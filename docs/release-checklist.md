@@ -163,5 +163,6 @@ $env:API_BASE = "https://staging-api.example.com"   # 如需要
 
 - [演示流程](./demo-flow.md) — 逐步演示与话术
 - [验收清单](./acceptance-checklist.md) — 模块级验收明细
+- [Kubernetes 部署说明](../deployments/kubernetes.md) — 外挂 PostgreSQL/Redis 的 K8s 部署参考
 - [README](../README.md) — 项目总览与快速启动
 - `ops/` — 各模块 API 契约
