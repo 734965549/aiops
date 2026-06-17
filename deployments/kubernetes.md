@@ -339,6 +339,289 @@ spec:
 
 ## 前端部署
 
+如果前端也部署到 Kubernetes，建议单独做 `aiops-web` 镜像和 Deployment，不要和 `aiops-api` 放在同一个 Pod。前端容器只负责托管 `web/dist` 静态资源，可在容器内 Nginx 直接反代 API，也可以只暴露静态资源，由 Ingress 或外部 Nginx 统一反代。
+
+### aiops-web 镜像
+
+仓库目前没有前端 Dockerfile，可以新增一个前端镜像构建文件，例如 `web/Dockerfile`：
+
+```dockerfile
+FROM node:20-alpine AS builder
+WORKDIR /workspace
+
+COPY web/package*.json ./
+RUN npm ci
+
+COPY web/ ./
+RUN npm run build
+
+FROM nginx:1.27-alpine
+COPY web/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /workspace/dist /usr/share/nginx/html
+EXPOSE 80
+```
+
+同源部署时，前端构建保持 `VITE_API_BASE=`，让浏览器请求同源 `/api`、`/readyz` 等路径。
+
+`web/nginx.conf` 示例：
+
+```nginx
+server {
+  listen 80;
+  server_name _;
+
+  root /usr/share/nginx/html;
+  index index.html;
+
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+
+  location /api/ {
+    proxy_pass http://aiops-api.aiops.svc.cluster.local:8080/api/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  }
+
+  location = /healthz {
+    proxy_pass http://aiops-api.aiops.svc.cluster.local:8080/healthz;
+  }
+
+  location = /readyz {
+    proxy_pass http://aiops-api.aiops.svc.cluster.local:8080/readyz;
+  }
+
+  location = /version {
+    proxy_pass http://aiops-api.aiops.svc.cluster.local:8080/version;
+  }
+}
+```
+
+如果命名空间不是 `aiops`，把 `aiops-api.aiops.svc.cluster.local` 改成实际命名空间，例如 `aiops-api.aurora-test8.svc.cluster.local`。
+
+构建和推送：
+
+```bash
+docker build -f web/Dockerfile -t registry.example.com/aiops/aiops-web:<version> .
+docker push registry.example.com/aiops/aiops-web:<version>
+```
+
+### aiops-web Deployment
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aiops-web
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: aiops-web
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aiops-web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aiops-web
+    spec:
+      containers:
+        - name: web
+          image: registry.example.com/aiops/aiops-web:<version>
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+```
+
+### aiops-web Service
+
+集群内访问或 Ingress 转发使用 `ClusterIP`：
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: aiops-web
+  namespace: aiops
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: aiops-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+```
+
+如果没有 Ingress，也可以临时用云厂商 LoadBalancer 暴露前端：
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: aiops-web-lb
+  namespace: aiops
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: aiops-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+```
+
+LoadBalancer 模式下，推荐仍由 `aiops-web` 容器内 Nginx 反代 `/api` 到 `aiops-api`，这样浏览器仍是同源访问，不需要后端 CORS。
+
+### Ingress 统一入口
+
+如果使用 Ingress Controller，可以让同一个域名同时代理前端和后端。此时 `aiops-web` 的 Nginx 可以只托管静态资源，API 由 Ingress 转发：
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: aiops
+  namespace: aiops
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - aiops.example.com
+      secretName: aiops-tls
+  rules:
+    - host: aiops.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: aiops-api
+                port:
+                  name: http
+          - path: /healthz
+            pathType: Exact
+            backend:
+              service:
+                name: aiops-api
+                port:
+                  name: http
+          - path: /readyz
+            pathType: Exact
+            backend:
+              service:
+                name: aiops-api
+                port:
+                  name: http
+          - path: /version
+            pathType: Exact
+            backend:
+              service:
+                name: aiops-api
+                port:
+                  name: http
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: aiops-web
+                port:
+                  name: http
+```
+
+这种模式是推荐的生产形态：浏览器只访问 `https://aiops.example.com`，前端和后端同源，后端可以不配置 CORS。
+
+### 外部自建 Nginx 代理
+
+如果不使用 K8s Ingress，也可以在集群外自建 Nginx，把流量转到 `aiops-web` 和 `aiops-api` 的 Service。常见做法：
+
+```text
+Browser
+  -> external Nginx / SLB
+  -> aiops-web Service
+  -> aiops-api Service
+```
+
+外部 Nginx 示例：
+
+```nginx
+upstream aiops_web {
+  server <aiops-web-lb-or-nodeport>:80;
+}
+
+upstream aiops_api {
+  server <aiops-api-lb-or-nodeport>:8080;
+}
+
+server {
+  listen 80;
+  server_name aiops.example.com;
+
+  location /api/ {
+    proxy_pass http://aiops_api/api/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  }
+
+  location = /healthz {
+    proxy_pass http://aiops_api/healthz;
+  }
+
+  location = /readyz {
+    proxy_pass http://aiops_api/readyz;
+  }
+
+  location = /version {
+    proxy_pass http://aiops_api/version;
+  }
+
+  location / {
+    proxy_pass http://aiops_web;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  }
+}
+```
+
+外部 Nginx 模式下，K8s 侧通常需要把 `aiops-web` 和 `aiops-api` 以 LoadBalancer 或 NodePort 暴露给 Nginx 所在网络。不要暴露 PostgreSQL 和 Redis。
+
 ### 同源反代
 
 适合企业内网统一域名，例如 `https://aiops.example.com`。构建时 `VITE_API_BASE` 留空或设为 `/`，浏览器请求同源路径。
