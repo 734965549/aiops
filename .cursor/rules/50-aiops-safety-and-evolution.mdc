@@ -1,0 +1,65 @@
+---
+description: "AI 运维安全边界、执行风险控制和后续演进建议"
+globs:
+  - "internal/ai/**/*.go"
+  - "internal/execution/**/*.go"
+  - "internal/runbook/**/*.go"
+  - "internal/alert/**/*.go"
+  - "web/src/views/ai-assistant/**/*.vue"
+  - "web/src/views/executions/**/*.vue"
+  - "web/src/views/runbooks/**/*.vue"
+alwaysApply: false
+---
+
+# AI 运维安全与演进规则
+
+## 安全边界
+
+- AI 助手不是执行器；它只能分析、建议、生成计划或创建待确认任务。
+- 真实动作必须进入 Execution 模块，并经过状态机、权限、风险等级、人工确认和审计。
+- 中高风险动作默认 `pending_confirm`，确认文本沿用 `CONFIRM` 语义，大小写敏感。
+- 工具调用继承当前用户身份，不允许使用“系统超级权限”绕过 RBAC、数据范围或工具权限。
+- 凭据不进入 Prompt，不进入执行日志，不进入审计明文。
+
+## 执行闭环
+
+Execution 第一阶段状态机：
+
+```text
+pending_confirm -> pending_execute -> running -> success|failed
+```
+
+低风险可创建后直达 `pending_execute`；medium/high/critical 必须确认。
+
+来源为 alert 的执行任务要回写告警时间线：
+
+- `execution_created`
+- `execution_started`
+- `execution_finished`
+
+Runbook 多步骤任务要保留步骤顺序、dry-run 标记、输出和失败原因。
+
+## AI Provider 与工具
+
+- provider 列表不返回明文 `api_key`；已设置时显示 `****` 并返回 `has_api_key=true`。
+- 更新 provider 时如果省略 `api_key`，保留原密钥。
+- 工具调用响应 `allowed=false` 不是异常，而是业务拒绝；前端必须展示 `reason`。
+- Provider 类型保持现有 `a/b/c` 语义，新增类型前先更新 `ops/ai-contract.md`。
+
+## 设计建议
+
+以下是项目演进建议，不要误当成已经全部落地的功能：
+
+- P1 优先补齐审计中心 UI：筛选、导出、按 trace/resource/user 聚合查看。
+- 权限管理写接口要和审计绑定，避免“能改权限但不可追溯”。
+- 菜单权限应基于后端权限结果动态隐藏入口，但 API 仍必须服务端校验。
+- 更多告警源、CMDB、K8s、日志/指标系统接入时，先定义 Provider/Adapter 接口，再接具体厂商。
+- 真实执行代理上线前，先实现命令白名单、参数 schema 校验、超时、重试策略、幂等键和回滚计划。
+- AI 输出建议应带证据来源、风险等级、不确定性说明，并区分“建议操作”和“可执行计划”。
+
+## 反模式
+
+- 不让 AI 或前端直接调用云 API、K8s API、SSH、数据库写操作。
+- 不在页面里用“确认弹窗”替代后端确认状态机。
+- 不把 runbook 步骤当作纯文本丢失结构化字段。
+- 不为了演示方便绕过权限、审计或风险控制；演示数据也要走真实链路。

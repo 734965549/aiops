@@ -1,0 +1,203 @@
+# AI 运维平台 - 配置样例
+# 复制为 configs/config.yaml 后按实际环境修改。
+# 也可通过环境变量覆盖：变量前缀 AIOPS_，分段分隔符为双下划线 "__"。
+# 例如 AIOPS_SERVER__PORT=9090 -> server.port
+#     AIOPS_DATABASE__SSL_MODE=require -> database.ssl_mode
+
+app:
+  name: aiops
+  env: dev          # dev | test | prod
+  timezone: Asia/Shanghai
+  bootstrap_timeout_s: 30   # 启动装配超时（秒）；大库/慢网络可适当调大
+
+server:
+  host: 0.0.0.0
+  port: 8080
+  read_timeout_s: 15
+  write_timeout_s: 30
+  shutdown_timeout_s: 10
+
+logger:
+  level: info       # debug | info | warn | error
+  format: console   # console | json
+  output: stdout    # stdout | stderr | file
+  file_path: logs/aiops.log
+  max_size_mb: 100
+  max_backups: 10
+  max_age_days: 30
+
+database:
+  driver: postgres
+  host: 127.0.0.1
+  port: 5432
+  user: aiops
+  password: aiops
+  name: aiops
+  ssl_mode: disable
+  max_idle_conns: 10
+  max_open_conns: 100
+  conn_max_lifetime_s: 60
+  log_level: warn   # silent | error | warn | info
+  # 默认关闭代码内自动迁移；建表、初始化数据等动作应由 DBA 或外部发布流程执行。
+  # 如需临时启用，仅限受控开发/测试环境手动确认后设置为 true。
+  auto_migrate: false
+  migrate_timeout_s: 300   # auto_migrate=true 时迁移独立超时（秒），与 bootstrap_timeout_s 解耦
+
+redis:
+  required: false   # dev 可 false；prod 必须为 true（Validate 拦截），Redis 不可用时应拒绝启动
+  addr: 127.0.0.1:6379
+  password: ""
+  db: 0
+  pool_size: 50
+
+auth:
+  # dev 可用此占位值；非 dev 须注入强密钥（拒绝占位/弱密钥，校验熵与字符多样性）。
+  jwt_secret: "please-change-me-in-production"
+  jwt_issuer: aiops
+  access_ttl_m: 120
+  refresh_ttl_h: 168
+  # 可选：仅 dev/test 初始化默认管理员；prod 必须留空，建议由发布流程/运维 SQL 创建。
+  bootstrap_username: admin
+  bootstrap_password: admin123
+  bootstrap_display_name: "Administrator"
+  # LoadUserGrantContext Redis 短期缓存（秒）；0 禁用。角色级权限变更依赖 TTL 自然过期。
+  grant_cache_ttl_s: 60
+  # 登录安全 IP 白名单；空数组表示唔限制。支持单 IP 同 CIDR，例如 10.0.0.0/8。
+  login_ip_allowlist: []
+  login_rate_limit:
+    enabled: true
+    ip_requests_per_window: 30
+    ip_window_s: 60
+    ip_failures_before_lockout: 20
+    username_failures_before_lockout: 5
+    lockout_s: 900
+
+# 企业身份源（LDAP/AD 优先；OAuth2/OIDC/SSO 预留）
+# 安全策略：外部登录仅允许已预置绑定（provider_id + external_subject）的用户；
+# 管理员可在前端「域账号导入」页（/identity/ldap-import）填写连接并批量导入；亦可通过 Admin API 操作。
+# 平台用户名（本地/域账号）全局唯一，不可重名。
+# 生产环境 LDAP 必须使用 ldaps:// 或 start_tls: true
+identity:
+  providers:
+    # LDAP 示例（默认 disabled，按实际 AD/LDAP 环境启用）
+    - id: corp-ldap
+      type: ldap          # ldap | ad | oauth2 | oidc | sso
+      name: 企业 LDAP 域账号
+      enabled: false
+      priority: 10
+      ldap:
+        server_url: ldaps://ldap.example.com:636
+        bind_dn: cn=svc-aiops,ou=service,dc=example,dc=com
+        bind_password: "<REPLACE_WITH_SERVICE_PASSWORD>"
+        base_dn: ou=users,dc=example,dc=com
+        user_filter: "(uid={username})"
+        start_tls: false
+        insecure_skip_verify: false
+        timeout_s: 10
+        attr_display_name: cn
+        attr_email: mail
+        attr_groups: memberOf
+        attr_subject: entryUUID   # 稳定外部主体；留空时 LDAP 默认 entryUUID，AD 默认 objectGUID/objectSid
+        # 可选：管理员目录浏览/导入时的 LDAP 过滤；留空使用类型默认值
+        # browse_org_filter: "(|(objectClass=organizationalUnit)(objectClass=container))"
+        # browse_user_filter: "(objectClass=inetOrgPerson)"
+        # 外部登录不再自动创建/绑定平台用户；须管理员预置绑定后方可登录。
+        auto_create_user: false
+        default_role_code: viewer
+        group_role_mapping:
+          "CN=PlatformAdmins,OU=Groups,DC=example,DC=com": admin
+          "CN=Operators,OU=Groups,DC=example,DC=com": operator
+    # Active Directory 示例
+    - id: corp-ad
+      type: ad
+      name: Active Directory 域账号
+      enabled: false
+      priority: 5
+      ldap:
+        server_url: ldaps://ad.example.com:636
+        bind_dn: CN=svc-aiops,OU=Service Accounts,DC=corp,DC=local
+        bind_password: "<REPLACE_WITH_SERVICE_PASSWORD>"
+        base_dn: DC=corp,DC=local
+        user_filter: "(sAMAccountName={username})"
+        attr_subject: objectGUID
+        auto_create_user: false
+        default_role_code: viewer
+        group_role_mapping: {}
+    # OAuth2 / 企业 SSO 示例（授权码模式）
+    - id: corp-oauth2
+      type: oauth2
+      name: 企业 OAuth2 SSO
+      enabled: false
+      priority: 20
+      oauth2:
+        authorization_url: https://sso.example.com/oauth/authorize
+        token_url: https://sso.example.com/oauth/token
+        userinfo_url: https://sso.example.com/oauth/userinfo
+        client_id: "<REPLACE_WITH_CLIENT_ID>"
+        client_secret: "<REPLACE_WITH_CLIENT_SECRET>"
+        redirect_uri: http://localhost:5173/login
+        scopes: ["openid", "profile", "email"]
+        groups_claim: groups   # userinfo 中组列表字段；支持 JSON 字符串数组或逗号分隔字符串
+        auto_create_user: false
+        default_role_code: viewer
+    # OIDC 示例（自动 discovery）
+    - id: corp-oidc
+      type: oidc
+      name: 企业 OIDC
+      enabled: false
+      priority: 30
+      oidc:
+        issuer: https://oidc.example.com
+        client_id: "<REPLACE_WITH_CLIENT_ID>"
+        client_secret: "<REPLACE_WITH_CLIENT_SECRET>"
+        redirect_uri: http://localhost:5173/login
+        scopes: ["openid", "profile", "email"]
+        groups_claim: groups
+        auto_create_user: false
+        default_role_code: viewer
+
+cors:
+  # dev 默认仅允许 Vite dev server；生产分域部署须改为实际前端 origin（可多项）。
+  # 与 web/.env.production 的 VITE_API_BASE 组合方案见 deployments/README.md「生产前端接入」。
+  allow_origins:
+    - "http://localhost:5173"
+    - "http://127.0.0.1:5173"
+  allow_credentials: true
+
+# 以下 provider 均为占位示例，api_key 禁止用于真实环境；生产请通过密钥管理注入。
+# 启动时 cmd/api 会从 ai.providers 载入内存注册表；亦可启动后 POST /api/ai/providers 维护。
+# outbound_allowed_hosts 非空时仅允许访问列表内主机；生产建议显式配置白名单。
+# outbound_allow_loopback 为 true 时允许 127.0.0.1 等 loopback（dev 环境默认等同 true）。
+ai:
+  outbound_allowed_hosts: []
+  outbound_allow_loopback: false
+  providers:
+    - id: "demo-http-a"
+      name: "Demo HTTP Provider A"
+      type: "a"
+      base_url: "http://127.0.0.1:9000"
+      api_key: "<REPLACE_WITH_YOUR_API_KEY>"
+      timeout_ms: 30000
+      headers:
+        X-Client-Name: "aiops"
+      enabled: true
+      description: "通用 HTTP API Key 工具提供方样例（仅占位）"
+    - id: "demo-openai-b"
+      name: "Demo OpenAI Compatible Provider B"
+      type: "b"
+      base_url: "https://api.openai.com"
+      api_key: "<REPLACE_WITH_YOUR_API_KEY>"
+      timeout_ms: 30000
+      headers: {}
+      enabled: false
+      description: "类 OpenAI / Claude 兼容提供方样例（仅占位）"
+    - id: "demo-internal-c"
+      name: "Demo Internal Provider C"
+      type: "c"
+      base_url: "http://127.0.0.1:9010"
+      api_key: "<REPLACE_WITH_YOUR_API_KEY>"
+      timeout_ms: 30000
+      headers:
+        X-Trace-Source: "aiops"
+      enabled: false
+      description: "内部服务工具提供方样例（仅占位）"

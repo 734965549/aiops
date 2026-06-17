@@ -1,0 +1,22 @@
+# 本地开发联调覆盖：为 api 开启内建迁移 runner、默认管理员，并挂载 YAML 配置。
+# 用法：
+#   docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d
+#
+# 与 make migrate 二选一，避免重复建表。
+# 挂载 configs/config.example.yaml 为 /app/configs/config.yaml（含 ai.providers、cors 等 slice 配置）。
+# 默认凭据 admin/admin123、dev JWT 占位值仅限本机开发。
+
+services:
+  api:
+    command: ["-config", "/app/configs/config.yaml"]
+    volumes:
+      - ../migrations:/app/migrations:ro
+      - ../configs/config.example.yaml:/app/configs/config.yaml:ro
+    environment:
+      AIOPS_DATABASE__AUTO_MIGRATE: "true"
+      AIOPS_DATABASE__HOST: postgres
+      AIOPS_REDIS__ADDR: redis:6379
+      AIOPS_AUTH__BOOTSTRAP_USERNAME: admin
+      AIOPS_AUTH__BOOTSTRAP_PASSWORD: admin123
+      # 显式覆盖 JWT，与主 compose 默认 dev 占位值一致。
+      AIOPS_AUTH__JWT_SECRET: dev-only-not-secret-please-change

@@ -1,0 +1,66 @@
+---
+description: "运维契约、验收路径、E2E 脚本和发布检查规则"
+globs:
+  - "ops/**/*.md"
+  - "docs/**/*.md"
+  - "scripts/**/*.ps1"
+  - "deployments/**/*"
+  - "Makefile"
+  - "README.md"
+alwaysApply: false
+---
+
+# 契约与验收规则
+
+## 契约优先级
+
+`ops/*.md` 是前后端联调和运维接入的稳定契约。修改接口、状态机、权限码、健康检查、迁移行为、执行流程时，必须同步更新对应契约。
+
+常用映射：
+
+- 认证/JWT/登录：`ops/auth-contract.md`
+- 身份、角色、LDAP 导入、授权校验：`ops/identity-api-contract.md`
+- 告警源、Webhook、状态流转：`ops/alert-contract.md`
+- 执行任务、确认、状态机、时间线：`ops/execution-contract.md`
+- Runbook 模板、推荐、多步骤任务：`ops/runbook-contract.md`
+- AI provider、工具调用、allowed 语义：`ops/ai-contract.md`
+- 健康检查与 readiness：`ops/health-contract.md`
+- 数据库迁移：`ops/migration-contract.md`
+
+## 主链路验收
+
+主链路必须保持可跑：
+
+```powershell
+docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d
+go run ./cmd/migrate
+go test ./cmd/... ./internal/... ./pkg/...
+cd web && npm run build
+.\scripts\e2e-alert.ps1
+.\scripts\e2e-asset.ps1
+.\scripts\e2e-runbook.ps1
+.\scripts\e2e-execution.ps1
+```
+
+根据改动范围选择最小必要验证；触及共享模块、权限、迁移、状态机、执行闭环时扩大验证范围。
+
+## 健康检查契约
+
+- `/healthz` 是 liveness，只检查进程，顶层 `data.status` 为 `ok`。
+- `/readyz` 是 readiness，检查 process/config/migration/db/redis；只有顶层 `data.status == "ready"` 才能接流量。
+- `checks[*].status` 可为 `ok/down/degraded`；不要把子项 `degraded` 当作顶层已就绪。
+- `redis.required=false` 时 Redis 异常可 degraded 且不阻塞顶层 ready；`redis.required=true` 时必须阻塞。
+
+## 发布和配置
+
+- 默认 Compose 不自动建表；生产不能依赖 `database.auto_migrate=true`。
+- 生产环境必须关闭 bootstrap 管理员配置，使用 secrets 注入 JWT 和数据库密码。
+- 不向生产暴露 PostgreSQL/Redis 端口。
+- CORS `allow_credentials=true` 时禁止 `*` origin。
+- 配置优先级：`AIOPS_` 环境变量 > `--config` YAML > 默认值。
+
+## 文档维护
+
+- README 用于项目入口和快速验收，不承载过细接口细节。
+- `ops/*.md` 写稳定契约；`docs/*.md` 写设计、流程、验收、发布建议。
+- 新增 E2E 脚本时，在 `docs/acceptance-checklist.md` 增加推荐验收顺序或模块检查项。

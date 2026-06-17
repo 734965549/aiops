@@ -1,0 +1,51 @@
+---
+description: "Vue 3 前端工程、API 调用、权限提示与 UI 协作规则"
+globs:
+  - "web/**/*.ts"
+  - "web/**/*.vue"
+  - "web/**/*.scss"
+  - "web/**/*.json"
+alwaysApply: false
+---
+
+# 前端规则
+
+## 技术栈与目录
+
+前端位于 `web/`，使用 Vue 3 + TypeScript + Vite + Pinia + Vue Router + Arco Design。
+
+- API 封装放在 `web/src/api/`。
+- 页面放在 `web/src/views/<module>/`。
+- 全局状态放在 `web/src/stores/`。
+- 路由放在 `web/src/router/`。
+- 页面级组合逻辑可放在当前 view 的 `composables/`，避免过早抽全局工具。
+
+## API 调用
+
+- 所有后端请求经 `web/src/api/request.ts`，不要在页面里直接裸用 axios。
+- 成功判断使用 `code === "OK"`，不要使用数字 `0`。
+- `request.ts` 已处理 401 refresh、403 权限提示、503 未就绪提示；新增模块 API 保持这个错误处理链路。
+- AI 工具调用即使 HTTP 200 且 `code="OK"`，也必须检查 `data.allowed`。
+- 新增 API 文件时，同步更新 `web/src/api/README.md`。
+
+## 权限与路由体验
+
+- 未登录访问受保护页面应回到 `/login`。
+- 403 不应造成白屏；页面应保留结构并给出可理解提示。
+- 权限码、迁移依赖、接口路径以 `ops/*.md` 和后端实现为准。
+- 菜单权限尚属 P1+ 能力，新增入口时不要假设完整动态菜单已经落地。
+
+## UI 风格
+
+- 这是运维控制台，优先清晰、紧凑、可扫描；避免营销页式大标题和装饰性视觉。
+- 页面首屏应直接服务工作流：告警列表、任务列表、Dashboard 指标、表单或详情。
+- 表格、筛选、状态 Tag、抽屉、确认弹窗、空状态、加载状态、错误状态要完整。
+- 高风险执行动作必须有明显确认，不要只靠一个普通按钮。
+- 敏感值如 provider `api_key` 只显示掩码和 `has_api_key`，不要在表单回显明文。
+
+## 构建与验证
+
+- 常规验证：`cd web && npm run build`。
+- 修改 lint 相关代码时可跑 `cd web && npm run lint`。
+- 联调时前端 dev server 默认 `http://127.0.0.1:5173`，`/api`、`/healthz`、`/readyz`、`/version` 代理到后端 `8080`。
+- 如果 Windows 网盘映射路径导致 Vite 构建异常，先查看 `web/README.md` 和 `vite.config.ts` 中关于 `realpathSync` 的说明。

@@ -1,0 +1,145 @@
+# 本地一键启动平台依赖 + 后端 API（前端开发仍走 npm run dev）。
+#
+# 快速开始（无需 .env，推荐首次联调）：
+#   docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d
+#   # 自动迁移 + bootstrap 管理员 admin/admin123；JWT 使用内置 dev 占位值
+#
+# 可选：cp .env.example .env 后自定义 JWT_SECRET=...，再仅启主文件：
+#   docker compose -f deployments/docker-compose.yml up -d
+#   # 无 .env 时 JWT 默认 dev-only-not-secret-please-change；须 make migrate 后 /readyz 才 ready
+#
+# 常用命令：
+#   docker compose -f deployments/docker-compose.yml up -d postgres redis  # 仅中间件
+#   docker compose -f deployments/docker-compose.yml down                  # 停止并保留数据卷
+#   docker compose -f deployments/docker-compose.yml down -v               # 停止并清理数据
+#
+# PostgreSQL 默认库账号 aiops/aiops；Web 登录 admin/admin123 须 dev 覆盖或 bootstrap（**仅限本机开发**）。
+# 默认不自动建表（AIOPS_DATABASE__AUTO_MIGRATE=false）；未迁移时 /readyz 为 not_ready，容器健康检查会等待。
+# 已迁移 0001 但未执行 0002：若 bootstrap 已配置，绑定 admin 角色失败会导致 API 启动失败；未开 bootstrap 时可能仍可登录但受保护 API 返回 403。见 ops/migration-contract.md。
+# 生产部署：勿将 postgres/redis 端口映射到宿主机，JWT/DB 密码须通过 secrets 注入（见 README）。
+
+x-aiops-env: &aiops-env
+  AIOPS_APP__NAME: aiops
+  AIOPS_APP__ENV: dev
+  AIOPS_APP__TIMEZONE: Asia/Shanghai
+  AIOPS_SERVER__HOST: 0.0.0.0
+  AIOPS_SERVER__PORT: "8080"
+  AIOPS_SERVER__READ_TIMEOUT_S: "15"
+  AIOPS_SERVER__WRITE_TIMEOUT_S: "30"
+  AIOPS_SERVER__SHUTDOWN_TIMEOUT_S: "10"
+  AIOPS_LOGGER__LEVEL: info
+  AIOPS_LOGGER__FORMAT: console
+  AIOPS_LOGGER__OUTPUT: stdout
+  AIOPS_LOGGER__FILE_PATH: logs/aiops.log
+  AIOPS_LOGGER__MAX_SIZE_MB: "100"
+  AIOPS_LOGGER__MAX_BACKUPS: "10"
+  AIOPS_LOGGER__MAX_AGE_DAYS: "30"
+  AIOPS_DATABASE__DRIVER: postgres
+  AIOPS_DATABASE__HOST: postgres
+  AIOPS_DATABASE__PORT: "5432"
+  AIOPS_DATABASE__USER: aiops
+  AIOPS_DATABASE__PASSWORD: aiops
+  AIOPS_DATABASE__NAME: aiops
+  AIOPS_DATABASE__SSL_MODE: disable
+  AIOPS_DATABASE__MAX_IDLE_CONNS: "10"
+  AIOPS_DATABASE__MAX_OPEN_CONNS: "100"
+  AIOPS_DATABASE__CONN_MAX_LIFETIME_S: "60"
+  AIOPS_DATABASE__LOG_LEVEL: warn
+  # 默认关闭代码内自动迁移；建表应由 DBA / 发布流程 / dev 覆盖文件显式执行。
+  AIOPS_DATABASE__AUTO_MIGRATE: "false"
+  # 默认管理员仅 dev 覆盖注入；见 docker-compose.dev.yml / config.example.yaml。
+  AIOPS_AUTH__BOOTSTRAP_USERNAME: ""
+  AIOPS_AUTH__BOOTSTRAP_PASSWORD: ""
+  AIOPS_REDIS__ADDR: redis:6379
+  AIOPS_REDIS__DB: "0"
+  AIOPS_REDIS__POOL_SIZE: "50"
+  # refresh token 轮换依赖 Redis；生产须保持 true，Redis 不可用时应拒绝启动。
+  AIOPS_REDIS__REQUIRED: "true"
+  # 本地无 .env 时使用 dev 占位值；生产必须在宿主机 .env 或 CI Secret 中注入强 JWT_SECRET。
+  AIOPS_AUTH__JWT_SECRET: ${JWT_SECRET:-dev-only-not-secret-please-change}
+  AIOPS_AUTH__JWT_ISSUER: aiops
+  AIOPS_AUTH__ACCESS_TTL_M: "120"
+  AIOPS_AUTH__REFRESH_TTL_H: "168"
+  # CORS 默认由 pkg/config.setDefaults 提供 localhost:5173；生产分域须显式配置实际前端 origin：
+  # AIOPS_CORS__ALLOW_ORIGINS=https://app.example.com
+  # AIOPS_CORS__ALLOW_CREDENTIALS=true
+  # 与 web/.env.production 的 VITE_API_BASE 组合见 deployments/README.md
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aiops-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aiops
+      POSTGRES_USER: aiops
+      POSTGRES_PASSWORD: aiops
+      TZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - aiops-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiops -d aiops"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aiops-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: aiops-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - aiops-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - aiops-net
+
+  api:
+    image: aiops-api:${AIOPS_VERSION:-dev}
+    container_name: aiops-api
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+      args:
+        VERSION: ${AIOPS_VERSION:-dev}
+        COMMIT: ${AIOPS_COMMIT:-none}
+        BUILD_AT: ${AIOPS_BUILD_AT:-unknown}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *aiops-env
+    ports:
+      - "8080:8080"
+    # Dockerfile 镜像里 /app/migrations 已包含构建期的 *.up.sql，
+    # 这里再挂一份本地最新 migrations 方便开发时不重建镜像就能验证新增脚本。
+    volumes:
+      - ../migrations:/app/migrations:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz | grep -q '\"status\":\"ready\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - aiops-net
+
+volumes:
+  aiops-pg-data:
+  aiops-redis-data:
+
+networks:
+  aiops-net:
+    driver: bridge

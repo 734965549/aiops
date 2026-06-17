@@ -1,0 +1,154 @@
+:root {
+  --aiops-ink: #071226;
+  --aiops-panel: rgba(255, 255, 255, 0.88);
+  --aiops-panel-strong: rgba(255, 255, 255, 0.96);
+  --aiops-border: rgba(22, 93, 255, 0.12);
+  --aiops-cyan: #00dcc5;
+  --aiops-blue: #165dff;
+  --aiops-violet: #6d5dfc;
+  --aiops-text-soft: #5d6b86;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Helvetica, Arial, sans-serif;
+  background: #071226;
+  color: #1d273b;
+}
+
+body {
+  min-width: 320px;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::selection {
+  color: #fff;
+  background: rgba(22, 93, 255, 0.75);
+}
+
+.arco-card {
+  border-radius: 8px;
+  border: 1px solid var(--aiops-border) !important;
+  background:
+    linear-gradient(180deg, var(--aiops-panel-strong), var(--aiops-panel)),
+    radial-gradient(circle at top right, rgba(0, 220, 197, 0.12), transparent 34%);
+  box-shadow: 0 16px 44px rgba(12, 31, 65, 0.1);
+  backdrop-filter: blur(16px);
+}
+
+.arco-card-hoverable:hover {
+  transform: translateY(-2px);
+  border-color: rgba(0, 220, 197, 0.34) !important;
+  box-shadow: 0 20px 54px rgba(22, 93, 255, 0.16);
+}
+
+.arco-card-header {
+  min-height: 48px;
+  border-bottom: 1px solid rgba(22, 93, 255, 0.08);
+}
+
+.arco-card-header-title {
+  color: #17223b;
+  font-weight: 700;
+}
+
+.arco-btn-primary,
+.arco-btn-primary:not(.arco-btn-disabled) {
+  border: 0;
+  background: linear-gradient(135deg, var(--aiops-blue), var(--aiops-cyan));
+  box-shadow: 0 10px 26px rgba(22, 93, 255, 0.24);
+}
+
+.arco-btn-primary:not(.arco-btn-disabled):hover {
+  filter: saturate(1.12) brightness(1.03);
+  box-shadow: 0 14px 32px rgba(0, 220, 197, 0.24);
+}
+
+.arco-table {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.arco-table-th {
+  color: #4d5b76;
+  background: rgba(231, 244, 255, 0.8) !important;
+}
+
+.arco-table-tr:hover .arco-table-td {
+  background: rgba(218, 240, 255, 0.62) !important;
+}
+
+.arco-tag {
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.arco-menu-dark {
+  background: transparent !important;
+}
+
+.arco-menu-dark .arco-menu-item {
+  margin: 6px 12px;
+  width: calc(100% - 24px);
+  border-radius: 8px;
+  color: rgba(226, 246, 255, 0.72);
+}
+
+.arco-menu-dark .arco-menu-item:hover {
+  color: #fff;
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.arco-menu-dark .arco-menu-selected {
+  color: #f8feff !important;
+  background: linear-gradient(135deg, rgba(22, 93, 255, 0.76), rgba(0, 220, 197, 0.46)) !important;
+  box-shadow: 0 12px 30px rgba(0, 220, 197, 0.2);
+}
+
+.arco-input-wrapper,
+.arco-select-view-single,
+.arco-input-number,
+.arco-textarea-wrapper {
+  border-radius: 8px;
+}
+
+.arco-input-wrapper:focus-within,
+.arco-select-view-focus,
+.arco-textarea-wrapper:focus-within {
+  border-color: rgba(0, 220, 197, 0.75) !important;
+  box-shadow: 0 0 0 3px rgba(0, 220, 197, 0.12);
+}
+
+.tech-scanline {
+  position: relative;
+  overflow: hidden;
+}
+
+.tech-scanline::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent, rgba(0, 220, 197, 0.12), transparent);
+  transform: translateY(-100%);
+  animation: scanline 4.8s linear infinite;
+}
+
+@keyframes scanline {
+  to {
+    transform: translateY(100%);
+  }
+}

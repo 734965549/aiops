@@ -1,0 +1,65 @@
+---
+description: "Go 后端 DDD 分层、HTTP、错误、权限、审计与模块接入规则"
+globs:
+  - "cmd/**/*.go"
+  - "internal/**/*.go"
+  - "pkg/**/*.go"
+alwaysApply: false
+---
+
+# Go 后端规则
+
+## 分层与依赖
+
+每个业务上下文按 `internal/<context>/{domain,application,infrastructure,interfaces}` 组织。
+
+- `domain`：实体、值对象、状态机、领域错误、Repository 接口，不依赖 Gin/GORM/Redis。
+- `application`：用例编排、事务边界、权限意图、审计 hook、跨模块端口接口。
+- `infrastructure`：GORM/Redis/外部系统/审计 recorder 等实现。
+- `interfaces/http`：Gin Handler、路由注册、DTO 绑定与响应转换。
+
+依赖方向保持：
+
+```text
+interfaces -> application -> domain <- infrastructure
+```
+
+不要让 Handler 直接操作 GORM，也不要让 domain 直接 import infrastructure。
+
+## 新模块接入
+
+- 新上下文放在 `internal/<context>`，保持现有目录风格。
+- HTTP 路由通过实现 `internal/server.RouteRegistrar` 暴露。
+- 在 `cmd/api/main.go` 的 `registrars` 列表装配模块依赖。
+- 跨上下文调用优先使用 application 层端口接口，不直接 import 对方 infrastructure。
+- 共享基础能力才放进 `pkg/`；业务专属逻辑不要抽到 `pkg/`。
+
+## HTTP 响应和错误
+
+- 所有业务接口使用 `httpx.OK`、`httpx.Fail`、`httpx.FailWith`。
+- 成功响应固定 `code="OK"`、`message="ok"`，并闭合 `trace_id`。
+- 新增错误码先看 `pkg/errors/code.go` 和 HTTP 映射；业务错误用 `apperr.New` / `apperr.Wrap`。
+- 不直接把数据库、Redis、外部 API 原始错误文案暴露给调用方；底层详情写日志。
+- 分页接口沿用 `pkg/pagination` 和现有 `PageData` 形态。
+
+## 权限与安全
+
+- 受保护路由必须挂认证中间件，并使用模块授权或 application service 做权限校验。
+- 权限码沿用 `app:<module>:<action>` 风格，例如 `app:executions:confirm`。
+- AI 工具调用必须二次校验工具权限和确认状态，不能只依赖前端。
+- 域账号登录只接受管理员预置绑定，不自动按用户名开户。
+- JWT secret、provider api key、LDAP 密码等敏感值不能进入日志、响应、审计明文或测试 fixture。
+
+## 审计与可观测
+
+- 登录、权限变更、资产变更、告警状态流转、Runbook 启停、执行确认/拒绝/执行、AI 分析与工具调用都属于关键动作。
+- 新增关键写操作时，添加审计 hook 或复用已有 recorder。
+- 日志使用 `logger.From(ctx)`，不要绕过 request context；让 `trace_id` 自动进入日志。
+- `/healthz` 只检查进程存活；`/readyz` 才检查 config、migration、db、redis。
+
+## 测试要求
+
+- domain 状态机、枚举、匹配规则、权限判断必须有单元测试。
+- application 服务触及状态流转、审计、事务或幂等时必须补测试。
+- HTTP Handler 新增接口时，补成功、鉴权失败、参数错误、权限不足等主路径测试。
+- 修改共享包 `pkg/*` 时，跑或补对应包测试。

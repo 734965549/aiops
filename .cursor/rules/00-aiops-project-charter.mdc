@@ -1,0 +1,56 @@
+---
+description: "AI 运维平台全局项目契约、产品边界与协作原则"
+alwaysApply: true
+---
+
+# AI 运维平台项目宪章
+
+本项目是面向企业运维场景的 AI 运维平台。当前已打通 P0 闭环：
+
+```text
+告警接入 -> 资产匹配 -> Runbook 推荐 -> 执行确认 -> Dashboard 汇总 -> 审计追溯
+```
+
+AI/Agent 在本仓库协作时，优先维护这个闭环的稳定性。任何新功能、重构或 UI 调整，都不能破坏已落地的主链路和验收脚本。
+
+## 核心理念
+
+- 平台不是“让 AI 直接操作生产”的工具，而是安全、可控、可审计的智能运维闭环。
+- AI 负责分析、解释、建议和生成计划；真实执行必须进入 Execution 模块，由权限、风险、确认、审计共同约束。
+- 外部系统通过适配器接入，业务代码不直接绑定具体云厂商、日志系统、监控系统或模型供应商。
+- 第一阶段坚持 DDD 模块化单体，按限界上下文组织代码；后续可按模块拆分为独立服务。
+- 关键行为必须可追踪：请求有 `trace_id`，写操作有审计，执行动作有状态机和时间线。
+
+## 权威文档
+
+改动前先查对应契约，不要凭记忆改接口：
+
+- 产品和设计：`README.md`、`docs/AI运维平台技术架构设计.md`、`docs/AI运维平台信息架构.md`、`docs/AI运维平台核心业务流程图.md`
+- 验收：`docs/acceptance-checklist.md`、`docs/demo-flow.md`、`docs/release-checklist.md`
+- 运维/API 契约：`ops/*.md`
+- 前端 API：`web/src/api/README.md`
+
+当源码与文档不一致时，先判断是否是代码已经演进但文档未更新。涉及对外接口、状态机、权限码、迁移、健康检查时，必须同步更新契约文档。
+
+## 全局硬约束
+
+- 后端统一响应结构为 `code/message/trace_id/data`，成功码是字符串 `"OK"`，不是数字 `0`。
+- 后端业务错误使用 `pkg/errors` 的 `apperr.New` / `apperr.Wrap`，HTTP 输出使用 `pkg/transport/http` 的 `OK` / `Fail` / `FailWith`。
+- 受保护 API 必须走 Bearer Token、RBAC/数据权限/工具权限校验；401 与 403 语义要区分。
+- 任意写操作、执行确认、告警处理、AI 工具调用等关键动作必须写审计或预留审计 hook。
+- 不把密钥、Token、AK/SK、JWT secret、数据库密码写进代码、日志、Prompt、测试快照或前端持久化状态。
+- 不暴露数据库自增 `id` 作为跨上下文或对外 API 的业务标识；对外使用 `*_id` 业务 ID。
+- 不引入另一套迁移工具；本项目只使用自研 runner。
+
+## 当前技术栈
+
+- 后端：Go 1.22、Gin、GORM、PostgreSQL、Redis、Viper、zap、JWT。
+- 前端：Vue 3、TypeScript、Vite、Pinia、Vue Router、Arco Design、Axios。
+- 部署：Docker Compose；本地 dev 默认 API `8080`，前端 `5173`。
+
+## 协作方式
+
+- 先读相关 README/契约/测试，再改代码。
+- 小步修改，保持模块边界清晰；不要借需求顺手做大规模无关重构。
+- 新增能力时优先补齐对应测试、E2E 脚本或验收清单。
+- 如果实现和契约发生冲突，优先停下来说明冲突点，并建议是改代码、改契约还是拆分阶段处理。

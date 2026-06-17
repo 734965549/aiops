@@ -1,0 +1,54 @@
+---
+description: "数据库建模、GORM 模型和 SQL 迁移强制契约"
+globs:
+  - "migrations/**/*.sql"
+  - "pkg/database/**/*.go"
+  - "internal/**/infrastructure/persistence/**/*.go"
+  - "internal/**/domain/**/*.go"
+alwaysApply: false
+---
+
+# 数据库与迁移规则
+
+## 迁移执行器
+
+本项目只允许使用仓库内自研迁移 runner：`pkg/database/migrate.go`。
+
+- 允许：`make migrate`、`make migrate-up`、`go run ./cmd/migrate -config configs/config.yaml`。
+- 禁止：golang-migrate、`docker-entrypoint-initdb.d` 手工 `\i`、任何第三方迁移工具与 runner 混用。
+- `database.auto_migrate=true` 仅限本地/dev/test，生产必须由 DBA 或发布流水线在 API 启动前显式迁移。
+- `*.down.sql` 是人工回滚参考，不由 runner 自动执行。
+
+## 迁移文件
+
+- 文件名格式：`<version>_<name>.up.sql` / `<version>_<name>.down.sql`。
+- 版本号使用 4 位递增编号，例如 `0015`；不要插队、复用或改写已发布版本。
+- 同一上下文表名前缀保持一致：`iam_*`、`alert_*`、`asset_*`、`exec_*`、`audit_*` 等。
+- up 脚本尽量幂等，种子数据使用 `ON CONFLICT`。
+- 新增权限、角色、AI 工具权限、Dashboard 权限等种子数据时，同步考虑 admin 角色绑定。
+
+## 建表硬约束
+
+所有业务表遵守：
+
+- 主键统一为 `id BIGSERIAL`。
+- 业务标识独立唯一列，例如 `user_id`、`alert_id`、`asset_id`、`task_id`。
+- 对外 API 和跨上下文引用使用业务 ID，不暴露自增 `id`。
+- 每张业务表必须有 `created_at TIMESTAMPTZ NOT NULL` 和 `updated_at TIMESTAMPTZ NOT NULL`。
+- 业务表时间戳由 Go 程序维护，禁止 DB DEFAULT，禁止触发器。
+- 不随意添加数据库外键；若项目已有“应用层保证完整性”的模式，继续使用事务、唯一索引、存在性校验和 repository 约束。
+
+例外：`schema_migrations.applied_at` 是 runner 元数据，可保留 `DEFAULT NOW()` 兜底。
+
+## GORM 模型
+
+- 新模型嵌入 `pkg/database.BaseModel`，由 hook 维护 `id/created_at/updated_at`。
+- `TableName()` 明确返回表名。
+- 不在主流程使用 `UpdateColumn` / `UpdateColumns` / 原生 `db.Exec` 更新业务表；这些会绕过 GORM hook。确需使用时，必须手动维护 `updated_at` 并在代码注释中说明原因。
+- Repository 方法保持事务边界清楚；创建主从数据时用同一事务。
+
+## 迁移验收
+
+- 修改迁移 runner 或 SQL splitter 时，跑 `go test ./pkg/database/...`。
+- 新增迁移后，确认 `/readyz` 的 migration 子项能正确反映 latest/applied/pending。
+- 涉及前端权限报错提示时，同步检查 `web/src/api/request.ts` 是否仍能给出有效提示。
