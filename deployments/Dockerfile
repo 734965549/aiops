@@ -2,7 +2,7 @@
 
 FROM golang:1.22-alpine AS builder
 WORKDIR /workspace
-
+ENV GOPROXY=https://goproxy.cn,direct
 # 优先复制 go.mod / go.sum 以充分利用 layer 缓存。
 COPY go.mod go.sum ./
 RUN go mod download
@@ -24,7 +24,8 @@ RUN go build -trimpath \
 
 FROM alpine:3.20
 # wget 用于 HEALTHCHECK；tini 用于正确转发 SIGTERM 给 Go 进程触发优雅退出。
-RUN apk --no-cache add ca-certificates tzdata wget tini && \
+RUN sed -i 's#https\?://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#g' /etc/apk/repositories && \
+    apk --no-cache add ca-certificates tzdata wget tini && \
     cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
     echo "Asia/Shanghai" > /etc/timezone && \
     addgroup -S aiops && adduser -S -G aiops aiops

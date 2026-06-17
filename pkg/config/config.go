@@ -290,10 +290,10 @@ func Load(configPath string) (*Config, error) {
 	setDefaults(v)
 
 	v.SetEnvPrefix("AIOPS")
-	v.AutomaticEnv()
 	// yaml 用 "." 表示分段，环境变量分段使用双下划线 "__"，
 	// 避免与 snake_case 键名内部的单下划线发生歧义（如 database.ssl_mode）。
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "__"))
+	v.AutomaticEnv()
 
 	if configPath != "" {
 		v.SetConfigFile(configPath)
@@ -475,6 +475,8 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("redis.required", false)
 	v.SetDefault("redis.addr", "127.0.0.1:6379")
+	v.SetDefault("redis.username", "")
+	v.SetDefault("redis.password", "")
 	v.SetDefault("redis.db", 0)
 	v.SetDefault("redis.pool_size", 50)
 

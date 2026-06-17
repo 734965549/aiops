@@ -2,6 +2,34 @@ package config
 
 import "testing"
 
+func TestLoadReadsRedisPasswordFromEnv(t *testing.T) {
+	t.Setenv("AIOPS_REDIS__ADDR", "10.51.2.220:6379")
+	t.Setenv("AIOPS_REDIS__USERNAME", "default")
+	t.Setenv("AIOPS_REDIS__PASSWORD", "ubTKSLICMXs=")
+	t.Setenv("AIOPS_REDIS__DB", "2")
+	t.Setenv("AIOPS_REDIS__REQUIRED", "true")
+
+	c, err := Load("")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if c.Redis.Addr != "10.51.2.220:6379" {
+		t.Fatalf("unexpected redis addr: %q", c.Redis.Addr)
+	}
+	if c.Redis.Username != "default" {
+		t.Fatalf("unexpected redis username: %q", c.Redis.Username)
+	}
+	if c.Redis.Password != "ubTKSLICMXs=" {
+		t.Fatalf("unexpected redis password: %q", c.Redis.Password)
+	}
+	if c.Redis.DB != 2 {
+		t.Fatalf("unexpected redis db: %d", c.Redis.DB)
+	}
+	if !c.Redis.Required {
+		t.Fatal("expected redis.required from env")
+	}
+}
+
 func TestConfigValidateAIExample(t *testing.T) {
 	c := &Config{
 		App:      AppConfig{Env: "dev"},
