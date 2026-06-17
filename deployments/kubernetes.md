@@ -18,7 +18,7 @@ Browser
 - Kubernetes 只部署应用层：`aiops-api`、可选前端静态资源服务、Ingress / Service / ConfigMap / Secret。
 - PostgreSQL 外挂：使用 RDS、自建高可用 PostgreSQL、或平台 DBA 提供的实例。
 - Redis 外挂：生产环境必须可用，`AIOPS_REDIS__REQUIRED=true`。
-- 数据库迁移必须在 API 发布前由 DBA 或发布流水线显式执行，保持 `AIOPS_DATABASE__AUTO_MIGRATE=false`。
+- 数据库初始化和迁移必须在 API 发布前由 DBA 显式执行，保持 `AIOPS_DATABASE__AUTO_MIGRATE=false`。
 - 不使用 initContainer、应用启动钩子或多副本 API 自动迁移生产数据库，避免并发迁移、权限扩大和不可审计变更。
 - 不把数据库密码、JWT secret、Redis 密码、AI provider key 写入 Git、ConfigMap、镜像层或前端环境变量。
 
@@ -54,7 +54,7 @@ PostgreSQL：
 
 - 版本建议 PostgreSQL 14+，推荐 16。
 - 生产库账号最小权限至少需要连接、建表、建索引、写入迁移元数据和业务表数据。
-- `schema_migrations` 由仓库内自研 runner 维护，不能混用 golang-migrate 或其它迁移工具。
+- `schema_migrations` 按仓库迁移账本结构维护，不能混用 golang-migrate 或其它迁移工具的元数据表。
 - 生产建议开启 SSL，按数据库侧要求设置 `AIOPS_DATABASE__SSL_MODE=require` 或 `verify-full`。
 - 根据 API 副本数控制连接池：`max_open_conns * replicas` 不应超过数据库连接上限。
 
@@ -70,38 +70,58 @@ Redis：
 1. 构建并推送 aiops-api 镜像
 2. 构建并发布前端静态资源
 3. 备份外部 PostgreSQL
-4. 执行数据库迁移
+4. DBA 在外部 PostgreSQL 执行建表、种子数据和迁移账本 SQL
 5. apply / update Kubernetes ConfigMap、Secret、Deployment、Service、Ingress
 6. 等待 /readyz 返回 data.status=ready
 7. 执行业务 E2E 或手工验收
 8. 观察日志、审计、告警 15-30 分钟
 ```
 
-## 迁移执行
+## 数据库初始化
 
-推荐由 CI/CD runner 或 DBA 运维机执行迁移。执行环境需要：
+生产 Kubernetes 部署不允许 API 进程自动初始化数据库，也不在 Pod、initContainer 或 K8s Job 中运行迁移。数据库初始化由 DBA 在外部 PostgreSQL 上统一执行，应用只读取结果并通过 `/readyz` 校验状态。
 
-- 能访问外部 PostgreSQL。
-- 能访问当前发布版本的源码和 `migrations/`。
-- 使用本仓库自研 runner：`go run ./cmd/migrate` 或 `make migrate`。
+DBA 执行范围包括：
 
-示例：
+- 按版本顺序执行 `migrations/*.up.sql`。
+- 确认所有业务表、权限种子、Runbook 种子和审计相关表已成功创建。
+- 执行 `migrations/manual_schema_migrations.sql`，创建并维护 `schema_migrations` 迁移账本表。
+- 确认 `schema_migrations` 已记录当前发布版本包含的全部 SQL 版本。
 
-```bash
-export AIOPS_APP__ENV=prod
-export AIOPS_DATABASE__DRIVER=postgres
-export AIOPS_DATABASE__HOST=prod-postgres.example.internal
-export AIOPS_DATABASE__PORT=5432
-export AIOPS_DATABASE__USER=aiops
-export AIOPS_DATABASE__PASSWORD='<from-secret-manager>'
-export AIOPS_DATABASE__NAME=aiops
-export AIOPS_DATABASE__SSL_MODE=require
-export AIOPS_DATABASE__AUTO_MIGRATE=false
+`schema_migrations` 不是业务表，它是应用 readiness 用来判断数据库是否追平当前镜像内 `migrations/` 的账本。即使 DBA 已手工执行了所有 `*.up.sql`，也必须同步写入账本；否则 `/readyz` 会返回 migration pending，Pod 不应接收流量。
 
-go run ./cmd/migrate -config configs/config.yaml
+DBA SQL 统一目录为仓库根目录下的 `migrations/`。生产初始化按 `migrations/README.md` 中列出的顺序执行：
+
+```text
+migrations/0001_init_identity.up.sql
+migrations/0002_seed_admin_permissions.up.sql
+migrations/0003_external_identity.up.sql
+migrations/0004_user_provisioning_permissions.up.sql
+migrations/0005_user_role_source.up.sql
+migrations/0006_auth_audit.up.sql
+migrations/0007_init_alert.up.sql
+migrations/0008_init_asset.up.sql
+migrations/0009_init_audit.up.sql
+migrations/0010_ai_analyze_permission.up.sql
+migrations/0011_init_execution.up.sql
+migrations/0012_init_runbook.up.sql
+migrations/0013_dashboard_permission.up.sql
+migrations/0014_init_asset_match_rule.up.sql
+migrations/0015_identity_access_control_management.up.sql
+migrations/manual_schema_migrations.sql
 ```
 
-当前 `deployments/Dockerfile` 只打包 API 进程，不包含独立的 `cmd/migrate` 二进制。因此不要直接拿 `aiops-api` 镜像创建迁移 Job。若团队希望迁移也由 K8s Job 执行，应先新增受控的 migrate 镜像，并保证 Job 在 API Deployment 更新前完成。
+执行完成后检查：
+
+```sql
+SELECT version, name, applied_at
+FROM public.schema_migrations
+ORDER BY version;
+```
+
+只有在确认对应版本的 `*.up.sql` 已经实际执行成功后，才能写入该版本账本。不要为了让 `/readyz` 变绿而预写未执行版本。
+
+仓库内的 `go run ./cmd/migrate` / `make migrate` 是开发、测试环境可选方式；在“DBA 统一执行 SQL”的生产模式下，不作为 Kubernetes 部署步骤使用。当前 `deployments/Dockerfile` 也只打包 API 进程，不包含独立迁移二进制。
 
 ## 基础清单示例
 
@@ -426,8 +446,8 @@ $env:API_BASE = "https://api.example.com"
 | 现象 | 常见原因 | 处理 |
 | --- | --- | --- |
 | Pod Running 但未 Ready | `/readyz` 中 migration/db/redis 非 ok | 查 `kubectl logs` 和 `/readyz` 的 checks |
-| `migration` degraded | 外部数据库未执行最新迁移 | 先执行 `go run ./cmd/migrate`，再滚动 API |
-| `db` down | 安全组、DNS、SSL、账号密码或连接池配置错误 | 从临时调试 Pod 或发布 runner 验证连通性 |
+| `migration` degraded | 外部数据库未执行最新 SQL，或 `schema_migrations` 账本未同步 | 由 DBA 补齐 SQL 与账本后，再滚动 API |
+| `db` down | 安全组、DNS、SSL、账号密码或连接池配置错误 | 从临时调试 Pod 或 DBA 运维网络验证连通性 |
 | `redis` down | `redis.required=true` 且 Redis 不可达 | 检查 Redis 地址、密码、DB 编号和网络策略 |
 | 登录后 403 | 权限种子迁移未追平，常见于缺少 `0002` 或后续权限迁移 | 执行完整迁移并检查 `schema_migrations` |
 | API 启动失败 | prod 环境使用弱 JWT、配置非法、bootstrap 绑定失败 | 检查 Secret、关闭 bootstrap、确认迁移完整 |
@@ -442,7 +462,7 @@ $env:API_BASE = "https://api.example.com"
 - 前端不持有任何服务端密钥。
 - CORS 只允许正式前端域名。
 - API 镜像 tag 使用不可变版本，不使用 `latest`。
-- 外部 PostgreSQL 已备份，迁移执行结果可追溯。
+- 外部 PostgreSQL 已备份，DBA 建表、种子数据和 `schema_migrations` 账本执行结果可追溯。
 - 日志使用 stdout/json，便于平台采集并保留 `trace_id`。
 
 ## 回滚

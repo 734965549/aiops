@@ -2,22 +2,22 @@
 
 本文档面向平台团队、DBA 与联调方，描述平台的数据库迁移使用方式与责任边界。
 
-## 唯一执行方式
+## 迁移版本体系
 
-平台**仅**使用仓库内自研迁移 runner（`pkg/database/migrate.go`），通过 `schema_migrations` 表跟踪已应用版本。
+平台只维护一套迁移版本体系：仓库 `migrations/` 目录下的版本化 SQL，以及 `schema_migrations` 表中的已应用版本记录。
 
 | 允许 | 禁止 |
 | --- | --- |
-| `make migrate` | [golang-migrate](https://github.com/golang-migrate/migrate) CLI 或库 |
-| `go run ./cmd/migrate -config <path>` | 任何与自研 runner 并行的第三方迁移工具 |
-| CI / 发布流水线调用上述命令 | PostgreSQL `docker-entrypoint-initdb.d` 手工 `\i` 与应用 runner 混用 |
-| 受控 dev/test 下 `database.auto_migrate=true`（仍走同一 runner） | 同一环境对同一库交替使用多种迁移执行器 |
+| 生产 DBA 按顺序手工执行 `migrations/*.up.sql` 并执行 `migrations/manual_schema_migrations.sql` | [golang-migrate](https://github.com/golang-migrate/migrate) CLI 或库 |
+| dev/test 使用 `make migrate` | 任何第三方迁移工具或另一套迁移元数据表 |
+| dev/test 使用 `go run ./cmd/migrate -config <path>` | PostgreSQL `docker-entrypoint-initdb.d` 与应用启动自动迁移混用 |
+| 受控 dev/test 下 `database.auto_migrate=true`（仍走同一版本体系） | 同一环境对同一库交替使用多种迁移版本体系 |
 
-**禁止混用**：同一数据库实例不得交替使用 golang-migrate（或其它外部工具）与自研 runner。`schema_migrations` 表结构、版本号语义与幂等逻辑均以自研 runner 为准。
+**禁止混用**：同一数据库实例不得交替使用 golang-migrate（或其它外部工具）与本仓库 `migrations/` 版本体系。`schema_migrations` 表结构、版本号语义与幂等逻辑均以本仓库为准。
 
 ## 责任边界
 
-- **生产环境**：迁移必须由 **DBA / 发布流水线** 在部署 API **之前**显式执行（`make migrate` 或等价 `go run ./cmd/migrate`），`database.auto_migrate` 保持 `false`。
+- **生产环境**：数据库初始化和迁移必须由 **DBA** 在部署 API **之前**显式执行。DBA 按 `migrations/README.md` 中的顺序执行 `migrations/*.up.sql`，最后执行 `migrations/manual_schema_migrations.sql` 写入账本，`database.auto_migrate` 保持 `false`。
 - **应用启动**：`cmd/api` 默认不执行迁移，只连接数据库并读取迁移状态供 `/readyz` 判读。
 - `database.auto_migrate=true` 仅限本地或测试环境临时便利，仍调用同一 `RunMigrations` 实现，**不得**作为生产默认策略。
 
@@ -49,6 +49,16 @@
 
 ## 执行命令
 
+生产 DBA 手工模式：
+
+```bash
+psql "$AIOPS_DATABASE_DSN" -f migrations/0001_init_identity.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0002_seed_admin_permissions.up.sql
+# ...按 migrations/README.md 顺序继续执行...
+psql "$AIOPS_DATABASE_DSN" -f migrations/0015_identity_access_control_management.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/manual_schema_migrations.sql
+```
+
 本地联调（PostgreSQL 已启动）：
 
 ```bash
@@ -59,7 +69,7 @@ make migrate
 go run ./cmd/migrate -config configs/config.yaml
 ```
 
-CI / 发布流水线示例：
+受控 dev/test 流水线示例：
 
 ```bash
 go run ./cmd/migrate -config /path/to/config.yaml
