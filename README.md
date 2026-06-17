@@ -20,6 +20,7 @@
 - [演示流程](docs/demo-flow.md) — 10 步完整闭环演示
 - [上线检查清单](docs/release-checklist.md) — 发布前必查项
 - [验收清单](docs/acceptance-checklist.md) — 模块级验收明细
+- [Kubernetes 部署说明](deployments/kubernetes.md) — 外挂 PostgreSQL/Redis 的 K8s 部署参考
 
 ## 快速验收
 
@@ -341,6 +342,7 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 - `docs/demo-flow.md` — 演示步骤与自动化验收
 - `docs/release-checklist.md` — 上线前检查清单
 - `docs/acceptance-checklist.md` — 模块验收明细
+- `deployments/kubernetes.md` — Kubernetes 部署说明（外挂 PostgreSQL/Redis）
 - `docs/AI运维平台核心业务流程图.md`
 - `docs/AI运维平台信息架构.md`
 - `docs/AI运维平台技术架构设计.md`
