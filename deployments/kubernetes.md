@@ -109,6 +109,7 @@ migrations/0013_dashboard_permission.up.sql
 migrations/0014_init_asset_match_rule.up.sql
 migrations/0015_identity_access_control_management.up.sql
 migrations/0016_seed_default_admin_user.up.sql
+migrations/0017_repair_default_admin_superset.up.sql
 migrations/manual_schema_migrations.sql
 ```
 

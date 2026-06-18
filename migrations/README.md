@@ -27,6 +27,7 @@
 0014_init_asset_match_rule.up.sql
 0015_identity_access_control_management.up.sql
 0016_seed_default_admin_user.up.sql
+0017_repair_default_admin_superset.up.sql
 manual_schema_migrations.sql
 ```
 
@@ -46,7 +47,7 @@ psql "$AIOPS_DATABASE_DSN" -f migrations/0001_init_identity.up.sql
 psql "$AIOPS_DATABASE_DSN" -f migrations/0002_seed_admin_permissions.up.sql
 # ...按上方顺序继续执行...
 psql "$AIOPS_DATABASE_DSN" -f migrations/0015_identity_access_control_management.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0016_seed_default_admin_user.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0017_repair_default_admin_superset.up.sql
 psql "$AIOPS_DATABASE_DSN" -f migrations/manual_schema_migrations.sql
 ```
 

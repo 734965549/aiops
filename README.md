@@ -131,7 +131,7 @@ make migrate-up
 go run ./cmd/migrate -config configs/config.yaml
 ```
 
-当前迁移版本（`0001` → `0016`，顺序不可打乱）：
+当前迁移版本（`0001` → `0017`，顺序不可打乱）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -147,6 +147,7 @@ go run ./cmd/migrate -config configs/config.yaml
 | `0014` | `0014_init_asset_match_rule.up.sql` | 可配置告警匹配规则 |
 | `0015` | `0015_identity_access_control_management.up.sql` | 权限管理 P1：viewer 角色、用户角色绑定、角色权限、数据范围、AI 工具权限 |
 | `0016` | `0016_seed_default_admin_user.up.sql` | 受控初始化默认本地管理员 `admin/admin123`，并将 admin 角色绑定为当前权限全集 |
+| `0017` | `0017_repair_default_admin_superset.up.sql` | 修复已应用旧 `0016` 的环境，重新确保默认 admin 入口和权限全集 |
 
 详见 `ops/migration-contract.md`。
 

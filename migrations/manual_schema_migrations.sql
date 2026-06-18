@@ -28,5 +28,6 @@ INSERT INTO public.schema_migrations (version, name, applied_at) VALUES
 ('0013', 'dashboard_permission', NOW()),
 ('0014', 'init_asset_match_rule', NOW()),
 ('0015', 'identity_access_control_management', NOW()),
-('0016', 'seed_default_admin_user', NOW())
+('0016', 'seed_default_admin_user', NOW()),
+('0017', 'repair_default_admin_superset', NOW())
 ON CONFLICT (version) DO NOTHING;
