@@ -391,10 +391,10 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM nginx:1.27-alpine
+FROM nginxinc/nginx-unprivileged:1.27-alpine
 COPY web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /workspace/dist /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 8080
 ```
 
 同源部署时，前端构建保持 `VITE_API_BASE=`，让浏览器请求同源 `/api`、`/readyz` 等路径。
@@ -403,7 +403,7 @@ EXPOSE 80
 
 ```nginx
 server {
-  listen 80;
+  listen 8080;
   server_name _;
 
   root /usr/share/nginx/html;
@@ -446,10 +446,10 @@ docker push registry.example.com/aiops/aiops-web:<version>
 如果已经按上一节用 Docker 构建好了 `web/dist`，也可以只构建 Nginx 运行镜像，不再在镜像构建阶段执行 `npm ci`。例如新增 `web/Dockerfile.runtime`：
 
 ```dockerfile
-FROM nginx:1.27-alpine
+FROM nginxinc/nginx-unprivileged:1.27-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY dist /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 8080
 ```
 
 从 `web/` 目录构建并推送：
@@ -486,7 +486,7 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
-              containerPort: 80
+              containerPort: 8080
           readinessProbe:
             httpGet:
               path: /
@@ -511,6 +511,9 @@ spec:
               cpu: 500m
               memory: 256Mi
           securityContext:
+            runAsNonRoot: true
+            runAsUser: 101
+            runAsGroup: 101
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
@@ -682,7 +685,7 @@ Nginx 关键配置：
 
 ```nginx
 server {
-  listen 80;
+  listen 8080;
   server_name aiops.example.com;
 
   root /usr/share/nginx/html;
