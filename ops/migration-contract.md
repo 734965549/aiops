@@ -30,19 +30,21 @@
 0002_seed_admin_permissions.up.sql     → 种子 admin 角色、基础权限、数据范围、AI 工具权限
 0003_external_identity.up.sql          → iam_external_identity（外部身份绑定）
 0004_user_provisioning_permissions.up.sql → 管理员用户预置 / LDAP 导入权限
+0016_seed_default_admin_user.up.sql    → 种子默认本地管理员 admin/admin123 并绑定 admin 角色
 ```
 
-| 职责 | 0001 / 0002 迁移 | 启动期 bootstrap（`cmd/api`） |
+| 职责 | 0001 / 0002 / 0016 迁移 | 启动期 bootstrap（`cmd/api`） |
 | --- | --- | --- |
 | 表结构 | ✅ 0001 | — |
 | admin 角色及权限集合 | ✅ 0002 | — |
-| 默认管理员用户账号 | — | ✅ `EnsureBootstrapUser`（读 `auth.bootstrap_*` 配置） |
-| 用户与 admin 角色绑定 | — | ✅ `ensureBootstrapAdminRole`（幂等写入 `iam_user_role`） |
+| 默认管理员用户账号 | ✅ 0016（`admin/admin123`） | ✅ `EnsureBootstrapUser`（读 `auth.bootstrap_*` 配置，兼容旧 dev 启动链路） |
+| 用户与 admin 角色绑定 | ✅ 0016 | ✅ `ensureBootstrapAdminRole`（幂等写入 `iam_user_role`） |
 
 **要点**：
 
 - `0002` 只创建 `admin` 角色及其权限绑定，**不创建用户**。
-- 默认管理员用户由启动期根据 `auth.bootstrap_username` / `auth.bootstrap_password` 幂等创建；生产环境 bootstrap 配置必须留空。
+- `0016` 直接 upsert 默认本地管理员 `admin/admin123` 并绑定 `admin` 角色；如果库中已存在 `admin` 用户，会将其密码重置为 `admin123` 并启用该账号。
+- 启动期 bootstrap 仍保留，用于 dev/test 或旧数据库兼容；生产环境 bootstrap 配置必须留空，且上线后必须改密或禁用默认账号。
 - 若只执行 `0001` 而未执行 `0002`，bootstrap 绑定 admin 角色时会因角色不存在而失败。
 - 若未执行 `0004`，管理员无法使用域账号导入等 Admin 接口（403）。
 - 各 `*.up.sql` 内部使用 `ON CONFLICT` 保证幂等，但**版本顺序不可打乱**（0002 依赖 0001 表结构，0003/0004 依赖 0001/0002）。
@@ -55,7 +57,7 @@
 psql "$AIOPS_DATABASE_DSN" -f migrations/0001_init_identity.up.sql
 psql "$AIOPS_DATABASE_DSN" -f migrations/0002_seed_admin_permissions.up.sql
 # ...按 migrations/README.md 顺序继续执行...
-psql "$AIOPS_DATABASE_DSN" -f migrations/0015_identity_access_control_management.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0016_seed_default_admin_user.up.sql
 psql "$AIOPS_DATABASE_DSN" -f migrations/manual_schema_migrations.sql
 ```
 
@@ -156,7 +158,7 @@ Identity 初始化迁移，包含以下表结构：
 | `iam_ai_tool_permission` | 告警分析、指标查询、日志检索、执行预案等工具权限 |
 | 关联表 | 将上述权限绑定到 `admin` 角色 |
 
-默认管理员**用户**及 `iam_user_role` 绑定由 `cmd/api` 启动期 bootstrap 完成，见上文「执行顺序与 bootstrap 分工」。
+默认管理员**用户**由 `0016_seed_default_admin_user` 种子；`cmd/api` 启动期 bootstrap 仍保留为 dev/test 兼容链路，见上文「执行顺序与 bootstrap 分工」。
 
 ### `0003_external_identity`
 
@@ -181,6 +183,15 @@ Identity 初始化迁移，包含以下表结构：
 | `iam_permission` | `app:executions:read/create/confirm/execute` |
 | `iam_role_permission` | 绑定到 `admin` 角色 |
 
+### `0016_seed_default_admin_user`
+
+| 对象 | 说明 |
+| --- | --- |
+| `iam_user` | upsert 默认本地管理员 `admin/admin123`，密码以 bcrypt hash 存储 |
+| `iam_user_role` | 将 `admin` 用户绑定到内置 `admin` 角色 |
+
+该迁移用于受控初始化和联调兜底。若目标环境已有 `admin` 用户，迁移会将其本地密码重置为 `admin123` 并设为 `active`；生产上线后必须立即改密或禁用默认账号。
+
 ## 运行期判读
 
 迁移状态的结构化结果与 readiness 语义已统一到 `ops/health-contract.md`，用于联调与探针判读。
@@ -189,7 +200,7 @@ Identity 初始化迁移，包含以下表结构：
 
 | 现象 | 可能原因 | 处理 |
 | --- | --- | --- |
-| 登录成功，Authed 接口 403（含域账号导入页） | 未执行 `0002` 和/或 `0004` | `make migrate` 追平至最新版本 |
+| 登录成功，Authed 接口 403（含域账号导入页） | 未执行 `0002`、`0004`、`0016` 或旧 token 未刷新 | `make migrate` 追平至最新版本，并重新登录 |
 | API 启动即退出（`ensure bootstrap admin role failed`） | 仅执行 `0001` 且 bootstrap 已配置，admin 角色不存在 | 同上，须先执行 `0002` |
 | Dashboard `/readyz` 显示迁移未追平 | pending `0002` 或更高版本 | 同上 |
 | 401 循环跳转登录 | JWT 无效或未注入 `JWT_SECRET` | 检查 `auth.jwt_secret` 与登录响应 |

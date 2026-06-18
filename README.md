@@ -106,7 +106,7 @@ aiops/
 # 仅 PostgreSQL + Redis（本地 go run 联调常用）
 docker compose -f deployments/docker-compose.yml up -d postgres redis
 
-# 全栈：API 会启动，但默认不建表、无 bootstrap 账号 → /readyz 可能 not_ready
+# 全栈：API 会启动，但默认不建表 → /readyz 可能 not_ready
 docker compose -f deployments/docker-compose.yml up -d
 
 # 全栈 dev 就绪：推荐首次容器联调使用（AUTO_MIGRATE + admin 账号）
@@ -115,7 +115,7 @@ docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.d
 
 > **注意**：默认 Compose **不会**自动建表。PostgreSQL 未挂载 `docker-entrypoint-initdb.d`，且 `database.auto_migrate` 在代码默认值、`config.example.yaml`、`.env.example` 与主 `docker-compose.yml` 中均为 `false`；仅当显式设为 `true` 时 `bootstrap.Init` 才会执行迁移。全栈默认模式需先 `make migrate` 或叠加 `docker-compose.dev.yml`。
 
-> **安全**：Compose 主文件将 PostgreSQL（5432）、Redis（6379）映射到宿主机；PG 默认 `aiops/aiops`，Web 登录 `admin/admin123` 须叠加 `docker-compose.dev.yml` 或 bootstrap，**仅限本机开发**。生产环境勿发布 DB/Redis 端口，须 `redis.required=true`、通过 secrets 注入 JWT 与数据库密码，并关闭 bootstrap。
+> **安全**：Compose 主文件将 PostgreSQL（5432）、Redis（6379）映射到宿主机；PG 默认 `aiops/aiops`，完整迁移会种子 Web 登录 `admin/admin123`，**仅限本机开发或受控初始化**。生产环境勿发布 DB/Redis 端口，须 `redis.required=true`、通过 secrets 注入 JWT 与数据库密码，关闭 bootstrap，并在发布后立即改密或禁用默认账号。
 
 ### 2. 数据库迁移（必做）
 
@@ -131,7 +131,7 @@ make migrate-up
 go run ./cmd/migrate -config configs/config.yaml
 ```
 
-当前迁移版本（`0001` → `0015`，顺序不可打乱）：
+当前迁移版本（`0001` → `0016`，顺序不可打乱）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -146,6 +146,7 @@ go run ./cmd/migrate -config configs/config.yaml
 | `0013` | `0013_dashboard_permission.up.sql` | Dashboard 读权限 |
 | `0014` | `0014_init_asset_match_rule.up.sql` | 可配置告警匹配规则 |
 | `0015` | `0015_identity_access_control_management.up.sql` | 权限管理 P1：viewer 角色、用户角色绑定、角色权限、数据范围、AI 工具权限 |
+| `0016` | `0016_seed_default_admin_user.up.sql` | 受控初始化默认本地管理员 `admin/admin123` 并绑定 admin 角色 |
 
 详见 `ops/migration-contract.md`。
 
@@ -183,9 +184,9 @@ go run ./cmd/api -config configs/config.yaml
 任意接口的响应均带 `X-Trace-Id`，并在标准 `context.Context` 中闭合，
 业务下层可通过 `middleware.TraceIDFromContext(ctx)` 取到完整链路 ID。
 
-> 开发联调默认管理员由 `auth.bootstrap_username` / `auth.bootstrap_password` 控制
-> （`configs/config.example.yaml` 已预填 `admin` / `admin123`，仅当库中不存在该用户时幂等创建）；
-> 生产环境必须留空 bootstrap 配置，由发布流程或运维 SQL 注入正式账号。
+> 完整迁移会通过 `0016_seed_default_admin_user` 种子默认管理员 `admin/admin123`；
+> `auth.bootstrap_username` / `auth.bootstrap_password` 仅保留为 dev/test 兼容链路。
+> 生产环境必须留空 bootstrap 配置，并在发布后立即改密或禁用默认账号。
 
 ### 4. 启动前端
 

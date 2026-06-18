@@ -27,5 +27,6 @@ INSERT INTO public.schema_migrations (version, name, applied_at) VALUES
 ('0012', 'init_runbook', NOW()),
 ('0013', 'dashboard_permission', NOW()),
 ('0014', 'init_asset_match_rule', NOW()),
-('0015', 'identity_access_control_management', NOW())
+('0015', 'identity_access_control_management', NOW()),
+('0016', 'seed_default_admin_user', NOW())
 ON CONFLICT (version) DO NOTHING;

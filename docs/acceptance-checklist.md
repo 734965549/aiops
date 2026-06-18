@@ -11,7 +11,7 @@
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
 | 0.1 | 依赖启动 | `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d` | Postgres 健康 |
-| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0007–0015，无报错 |
+| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0007–0016，无报错 |
 | 0.3 | API 启动 | `go run ./cmd/api` 或 compose 内 api 服务 | 登录接口可用 |
 | 0.4 | 前端（UI 验收） | `cd web && npm run dev` | 可登录并访问各页面 |
 | 0.5 | 自动化冒烟 | 见 [§7 推荐验收顺序](#7-推荐验收顺序自动化) | 全部输出 `PASS` |

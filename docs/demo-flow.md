@@ -283,4 +283,4 @@ cd web && npm run build
 
 ---
 
-**文档版本**：与 migration `0015`（权限管理 P1）及 Dashboard 拆包同期维护。
+**文档版本**：与 migration `0016`（默认管理员种子）及 Dashboard 拆包同期维护。

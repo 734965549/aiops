@@ -19,7 +19,7 @@
 
 | # | 检查项 | 操作 | 通过标准 |
 |---|--------|------|----------|
-| 2.1 | 迁移脚本齐全 | 检查 `migrations/` 至最新版本 | 当前最高 `0015_identity_access_control_management` |
+| 2.1 | 迁移脚本齐全 | 检查 `migrations/` 至最新版本 | 当前最高 `0016_seed_default_admin_user` |
 | 2.2 | **生产**关闭 auto_migrate | `database.auto_migrate=false` | API 启动不自动改表 |
 | 2.3 | 发布前执行迁移 | `go run ./cmd/migrate -config <prod-config>` | 无报错，`schema_migrations` 记录最新版本 |
 | 2.4 | 回滚预案 | 阅读对应 `.down.sql` | 明确回滚步骤与数据影响 |

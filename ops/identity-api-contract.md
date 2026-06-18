@@ -37,7 +37,7 @@ Authorization: Bearer <access_token>
 
 授权失败返回 `PERMISSION_DENIED`（HTTP 403）。未登录或 token 无效返回 `UNAUTHENTICATED`（HTTP 401）。
 
-系统管理员角色 `admin` 嘅默认权限由迁移 `migrations/0002_seed_admin_permissions.up.sql`、`0004_user_provisioning_permissions.up.sql` 同 `0006_auth_audit.up.sql` 种子；默认管理员用户由启动期 `EnsureBootstrapUser` 按配置幂等创建并绑定 `admin` 角色。
+系统管理员角色 `admin` 嘅默认权限由迁移 `migrations/0002_seed_admin_permissions.up.sql`、`0004_user_provisioning_permissions.up.sql` 同 `0006_auth_audit.up.sql` 种子；默认管理员用户由 `migrations/0016_seed_default_admin_user.up.sql` 直接种子为 `admin/admin123` 并绑定 `admin` 角色。启动期 `EnsureBootstrapUser` 仍保留作 dev/test 兼容链路。
 
 ## 3. 统一响应格式
 
