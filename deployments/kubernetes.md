@@ -341,6 +341,42 @@ spec:
 
 如果前端也部署到 Kubernetes，建议单独做 `aiops-web` 镜像和 Deployment，不要和 `aiops-api` 放在同一个 Pod。前端容器只负责托管 `web/dist` 静态资源，可在容器内 Nginx 直接反代 API，也可以只暴露静态资源，由 Ingress 或外部 Nginx 统一反代。
 
+### 用 Docker 构建 dist
+
+如果部署机或构建机系统较旧，宿主机 Node.js / npm 版本跟不上，可以直接用 Node 官方镜像构建前端产物，不依赖宿主机 Node 环境。
+
+在仓库 `web/` 目录执行：
+
+```bash
+docker run --rm -it \
+  -v "$PWD":/app \
+  -w /app \
+  -e npm_config_registry=https://registry.npmmirror.com \
+  node:22 \
+  sh -c "npm ci && npm run build"
+```
+
+构建成功后应看到：
+
+```text
+web/dist/index.html
+web/dist/assets/
+```
+
+如果前端和后端走同源反代，`web/.env.production` 中 `VITE_API_BASE` 保持为空即可。若是分域部署，例如前端访问 `https://aiops.example.com`、后端访问 `https://api.example.com`，构建时需要注入 API 地址：
+
+```bash
+docker run --rm -it \
+  -v "$PWD":/app \
+  -w /app \
+  -e npm_config_registry=https://registry.npmmirror.com \
+  -e VITE_API_BASE=https://api.example.com \
+  node:22 \
+  sh -c "npm ci && npm run build"
+```
+
+如果 `node_modules/` 已经存在且怀疑版本不干净，先删除后再构建；生产构建建议以 `npm ci` 和 `package-lock.json` 为准。
+
 ### aiops-web 镜像
 
 仓库目前没有前端 Dockerfile，可以新增一个前端镜像构建文件，例如 `web/Dockerfile`：
@@ -404,6 +440,22 @@ server {
 
 ```bash
 docker build -f web/Dockerfile -t registry.example.com/aiops/aiops-web:<version> .
+docker push registry.example.com/aiops/aiops-web:<version>
+```
+
+如果已经按上一节用 Docker 构建好了 `web/dist`，也可以只构建 Nginx 运行镜像，不再在镜像构建阶段执行 `npm ci`。例如新增 `web/Dockerfile.runtime`：
+
+```dockerfile
+FROM nginx:1.27-alpine
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY dist /usr/share/nginx/html
+EXPOSE 80
+```
+
+从 `web/` 目录构建并推送：
+
+```bash
+docker build -f Dockerfile.runtime -t registry.example.com/aiops/aiops-web:<version> .
 docker push registry.example.com/aiops/aiops-web:<version>
 ```
 
