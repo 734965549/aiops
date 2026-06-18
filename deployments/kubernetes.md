@@ -417,9 +417,11 @@ server {
 
   location /api/ {
     proxy_pass http://aiops-api.aiops.svc.cluster.local:8080/api/;
-    proxy_set_header Host $host;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Origin "";
   }
 
   location = /healthz {
@@ -651,9 +653,11 @@ server {
 
   location /api/ {
     proxy_pass http://aiops_api/api/;
-    proxy_set_header Host $host;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Origin "";
   }
 
   location = /healthz {
@@ -699,9 +703,11 @@ server {
 
   location /api/ {
     proxy_pass http://aiops-api.aiops.svc.cluster.local:8080/api/;
-    proxy_set_header Host $host;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Origin "";
   }
 
   location = /healthz {
