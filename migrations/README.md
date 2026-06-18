@@ -37,6 +37,7 @@ manual_schema_migrations.sql
 - `schema_migrations` 是 `/readyz` 判断数据库是否追平当前版本的账本；如果业务 SQL 已执行但账本没写，应用会认为 migration pending。
 - 不要为了让 `/readyz` 变绿而提前执行 `manual_schema_migrations.sql`。
 - `*.down.sql` 只作为人工回滚参考，不由应用自动执行。
+- `0016_seed_default_admin_user.up.sql` 是 DBA 初始化入口账号兜底：创建/重置 `admin/admin123`，并把 `admin` 角色绑定到当前全部权限、数据范围和 AI 工具权限。只执行 `0001/0002` 不算完整初始化。
 
 示例：
 

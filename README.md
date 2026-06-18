@@ -146,7 +146,7 @@ go run ./cmd/migrate -config configs/config.yaml
 | `0013` | `0013_dashboard_permission.up.sql` | Dashboard 读权限 |
 | `0014` | `0014_init_asset_match_rule.up.sql` | 可配置告警匹配规则 |
 | `0015` | `0015_identity_access_control_management.up.sql` | 权限管理 P1：viewer 角色、用户角色绑定、角色权限、数据范围、AI 工具权限 |
-| `0016` | `0016_seed_default_admin_user.up.sql` | 受控初始化默认本地管理员 `admin/admin123` 并绑定 admin 角色 |
+| `0016` | `0016_seed_default_admin_user.up.sql` | 受控初始化默认本地管理员 `admin/admin123`，并将 admin 角色绑定为当前权限全集 |
 
 详见 `ops/migration-contract.md`。
 
@@ -184,7 +184,7 @@ go run ./cmd/api -config configs/config.yaml
 任意接口的响应均带 `X-Trace-Id`，并在标准 `context.Context` 中闭合，
 业务下层可通过 `middleware.TraceIDFromContext(ctx)` 取到完整链路 ID。
 
-> 完整迁移会通过 `0016_seed_default_admin_user` 种子默认管理员 `admin/admin123`；
+> 完整迁移会通过 `0016_seed_default_admin_user` 种子默认管理员 `admin/admin123`，并把 `admin` 角色绑定到当前全部权限；
 > `auth.bootstrap_username` / `auth.bootstrap_password` 仅保留为 dev/test 兼容链路。
 > 生产环境必须留空 bootstrap 配置，并在发布后立即改密或禁用默认账号。
 

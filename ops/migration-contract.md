@@ -30,7 +30,7 @@
 0002_seed_admin_permissions.up.sql     → 种子 admin 角色、基础权限、数据范围、AI 工具权限
 0003_external_identity.up.sql          → iam_external_identity（外部身份绑定）
 0004_user_provisioning_permissions.up.sql → 管理员用户预置 / LDAP 导入权限
-0016_seed_default_admin_user.up.sql    → 种子默认本地管理员 admin/admin123 并绑定 admin 角色
+0016_seed_default_admin_user.up.sql    → 种子默认本地管理员 admin/admin123，并把 admin 角色绑定为当前权限全集
 ```
 
 | 职责 | 0001 / 0002 / 0016 迁移 | 启动期 bootstrap（`cmd/api`） |
@@ -39,11 +39,13 @@
 | admin 角色及权限集合 | ✅ 0002 | — |
 | 默认管理员用户账号 | ✅ 0016（`admin/admin123`） | ✅ `EnsureBootstrapUser`（读 `auth.bootstrap_*` 配置，兼容旧 dev 启动链路） |
 | 用户与 admin 角色绑定 | ✅ 0016 | ✅ `ensureBootstrapAdminRole`（幂等写入 `iam_user_role`） |
+| admin 超集授权 | ✅ 0016（绑定所有已存在权限、数据范围、AI 工具权限） | — |
 
 **要点**：
 
 - `0002` 只创建 `admin` 角色及其权限绑定，**不创建用户**。
 - `0016` 直接 upsert 默认本地管理员 `admin/admin123` 并绑定 `admin` 角色；如果库中已存在 `admin` 用户，会将其密码重置为 `admin123` 并启用该账号。
+- `0016` 会把 `admin` 角色绑定到执行到当前版本时所有已存在的 `iam_permission`、`iam_data_scope`、`iam_ai_tool_permission`，作为 DBA 初始化后的入口超集账号。
 - 启动期 bootstrap 仍保留，用于 dev/test 或旧数据库兼容；生产环境 bootstrap 配置必须留空，且上线后必须改密或禁用默认账号。
 - 若只执行 `0001` 而未执行 `0002`，bootstrap 绑定 admin 角色时会因角色不存在而失败。
 - 若未执行 `0004`，管理员无法使用域账号导入等 Admin 接口（403）。
@@ -189,8 +191,11 @@ Identity 初始化迁移，包含以下表结构：
 | --- | --- |
 | `iam_user` | upsert 默认本地管理员 `admin/admin123`，密码以 bcrypt hash 存储 |
 | `iam_user_role` | 将 `admin` 用户绑定到内置 `admin` 角色 |
+| `iam_role_permission` | 将内置 `admin` 角色绑定到所有已存在权限 |
+| `iam_role_data_scope` | 将内置 `admin` 角色绑定到所有已存在数据范围 |
+| `iam_role_ai_tool_permission` | 将内置 `admin` 角色绑定到所有已存在 AI 工具权限 |
 
-该迁移用于受控初始化和联调兜底。若目标环境已有 `admin` 用户，迁移会将其本地密码重置为 `admin123` 并设为 `active`；生产上线后必须立即改密或禁用默认账号。
+该迁移用于受控初始化和联调兜底。若目标环境已有 `admin` 用户，迁移会将其本地密码重置为 `admin123` 并设为 `active`。DBA 初始化必须按顺序执行到 `0016`，只执行 `0001/0002` 仍不是完整可用系统；生产上线后必须立即改密或禁用默认账号。
 
 ## 运行期判读
 

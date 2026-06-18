@@ -25,3 +25,27 @@ FROM iam_user u
 JOIN iam_role r ON r.code = 'admin'
 WHERE u.username = 'admin'
 ON CONFLICT (user_id, role_id) DO NOTHING;
+
+-- Make the built-in admin role a true super-set role after all module permission
+-- seeds have been applied. This keeps DBA-only initialization usable without
+-- relying on API bootstrap code to create an entry account.
+INSERT INTO iam_role_permission (role_id, permission_id, created_at, updated_at)
+SELECT r.role_id, p.permission_id, NOW(), NOW()
+FROM iam_role r
+CROSS JOIN iam_permission p
+WHERE r.code = 'admin'
+ON CONFLICT (role_id, permission_id) DO UPDATE SET updated_at = NOW();
+
+INSERT INTO iam_role_data_scope (role_id, data_scope_id, created_at, updated_at)
+SELECT r.role_id, ds.data_scope_id, NOW(), NOW()
+FROM iam_role r
+CROSS JOIN iam_data_scope ds
+WHERE r.code = 'admin'
+ON CONFLICT (role_id, data_scope_id) DO UPDATE SET updated_at = NOW();
+
+INSERT INTO iam_role_ai_tool_permission (role_id, tool_permission_id, created_at, updated_at)
+SELECT r.role_id, tp.tool_permission_id, NOW(), NOW()
+FROM iam_role r
+CROSS JOIN iam_ai_tool_permission tp
+WHERE r.code = 'admin'
+ON CONFLICT (role_id, tool_permission_id) DO UPDATE SET updated_at = NOW();
