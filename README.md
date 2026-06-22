@@ -359,3 +359,15 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 - `ops/runbook-contract.md`
 - `ops/ai-contract.md`
 - `web/src/api/README.md`
+
+## 云厂商只读接管与观测智能体演进
+
+当前 P0 版本已经完成“外部告警进入平台后”的闭环。下一阶段的目标是把华为云、其他云厂商和 Signoz 等可观测平台作为只读数据源接管进来，由平台统一同步资源、查询指标/日志/链路，并让观测智能体持续巡检、分析瓶颈、生成建议。
+
+该方向不是简单新增告警 Webhook，而是新增云账号接入、Provider Adapter、Observability 查询、Inspection 巡检、Agent 工具编排和 Notification 通知等能力。AI/Agent 仍只负责分析和建议，任何真实变更必须进入 Execution 模块并接受权限、风险、确认和审计约束。
+
+详细设计见：
+
+- `docs/cloud-observability-agent-roadmap.md`：DDD 上下文、阶段步骤、数据模型、工作流和验收策略。
+- `ops/cloud-observability-contract.md`：云账号接入、指标/日志/链路查询、巡检策略和建议到执行的 API 契约草案。
+- `ops/execution-agent-contract.md`：执行介体、执行代理、Command Spec、租约、日志回传和确认后执行的契约草案。

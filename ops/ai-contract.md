@@ -155,7 +155,31 @@ HTTP 200 且 `code` 为 `"OK"` 时，`data` 内仍可能 `allowed = false`（业
 - `provider`：实际使用的 provider；
 - `data`：provider 原始返回数据。
 
-## 6. Provider 类型说明
+## 6. P1+ 观测与执行工具边界
+
+后续接入云厂商只读观测和执行介体后，AI 工具网关需要明确区分只读观测、任务提议和真实执行。
+
+| tool_code | 建议模式 | 说明 |
+| --- | --- | --- |
+| `cloud.resources.list` | read_only | 查询资源 |
+| `cloud.metrics.query` | read_only | 查询指标 |
+| `cloud.logs.search` | read_only | 查询日志 |
+| `cloud.traces.query` | read_only | 查询链路 |
+| `cloud.topology.get` | read_only | 查询拓扑 |
+| `execution.media.list` | read_only | 查询可用执行介体和健康状态 |
+| `execution.tasks.propose` | require_confirm | 根据 AI 建议创建待确认 Execution Task |
+| `execution.tasks.dispatch` | deny | 不允许 AI 直接分发或执行任务 |
+| `execution.command.run` | deny | 不允许 AI 直接运行自由命令 |
+
+约束：
+
+- AI 可以调用只读观测工具获取上下文。
+- AI 可以调用 `execution.tasks.propose` 生成待确认任务，但任务必须进入 Execution 状态机。
+- AI 不得直接调用执行代理、SSH、K8s exec、云厂商写 API、数据库写操作。
+- AI 生成的命令必须匹配 Execution 模块中的 Command Spec，并由运维人员确认后才能执行。
+- 执行介体、代理、租约和日志回传契约见 `ops/execution-agent-contract.md`。
+
+## 7. Provider 类型说明
 
 | 类型 | 说明 |
 | --- | --- |
@@ -163,16 +187,16 @@ HTTP 200 且 `code` 为 `"OK"` 时，`data` 内仍可能 `allowed = false`（业
 | `b` | 类 OpenAI / Claude 兼容接入 |
 | `c` | 内部服务接入 |
 
-## 7. 前端页面交互建议
+## 8. 前端页面交互建议
 
-### 7.1 Provider 管理页
+### 8.1 Provider 管理页
 
 - 左侧为 provider 列表，支持按启用状态筛选；
 - 右侧为表单编辑区，可新增、编辑、删除 provider；
 - 点击“测试连接”可校验 `base_url`、`api_key`、`headers` 是否可用；
 - 提交后立即刷新列表。
 
-### 7.2 工具调用页
+### 8.2 工具调用页
 
 - 先选择 provider；
 - 再填写工具编码与调用参数；

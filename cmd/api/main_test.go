@@ -67,7 +67,11 @@ func assembleSmokeEngine(t *testing.T) *gin.Engine {
 		Server:   config.ServerConfig{Port: 8080},
 		Database: config.DatabaseConfig{Host: "127.0.0.1", Name: "aiops", SSLMode: "disable"},
 		Auth:     config.AuthConfig{JWTSecret: config.DefaultJWTSecretPlaceholder},
-		Redis:    config.RedisConfig{Required: false},
+		Integration: config.IntegrationConfig{
+			CredentialEncryptionKey:        config.DefaultCredentialEncryptionKeyPlaceholder,
+			CredentialEncryptionKeyVersion: 1,
+		},
+		Redis: config.RedisConfig{Required: false},
 	}
 	jwtMgr, err := auth.NewJWTManager(auth.Options{
 		Secret:     cfg.Auth.JWTSecret,

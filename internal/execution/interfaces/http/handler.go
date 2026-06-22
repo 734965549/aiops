@@ -11,12 +11,15 @@ import (
 
 // Handler Execution HTTP 层。
 type Handler struct {
-	tasks *execapp.TaskService
+	tasks  *execapp.TaskService
+	media  *execapp.MediumService
+	specs  *execapp.CommandSpecService
+	dispatch *execapp.DispatchService
 }
 
 // NewHandler 构造 Handler。
-func NewHandler(tasks *execapp.TaskService) *Handler {
-	return &Handler{tasks: tasks}
+func NewHandler(tasks *execapp.TaskService, media *execapp.MediumService, specs *execapp.CommandSpecService, dispatch *execapp.DispatchService) *Handler {
+	return &Handler{tasks: tasks, media: media, specs: specs, dispatch: dispatch}
 }
 
 type createTaskRequest struct {
@@ -33,6 +36,10 @@ type createTaskRequest struct {
 	RiskLevel         string         `json:"risk_level"`
 	RunbookTemplateID string         `json:"runbook_template_id"`
 	DryRun            bool           `json:"dry_run"`
+	ExecutionMode     string         `json:"execution_mode"`
+	MediumID          string         `json:"medium_id"`
+	CommandSpecID     string         `json:"command_spec_id"`
+	Arguments         map[string]any `json:"arguments"`
 }
 
 type confirmTaskRequest struct {
@@ -61,6 +68,8 @@ func (h *Handler) CreateTask(c *gin.Context) {
 		TargetName: req.TargetName, Environment: req.Environment,
 		Parameters: req.Parameters, RollbackPlan: req.RollbackPlan, RiskLevel: req.RiskLevel,
 		RunbookTemplateID: req.RunbookTemplateID, DryRun: req.DryRun,
+		ExecutionMode: req.ExecutionMode, MediumID: req.MediumID,
+		CommandSpecID: req.CommandSpecID, Arguments: req.Arguments,
 	})
 	if err != nil {
 		httpx.Fail(c, err)

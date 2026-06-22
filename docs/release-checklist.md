@@ -142,7 +142,32 @@ $env:API_BASE = "https://staging-api.example.com"   # 如需要
 
 ---
 
-## 11. 签字表
+## 11. 云厂商只读接管发布前检查（P1+）
+
+当启用 Integration、Observability、Inspection、Notification 任一能力时，发布前必须额外确认：
+
+| # | 检查项 | 配置 / 操作 | 通过标准 |
+|---|--------|-------------|----------|
+| 11.1 | 云账号最小权限 | 华为云 IAM / 其他云厂商只读策略 | 仅包含资源、指标、日志、链路、告警只读权限 |
+| 11.2 | 凭据注入 | Secret 管理或加密存储 | AK/SK、Token 不进入配置文件、日志、审计、前端响应 |
+| 11.3 | 工具权限 | AI 工具权限种子和角色绑定 | 只有授权角色可调用 `cloud.*`、`inspection.*`、`notification.*` 工具 |
+| 11.4 | Provider 限流 | Adapter 配置 | 按账号、region、工具设置限流和超时 |
+| 11.5 | 巡检 Worker | 调度开关和并发数 | staging 验证无重复运行、无任务堆积 |
+| 11.6 | 审计 | 触发一次指标查询和巡检 | 审计可查调用者、资源范围、参数摘要、结果摘要 |
+| 11.7 | 通知通道 | 企业微信/飞书/邮件/Webhook | 测试发送成功，失败有重试和记录 |
+| 11.8 | 执行边界 | Recommendation 转 Execution | 中高风险建议进入 `pending_confirm`，不会自动执行 |
+| 11.9 | 执行介体权限 | 介体注册和代理注册 | 介体绑定环境/网络域/能力，禁用介体不能执行 |
+| 11.10 | Command Spec | 命令模板与参数 schema | 禁止自由 shell 字符串直接执行，参数不合法时拒绝 |
+| 11.11 | 代理通信 | agent mTLS/token、心跳、租约 | 代理只能主动拉取任务，未确认任务不能领取 |
+| 11.12 | 执行日志 | stdout/stderr 回传 | 服务端二次脱敏，敏感字段不进审计明文 |
+
+相关文档：
+
+- `docs/cloud-observability-agent-roadmap.md`
+- `ops/cloud-observability-contract.md`
+- `ops/execution-agent-contract.md`
+
+## 12. 签字表
 
 | 类别 | 检查人 | 日期 | 结论 |
 |------|--------|------|------|

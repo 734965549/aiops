@@ -19,7 +19,7 @@ import (
 func NewPostgres(ctx context.Context, cfg config.DatabaseConfig, tz string) (*gorm.DB, error) {
 	level := parseGormLogLevel(cfg.LogLevel)
 	gdb, err := gorm.Open(postgres.Open(cfg.DSN(tz)), &gorm.Config{
-		Logger:                 gormlogger.Default.LogMode(level),
+		Logger:                 newGormLogger(level),
 		PrepareStmt:            true,
 		SkipDefaultTransaction: true, // 业务上未显式使用事务时省去隐式 begin/commit
 	})

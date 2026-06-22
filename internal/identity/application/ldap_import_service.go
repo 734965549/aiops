@@ -7,7 +7,6 @@ import (
 	"github.com/734965549/aiops/internal/identity/infrastructure/identityprovider"
 	apperr "github.com/734965549/aiops/pkg/errors"
 	"github.com/734965549/aiops/pkg/logger"
-	"go.uber.org/zap"
 )
 
 const maxLDAPImportBatch = 200
@@ -202,10 +201,10 @@ func (s *AuthService) importLDAPUsers(
 		result.Users = append(result.Users, item)
 	}
 	logger.From(ctx).Info("ldap users imported",
-		zap.String("provider_id", in.ProviderID),
-		zap.Int("created", result.Created),
-		zap.Int("skipped", result.Skipped),
-		zap.Int("failed", result.Failed),
+		logger.String("provider_id", in.ProviderID),
+		logger.Int("created", result.Created),
+		logger.Int("skipped", result.Skipped),
+		logger.Int("failed", result.Failed),
 	)
 	return result, nil
 }

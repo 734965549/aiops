@@ -32,6 +32,8 @@
 0004_user_provisioning_permissions.up.sql → 管理员用户预置 / LDAP 导入权限
 0016_seed_default_admin_user.up.sql    → 种子默认本地管理员 admin/admin123，并把 admin 角色绑定为当前权限全集
 0017_repair_default_admin_superset.up.sql → 修复已应用旧 0016 的环境，重新确保 admin 入口和权限全集
+0018_init_integration.up.sql             → Integration 上下文：云账号/观测平台接入、凭据引用、能力声明、连通性检查
+0019_init_observability.up.sql           → Observability 上下文：查询证据引用与 app:observability:read 权限
 ```
 
 | 职责 | 0001 / 0002 / 0016 迁移 | 启动期 bootstrap（`cmd/api`） |
@@ -202,6 +204,49 @@ Identity 初始化迁移，包含以下表结构：
 ### `0017_repair_default_admin_superset`
 
 `0017` 重复执行 `0016` 的最终形态：创建/重置 `admin/admin123`、绑定 `admin` 角色，并把 `admin` 角色绑定到所有已存在权限、数据范围和 AI 工具权限。它用于修复已经记录旧版 `0016` 的数据库；新库按顺序执行时同样幂等。
+
+### `0018_init_integration`
+
+Integration 上下文第一阶段迁移，建表：
+
+- `integration_account`：云账号/观测平台账号（业务 ID `account_id`）
+- `integration_credential_ref`：凭据引用（AES 密文或外部 Secret 引用，不存明文）
+- `integration_capability`：Provider 能力声明（`metrics` / `logs` / `traces` / `topology` / `alerts` / `assets`）
+- `integration_check_result`：连通性检查历史
+
+权限种子：
+
+- `app:integrations:read`
+- `app:integrations:create`
+- `app:integrations:update`
+- `app:integrations:delete`
+- `app:integrations:check`
+
+并绑定到 `admin` 角色。API 契约见 `ops/cloud-observability-contract.md` §4。
+
+## P1+ 接入、观测、巡检与执行介体迁移规划
+
+云厂商只读接管、智能体巡检和执行介体属于后续演进能力，落地时仍沿用本仓库自研 runner，不引入第二套迁移工具。建议从 `0018` 开始连续递增，不插队、不改写已发布版本：
+
+| 规划版本 | 建议文件 | 上下文 | 主要对象 | 状态 |
+| --- | --- | --- | --- | --- |
+| `0018` | `0018_init_integration.up.sql` | Integration | `integration_account`、`integration_credential_ref`、`integration_capability`、`integration_check_result` | 已落地 |
+| `0019` | `0019_init_observability.up.sql` | Observability | `obs_evidence_ref`（证据引用）；权限 `app:observability:read` | 已落地（Port + fake provider；拓扑/查询历史表后续递增） |
+| `0020` | `0020_init_inspection.up.sql` | Inspection | `inspection_policy`、`inspection_run`、`inspection_finding`、`inspection_recommendation` | 已落地 |
+| `0021` | `0021_init_notification.up.sql` | Notification | `notification_channel`、`notification_template`、`notification_delivery` |
+| `0022` | `0022_init_execution_agent.up.sql` | Execution | `exec_medium`、`exec_agent`、`exec_command_spec`、`exec_lease`、`exec_log_stream` |
+
+这些迁移必须同步种子化权限和 AI 工具权限，并把 admin 角色绑定到新增权限：
+
+- Integration（`0018` 已落地）：`app:integrations:read/create/update/delete/check`（HTTP 层 action 与权限码一一对应）。
+- Observability（`0019` 已落地）：`app:observability:read`（HTTP 层 `observability` + `read`）；AI 工具 `cloud.metrics.query`、`cloud.logs.search`、`cloud.traces.query`、`cloud.topology.get` 等 readonly 模式待 `0019+` 种子。
+- Inspection：`app:inspections:read/create/update/run`，AI 工具 `inspection.runs.create`、`inspection.findings.analyze`。
+- Notification：`app:notifications:read/create/update/test`。
+- Execution Agent：`app:executions:media:read/create/update/delete`、`app:executions:agents:manage`、`app:executions:command_specs:read/create/update/delete`，AI 工具 `execution.media.list`、`execution.tasks.propose`；`execution.tasks.dispatch` 不授予 AI。
+
+建表仍遵守全局规范：`id BIGSERIAL` 仅作内部主键；跨上下文和对外 API 使用 `provider_account_id`、`inspection_run_id`、`medium_id`、`agent_id`、`command_spec_id`、`lease_id` 等业务 ID；业务表必须包含由 Go 维护的 `created_at` / `updated_at`；默认不加数据库外键，通过 repository 事务、唯一索引和存在性校验保证一致性。
+
+执行介体相关表还必须预留审计与安全字段：介体类型、网络区域、环境、风险等级上限、允许的 Command Spec、Agent 最近心跳、租约过期时间、输出脱敏策略、结果摘要。凭据只保存引用，不保存明文密钥、SSH 私钥、云 AK/SK 或临时 Token。
 
 ## 运行期判读
 

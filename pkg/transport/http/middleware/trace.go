@@ -9,7 +9,6 @@ import (
 	httpx "github.com/734965549/aiops/pkg/transport/http"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"go.uber.org/zap"
 )
 
 // Trace 中间件：
@@ -26,7 +25,7 @@ func Trace() gin.HandlerFunc {
 		// 把 trace_id 与带 trace_id 字段的 logger 一并放入标准 context，
 		// 业务层只持有 context.Context 也能拿到完整链路信息。
 		ctx := httpx.ContextWithTraceID(c.Request.Context(), traceID)
-		ctx = logger.WithContext(ctx, logger.With(zap.String("trace_id", traceID)))
+		ctx = logger.WithContextFields(ctx, logger.String("trace_id", traceID))
 		c.Request = c.Request.WithContext(ctx)
 
 		c.Next()
@@ -51,7 +50,7 @@ func ContextWithTraceID(ctx context.Context, traceID string) context.Context {
 		traceID = uuid.NewString()
 	}
 	ctx = httpx.ContextWithTraceID(ctx, traceID)
-	ctx = logger.WithContext(ctx, logger.With(zap.String("trace_id", traceID)))
+	ctx = logger.WithContextFields(ctx, logger.String("trace_id", traceID))
 	return ctx
 }
 

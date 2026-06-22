@@ -50,6 +50,24 @@ const routes: RouteRecordRaw[] = [
         meta: { title: 'Runbook 预案', icon: 'Collection' }
       },
       {
+        path: 'integrations',
+        name: 'integrations',
+        component: () => import('@/views/integrations/index.vue'),
+        meta: { title: '云账号接入', icon: 'Cloud' }
+      },
+      {
+        path: 'observability',
+        name: 'observability',
+        component: () => import('@/views/observability/index.vue'),
+        meta: { title: '观测查询', icon: 'BarChart' }
+      },
+      {
+        path: 'inspections',
+        name: 'inspections',
+        component: () => import('@/views/inspections/index.vue'),
+        meta: { title: '智能巡检', icon: 'Robot' }
+      },
+      {
         path: 'audits',
         name: 'audits',
         component: () => import('@/views/audits/index.vue'),

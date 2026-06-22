@@ -193,6 +193,10 @@ func validTestConfig() *config.Config {
 		Server:   config.ServerConfig{Port: 8080},
 		Database: config.DatabaseConfig{Host: "127.0.0.1", Name: "aiops", SSLMode: "disable"},
 		Auth:     config.AuthConfig{JWTSecret: config.DefaultJWTSecretPlaceholder},
+		Integration: config.IntegrationConfig{
+			CredentialEncryptionKey:        config.DefaultCredentialEncryptionKeyPlaceholder,
+			CredentialEncryptionKeyVersion: 1,
+		},
 	}
 }
 

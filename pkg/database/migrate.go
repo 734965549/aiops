@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/734965549/aiops/pkg/logger"
-	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -111,7 +110,7 @@ func RunMigrations(ctx context.Context, db *gorm.DB, opt MigrateOptions) error {
 		return fmt.Errorf("scan migration dir %q: %w", dir, err)
 	}
 	if len(files) == 0 {
-		logger.From(ctx).Info("no migration files found", zap.String("dir", dir))
+		logger.From(ctx).Info("no migration files found", logger.String("dir", dir))
 		return nil
 	}
 
@@ -128,23 +127,23 @@ func RunMigrations(ctx context.Context, db *gorm.DB, opt MigrateOptions) error {
 	}
 	if len(pending) == 0 {
 		logger.From(ctx).Info("database migrations up to date",
-			zap.Int("applied", len(applied)),
-			zap.Int("files", len(files)),
+			logger.Int("applied", len(applied)),
+			logger.Int("files", len(files)),
 		)
 		return nil
 	}
 
 	logger.From(ctx).Info("applying database migrations",
-		zap.Int("pending", len(pending)),
-		zap.String("dir", dir),
+		logger.Int("pending", len(pending)),
+		logger.String("dir", dir),
 	)
 	for _, m := range pending {
 		if err := applyMigration(ctx, db, m); err != nil {
 			return fmt.Errorf("apply %s: %w", m.Version, err)
 		}
 		logger.From(ctx).Info("migration applied",
-			zap.String("version", m.Version),
-			zap.String("name", m.Name),
+			logger.String("version", m.Version),
+			logger.String("name", m.Name),
 		)
 	}
 	return nil

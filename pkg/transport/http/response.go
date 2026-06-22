@@ -10,7 +10,6 @@ import (
 	apperr "github.com/734965549/aiops/pkg/errors"
 	"github.com/734965549/aiops/pkg/logger"
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // Response 是平台对外统一响应结构（§2：code / message / trace_id / data）。
@@ -46,11 +45,18 @@ func Fail(c *gin.Context, err error) {
 	var typed *apperr.Error
 	wasTyped := errors.As(err, &typed)
 	e := apperr.FromError(err)
+	status := HTTPStatus(e.Code)
 	if shouldLogInternalError(wasTyped, e) {
-		logger.From(c.Request.Context()).Error("request failed", zap.Error(err))
+		logger.From(c.Request.Context()).Error("request failed",
+			logger.String("error_code", string(e.Code)),
+			logger.Int("http_status", status),
+			logger.String("method", c.Request.Method),
+			logger.String("path", c.Request.URL.Path),
+			logger.Error(err),
+		)
 	}
 
-	c.JSON(HTTPStatus(e.Code), Response{
+	c.JSON(status, Response{
 		Code:    e.Code,
 		Message: e.Message,
 		TraceID: TraceIDFrom(c),

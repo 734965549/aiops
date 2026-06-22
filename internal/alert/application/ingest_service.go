@@ -12,7 +12,6 @@ import (
 	apperr "github.com/734965549/aiops/pkg/errors"
 	"github.com/734965549/aiops/pkg/logger"
 	httpx "github.com/734965549/aiops/pkg/transport/http"
-	"go.uber.org/zap"
 )
 
 // IngestService 负责 Webhook 接入（ops/alert-contract.md §1 外部告警接收、§3.2 鉴权与幂等）。
@@ -131,13 +130,13 @@ func (s *IngestService) ingestNormalized(ctx context.Context, src *domain.AlertS
 		result.Ignored += ignored
 	}
 	logger.From(ctx).Info("alert ingest completed",
-		zap.String("source_id", src.ID),
-		zap.String("source_name", src.Name),
-		zap.Int("accepted", result.Accepted),
-		zap.Int("created", result.Created),
-		zap.Int("updated", result.Updated),
-		zap.Int("recovered", result.Recovered),
-		zap.Int("ignored", result.Ignored),
+		logger.String("source_id", src.ID),
+		logger.String("source_name", src.Name),
+		logger.Int("accepted", result.Accepted),
+		logger.Int("created", result.Created),
+		logger.Int("updated", result.Updated),
+		logger.Int("recovered", result.Recovered),
+		logger.Int("ignored", result.Ignored),
 	)
 	return result, nil
 }
@@ -313,8 +312,8 @@ func (s *IngestService) applyAssetLinks(ctx context.Context, alert *domain.Alert
 	})
 	if err != nil {
 		logger.From(ctx).Warn("asset match failed",
-			zap.String("alert_name", alert.Name),
-			zap.Error(err),
+			logger.String("alert_name", alert.Name),
+			logger.Error(err),
 		)
 		return
 	}

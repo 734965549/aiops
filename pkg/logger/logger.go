@@ -14,7 +14,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync/atomic"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -41,6 +43,9 @@ var (
 	initialized  atomic.Bool
 )
 
+// Field 是日志字段的统一类型别名。业务代码只依赖 pkg/logger，避免直接绑定 zap。
+type Field = zap.Field
+
 func init() {
 	globalLogger.Store(zap.NewNop())
 }
@@ -51,9 +56,9 @@ func loadGlobal() *zap.Logger {
 
 // New 根据配置构造独立 logger，适合库侧注入或测试；不修改全局单例。
 func New(opt Options) (*zap.Logger, error) {
-	level := zap.InfoLevel
-	if err := level.UnmarshalText([]byte(opt.Level)); err != nil && opt.Level != "" {
-		return nil, fmt.Errorf("parse log level %q: %w", opt.Level, err)
+	level, err := parseLevel(opt.Level)
+	if err != nil {
+		return nil, err
 	}
 
 	encCfg := zap.NewProductionEncoderConfig()
@@ -65,6 +70,10 @@ func New(opt Options) (*zap.Logger, error) {
 	format := opt.Format
 	if format == "" {
 		format = "json"
+	}
+	format = strings.ToLower(strings.TrimSpace(format))
+	if format != "json" && format != "console" {
+		return nil, fmt.Errorf("unsupported log format %q", opt.Format)
 	}
 	if opt.AppEnv == "dev" {
 		// 本地开发更友好：console 编码 + 彩色 level。
@@ -91,6 +100,23 @@ func New(opt Options) (*zap.Logger, error) {
 		l = l.With(zap.String("service", name))
 	}
 	return l, nil
+}
+
+func parseLevel(raw string) (zapcore.Level, error) {
+	levelText := strings.ToLower(strings.TrimSpace(raw))
+	if levelText == "" {
+		levelText = "info"
+	}
+	switch levelText {
+	case "debug", "info", "warn", "error":
+	default:
+		return zap.InfoLevel, fmt.Errorf("unsupported log level %q", raw)
+	}
+	var level zapcore.Level
+	if err := level.UnmarshalText([]byte(levelText)); err != nil {
+		return zap.InfoLevel, fmt.Errorf("parse log level %q: %w", raw, err)
+	}
+	return level, nil
 }
 
 // Init 根据配置构造全局 logger。重复调用会替换全局实例。
@@ -156,7 +182,7 @@ func ReportError(message string, err error) {
 }
 
 // With 在全局 logger 基础上追加字段。
-func With(fields ...zap.Field) *zap.Logger { return loadGlobal().With(fields...) }
+func With(fields ...Field) *zap.Logger { return loadGlobal().With(fields...) }
 
 // Sync 在程序退出前 flush 日志缓冲。建议在 main 中 defer 调用。
 func Sync() { _ = loadGlobal().Sync() }
@@ -171,6 +197,14 @@ func WithContext(ctx context.Context, l *zap.Logger) context.Context {
 	return context.WithValue(ctx, ctxKey{}, l)
 }
 
+// WithContextFields 在 ctx 当前 logger 基础上追加字段并写回 ctx。
+func WithContextFields(ctx context.Context, fields ...Field) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return WithContext(ctx, From(ctx).With(fields...))
+}
+
 // From 从 ctx 取出 logger；若不存在则返回全局 logger。
 func From(ctx context.Context) *zap.Logger {
 	if ctx == nil {
@@ -181,3 +215,23 @@ func From(ctx context.Context) *zap.Logger {
 	}
 	return loadGlobal()
 }
+
+func String(key, val string) Field { return zap.String(key, val) }
+
+func Strings(key string, vals []string) Field { return zap.Strings(key, vals) }
+
+func Int(key string, val int) Field { return zap.Int(key, val) }
+
+func Int64(key string, val int64) Field { return zap.Int64(key, val) }
+
+func Bool(key string, val bool) Field { return zap.Bool(key, val) }
+
+func Duration(key string, val time.Duration) Field { return zap.Duration(key, val) }
+
+func Time(key string, val time.Time) Field { return zap.Time(key, val) }
+
+func Any(key string, val any) Field { return zap.Any(key, val) }
+
+func Error(err error) Field { return zap.Error(err) }
+
+func ByteString(key string, val []byte) Field { return zap.ByteString(key, val) }

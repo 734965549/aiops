@@ -893,6 +893,35 @@ flowchart TD
 - 代理执行日志实时回传。
 - 代理本地不保存长期敏感凭据。
 
+#### 4.9.4 执行介体与受控命令（P1+）
+
+后续真实执行能力需要引入“执行介体”概念。执行介体是命令或脚本真正落地的位置，可以是跳板机、诊断 VM、目标机器、Kubernetes 诊断 Pod 或云厂商受控命令通道。
+
+执行链路：
+
+```text
+AI 建议
+  -> 匹配 Command Spec
+  -> 运维人员选择/确认执行介体
+  -> Execution Task pending_confirm
+  -> CONFIRM 后 pending_execute
+  -> 执行代理领取租约
+  -> 执行受控命令
+  -> 日志和结果回传
+  -> 审计与时间线闭环
+```
+
+核心控制点：
+
+- AI 只能填充 Command Spec 参数，不能直接提交自由 shell 字符串执行。
+- Command Spec 必须包含命令模板、参数 schema、风险等级、超时、允许退出码和输出脱敏规则。
+- 执行代理只能领取 `pending_execute` 任务，不能领取 `pending_confirm` 任务。
+- 代理领取任务必须有租约，防止多个代理重复执行。
+- 执行日志分 stdout/stderr 回传，服务端必须进行二次脱敏。
+- 禁用介体、离线代理、能力不匹配时禁止分发。
+
+详细契约见 `ops/execution-agent-contract.md`。
+
 ### 4.10 审计服务
 
 #### 4.10.1 职责
@@ -1602,6 +1631,32 @@ flowchart TD
 - 混沌工程。
 - 多云治理。
 - 安全运维助手。
+
+### 16.4 云厂商只读接管与观测智能体
+
+在 P0 闭环稳定后，平台需要从“告警事件接入”演进到“云厂商和可观测平台只读数据面接管”。该方向的核心不是让 AI 直接操作云资源，而是通过只读账号、Provider Adapter、受控工具网关和巡检策略，为 Agent 提供可信观测上下文。
+
+建议新增或扩展以下 DDD 上下文：
+
+| 上下文 | 职责 | 目录建议 |
+| --- | --- | --- |
+| Integration | 云账号、可观测平台账号、凭据引用、连通性测试、能力发现 | `internal/integration` |
+| Observability | 指标、日志、链路、拓扑统一查询；屏蔽 Huawei CES/AOM/APM、Signoz、Prometheus 差异 | `internal/observability` |
+| Inspection | 巡检策略、巡检运行、发现、建议、证据包 | `internal/inspection` |
+| Notification | 通知通道、模板、发送记录、重试 | `internal/notification` |
+| Agent 工具编排 | 在现有 AI 工具网关基础上注册只读工具，并受 RBAC/数据权限/工具权限约束 | `internal/ai` 扩展或 `internal/agent` |
+
+架构约束：
+
+- 云厂商 AK/SK、Token、委托凭据只保存在 Integration 基础设施层，不进入 Prompt、日志、审计明文或前端状态。
+- Agent 不直接调用云 SDK；只能通过工具网关调用只读工具，例如 `cloud.metrics.query`、`cloud.logs.search`、`cloud.traces.query`。
+- Provider Adapter 属于 infrastructure，实现 Huawei CES/AOM/APM、Signoz、Prometheus 等差异化协议；application 层只依赖端口接口。
+- 巡检智能体输出建议和执行计划；真实变更仍通过 Execution 状态机和人工确认。
+
+详细阶段设计和接口草案见：
+
+- `docs/cloud-observability-agent-roadmap.md`
+- `ops/cloud-observability-contract.md`
 
 ## 17. 架构总结
 

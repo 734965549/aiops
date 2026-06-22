@@ -30,6 +30,12 @@ type TaskDTO struct {
 	RunbookTemplateID string         `json:"runbook_template_id,omitempty"`
 	RunbookName       string         `json:"runbook_name,omitempty"`
 	DryRun            bool           `json:"dry_run"`
+	ExecutionMode     string         `json:"execution_mode,omitempty"`
+	MediumID          string         `json:"medium_id,omitempty"`
+	AgentID           string         `json:"agent_id,omitempty"`
+	DispatchStatus    string         `json:"dispatch_status,omitempty"`
+	LeaseID           string         `json:"lease_id,omitempty"`
+	CommandSpecID     string         `json:"command_spec_id,omitempty"`
 	ResultSummary     string         `json:"result_summary,omitempty"`
 	ErrorMessage      string         `json:"error_message,omitempty"`
 	CreatedBy         string         `json:"created_by,omitempty"`
@@ -98,6 +104,12 @@ func ToTaskDTO(t domain.Task) TaskDTO {
 		RollbackPlan:      rollback,
 		RunbookTemplateID: t.RunbookTemplateID,
 		DryRun:            t.DryRun,
+		ExecutionMode:     string(t.ExecutionMode),
+		MediumID:          t.MediumID,
+		AgentID:           t.AgentID,
+		DispatchStatus:    string(t.DispatchStatus),
+		LeaseID:           t.LeaseID,
+		CommandSpecID:     t.CommandSpecID,
 		ResultSummary:     t.ResultSummary,
 		ErrorMessage:      t.ErrorMessage,
 		CreatedBy:         t.CreatedBy,

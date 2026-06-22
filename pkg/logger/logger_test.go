@@ -74,6 +74,15 @@ func TestNew_InjectsServiceNameIntoJSON(t *testing.T) {
 	assertServiceField(t, bytes.TrimSpace(buf.Bytes()), "aiops-api")
 }
 
+func TestNew_RejectsUnsupportedLevelAndFormat(t *testing.T) {
+	if _, err := New(Options{Level: "fatal", Format: "json"}); err == nil {
+		t.Fatal("expected unsupported level error")
+	}
+	if _, err := New(Options{Level: "info", Format: "xml"}); err == nil {
+		t.Fatal("expected unsupported format error")
+	}
+}
+
 func TestInit_InjectsServiceNameIntoJSON(t *testing.T) {
 	resetGlobal()
 	defer resetGlobal()
@@ -129,7 +138,7 @@ func TestGlobalLoggerConcurrentInitAndRead(t *testing.T) {
 			_ = L().Sync()
 			_ = Initialized()
 			_ = From(nil)
-			With(zap.String("k", "v"))
+			With(String("k", "v"))
 			ReportError("probe", errors.New("x"))
 		}()
 	}

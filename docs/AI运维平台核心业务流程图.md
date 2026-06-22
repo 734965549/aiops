@@ -315,6 +315,51 @@ flowchart TD
     U --> V[写入审计日志]
 ```
 
+### 7.3 指定执行介体流程（P1+）
+
+该流程用于 AI 分析后给出建议，运维人员确认后，通过指定介体执行诊断命令或处置步骤。
+
+```mermaid
+flowchart TD
+    A[AI 生成建议和执行计划] --> B[匹配 Command Spec]
+    B --> C{参数 schema 是否通过}
+    C -- 否 --> D[拒绝创建执行任务]
+    C -- 是 --> E[选择执行介体]
+
+    E --> E1[跳板机/诊断 VM]
+    E --> E2[目标机器]
+    E --> E3[K8s 诊断 Pod]
+    E --> E4[云厂商受控命令通道]
+
+    E1 --> F[创建 Execution Task]
+    E2 --> F
+    E3 --> F
+    E4 --> F
+
+    F --> G[风险评估]
+    G --> H{是否需要人工确认}
+    H -- 是 --> I[执行确认页展示介体/命令/风险/回滚]
+    H -- 否 --> J[进入待执行]
+    I --> K{运维人员是否输入 CONFIRM}
+    K -- 否 --> L[任务取消或保持待确认]
+    K -- 是 --> J
+
+    J --> M[Execution 分发任务]
+    M --> N[执行代理领取租约]
+    N --> O[执行受控命令]
+    O --> P[实时回传 stdout/stderr]
+    P --> Q[回传 exit_code 和结果摘要]
+    Q --> R[写入执行结果/审计/时间线]
+```
+
+关键约束：
+
+- AI 只能生成计划和参数，不能直接执行命令。
+- 运维人员必须能看到并确认执行介体、命令规格、参数、风险和影响范围。
+- 执行代理只能领取 `pending_execute` 任务。
+- 禁止未匹配 Command Spec 的自由命令直接执行。
+- 日志回传必须脱敏，服务端必须二次脱敏。
+
 ## 8. 变更与发布流程
 
 ### 8.1 流程说明
@@ -812,7 +857,65 @@ flowchart LR
     E --> K
 ```
 
-## 20. 流程总结
+## 20. 云厂商只读接管与观测智能体巡检流程（P1+）
+
+### 20.1 流程说明
+
+该流程描述平台从华为云、其他云厂商、Signoz 等系统获取只读观测数据，并由观测智能体持续巡检、生成证据化建议的后续演进链路。该流程不替代 P0 告警闭环，而是在资源、指标、日志、链路和告警上下文更完整后，增强 AI 分析质量。
+
+安全边界保持不变：Agent 只读观察和建议，真实变更必须进入 Execution。
+
+### 20.2 流程图
+
+```mermaid
+flowchart TD
+    A[管理员创建只读接入账号] --> B[Integration 保存凭据引用]
+    B --> C[连通性测试与能力发现]
+    C --> D{账号是否可用}
+    D -- 否 --> E[记录失败原因和审计]
+    D -- 是 --> F[资源同步 Worker]
+
+    F --> G[Provider Adapter 拉取云资源]
+    G --> H[归一化应用/资源/拓扑]
+    H --> I[更新 Asset 注册表和拓扑快照]
+
+    I --> J[Inspection Scheduler 触发巡检]
+    J --> K[加载巡检策略和目标范围]
+    K --> L[查询指标]
+    K --> M[查询日志]
+    K --> N[查询链路]
+    K --> O[查询历史告警和变更]
+
+    L --> P[生成 EvidenceRef]
+    M --> P
+    N --> P
+    O --> P
+
+    P --> Q[Agent 构造脱敏分析上下文]
+    Q --> R[AI 分析瓶颈/故障/容量/风险]
+    R --> S[生成 Finding 和 Recommendation]
+    S --> T{是否需要对外通知}
+    T -- 是 --> U[Notification 发送建议]
+    T -- 否 --> V[Dashboard/建议中心展示]
+    U --> V
+
+    V --> W{是否需要执行动作}
+    W -- 否 --> X[沉淀巡检记录和知识]
+    W -- 是 --> Y[从建议创建 Execution Task]
+    Y --> Z[进入执行确认流程]
+```
+
+### 20.3 关键约束
+
+- Integration 凭据不进入 AI Prompt、日志、审计明文和前端持久化状态。
+- Provider Adapter 只实现只读查询；写操作必须走 Execution。
+- Observability 查询必须产生证据引用，便于审计和复盘。
+- Inspection 运行允许 `partial`，外部数据源部分失败时不能影响已采集证据。
+- Recommendation 转 Execution 时，中高风险动作必须进入 `pending_confirm`。
+
+详细设计见 `docs/cloud-observability-agent-roadmap.md` 和 `ops/cloud-observability-contract.md`。
+
+## 21. 流程总结
 
 AI 运维平台的核心业务流程以“问题发现、上下文聚合、AI 分析、人工确认、安全执行、审计追溯、知识沉淀”为主线。
 

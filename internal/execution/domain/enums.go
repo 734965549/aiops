@@ -9,16 +9,45 @@ const (
 	SourceAlert          SourceType = "alert"
 	SourceManual         SourceType = "manual"
 	SourceAIConversation SourceType = "ai_conversation"
+	SourceInspection     SourceType = "inspection"
 )
 
 func (s SourceType) IsValid() bool {
 	switch s {
-	case SourceAlert, SourceManual, SourceAIConversation:
+	case SourceAlert, SourceManual, SourceAIConversation, SourceInspection:
 		return true
 	default:
 		return false
 	}
 }
+
+// ExecutionMode 执行模式。
+type ExecutionMode string
+
+const (
+	ModeSimulated ExecutionMode = "simulated"
+	ModeAgent     ExecutionMode = "agent"
+	ModeAdapter   ExecutionMode = "adapter"
+)
+
+func (m ExecutionMode) IsValid() bool {
+	switch m {
+	case ModeSimulated, ModeAgent, ModeAdapter:
+		return true
+	default:
+		return false
+	}
+}
+
+// DispatchStatus 代理分发状态。
+type DispatchStatus string
+
+const (
+	DispatchPending        DispatchStatus = "pending_dispatch"
+	DispatchLeased         DispatchStatus = "leased"
+	DispatchDispatched     DispatchStatus = "dispatched"
+	DispatchFailed         DispatchStatus = "dispatch_failed"
+)
 
 // OperationType 操作类型。
 type OperationType string
@@ -29,11 +58,12 @@ const (
 	OpScript  OperationType = "script"
 	OpRunbook OperationType = "runbook"
 	OpCustom  OperationType = "custom"
+	OpCommand OperationType = "command"
 )
 
 func (o OperationType) IsValid() bool {
 	switch o {
-	case OpRestart, OpScale, OpScript, OpRunbook, OpCustom:
+	case OpRestart, OpScale, OpScript, OpRunbook, OpCustom, OpCommand:
 		return true
 	default:
 		return false

@@ -196,11 +196,11 @@ func newExecutionHTTPEngine(t *testing.T, authz *fakeExecHTTPAuthorizer) (*gin.E
 	svc := execapp.NewTaskService(
 		taskRepo, stepRepo, creator,
 		execHTTPFakeAlertReader{}, execHTTPFakeTimeline{},
-		execapp.NoopAuditRecorder{}, nil,
+		execapp.NoopAuditRecorder{}, nil, nil, nil,
 	)
 
-	handler := NewHandler(svc)
-	registrar := NewRegistrar(handler, authz)
+	handler := NewHandler(svc, nil, nil, nil)
+	registrar := NewRegistrar(handler, nil, authz)
 	engine := server.NewEngine(server.Options{
 		Cfg: &config.Config{
 			App:      config.AppConfig{Env: "dev", Timezone: "Asia/Shanghai"},

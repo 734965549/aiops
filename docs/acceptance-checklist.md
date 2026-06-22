@@ -277,6 +277,67 @@ go run ./cmd/migrate
 
 ---
 
+## 9. 云厂商只读接管与观测智能体验收规划（P1+）
+
+本节用于后续阶段验收，不影响当前 P0 闭环验收。
+
+### 9.1 Integration 接入账号
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 9.1.1 | 创建只读账号 | `POST /api/integrations/accounts` | 返回 `account_id`，`has_credential=true`，不返回明文密钥 |
+| 9.1.2 | 连通性检查 | `POST /api/integrations/accounts/{account_id}/check` | 返回 `status=ok` 或脱敏失败原因 |
+| 9.1.3 | 权限负向 | 无 `app:integrations:create` 创建账号 | `403 PERMISSION_DENIED` |
+| 9.1.4 | 审计 | 创建/更新/检查账号 | `GET /api/audits` 可查对应动作 |
+
+### 9.2 Observability 查询
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 9.2.1 | 指标查询 | `POST /api/observability/metrics/query` | 返回 `series[]` 和 `evidence_id` |
+| 9.2.2 | 日志搜索 | `POST /api/observability/logs/search` | 返回脱敏摘要，不泄露敏感字段 |
+| 9.2.3 | 链路查询 | `POST /api/observability/traces/query` | 返回 Trace 摘要、慢调用和错误调用 |
+| 9.2.4 | 限流/降级 | fake provider 超时或限流 | 返回 `UNAVAILABLE` 或 `RESOURCE_EXHAUSTED`，写审计 |
+
+### 9.3 Inspection 巡检
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 9.3.1 | 创建策略 | `POST /api/inspections/policies` | 返回 `policy_id`，状态 enabled |
+| 9.3.2 | 手动触发 | `POST /api/inspections/policies/{policy_id}/runs` | 返回 `run_id`，状态进入 `pending/running` |
+| 9.3.3 | 运行完成 | `GET /api/inspections/runs/{run_id}` | 状态为 `success` 或 `partial`，有时间线 |
+| 9.3.4 | 发现与建议 | `GET /api/inspections/findings?run_id=...` | 每条发现含风险、证据、建议、置信度 |
+| 9.3.5 | 建议转执行 | `POST /api/inspections/recommendations/{id}/execution` | 创建 Execution Task，不直接执行 |
+
+### 9.4 推荐自动化脚本
+
+```powershell
+.\scripts\e2e-integration.ps1
+.\scripts\e2e-observability.ps1
+.\scripts\e2e-inspection.ps1
+.\scripts\e2e-notification.ps1
+```
+
+### 9.5 Execution Agent 执行介体验收
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 9.5.1 | 创建执行介体 | `POST /api/executions/media` | 返回 `medium_id`，不返回任何登录凭据 |
+| 9.5.2 | 注册 fake agent | `POST /api/executions/agents/register` | agent 绑定 medium，状态可心跳为 online |
+| 9.5.3 | 创建受控命令任务 | `POST /api/executions/tasks`，含 `execution_mode=agent`、`medium_id`、`command_spec_id` | 任务进入 `pending_confirm` 或 `pending_execute` |
+| 9.5.4 | 未确认不可领取 | fake agent 领取 `pending_confirm` 任务 | 返回空任务或拒绝 |
+| 9.5.5 | 确认后领取 | `CONFIRM` 后 fake agent lease | 返回单个 `lease_id` 和受控 argv |
+| 9.5.6 | 日志回传 | fake agent 回传 stdout/stderr | 任务详情可见日志流，敏感内容被脱敏 |
+| 9.5.7 | 结果回传 | fake agent 回传 exit_code/result | step 和 task 状态更新，审计可查 |
+| 9.5.8 | 参数校验 | 提交不符合 schema 的 arguments | `INVALID_ARGUMENT`，不创建任务 |
+
+推荐脚本：
+
+```powershell
+.\scripts\e2e-execution-agent.ps1
+.\scripts\e2e-execution-agent-permission.ps1
+```
+
 ## 附录 A：仅 UI 手工步骤（精简表）
 
 > 适用场景：前端联调、演示、无脚本环境。

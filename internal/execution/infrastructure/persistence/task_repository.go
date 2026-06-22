@@ -29,6 +29,12 @@ type taskModel struct {
 	RunbookTemplateID string     `gorm:"column:runbook_template_id;type:varchar(36);not null;default:''"`
 	RunbookSnapshot   []byte     `gorm:"column:runbook_snapshot;type:jsonb;not null;default:'{}'::jsonb"`
 	DryRun            bool       `gorm:"column:dry_run;not null;default:false"`
+	ExecutionMode     string     `gorm:"column:execution_mode;type:varchar(16);not null;default:'simulated'"`
+	MediumID          string     `gorm:"column:medium_id;type:varchar(64);not null;default:''"`
+	AgentID           string     `gorm:"column:agent_id;type:varchar(64);not null;default:''"`
+	DispatchStatus    string     `gorm:"column:dispatch_status;type:varchar(32);not null;default:''"`
+	LeaseID           string     `gorm:"column:lease_id;type:varchar(64);not null;default:''"`
+	CommandSpecID     string     `gorm:"column:command_spec_id;type:varchar(64);not null;default:''"`
 	ResultSummary     string     `gorm:"column:result_summary;type:varchar(512);not null;default:''"`
 	ErrorMessage      string     `gorm:"column:error_message;type:text;not null;default:''"`
 	CreatedBy         string     `gorm:"column:created_by;type:varchar(36);not null;default:''"`
@@ -156,6 +162,15 @@ func (r *TaskRepository) UpdateStatusIf(
 	if next.ConfirmedAt != task.ConfirmedAt {
 		updates["confirmed_at"] = next.ConfirmedAt
 	}
+	if next.DispatchStatus != task.DispatchStatus {
+		updates["dispatch_status"] = string(next.DispatchStatus)
+	}
+	if next.AgentID != task.AgentID {
+		updates["agent_id"] = next.AgentID
+	}
+	if next.LeaseID != task.LeaseID {
+		updates["lease_id"] = next.LeaseID
+	}
 
 	res := r.db.WithContext(ctx).Model(&taskModel{}).
 		Where("task_id = ? AND status = ?", taskID, string(fromStatus)).
@@ -233,6 +248,26 @@ func (r *TaskRepository) applyFilter(q *gorm.DB, filter domain.TaskFilter) *gorm
 	return q
 }
 
+func (r *TaskRepository) FindDispatchableTask(ctx context.Context, mediumID string) (*domain.Task, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("execution task repository is not configured")
+	}
+	var m taskModel
+	err := r.db.WithContext(ctx).
+		Where("medium_id = ? AND execution_mode = ? AND status = ? AND dispatch_status = ?",
+			strings.TrimSpace(mediumID), string(domain.ModeAgent), string(domain.StatusPendingExecute), string(domain.DispatchPending)).
+		Order("created_at ASC, id ASC").
+		First(&m).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+	t := toTaskDomain(&m)
+	return &t, nil
+}
+
 func toTaskModel(task *domain.Task) (*taskModel, error) {
 	params, err := marshalAnyMap(task.Parameters)
 	if err != nil {
@@ -263,6 +298,12 @@ func toTaskModel(task *domain.Task) (*taskModel, error) {
 		RunbookTemplateID: task.RunbookTemplateID,
 		RunbookSnapshot:   snapshot,
 		DryRun:            task.DryRun,
+		ExecutionMode:     string(task.ExecutionMode),
+		MediumID:          task.MediumID,
+		AgentID:           task.AgentID,
+		DispatchStatus:    string(task.DispatchStatus),
+		LeaseID:           task.LeaseID,
+		CommandSpecID:     task.CommandSpecID,
 		ResultSummary:     task.ResultSummary,
 		ErrorMessage:      task.ErrorMessage,
 		CreatedBy:         task.CreatedBy,
@@ -292,6 +333,12 @@ func toTaskDomain(m *taskModel) domain.Task {
 		RunbookTemplateID: m.RunbookTemplateID,
 		RunbookSnapshot:   unmarshalAnyMap(m.RunbookSnapshot),
 		DryRun:            m.DryRun,
+		ExecutionMode:     defaultExecutionMode(m.ExecutionMode),
+		MediumID:          m.MediumID,
+		AgentID:           m.AgentID,
+		DispatchStatus:    domain.DispatchStatus(m.DispatchStatus),
+		LeaseID:           m.LeaseID,
+		CommandSpecID:     m.CommandSpecID,
 		ResultSummary:     m.ResultSummary,
 		ErrorMessage:      m.ErrorMessage,
 		CreatedBy:         m.CreatedBy,
@@ -308,4 +355,12 @@ func toTaskDomain(m *taskModel) domain.Task {
 func fillTaskFromModel(task *domain.Task, m *taskModel) {
 	task.CreatedAt = m.CreatedAt
 	task.UpdatedAt = m.UpdatedAt
+}
+
+func defaultExecutionMode(raw string) domain.ExecutionMode {
+	mode := domain.ExecutionMode(strings.TrimSpace(raw))
+	if mode == "" {
+		return domain.ModeSimulated
+	}
+	return mode
 }

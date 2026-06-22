@@ -186,6 +186,7 @@ func TestTaskService_CreateFromAlertAndExecute(t *testing.T) {
 		timeline,
 		NoopAuditRecorder{},
 		nil,
+		nil, nil,
 	)
 	svc.now = func() time.Time { return now }
 
@@ -235,6 +236,7 @@ func TestTaskService_ExecuteMarksFailedWhenListStepsFails(t *testing.T) {
 		timeline,
 		NoopAuditRecorder{},
 		nil,
+		nil, nil,
 	)
 	svc.now = func() time.Time { return now }
 
@@ -282,6 +284,7 @@ func TestTaskService_ConfirmRejectsDuplicateConfirm(t *testing.T) {
 		nil,
 		NoopAuditRecorder{},
 		nil,
+		nil, nil,
 	)
 	svc.now = func() time.Time { return now }
 
@@ -309,7 +312,7 @@ func TestTaskService_ExecuteFailsWithoutSteps(t *testing.T) {
 	now := time.Date(2026, 6, 13, 10, 0, 0, 0, time.UTC)
 	taskRepo := newFakeTaskRepo()
 	stepRepo := newFakeStepRepo()
-	svc := NewTaskService(taskRepo, stepRepo, &fakeTaskCreator{tasks: taskRepo, steps: stepRepo}, nil, nil, NoopAuditRecorder{}, nil)
+	svc := NewTaskService(taskRepo, stepRepo, &fakeTaskCreator{tasks: taskRepo, steps: stepRepo}, nil, nil, NoopAuditRecorder{}, nil, nil, nil)
 	svc.now = func() time.Time { return now }
 
 	taskID := "task-no-steps"
@@ -345,7 +348,7 @@ func TestTaskService_CreateRejectsNonProcessingAlert(t *testing.T) {
 			stepRepo := newFakeStepRepo()
 			svc := NewTaskService(taskRepo, stepRepo, &fakeTaskCreator{tasks: taskRepo, steps: stepRepo},
 				&fakeAlertReader{ctx: &AlertContext{ID: "a1", Status: tc.status}},
-				nil, NoopAuditRecorder{}, nil)
+				nil, NoopAuditRecorder{}, nil, nil, nil)
 			_, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateTaskInput{
 				SourceType: "alert", SourceID: "a1", OperationType: "restart", Name: "x",
 			})
@@ -371,6 +374,7 @@ func TestTaskService_ExecuteRejectsDuplicateStart(t *testing.T) {
 		&fakeTimeline{},
 		NoopAuditRecorder{},
 		nil,
+		nil, nil,
 	)
 	svc.now = func() time.Time { return now }
 
@@ -421,7 +425,7 @@ func TestTaskService_CreateFromRunbookGeneratesMultipleSteps(t *testing.T) {
 	svc := NewTaskService(
 		taskRepo, stepRepo, &fakeTaskCreator{tasks: taskRepo, steps: stepRepo},
 		&fakeAlertReader{ctx: &AlertContext{ID: "a1", Name: "HighCPU", Status: "processing", Environment: "prod", ResourceType: "pod"}},
-		timeline, NoopAuditRecorder{}, loader,
+		timeline, NoopAuditRecorder{}, loader, nil, nil,
 	)
 	svc.now = func() time.Time { return now }
 

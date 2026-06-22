@@ -14,7 +14,6 @@ import (
 	apperr "github.com/734965549/aiops/pkg/errors"
 	"github.com/734965549/aiops/pkg/logger"
 	"github.com/google/uuid"
-	"go.uber.org/zap"
 )
 
 // LoginInput 是 /api/identity/login 的参数。
@@ -104,11 +103,11 @@ func (s *AuthService) Login(ctx context.Context, in LoginInput) (*TokenPair, err
 		return nil, apperr.Wrap(err, apperr.CodeInternal, "find user failed")
 	}
 	if u == nil {
-		logger.From(ctx).Warn("login: user not found", zap.String("username", username))
+		logger.From(ctx).Warn("login: user not found", logger.String("username", username))
 		return nil, apperr.New(apperr.CodeUnauthenticated, "invalid username or password")
 	}
 	if !u.IsActive() {
-		logger.From(ctx).Warn("login: user not active", zap.String("user_id", u.ID), zap.String("status", string(u.Status)))
+		logger.From(ctx).Warn("login: user not active", logger.String("user_id", u.ID), logger.String("status", string(u.Status)))
 		return nil, apperr.New(apperr.CodeUnauthenticated, "invalid username or password")
 	}
 	if err := auth.VerifyPassword(u.PasswordHash, in.Password); err != nil {
@@ -291,8 +290,8 @@ func (s *AuthService) EnsureBootstrapUser(ctx context.Context, username, passwor
 		return apperr.Wrap(err, apperr.CodeInternal, "create bootstrap user failed")
 	}
 	logger.From(ctx).Info("bootstrap user created",
-		zap.String("username", u.Username),
-		zap.Time("at", time.Now()),
+		logger.String("username", u.Username),
+		logger.Time("at", time.Now()),
 	)
 	return nil
 }

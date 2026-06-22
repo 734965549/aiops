@@ -37,6 +37,7 @@ AI/Agent 在本仓库协作时，优先维护这个闭环的稳定性。任何�
 
 - 后端统一响应结构为 `code/message/trace_id/data`，成功码是字符串 `"OK"`，不是数字 `0`。
 - 后端业务错误使用 `pkg/errors` 的 `apperr.New` / `apperr.Wrap`，HTTP 输出使用 `pkg/transport/http` 的 `OK` / `Fail` / `FailWith`。
+- 后端日志统一通过 `pkg/logger`：业务代码使用 `logger.From(ctx)` / `logger.L()` 和 `logger.String` / `logger.Error` 等字段 helper；除 `pkg/logger` 内部外，不直接 import `go.uber.org/zap`，也不引入 `log/slog`、logrus、zerolog 等第二套日志门面。
 - 受保护 API 必须走 Bearer Token、RBAC/数据权限/工具权限校验；401 与 403 语义要区分。
 - 任意写操作、执行确认、告警处理、AI 工具调用等关键动作必须写审计或预留审计 hook。
 - 不把密钥、Token、AK/SK、JWT secret、数据库密码写进代码、日志、Prompt、测试快照或前端持久化状态。
@@ -106,6 +107,9 @@ interfaces -> application -> domain <- infrastructure
 - 登录、权限变更、资产变更、告警状态流转、Runbook 启停、执行确认/拒绝/执行、AI 分析与工具调用都属于关键动作。
 - 新增关键写操作时，添加审计 hook 或复用已有 recorder。
 - 日志使用 `logger.From(ctx)`，不要绕过 request context；让 `trace_id` 自动进入日志。
+- 认证成功后要把 `user_id/username` 注入请求 context logger；跨 application / repository / adapter 调用时传递 `context.Context`，不要新建脱链路的后台 context。
+- HTTP、GORM、外部 provider、Redis/cache 降级等日志必须使用统一 logger，并按语义分级：正常关键节点 `Info`，可恢复降级/拒绝/回滚失败 `Warn`，系统不可用、panic、内部错误 `Error` / 启动致命错误 `Fatal`。
+- 日志字段只能放业务 ID、trace、状态、计数和脱敏信息；JWT secret、provider api key、LDAP 密码、数据库密码、Token、原始 Authorization header 不得写入日志。SQL 日志默认不输出原始 SQL，调试期提高 `database.log_level=info` 前要确认不会泄露敏感字段。
 - `/healthz` 只检查进程存活；`/readyz` 才检查 config、migration、db、redis。
 
 ## 测试要求
@@ -155,6 +159,7 @@ interfaces -> application -> domain <- infrastructure
 - `TableName()` 明确返回表名。
 - 不在主流程使用 `UpdateColumn` / `UpdateColumns` / 原生 `db.Exec` 更新业务表；这些会绕过 GORM hook。确需使用时，必须手动维护 `updated_at` 并在代码注释中说明原因。
 - Repository 方法保持事务边界清楚；创建主从数据时用同一事务。
+- Repository 查询必须使用 `db.WithContext(ctx)`，确保 GORM 日志、超时取消和 trace/user 链路不断开。
 
 ## 迁移验收
 

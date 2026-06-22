@@ -70,3 +70,19 @@ func FromError(err error) *Error {
 	}
 	return &Error{Code: CodeInternal, Message: InternalMessage, cause: err}
 }
+
+// CodeOf 提取统一错误码；nil error 返回 OK，未包装错误返回 INTERNAL。
+func CodeOf(err error) Code {
+	if err == nil {
+		return CodeOK
+	}
+	return FromError(err).Code
+}
+
+// MessageOf 提取对外安全错误文案；nil error 返回 "ok"。
+func MessageOf(err error) string {
+	if err == nil {
+		return "ok"
+	}
+	return FromError(err).Message
+}

@@ -34,11 +34,12 @@ func TestNormalizeCORSConfig_EmptyOriginsWithCredentials(t *testing.T) {
 
 func TestValidateCORS_ProdRequiresExplicitOrigins(t *testing.T) {
 	c := &Config{
-		App:      AppConfig{Env: "prod"},
-		Server:   ServerConfig{Port: 8080},
-		Database: DatabaseConfig{Host: "127.0.0.1", Name: "aiops"},
-		Auth:     AuthConfig{JWTSecret: DefaultJWTSecretPlaceholder},
-		CORS:     CORSConfig{AllowCredentials: true},
+		App:         AppConfig{Env: "prod"},
+		Server:      ServerConfig{Port: 8080},
+		Database:    DatabaseConfig{Host: "127.0.0.1", Name: "aiops"},
+		Auth:        AuthConfig{JWTSecret: DefaultJWTSecretPlaceholder},
+		Integration: devIntegrationConfig(),
+		CORS:        CORSConfig{AllowCredentials: true},
 	}
 	c.normalize()
 	if err := c.Validate(); err == nil {
@@ -48,11 +49,12 @@ func TestValidateCORS_ProdRequiresExplicitOrigins(t *testing.T) {
 
 func TestValidateCORS_RejectsWildcardWithCredentials(t *testing.T) {
 	c := &Config{
-		App:      AppConfig{Env: "dev"},
-		Server:   ServerConfig{Port: 8080},
-		Database: DatabaseConfig{Host: "127.0.0.1", Name: "aiops"},
-		Auth:     AuthConfig{JWTSecret: DefaultJWTSecretPlaceholder},
-		CORS:     CORSConfig{AllowOrigins: []string{"*"}, AllowCredentials: true},
+		App:         AppConfig{Env: "dev"},
+		Server:      ServerConfig{Port: 8080},
+		Database:    DatabaseConfig{Host: "127.0.0.1", Name: "aiops"},
+		Auth:        AuthConfig{JWTSecret: DefaultJWTSecretPlaceholder},
+		Integration: devIntegrationConfig(),
+		CORS:        CORSConfig{AllowOrigins: []string{"*"}, AllowCredentials: true},
 	}
 	c.normalize()
 	if err := c.Validate(); err != nil {

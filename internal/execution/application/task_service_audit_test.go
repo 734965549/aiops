@@ -25,7 +25,7 @@ func TestTaskService_RejectWritesAudit(t *testing.T) {
 		ID: "t1", Status: domain.StatusPendingConfirm,
 		CreatedAt: now, UpdatedAt: now,
 	})
-	svc := NewTaskService(taskRepo, nil, &fakeTaskCreator{tasks: taskRepo}, nil, nil, audit, nil)
+	svc := NewTaskService(taskRepo, nil, &fakeTaskCreator{tasks: taskRepo}, nil, nil, audit, nil, nil, nil)
 	out, err := svc.Confirm(context.Background(), "t1", Actor{UserID: "user-1"}, ConfirmTaskInput{Confirm: false})
 	if err != nil {
 		t.Fatalf("reject: %v", err)

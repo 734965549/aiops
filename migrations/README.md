@@ -28,6 +28,8 @@
 0015_identity_access_control_management.up.sql
 0016_seed_default_admin_user.up.sql
 0017_repair_default_admin_superset.up.sql
+0018_init_integration.up.sql
+0019_init_observability.up.sql
 manual_schema_migrations.sql
 ```
 

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	apperr "github.com/734965549/aiops/pkg/errors"
+	"github.com/734965549/aiops/pkg/logger"
 	httpx "github.com/734965549/aiops/pkg/transport/http"
 	"github.com/gin-gonic/gin"
 )
@@ -58,6 +59,7 @@ func AuthRequired(a Authenticator) gin.HandlerFunc {
 		c.Set(CtxKeyUserID, id.UserID)
 		c.Set(CtxKeyUsername, id.Username)
 		c.Set(CtxKeyRoles, id.Roles)
+		attachIdentityLogger(c, id)
 		c.Next()
 	}
 }
@@ -78,9 +80,21 @@ func AuthOptional(a Authenticator) gin.HandlerFunc {
 			c.Set(CtxKeyUserID, id.UserID)
 			c.Set(CtxKeyUsername, id.Username)
 			c.Set(CtxKeyRoles, id.Roles)
+			attachIdentityLogger(c, id)
 		}
 		c.Next()
 	}
+}
+
+func attachIdentityLogger(c *gin.Context, id Identity) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	ctx := logger.WithContextFields(c.Request.Context(),
+		logger.String("user_id", id.UserID),
+		logger.String("username", id.Username),
+	)
+	c.Request = c.Request.WithContext(ctx)
 }
 
 func extractBearerToken(c *gin.Context) string {

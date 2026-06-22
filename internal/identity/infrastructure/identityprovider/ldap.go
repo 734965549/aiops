@@ -15,7 +15,6 @@ import (
 	"github.com/734965549/aiops/pkg/config"
 	"github.com/734965549/aiops/pkg/logger"
 	"github.com/go-ldap/ldap/v3"
-	"go.uber.org/zap"
 )
 
 const defaultLDAPTimeout = 10 * time.Second
@@ -101,8 +100,8 @@ func (p *LDAPProvider) Authenticate(ctx context.Context, username, password stri
 	conn, err := p.connect()
 	if err != nil {
 		logger.From(ctx).Warn("ldap connect failed",
-			zap.String("provider_id", p.info.ID),
-			zap.Error(err),
+			logger.String("provider_id", p.info.ID),
+			logger.Error(err),
 		)
 		return nil, domain.ErrInvalidCredentials
 	}
@@ -111,8 +110,8 @@ func (p *LDAPProvider) Authenticate(ctx context.Context, username, password stri
 	if bindDN := strings.TrimSpace(p.cfg.BindDN); bindDN != "" {
 		if err := conn.Bind(bindDN, p.cfg.BindPassword); err != nil {
 			logger.From(ctx).Warn("ldap service bind failed",
-				zap.String("provider_id", p.info.ID),
-				zap.Error(err),
+				logger.String("provider_id", p.info.ID),
+				logger.Error(err),
 			)
 			return nil, domain.ErrInvalidCredentials
 		}
@@ -129,9 +128,9 @@ func (p *LDAPProvider) Authenticate(ctx context.Context, username, password stri
 	result, err := conn.Search(searchReq)
 	if err != nil {
 		logger.From(ctx).Warn("ldap user search failed",
-			zap.String("provider_id", p.info.ID),
-			zap.String("username", username),
-			zap.Error(err),
+			logger.String("provider_id", p.info.ID),
+			logger.String("username", username),
+			logger.Error(err),
 		)
 		return nil, domain.ErrInvalidCredentials
 	}
@@ -140,9 +139,9 @@ func (p *LDAPProvider) Authenticate(ctx context.Context, username, password stri
 	}
 	if len(result.Entries) > 1 {
 		logger.From(ctx).Warn("ldap user search ambiguous",
-			zap.String("provider_id", p.info.ID),
-			zap.String("username", username),
-			zap.Int("count", len(result.Entries)),
+			logger.String("provider_id", p.info.ID),
+			logger.String("username", username),
+			logger.Int("count", len(result.Entries)),
 		)
 		return nil, domain.ErrInvalidCredentials
 	}
