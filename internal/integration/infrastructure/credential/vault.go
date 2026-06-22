@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/734965549/aiops/internal/integration/domain"
 )
@@ -21,6 +22,9 @@ type Vault struct {
 }
 
 func NewVault(encryptKey string, keyVersion int) (*Vault, error) {
+	if strings.TrimSpace(encryptKey) == "" {
+		return nil, errors.New("credential encryption key is required")
+	}
 	key := deriveKey(encryptKey)
 	if len(key) != 32 {
 		return nil, errors.New("invalid encryption key length")

@@ -98,8 +98,8 @@ COMMENT ON TABLE inspection_recommendation IS 'Actionable recommendation linked 
 
 INSERT INTO iam_permission (permission_id, code, name, resource, action, description, created_at, updated_at)
 VALUES
-    ('00000000-0000-0000-0001-000000000043', 'app:inspections:read', 'Read inspections', 'inspections', 'read', 'View inspection policies, runs, findings and recommendations', NOW(), NOW()),
-    ('00000000-0000-0000-0001-000000000044', 'app:inspections:write', 'Manage inspections', 'inspections', 'write', 'Create/update policies and trigger inspection runs', NOW(), NOW())
+    ('00000000-0000-0000-0001-000000000046', 'app:inspections:read', 'Read inspections', 'inspections', 'read', 'View inspection policies, runs, findings and recommendations', NOW(), NOW()),
+    ('00000000-0000-0000-0001-000000000047', 'app:inspections:write', 'Manage inspections', 'inspections', 'write', 'Create/update policies and trigger inspection runs', NOW(), NOW())
 ON CONFLICT (code) DO UPDATE SET
     name = EXCLUDED.name,
     resource = EXCLUDED.resource,

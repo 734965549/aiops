@@ -88,6 +88,9 @@ func (s *PolicyService) Create(ctx context.Context, actor Actor, in CreatePolicy
 }
 
 func (s *PolicyService) Update(ctx context.Context, actor Actor, policyID string, in UpdatePolicyInput) (*PolicyDTO, error) {
+	if s == nil || s.policies == nil {
+		return nil, apperr.New(apperr.CodeUnavailable, "inspection service is not enabled")
+	}
 	p, err := s.policies.GetByID(ctx, policyID)
 	if err != nil {
 		return nil, mapDomainErr(err)
@@ -136,6 +139,9 @@ func (s *PolicyService) Update(ctx context.Context, actor Actor, policyID string
 }
 
 func (s *PolicyService) Get(ctx context.Context, policyID string) (*PolicyDTO, error) {
+	if s == nil || s.policies == nil {
+		return nil, apperr.New(apperr.CodeUnavailable, "inspection service is not enabled")
+	}
 	p, err := s.policies.GetByID(ctx, policyID)
 	if err != nil {
 		return nil, mapDomainErr(err)
@@ -145,17 +151,20 @@ func (s *PolicyService) Get(ctx context.Context, policyID string) (*PolicyDTO, e
 }
 
 func (s *PolicyService) List(ctx context.Context, q ListPoliciesQuery) ([]PolicyDTO, int64, error) {
+	if s == nil || s.policies == nil {
+		return nil, 0, apperr.New(apperr.CodeUnavailable, "inspection service is not enabled")
+	}
 	filter := domain.PolicyFilter{Enabled: q.Enabled, Keyword: q.Keyword, Limit: q.PageSize, Offset: (q.Page - 1) * q.PageSize}
 	if filter.Limit <= 0 {
 		filter.Limit = 20
 	}
 	items, err := s.policies.List(ctx, filter)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, mapDomainErr(err)
 	}
 	total, err := s.policies.Count(ctx, filter)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, mapDomainErr(err)
 	}
 	out := make([]PolicyDTO, 0, len(items))
 	for i := range items {
@@ -165,6 +174,9 @@ func (s *PolicyService) List(ctx context.Context, q ListPoliciesQuery) ([]Policy
 }
 
 func (s *PolicyService) Delete(ctx context.Context, actor Actor, policyID string) error {
+	if s == nil || s.policies == nil {
+		return apperr.New(apperr.CodeUnavailable, "inspection service is not enabled")
+	}
 	if err := s.policies.SoftDelete(ctx, policyID); err != nil {
 		return mapDomainErr(err)
 	}
@@ -185,6 +197,10 @@ func mapDomainErr(err error) error {
 	if err == nil {
 		return nil
 	}
+	var appErr *apperr.Error
+	if errors.As(err, &appErr) {
+		return appErr
+	}
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		return apperr.New(apperr.CodeNotFound, err.Error())
@@ -197,6 +213,6 @@ func mapDomainErr(err error) error {
 	case errors.Is(err, domain.ErrInvalidTransition):
 		return apperr.New(apperr.CodeFailedPrecondition, err.Error())
 	default:
-		return err
+		return apperr.Wrap(err, apperr.CodeInternal, "inspection operation failed")
 	}
 }

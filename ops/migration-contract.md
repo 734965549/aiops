@@ -34,6 +34,8 @@
 0017_repair_default_admin_superset.up.sql → 修复已应用旧 0016 的环境，重新确保 admin 入口和权限全集
 0018_init_integration.up.sql             → Integration 上下文：云账号/观测平台接入、凭据引用、能力声明、连通性检查
 0019_init_observability.up.sql           → Observability 上下文：查询证据引用与 app:observability:read 权限
+0020_init_inspection.up.sql              → Inspection 上下文：巡检策略、运行、发现、建议
+0022_init_execution_agent.up.sql         → Execution Agent：执行介体、代理、Command Spec、租约、日志流
 ```
 
 | 职责 | 0001 / 0002 / 0016 迁移 | 启动期 bootstrap（`cmd/api`） |
@@ -63,7 +65,7 @@
 psql "$AIOPS_DATABASE_DSN" -f migrations/0001_init_identity.up.sql
 psql "$AIOPS_DATABASE_DSN" -f migrations/0002_seed_admin_permissions.up.sql
 # ...按 migrations/README.md 顺序继续执行...
-psql "$AIOPS_DATABASE_DSN" -f migrations/0017_repair_default_admin_superset.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0022_init_execution_agent.up.sql
 psql "$AIOPS_DATABASE_DSN" -f migrations/manual_schema_migrations.sql
 ```
 
@@ -234,7 +236,7 @@ Integration 上下文第一阶段迁移，建表：
 | `0019` | `0019_init_observability.up.sql` | Observability | `obs_evidence_ref`（证据引用）；权限 `app:observability:read` | 已落地（Port + fake provider；拓扑/查询历史表后续递增） |
 | `0020` | `0020_init_inspection.up.sql` | Inspection | `inspection_policy`、`inspection_run`、`inspection_finding`、`inspection_recommendation` | 已落地 |
 | `0021` | `0021_init_notification.up.sql` | Notification | `notification_channel`、`notification_template`、`notification_delivery` |
-| `0022` | `0022_init_execution_agent.up.sql` | Execution | `exec_medium`、`exec_agent`、`exec_command_spec`、`exec_lease`、`exec_log_stream` |
+| `0022` | `0022_init_execution_agent.up.sql` | Execution | `exec_medium`、`exec_agent`、`exec_command_spec`、`exec_lease`、`exec_log_stream` | 已落地（当前仓库未包含 `0021` 文件，手工执行按实际文件顺序） |
 
 这些迁移必须同步种子化权限和 AI 工具权限，并把 admin 角色绑定到新增权限：
 

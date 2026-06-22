@@ -82,7 +82,7 @@ func (s *RunService) TriggerRun(ctx context.Context, actor Actor, policyID strin
 	}
 	run.AppendTimeline("created", fmt.Sprintf("trigger=%s", trigger))
 	if err := s.runs.Create(ctx, run); err != nil {
-		return nil, err
+		return nil, mapDomainErr(err)
 	}
 	_ = s.audit.Record(ctx, AuditRecord{
 		ResourceType: "inspection_run", ResourceID: runID, Action: AuditRunCreate, UserID: actor.UserID,
@@ -96,6 +96,9 @@ func (s *RunService) TriggerRun(ctx context.Context, actor Actor, policyID strin
 }
 
 func (s *RunService) GetRun(ctx context.Context, runID string) (*RunDTO, error) {
+	if s == nil || s.runs == nil {
+		return nil, apperr.New(apperr.CodeUnavailable, "inspection run service is not enabled")
+	}
 	run, err := s.runs.GetByID(ctx, runID)
 	if err != nil {
 		return nil, mapDomainErr(err)
@@ -105,6 +108,9 @@ func (s *RunService) GetRun(ctx context.Context, runID string) (*RunDTO, error) 
 }
 
 func (s *RunService) ListRuns(ctx context.Context, q ListRunsQuery) ([]RunDTO, int64, error) {
+	if s == nil || s.runs == nil {
+		return nil, 0, apperr.New(apperr.CodeUnavailable, "inspection run service is not enabled")
+	}
 	filter := domain.RunFilter{
 		PolicyID: q.PolicyID, Status: q.Status,
 		Limit: q.PageSize, Offset: (q.Page - 1) * q.PageSize,
@@ -114,11 +120,11 @@ func (s *RunService) ListRuns(ctx context.Context, q ListRunsQuery) ([]RunDTO, i
 	}
 	items, err := s.runs.List(ctx, filter)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, mapDomainErr(err)
 	}
 	total, err := s.runs.Count(ctx, filter)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, mapDomainErr(err)
 	}
 	out := make([]RunDTO, 0, len(items))
 	for i := range items {
@@ -128,6 +134,9 @@ func (s *RunService) ListRuns(ctx context.Context, q ListRunsQuery) ([]RunDTO, i
 }
 
 func (s *RunService) ListFindings(ctx context.Context, q ListFindingsQuery) ([]FindingDTO, int64, error) {
+	if s == nil || s.findings == nil || s.recs == nil {
+		return nil, 0, apperr.New(apperr.CodeUnavailable, "inspection finding service is not enabled")
+	}
 	filter := domain.FindingFilter{
 		RunID: q.RunID, PolicyID: q.PolicyID, RiskLevel: q.RiskLevel,
 		Limit: q.PageSize, Offset: (q.Page - 1) * q.PageSize,
@@ -137,15 +146,18 @@ func (s *RunService) ListFindings(ctx context.Context, q ListFindingsQuery) ([]F
 	}
 	items, err := s.findings.List(ctx, filter)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, mapDomainErr(err)
 	}
 	total, err := s.findings.Count(ctx, filter)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, mapDomainErr(err)
 	}
 	out := make([]FindingDTO, 0, len(items))
 	for i := range items {
-		recs, _ := s.recs.ListByFindingID(ctx, items[i].FindingID)
+		recs, err := s.recs.ListByFindingID(ctx, items[i].FindingID)
+		if err != nil {
+			return nil, 0, mapDomainErr(err)
+		}
 		out = append(out, toFindingDTO(&items[i], recs))
 	}
 	return out, total, nil
@@ -157,7 +169,7 @@ func (s *RunService) executeRun(ctx context.Context, actor Actor, policy *domain
 	}
 	run.AppendTimeline("started", "collecting observability evidence")
 	if err := s.runs.Update(ctx, run); err != nil {
-		return err
+		return mapDomainErr(err)
 	}
 	_ = s.audit.Record(ctx, AuditRecord{
 		ResourceType: "inspection_run", ResourceID: run.RunID, Action: AuditRunStart, UserID: actor.UserID,
@@ -195,7 +207,7 @@ func (s *RunService) executeRun(ctx context.Context, actor Actor, policy *domain
 	results, err := s.analyzer.Analyze(ctx, policy.Checks, evidence)
 	if err != nil {
 		if finishErr := s.finishRun(ctx, actor, run, domain.RunStatusFailed, "analysis failed"); finishErr != nil {
-			return fmt.Errorf("analysis failed; finish run failed: %w", finishErr)
+			return apperr.Wrap(finishErr, apperr.CodeInternal, "analysis failed and finish run failed")
 		}
 		return err
 	}
@@ -236,9 +248,9 @@ func (s *RunService) executeRun(ctx context.Context, actor Actor, policy *domain
 	}
 	if err := s.persistArtifactsAndFinish(ctx, run, status, summary, findings, recs); err != nil {
 		if finishErr := s.finishRun(ctx, actor, run, domain.RunStatusFailed, "persist inspection results failed"); finishErr != nil {
-			return fmt.Errorf("persist inspection results failed: %v; finish run failed: %w", err, finishErr)
+			return apperr.Wrap(finishErr, apperr.CodeInternal, "persist inspection results failed and finish run failed")
 		}
-		return err
+		return mapDomainErr(err)
 	}
 	for _, rec := range recs {
 		_ = s.audit.Record(ctx, AuditRecord{
@@ -260,7 +272,7 @@ func (s *RunService) finishRun(ctx context.Context, actor Actor, run *domain.Ins
 		return err
 	}
 	if err := s.runs.Update(ctx, finalRun); err != nil {
-		return err
+		return mapDomainErr(err)
 	}
 	*run = *finalRun
 	_ = s.audit.Record(ctx, AuditRecord{
@@ -347,7 +359,7 @@ func executionErr(err error) error {
 type noopAnalyzer struct{}
 
 func (noopAnalyzer) CollectEvidence(context.Context, Actor, CheckEvidenceInput) (*EvidenceSummary, error) {
-	return nil, fmt.Errorf("analyzer not configured")
+	return nil, apperr.New(apperr.CodeUnavailable, "inspection analyzer is not configured")
 }
 func (noopAnalyzer) Analyze(context.Context, []string, []EvidenceSummary) ([]AnalysisResult, error) {
 	return nil, nil

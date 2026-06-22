@@ -2,13 +2,16 @@ package integration
 
 import (
 	"context"
+	"strings"
 
 	integdomain "github.com/734965549/aiops/internal/integration/domain"
 	"github.com/734965549/aiops/internal/observability/domain"
 	apperr "github.com/734965549/aiops/pkg/errors"
 )
 
-// AccountAdapter 实现 IntegrationAccountPort，复用 Integration 账号与能力仓储。
+// AccountAdapter 实现 IntegrationAccountPort，俾 Observability 只读取账号摘要同能力。
+//
+// 呢个 adapter 唔解密凭据，只传 credential_ref_id，避免明文凭据跨上下文流动。
 type AccountAdapter struct {
 	accounts     integdomain.AccountRepository
 	capabilities integdomain.CapabilityRepository
@@ -16,9 +19,7 @@ type AccountAdapter struct {
 
 func NewAccountAdapter(
 	accounts integdomain.AccountRepository,
-	credentials integdomain.CredentialRepository,
 	capabilities integdomain.CapabilityRepository,
-	vault integdomain.CredentialVault,
 ) *AccountAdapter {
 	return &AccountAdapter{
 		accounts: accounts, capabilities: capabilities,
@@ -29,6 +30,7 @@ func (a *AccountAdapter) ResolveAccount(ctx context.Context, accountID string) (
 	if a == nil || a.accounts == nil || a.capabilities == nil {
 		return nil, apperr.New(apperr.CodeUnavailable, "observability account adapter is not configured")
 	}
+	accountID = strings.TrimSpace(accountID)
 	if accountID == "" {
 		return nil, integdomain.ErrNotFound
 	}
@@ -51,12 +53,13 @@ func (a *AccountAdapter) ResolveAccount(ctx context.Context, accountID string) (
 		capStrs = append(capStrs, string(c))
 	}
 	return &domain.AccountSnapshot{
-		AccountID:    acc.AccountID,
-		Provider:     string(acc.Provider),
-		AuthType:     string(acc.AuthType),
-		Regions:      append([]string(nil), acc.Regions...),
-		ProjectID:    acc.ProjectID,
-		OwnerTeam:    acc.OwnerTeam,
-		Capabilities: capStrs,
+		AccountID:       acc.AccountID,
+		Provider:        string(acc.Provider),
+		AuthType:        string(acc.AuthType),
+		Regions:         append([]string(nil), acc.Regions...),
+		ProjectID:       acc.ProjectID,
+		CredentialRefID: acc.CredentialRefID,
+		OwnerTeam:       acc.OwnerTeam,
+		Capabilities:    capStrs,
 	}, nil
 }

@@ -36,40 +36,13 @@ func (r capabilityRepoStub) ListByAccountID(context.Context, string) ([]integdom
 	return r.caps, nil
 }
 
-type panicCredentialRepo struct {
-	t *testing.T
-}
-
-func (r panicCredentialRepo) Create(context.Context, *integdomain.CredentialRef) error { return nil }
-func (r panicCredentialRepo) Update(context.Context, *integdomain.CredentialRef) error { return nil }
-func (r panicCredentialRepo) GetByAccountID(context.Context, string) (*integdomain.CredentialRef, error) {
-	r.t.Fatal("observability account adapter must not load decrypted credentials")
-	return nil, nil
-}
-func (r panicCredentialRepo) DeleteByAccountID(context.Context, string) error { return nil }
-
-type panicVault struct {
-	t *testing.T
-}
-
-func (v panicVault) Encrypt(integdomain.CredentialMaterial) ([]byte, string, error) {
-	return nil, "", nil
-}
-func (v panicVault) Decrypt([]byte) (integdomain.CredentialMaterial, error) {
-	v.t.Fatal("observability account adapter must not decrypt credentials")
-	return nil, nil
-}
-func (v panicVault) Fingerprint(integdomain.CredentialMaterial) string { return "" }
-
 func TestAccountAdapterResolveAccountDoesNotDecryptCredentials(t *testing.T) {
 	adapter := NewAccountAdapter(
 		accountRepoStub{acc: &integdomain.IntegrationAccount{
 			AccountID: "acc-1", Provider: integdomain.ProviderHuaweiCloud, AuthType: integdomain.AuthAKSK,
 			CredentialRefID: "cred-1", Enabled: true,
 		}},
-		panicCredentialRepo{t: t},
 		capabilityRepoStub{caps: []integdomain.Capability{integdomain.CapabilityMetrics}},
-		panicVault{t: t},
 	)
 
 	acc, err := adapter.ResolveAccount(context.Background(), "acc-1")
@@ -79,13 +52,16 @@ func TestAccountAdapterResolveAccountDoesNotDecryptCredentials(t *testing.T) {
 	if acc.AccountID != "acc-1" || acc.Provider != string(integdomain.ProviderHuaweiCloud) {
 		t.Fatalf("unexpected account snapshot: %+v", acc)
 	}
+	if acc.CredentialRefID != "cred-1" {
+		t.Fatalf("expected credential ref only, got %+v", acc)
+	}
 	if len(acc.Capabilities) != 1 || acc.Capabilities[0] != string(integdomain.CapabilityMetrics) {
 		t.Fatalf("unexpected capabilities: %+v", acc.Capabilities)
 	}
 }
 
 func TestAccountAdapterResolveAccountMissingCapabilityRepoReturnsUnavailable(t *testing.T) {
-	adapter := NewAccountAdapter(accountRepoStub{}, nil, nil, nil)
+	adapter := NewAccountAdapter(accountRepoStub{}, nil)
 
 	_, err := adapter.ResolveAccount(context.Background(), "acc-1")
 	if err == nil {

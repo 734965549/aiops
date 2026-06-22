@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/734965549/aiops/internal/integration/domain"
 	"github.com/734965549/aiops/pkg/database"
@@ -71,10 +72,12 @@ func (r *AccountRepository) Update(ctx context.Context, account *domain.Integrat
 	if err != nil {
 		return err
 	}
+	now := time.Now()
 	res := r.db.WithContext(ctx).Model(&accountModel{}).Where("account_id = ? AND deleted = FALSE", account.AccountID).Updates(map[string]any{
 		"name": account.Name, "provider": string(account.Provider), "auth_type": string(account.AuthType),
 		"regions": regions, "project_id": account.ProjectID, "credential_ref_id": account.CredentialRefID,
 		"enabled": account.Enabled, "owner_team": account.OwnerTeam, "description": account.Description,
+		"updated_at": now,
 	})
 	if res.Error != nil {
 		return res.Error
@@ -82,6 +85,7 @@ func (r *AccountRepository) Update(ctx context.Context, account *domain.Integrat
 	if res.RowsAffected == 0 {
 		return domain.ErrNotFound
 	}
+	account.UpdatedAt = now
 	return nil
 }
 
@@ -149,7 +153,7 @@ func (r *AccountRepository) SoftDelete(ctx context.Context, accountID string) er
 		return domain.ErrNotFound
 	}
 	res := r.db.WithContext(ctx).Model(&accountModel{}).Where("account_id = ? AND deleted = FALSE", accountID).Updates(map[string]any{
-		"deleted": true, "enabled": false,
+		"deleted": true, "enabled": false, "updated_at": time.Now(),
 	})
 	if res.Error != nil {
 		return res.Error

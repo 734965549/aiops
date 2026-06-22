@@ -367,3 +367,14 @@ func TestUpdateProviderRefreshesCapabilities(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeConnectivityMessageRedactsCredentialValues(t *testing.T) {
+	got := sanitizeConnectivityMessage("provider rejected secret-value", "secret-value")
+	if got != "connectivity check failed" {
+		t.Fatalf("expected generic message, got %q", got)
+	}
+	got = sanitizeConnectivityMessage("provider timeout")
+	if got != "provider timeout" {
+		t.Fatalf("expected benign message preserved, got %q", got)
+	}
+}

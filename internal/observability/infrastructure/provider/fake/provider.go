@@ -3,6 +3,8 @@ package fake
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -81,7 +83,7 @@ func (p *Provider) SearchLogs(_ context.Context, pctx domain.ProviderContext, q 
 		fmt.Sprintf("[%s] health check ok", service),
 	}
 	if keyword != "" {
-		messages = append(messages, fmt.Sprintf("[%s] matched keyword %q", service, keyword))
+		messages = append(messages, fmt.Sprintf("[%s] matched keyword hash=%s len=%d", service, keywordHash(keyword), len([]rune(keyword))))
 	}
 	for i, msg := range messages {
 		if i >= limit {
@@ -244,6 +246,11 @@ func fakeMetricUnit(metric string) string {
 	default:
 		return "Count"
 	}
+}
+
+func keywordHash(keyword string) string {
+	sum := sha256.Sum256([]byte(keyword))
+	return hex.EncodeToString(sum[:8])
 }
 
 func cloneLabels(in map[string]string) map[string]string {

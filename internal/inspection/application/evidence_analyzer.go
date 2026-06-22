@@ -9,9 +9,12 @@ import (
 	"github.com/734965549/aiops/internal/inspection/domain"
 	obsapp "github.com/734965549/aiops/internal/observability/application"
 	obsdomain "github.com/734965549/aiops/internal/observability/domain"
+	apperr "github.com/734965549/aiops/pkg/errors"
 )
 
-// EvidenceAnalyzer 基于 Observability 证据链的规则分析器（fake/真实数据均可；后续可替换 AI Agent）。
+// EvidenceAnalyzer 基于 Observability 证据链做规则分析。
+//
+// fake 同真实 provider 数据都要经同一条脱敏证据链；后续可替换成 AI Agent，但唔可以绕过凭据同执行边界。
 type EvidenceAnalyzer struct {
 	obs ObservabilityQueryPort
 }
@@ -22,10 +25,10 @@ func NewEvidenceAnalyzer(obs ObservabilityQueryPort) *EvidenceAnalyzer {
 
 func (a *EvidenceAnalyzer) CollectEvidence(ctx context.Context, actor Actor, input CheckEvidenceInput) (*EvidenceSummary, error) {
 	if a == nil || a.obs == nil {
-		return nil, fmt.Errorf("observability port not configured")
+		return nil, apperr.New(apperr.CodeUnavailable, "observability port is not configured")
 	}
 	if !domain.IsSupportedCheck(input.Check) {
-		return nil, fmt.Errorf("%w: %s", domain.ErrUnsupportedCheck, input.Check)
+		return nil, apperr.Newf(apperr.CodeInvalidArgument, "%s: %s", domain.ErrUnsupportedCheck, input.Check)
 	}
 	from, to := input.From, input.To
 	if to <= from {
@@ -54,7 +57,7 @@ func (a *EvidenceAnalyzer) CollectEvidence(ctx context.Context, actor Actor, inp
 			return nil, err
 		}
 		if res == nil {
-			return nil, fmt.Errorf("metrics query returned nil result")
+			return nil, apperr.New(apperr.CodeInternal, "metrics query returned empty result")
 		}
 		maxVal := maxMetricValue(res.Series)
 		return &EvidenceSummary{Check: input.Check, Type: "metrics", EvidenceID: res.EvidenceID, Metric: metric, MaxValue: maxVal}, nil
@@ -68,7 +71,7 @@ func (a *EvidenceAnalyzer) CollectEvidence(ctx context.Context, actor Actor, inp
 			return nil, err
 		}
 		if res == nil {
-			return nil, fmt.Errorf("trace query returned nil result")
+			return nil, apperr.New(apperr.CodeInternal, "trace query returned empty result")
 		}
 		errCount := 0
 		for _, sp := range res.Spans {
@@ -88,18 +91,18 @@ func (a *EvidenceAnalyzer) CollectEvidence(ctx context.Context, actor Actor, inp
 			return nil, err
 		}
 		if res == nil {
-			return nil, fmt.Errorf("log search returned nil result")
+			return nil, apperr.New(apperr.CodeInternal, "log search returned empty result")
 		}
 		return &EvidenceSummary{Check: input.Check, Type: "logs", EvidenceID: res.EvidenceID, EntryCount: len(res.Entries)}, nil
 	default:
-		return nil, fmt.Errorf("unsupported check: %s", input.Check)
+		return nil, apperr.Newf(apperr.CodeInvalidArgument, "unsupported check: %s", input.Check)
 	}
 }
 
 func (a *EvidenceAnalyzer) Analyze(_ context.Context, checks []string, evidence []EvidenceSummary) ([]AnalysisResult, error) {
 	for _, check := range checks {
 		if !domain.IsSupportedCheck(check) {
-			return nil, fmt.Errorf("%w: %s", domain.ErrUnsupportedCheck, check)
+			return nil, apperr.Newf(apperr.CodeInvalidArgument, "%s: %s", domain.ErrUnsupportedCheck, check)
 		}
 	}
 	byCheck := map[string]EvidenceSummary{}

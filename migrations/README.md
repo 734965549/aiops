@@ -30,6 +30,8 @@
 0017_repair_default_admin_superset.up.sql
 0018_init_integration.up.sql
 0019_init_observability.up.sql
+0020_init_inspection.up.sql
+0022_init_execution_agent.up.sql
 manual_schema_migrations.sql
 ```
 
@@ -41,6 +43,8 @@ manual_schema_migrations.sql
 - 不要为了让 `/readyz` 变绿而提前执行 `manual_schema_migrations.sql`。
 - `*.down.sql` 只作为人工回滚参考，不由应用自动执行。
 - `0016_seed_default_admin_user.up.sql` 是 DBA 初始化入口账号兜底：创建/重置 `admin/admin123`，并把 `admin` 角色绑定到当前全部权限、数据范围和 AI 工具权限。只执行 `0001/0002` 不算完整初始化。
+- 当前仓库未包含 `0021` 文件；DBA 手工执行时按实际文件名顺序执行到 `0022`，唔好自己补一条空账本记录。
+- Integration、Observability、Inspection 同 Execution Agent 点样串到主链路，睇 `docs/AI运维平台整体流程与调用关系.md`。
 
 示例：
 
@@ -49,7 +53,12 @@ psql "$AIOPS_DATABASE_DSN" -f migrations/0001_init_identity.up.sql
 psql "$AIOPS_DATABASE_DSN" -f migrations/0002_seed_admin_permissions.up.sql
 # ...按上方顺序继续执行...
 psql "$AIOPS_DATABASE_DSN" -f migrations/0015_identity_access_control_management.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0016_seed_default_admin_user.up.sql
 psql "$AIOPS_DATABASE_DSN" -f migrations/0017_repair_default_admin_superset.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0018_init_integration.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0019_init_observability.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0020_init_inspection.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0022_init_execution_agent.up.sql
 psql "$AIOPS_DATABASE_DSN" -f migrations/manual_schema_migrations.sql
 ```
 
@@ -99,7 +108,7 @@ make migrate / go run ./cmd/migrate
 
 | 输出 | 说明 |
 | --- | --- |
-| 数据库表结构 | 例如 `iam_user`、`iam_role`、`iam_permission`、`iam_user_role`、`iam_role_permission`、`iam_data_scope`、`iam_role_data_scope`、`iam_ai_tool_permission`、`iam_role_ai_tool_permission`、`schema_migrations` |
+| 数据库表结构 | 例如 `iam_*`、`alert_*`、`asset_*`、`exec_*`、`integration_*`、`obs_evidence_ref`、`inspection_*`、`schema_migrations` |
 | migration 版本记录 | 防止同一条 SQL 重复执行 |
 | error | SQL 错、权限不足、连接断开等 |
 

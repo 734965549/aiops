@@ -915,6 +915,8 @@ flowchart TD
 
 详细设计见 `docs/cloud-observability-agent-roadmap.md` 和 `ops/cloud-observability-contract.md`。
 
+如果要睇 P0 告警闭环、Integration、Observability、Inspection、Recommendation、Execution Agent 点样串成一条完整调用链，睇 `docs/AI运维平台整体流程与调用关系.md`。该文档用粤语补充咗接口层、application Port、Provider Adapter、凭据边界、审计同权限之间嘅调用关系。
+
 ## 21. 流程总结
 
 AI 运维平台的核心业务流程以“问题发现、上下文聚合、AI 分析、人工确认、安全执行、审计追溯、知识沉淀”为主线。

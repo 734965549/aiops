@@ -1,10 +1,9 @@
--- DBA manual mode only.
+-- 只供 DBA 手工执行模式使用。
 --
--- Run this file after every migrations/*.up.sql file listed in migrations/README.md
--- has been executed successfully against the target database.
+-- 先按 migrations/README.md 列出嘅顺序成功执行所有 migrations/*.up.sql，
+-- 再执行呢个文件补齐 schema_migrations 账本。
 --
--- Do not use this file to hide missing table/seed changes. It only records that
--- DBA has already applied the corresponding versioned SQL files.
+-- 唔好用呢个文件掩盖未执行嘅建表或种子数据；佢只记录 DBA 已经套用对应版本 SQL。
 
 CREATE TABLE IF NOT EXISTS public.schema_migrations (
   version    VARCHAR(64) PRIMARY KEY,
@@ -31,5 +30,7 @@ INSERT INTO public.schema_migrations (version, name, applied_at) VALUES
 ('0016', 'seed_default_admin_user', NOW()),
 ('0017', 'repair_default_admin_superset', NOW()),
 ('0018', 'init_integration', NOW()),
-('0019', 'init_observability', NOW())
+('0019', 'init_observability', NOW()),
+('0020', 'init_inspection', NOW()),
+('0022', 'init_execution_agent', NOW())
 ON CONFLICT (version) DO NOTHING;

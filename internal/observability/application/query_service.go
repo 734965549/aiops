@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"time"
 
 	integdomain "github.com/734965549/aiops/internal/integration/domain"
 	"github.com/734965549/aiops/internal/observability/domain"
@@ -30,7 +29,9 @@ const (
 	maxAlertLimit       = 500
 )
 
-// QueryService 统一观测查询编排：账号解析 -> 能力校验 -> Provider Port -> 证据引用 -> 审计。
+// QueryService 统一编排观测查询：账号解析 -> 能力校验 -> Provider Port -> 证据引用 -> 审计。
+//
+// Service 只依赖 application Port，华为云、SigNoz、Prometheus 等差异留喺 infrastructure adapter。
 type QueryService struct {
 	accounts  IntegrationAccountPort
 	providers ProviderRegistry
@@ -60,6 +61,8 @@ func (s *QueryService) QueryMetrics(ctx context.Context, actor Actor, q domain.M
 	if err != nil {
 		return nil, err
 	}
+	q.AccountID = pctx.Account.AccountID
+	q.Provider = pctx.Account.Provider
 	port, ok := entry.(MetricQueryPort)
 	if !ok {
 		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider does not support metrics")
@@ -97,6 +100,8 @@ func (s *QueryService) SearchLogs(ctx context.Context, actor Actor, q domain.Log
 	if err != nil {
 		return nil, err
 	}
+	q.AccountID = pctx.Account.AccountID
+	q.Provider = pctx.Account.Provider
 	port, ok := entry.(LogSearchPort)
 	if !ok {
 		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider does not support logs")
@@ -135,6 +140,8 @@ func (s *QueryService) QueryTraces(ctx context.Context, actor Actor, q domain.Tr
 	if err != nil {
 		return nil, err
 	}
+	q.AccountID = pctx.Account.AccountID
+	q.Provider = pctx.Account.Provider
 	port, ok := entry.(TraceQueryPort)
 	if !ok {
 		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider does not support traces")
@@ -163,13 +170,17 @@ func (s *QueryService) QueryTraces(ctx context.Context, actor Actor, q domain.Tr
 }
 
 func (s *QueryService) QueryTopology(ctx context.Context, actor Actor, q domain.TopologyQuery) (*TopologyQueryResult, error) {
-	if err := validateTopologyQuery(q); err != nil {
+	normalized, err := normalizeTopologyQuery(q)
+	if err != nil {
 		return nil, err
 	}
+	q = normalized
 	pctx, entry, err := s.resolveEntry(ctx, q.AccountID, q.Provider, integdomain.CapabilityTopology)
 	if err != nil {
 		return nil, err
 	}
+	q.AccountID = pctx.Account.AccountID
+	q.Provider = pctx.Account.Provider
 	port, ok := entry.(TopologyQueryPort)
 	if !ok {
 		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider does not support topology")
@@ -210,6 +221,8 @@ func (s *QueryService) ListResources(ctx context.Context, actor Actor, q domain.
 	if err != nil {
 		return nil, err
 	}
+	q.AccountID = pctx.Account.AccountID
+	q.Provider = pctx.Account.Provider
 	port, ok := entry.(AssetDiscoveryPort)
 	if !ok {
 		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider does not support asset discovery")
@@ -247,6 +260,8 @@ func (s *QueryService) ListAlertRules(ctx context.Context, actor Actor, q domain
 	if err != nil {
 		return nil, err
 	}
+	q.AccountID = pctx.Account.AccountID
+	q.Provider = pctx.Account.Provider
 	port, ok := entry.(AlertRuleQueryPort)
 	if !ok {
 		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider does not support alert rules")
@@ -315,7 +330,6 @@ func (s *QueryService) persistEvidence(ctx context.Context, accountID, queryType
 	if err != nil {
 		return "", apperr.Wrap(err, apperr.CodeInternal, "hash query failed")
 	}
-	now := time.Now()
 	ref := &domain.EvidenceRef{
 		EvidenceID: evidenceID,
 		AccountID:  accountID,
@@ -326,11 +340,17 @@ func (s *QueryService) persistEvidence(ctx context.Context, accountID, queryType
 	if err := s.evidence.Create(ctx, ref); err != nil {
 		return "", apperr.Wrap(err, apperr.CodeInternal, "persist evidence failed")
 	}
-	_ = now
 	return evidenceID, nil
 }
 
 func normalizeMetricQuery(q domain.MetricQuery) (domain.MetricQuery, error) {
+	q.AccountID = strings.TrimSpace(q.AccountID)
+	q.Provider = strings.TrimSpace(q.Provider)
+	q.Region = strings.TrimSpace(q.Region)
+	q.Namespace = strings.TrimSpace(q.Namespace)
+	q.Metric = strings.TrimSpace(q.Metric)
+	q.Aggregator = strings.TrimSpace(q.Aggregator)
+	q.Dimensions = normalizeStringMap(q.Dimensions)
 	if strings.TrimSpace(q.Metric) == "" {
 		return domain.MetricQuery{}, apperr.New(apperr.CodeInvalidArgument, "metric is required")
 	}
@@ -362,6 +382,12 @@ func validateMetricQuery(q domain.MetricQuery) error {
 }
 
 func normalizeLogQuery(q domain.LogQuery) (domain.LogQuery, error) {
+	q.AccountID = strings.TrimSpace(q.AccountID)
+	q.Provider = strings.TrimSpace(q.Provider)
+	q.Service = strings.TrimSpace(q.Service)
+	q.ResourceID = strings.TrimSpace(q.ResourceID)
+	q.Keyword = strings.TrimSpace(q.Keyword)
+	q.TraceID = strings.TrimSpace(q.TraceID)
 	if q.From <= 0 || q.To <= 0 || q.From >= q.To {
 		return domain.LogQuery{}, apperr.New(apperr.CodeInvalidArgument, "invalid time range")
 	}
@@ -375,6 +401,11 @@ func normalizeLogQuery(q domain.LogQuery) (domain.LogQuery, error) {
 }
 
 func normalizeTraceQuery(q domain.TraceQuery) (domain.TraceQuery, error) {
+	q.AccountID = strings.TrimSpace(q.AccountID)
+	q.Provider = strings.TrimSpace(q.Provider)
+	q.Service = strings.TrimSpace(q.Service)
+	q.Operation = strings.TrimSpace(q.Operation)
+	q.TraceID = strings.TrimSpace(q.TraceID)
 	if q.From <= 0 || q.To <= 0 || q.From >= q.To {
 		return domain.TraceQuery{}, apperr.New(apperr.CodeInvalidArgument, "invalid time range")
 	}
@@ -387,14 +418,12 @@ func normalizeTraceQuery(q domain.TraceQuery) (domain.TraceQuery, error) {
 	return q, nil
 }
 
-func validateTopologyQuery(q domain.TopologyQuery) error {
-	if q.From <= 0 || q.To <= 0 || q.From >= q.To {
-		return apperr.New(apperr.CodeInvalidArgument, "invalid time range")
-	}
-	return nil
-}
-
 func normalizeAssetQuery(q domain.AssetDiscoveryQuery) (domain.AssetDiscoveryQuery, error) {
+	q.AccountID = strings.TrimSpace(q.AccountID)
+	q.Provider = strings.TrimSpace(q.Provider)
+	q.Region = strings.TrimSpace(q.Region)
+	q.ResourceType = strings.TrimSpace(q.ResourceType)
+	q.Keyword = strings.TrimSpace(q.Keyword)
 	if q.Limit <= 0 {
 		q.Limit = defaultAssetLimit
 	}
@@ -405,6 +434,11 @@ func normalizeAssetQuery(q domain.AssetDiscoveryQuery) (domain.AssetDiscoveryQue
 }
 
 func normalizeAlertQuery(q domain.AlertRuleQuery) (domain.AlertRuleQuery, error) {
+	q.AccountID = strings.TrimSpace(q.AccountID)
+	q.Provider = strings.TrimSpace(q.Provider)
+	q.Region = strings.TrimSpace(q.Region)
+	q.Namespace = strings.TrimSpace(q.Namespace)
+	q.Keyword = strings.TrimSpace(q.Keyword)
 	if q.Limit <= 0 {
 		q.Limit = defaultAlertLimit
 	}
@@ -412,6 +446,35 @@ func normalizeAlertQuery(q domain.AlertRuleQuery) (domain.AlertRuleQuery, error)
 		return domain.AlertRuleQuery{}, apperr.New(apperr.CodeInvalidArgument, "limit exceeds maximum 500")
 	}
 	return q, nil
+}
+
+func normalizeTopologyQuery(q domain.TopologyQuery) (domain.TopologyQuery, error) {
+	q.AccountID = strings.TrimSpace(q.AccountID)
+	q.Provider = strings.TrimSpace(q.Provider)
+	q.ApplicationID = strings.TrimSpace(q.ApplicationID)
+	if q.From <= 0 || q.To <= 0 || q.From >= q.To {
+		return domain.TopologyQuery{}, apperr.New(apperr.CodeInvalidArgument, "invalid time range")
+	}
+	return q, nil
+}
+
+func normalizeStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		key := strings.TrimSpace(k)
+		val := strings.TrimSpace(v)
+		if key == "" || val == "" {
+			continue
+		}
+		out[key] = val
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func hasCapability(caps []string, want string) bool {

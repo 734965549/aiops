@@ -59,3 +59,9 @@ func TestVaultEncryptRejectsEmptyMaterial(t *testing.T) {
 		t.Fatalf("expected ErrCredentialRequired, got %v", err)
 	}
 }
+
+func TestNewVaultRejectsEmptyKey(t *testing.T) {
+	if _, err := NewVault(" ", 1); err == nil {
+		t.Fatal("expected empty key error")
+	}
+}

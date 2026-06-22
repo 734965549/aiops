@@ -163,6 +163,7 @@ $env:API_BASE = "https://staging-api.example.com"   # 如需要
 
 相关文档：
 
+- `docs/AI运维平台整体流程与调用关系.md`
 - `docs/cloud-observability-agent-roadmap.md`
 - `ops/cloud-observability-contract.md`
 - `ops/execution-agent-contract.md`

@@ -36,6 +36,9 @@ func NewFindingRepository(db *gorm.DB) *FindingRepository {
 }
 
 func (r *FindingRepository) CreateBatch(ctx context.Context, findings []domain.InspectionFinding) error {
+	if r == nil || r.db == nil {
+		return errors.New("inspection finding repository is not configured")
+	}
 	if len(findings) == 0 {
 		return nil
 	}
@@ -47,10 +50,13 @@ func (r *FindingRepository) CreateBatch(ctx context.Context, findings []domain.I
 		}
 		models = append(models, m)
 	}
-	return r.db.WithContext(ctx).Create(&models).Error
+	return database.MapUniqueViolation(r.db.WithContext(ctx).Create(&models).Error, domain.ErrAlreadyExists)
 }
 
 func (r *FindingRepository) List(ctx context.Context, filter domain.FindingFilter) ([]domain.InspectionFinding, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("inspection finding repository is not configured")
+	}
 	q := r.db.WithContext(ctx).Model(&findingModel{})
 	if filter.RunID != "" {
 		q = q.Where("run_id = ?", filter.RunID)
@@ -77,6 +83,9 @@ func (r *FindingRepository) List(ctx context.Context, filter domain.FindingFilte
 }
 
 func (r *FindingRepository) Count(ctx context.Context, filter domain.FindingFilter) (int64, error) {
+	if r == nil || r.db == nil {
+		return 0, errors.New("inspection finding repository is not configured")
+	}
 	q := r.db.WithContext(ctx).Model(&findingModel{})
 	if filter.RunID != "" {
 		q = q.Where("run_id = ?", filter.RunID)
@@ -92,6 +101,9 @@ func (r *FindingRepository) Count(ctx context.Context, filter domain.FindingFilt
 }
 
 func (r *FindingRepository) GetByID(ctx context.Context, findingID string) (*domain.InspectionFinding, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("inspection finding repository is not configured")
+	}
 	var m findingModel
 	err := r.db.WithContext(ctx).Where("finding_id = ?", findingID).First(&m).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {

@@ -2,6 +2,8 @@
 
 封装位于 `web/src/api/`，统一经 `request.ts` 解包 `code === "OK"` 的响应。
 
+全项目调用关系见 `docs/AI运维平台整体流程与调用关系.md`。前端只负责传业务 ID、展示脱敏结果同发起确认动作；权限、风险、审计、凭据保存同真实执行全部由后端 application / Execution 状态机约束。
+
 ## Identity（`identity.ts`）
 
 | 函数 | 接口 | 说明 |
@@ -72,6 +74,8 @@
 
 页面：`views/integrations/index.vue`。契约：`ops/cloud-observability-contract.md` §4。
 
+调用链：页面表单 -> `integration.ts` -> `request.ts` -> `/api/integrations/accounts` -> Integration AccountService -> CredentialVault / Provider checker。前端唔保存明文凭据，更新时若用户唔填 `credential` 就由后端保留原凭据引用。
+
 ## Observability（`observability.ts`）
 
 | 函数 | 接口 | 说明 |
@@ -83,6 +87,8 @@
 
 页面：`views/observability/index.vue`。契约：`ops/cloud-observability-contract.md` §5。
 
+调用链：页面查询条件 -> `observability.ts` -> Observability QueryService -> IntegrationAccountPort -> ProviderRegistry -> fake / Huawei / SigNoz / Prometheus adapter。返回结果要以 `evidence_id` 串返巡检同审计。
+
 ## Inspection（`inspection.ts`）
 
 | 函数 | 接口 | 说明 |
@@ -93,6 +99,8 @@
 | `listFindings` | `GET /api/inspections/findings` | 发现与嵌套建议，含 `evidence_refs` |
 
 页面：`views/inspections/index.vue`。契约：`ops/cloud-observability-contract.md` §6。迁移依赖 `0020`。
+
+调用链：策略/运行操作 -> `inspection.ts` -> Inspection RunService -> ObservabilityQueryPort -> EvidenceAnalyzer -> Finding / Recommendation。建议转执行时只创建 Execution Task，唔会喺前端或 AI 侧直接执行。
 
 ## 错误处理（`request.ts`）
 

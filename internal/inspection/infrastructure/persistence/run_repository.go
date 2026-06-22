@@ -34,6 +34,12 @@ func NewRunRepository(db *gorm.DB) *RunRepository {
 }
 
 func (r *RunRepository) Create(ctx context.Context, run *domain.InspectionRun) error {
+	if r == nil || r.db == nil {
+		return errors.New("inspection run repository is not configured")
+	}
+	if run == nil {
+		return domain.ErrInvalidArgument
+	}
 	m, err := toRunModel(run)
 	if err != nil {
 		return err
@@ -47,13 +53,20 @@ func (r *RunRepository) Create(ctx context.Context, run *domain.InspectionRun) e
 }
 
 func (r *RunRepository) Update(ctx context.Context, run *domain.InspectionRun) error {
+	if r == nil || r.db == nil {
+		return errors.New("inspection run repository is not configured")
+	}
+	if run == nil {
+		return domain.ErrInvalidArgument
+	}
 	m, err := toRunModel(run)
 	if err != nil {
 		return err
 	}
+	now := time.Now()
 	res := r.db.WithContext(ctx).Model(&runModel{}).Where("run_id = ?", run.RunID).Updates(map[string]any{
 		"status": m.Status, "summary": m.Summary, "timeline": m.Timeline,
-		"started_at": m.StartedAt, "finished_at": m.FinishedAt,
+		"started_at": m.StartedAt, "finished_at": m.FinishedAt, "updated_at": now,
 	})
 	if res.Error != nil {
 		return res.Error
@@ -61,10 +74,14 @@ func (r *RunRepository) Update(ctx context.Context, run *domain.InspectionRun) e
 	if res.RowsAffected == 0 {
 		return domain.ErrNotFound
 	}
+	run.UpdatedAt = now
 	return nil
 }
 
 func (r *RunRepository) GetByID(ctx context.Context, runID string) (*domain.InspectionRun, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("inspection run repository is not configured")
+	}
 	var m runModel
 	err := r.db.WithContext(ctx).Where("run_id = ?", runID).First(&m).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -77,6 +94,9 @@ func (r *RunRepository) GetByID(ctx context.Context, runID string) (*domain.Insp
 }
 
 func (r *RunRepository) List(ctx context.Context, filter domain.RunFilter) ([]domain.InspectionRun, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("inspection run repository is not configured")
+	}
 	q := r.db.WithContext(ctx).Model(&runModel{})
 	if filter.PolicyID != "" {
 		q = q.Where("policy_id = ?", filter.PolicyID)
@@ -100,6 +120,9 @@ func (r *RunRepository) List(ctx context.Context, filter domain.RunFilter) ([]do
 }
 
 func (r *RunRepository) Count(ctx context.Context, filter domain.RunFilter) (int64, error) {
+	if r == nil || r.db == nil {
+		return 0, errors.New("inspection run repository is not configured")
+	}
 	q := r.db.WithContext(ctx).Model(&runModel{})
 	if filter.PolicyID != "" {
 		q = q.Where("policy_id = ?", filter.PolicyID)

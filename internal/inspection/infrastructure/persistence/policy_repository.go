@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/734965549/aiops/internal/inspection/domain"
 	"github.com/734965549/aiops/pkg/database"
@@ -38,6 +39,9 @@ func (r *PolicyRepository) Create(ctx context.Context, policy *domain.Inspection
 	if r == nil || r.db == nil {
 		return errors.New("policy repository is not configured")
 	}
+	if policy == nil {
+		return domain.ErrInvalidArgument
+	}
 	m, err := toPolicyModel(policy)
 	if err != nil {
 		return err
@@ -51,16 +55,21 @@ func (r *PolicyRepository) Create(ctx context.Context, policy *domain.Inspection
 }
 
 func (r *PolicyRepository) Update(ctx context.Context, policy *domain.InspectionPolicy) error {
-	if r == nil || r.db == nil || policy == nil {
+	if r == nil || r.db == nil {
 		return errors.New("policy repository is not configured")
+	}
+	if policy == nil {
+		return domain.ErrInvalidArgument
 	}
 	m, err := toPolicyModel(policy)
 	if err != nil {
 		return err
 	}
+	now := time.Now()
 	res := r.db.WithContext(ctx).Model(&policyModel{}).Where("policy_id = ? AND deleted = FALSE", policy.PolicyID).Updates(map[string]any{
 		"name": m.Name, "enabled": m.Enabled, "schedule": m.Schedule, "scope": m.Scope,
 		"checks": m.Checks, "agent_profile": m.AgentProfile, "notification_policy_id": m.NotificationPolicyID,
+		"updated_at": now,
 	})
 	if res.Error != nil {
 		return res.Error
@@ -68,11 +77,14 @@ func (r *PolicyRepository) Update(ctx context.Context, policy *domain.Inspection
 	if res.RowsAffected == 0 {
 		return domain.ErrNotFound
 	}
-	policy.UpdatedAt = m.UpdatedAt
+	policy.UpdatedAt = now
 	return nil
 }
 
 func (r *PolicyRepository) GetByID(ctx context.Context, policyID string) (*domain.InspectionPolicy, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("policy repository is not configured")
+	}
 	var m policyModel
 	err := r.db.WithContext(ctx).Where("policy_id = ? AND deleted = FALSE", policyID).First(&m).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -85,6 +97,9 @@ func (r *PolicyRepository) GetByID(ctx context.Context, policyID string) (*domai
 }
 
 func (r *PolicyRepository) List(ctx context.Context, filter domain.PolicyFilter) ([]domain.InspectionPolicy, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("policy repository is not configured")
+	}
 	q := r.db.WithContext(ctx).Model(&policyModel{}).Where("deleted = FALSE")
 	q = applyPolicyFilter(q, filter)
 	var rows []policyModel
@@ -103,6 +118,9 @@ func (r *PolicyRepository) List(ctx context.Context, filter domain.PolicyFilter)
 }
 
 func (r *PolicyRepository) Count(ctx context.Context, filter domain.PolicyFilter) (int64, error) {
+	if r == nil || r.db == nil {
+		return 0, errors.New("policy repository is not configured")
+	}
 	q := r.db.WithContext(ctx).Model(&policyModel{}).Where("deleted = FALSE")
 	q = applyPolicyFilter(q, filter)
 	var total int64
@@ -110,7 +128,12 @@ func (r *PolicyRepository) Count(ctx context.Context, filter domain.PolicyFilter
 }
 
 func (r *PolicyRepository) SoftDelete(ctx context.Context, policyID string) error {
-	res := r.db.WithContext(ctx).Model(&policyModel{}).Where("policy_id = ? AND deleted = FALSE", policyID).Update("deleted", true)
+	if r == nil || r.db == nil {
+		return errors.New("policy repository is not configured")
+	}
+	res := r.db.WithContext(ctx).Model(&policyModel{}).Where("policy_id = ? AND deleted = FALSE", policyID).Updates(map[string]any{
+		"deleted": true, "updated_at": time.Now(),
+	})
 	if res.Error != nil {
 		return res.Error
 	}

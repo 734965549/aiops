@@ -15,9 +15,13 @@
 | Dashboard 首页驾驶舱 | ✅ | `/dashboard` | API 抽检 | 告警/执行/资产/Runbook 聚合摘要 |
 | Audit 审计中心 | ✅ API | `/audits` | UI 查询/导出 | 关键操作审计写入、筛选、详情查看与 CSV 导出 |
 | AI 运维助手 | ✅ API | `/ai-assistant` | — | Provider 管理、告警分析、工具调用 |
+| Integration 接入账号 | ✅ | `/integrations` | 待补 E2E | 云账号/观测平台账号注册、凭据引用、连通性测试 |
+| Observability 统一观测 | ✅ | `/observability` | 待补 E2E | 指标、日志、链路、拓扑统一查询，第一版用 fake provider 跑通 |
+| Inspection 巡检中心 | ✅ | `/inspections` | 待补 E2E | 巡检策略、运行、Finding、Recommendation 同证据链 |
 
 **文档**：
 - [演示流程](docs/demo-flow.md) — 10 步完整闭环演示
+- [整体流程同调用关系（粤语版）](docs/AI运维平台整体流程与调用关系.md) — 将 P0 闭环、只读观测、巡检、执行介体串埋一张图
 - [上线检查清单](docs/release-checklist.md) — 发布前必查项
 - [验收清单](docs/acceptance-checklist.md) — 模块级验收明细
 - [Kubernetes 部署说明](deployments/kubernetes.md) — 外挂 PostgreSQL/Redis 的 K8s 部署参考
@@ -59,7 +63,10 @@ aiops/
 │   ├── execution/            # 执行任务编排与确认
 │   ├── dashboard/            # 首页聚合摘要
 │   ├── audit/                # 操作审计查询
-│   └── ai/                   # AI Provider、工具网关、告警分析
+│   ├── ai/                   # AI Provider、工具网关、告警分析
+│   ├── integration/          # 云账号/观测平台账号接入、凭据引用、能力探测
+│   ├── observability/        # 指标、日志、链路、拓扑统一只读查询
+│   └── inspection/           # 巡检策略、运行、发现同建议
 ├── pkg/                      # 跨模块共享库（可被 internal 与未来 cmd 复用）
 │   ├── config/               # YAML + 环境变量配置加载（viper）
 │   ├── logger/               # zap 日志，trace 注入
@@ -131,7 +138,7 @@ make migrate-up
 go run ./cmd/migrate -config configs/config.yaml
 ```
 
-当前迁移版本（`0001` → `0017`，顺序不可打乱）：
+当前迁移文件（`0001` → `0022`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，唔好手工补空账本）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -148,6 +155,10 @@ go run ./cmd/migrate -config configs/config.yaml
 | `0015` | `0015_identity_access_control_management.up.sql` | 权限管理 P1：viewer 角色、用户角色绑定、角色权限、数据范围、AI 工具权限 |
 | `0016` | `0016_seed_default_admin_user.up.sql` | 受控初始化默认本地管理员 `admin/admin123`，并将 admin 角色绑定为当前权限全集 |
 | `0017` | `0017_repair_default_admin_superset.up.sql` | 修复已应用旧 `0016` 的环境，重新确保默认 admin 入口和权限全集 |
+| `0018` | `0018_init_integration.up.sql` | Integration：云账号/观测平台账号、凭据引用、能力声明、连通性结果 |
+| `0019` | `0019_init_observability.up.sql` | Observability：证据引用与 `app:observability:read` |
+| `0020` | `0020_init_inspection.up.sql` | Inspection：巡检策略、运行、Finding、Recommendation |
+| `0022` | `0022_init_execution_agent.up.sql` | Execution Agent：执行介体、代理、Command Spec、租约、日志流 |
 
 详见 `ops/migration-contract.md`。
 
@@ -344,6 +355,7 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 - `docs/demo-flow.md` — 演示步骤与自动化验收
 - `docs/release-checklist.md` — 上线前检查清单
 - `docs/acceptance-checklist.md` — 模块验收明细
+- `docs/AI运维平台整体流程与调用关系.md` — 粤语版全链路图、DDD 调用关系同边界说明
 - `deployments/kubernetes.md` — Kubernetes 部署说明（外挂 PostgreSQL/Redis）
 - `docs/AI运维平台核心业务流程图.md`
 - `docs/AI运维平台信息架构.md`
@@ -369,5 +381,6 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 详细设计见：
 
 - `docs/cloud-observability-agent-roadmap.md`：DDD 上下文、阶段步骤、数据模型、工作流和验收策略。
+- `docs/AI运维平台整体流程与调用关系.md`：用粤语说明 P0、Integration、Observability、Inspection、Execution Agent 点样串埋，改代码前建议先睇。
 - `ops/cloud-observability-contract.md`：云账号接入、指标/日志/链路查询、巡检策略和建议到执行的 API 契约草案。
 - `ops/execution-agent-contract.md`：执行介体、执行代理、Command Spec、租约、日志回传和确认后执行的契约草案。

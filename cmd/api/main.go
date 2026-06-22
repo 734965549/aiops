@@ -298,7 +298,7 @@ func main() {
 
 	// ---- 装配 Observability 限界上下文（Provider Port + fake adapter）----
 	obsEvidenceRepo := obspg.NewEvidenceRepository(app.DB)
-	obsAccountAdapter := obsinteg.NewAccountAdapter(integAccountRepo, integCredentialRepo, integCapabilityRepo, integVault)
+	obsAccountAdapter := obsinteg.NewAccountAdapter(integAccountRepo, integCapabilityRepo)
 	obsAuditRecorder := obsaudit.NewRecorder(auditSvc)
 	obsQuerySvc := obsapp.NewQueryService(obsAccountAdapter, obsprovider.DefaultFakeRegistry(), obsEvidenceRepo, obsAuditRecorder)
 	obsHandler := obshttp.NewHandler(obsQuerySvc)

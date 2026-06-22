@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/734965549/aiops/internal/inspection/domain"
 	"github.com/734965549/aiops/pkg/database"
@@ -35,6 +36,9 @@ func NewRecommendationRepository(db *gorm.DB) *RecommendationRepository {
 }
 
 func (r *RecommendationRepository) CreateBatch(ctx context.Context, recs []domain.Recommendation) error {
+	if r == nil || r.db == nil {
+		return errors.New("inspection recommendation repository is not configured")
+	}
 	if len(recs) == 0 {
 		return nil
 	}
@@ -42,10 +46,13 @@ func (r *RecommendationRepository) CreateBatch(ctx context.Context, recs []domai
 	for i := range recs {
 		models = append(models, toRecommendationModel(&recs[i]))
 	}
-	return r.db.WithContext(ctx).Create(&models).Error
+	return database.MapUniqueViolation(r.db.WithContext(ctx).Create(&models).Error, domain.ErrAlreadyExists)
 }
 
 func (r *RecommendationRepository) ListByRunID(ctx context.Context, runID string) ([]domain.Recommendation, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("inspection recommendation repository is not configured")
+	}
 	var rows []recommendationModel
 	if err := r.db.WithContext(ctx).Where("run_id = ?", runID).Order("created_at ASC").Find(&rows).Error; err != nil {
 		return nil, err
@@ -54,6 +61,9 @@ func (r *RecommendationRepository) ListByRunID(ctx context.Context, runID string
 }
 
 func (r *RecommendationRepository) ListByFindingID(ctx context.Context, findingID string) ([]domain.Recommendation, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("inspection recommendation repository is not configured")
+	}
 	var rows []recommendationModel
 	if err := r.db.WithContext(ctx).Where("finding_id = ?", findingID).Order("created_at ASC").Find(&rows).Error; err != nil {
 		return nil, err
@@ -62,6 +72,9 @@ func (r *RecommendationRepository) ListByFindingID(ctx context.Context, findingI
 }
 
 func (r *RecommendationRepository) GetByID(ctx context.Context, recommendationID string) (*domain.Recommendation, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("inspection recommendation repository is not configured")
+	}
 	var m recommendationModel
 	err := r.db.WithContext(ctx).Where("recommendation_id = ?", recommendationID).First(&m).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -75,9 +88,17 @@ func (r *RecommendationRepository) GetByID(ctx context.Context, recommendationID
 }
 
 func (r *RecommendationRepository) Update(ctx context.Context, rec *domain.Recommendation) error {
+	if r == nil || r.db == nil {
+		return errors.New("inspection recommendation repository is not configured")
+	}
+	if rec == nil {
+		return domain.ErrInvalidArgument
+	}
 	m := toRecommendationModel(rec)
+	now := time.Now()
 	res := r.db.WithContext(ctx).Model(&recommendationModel{}).Where("recommendation_id = ?", rec.RecommendationID).Updates(map[string]any{
 		"status": m.Status, "title": m.Title, "reason": m.Reason, "suggested_action": m.SuggestedAction,
+		"updated_at": now,
 	})
 	if res.Error != nil {
 		return res.Error
@@ -85,6 +106,7 @@ func (r *RecommendationRepository) Update(ctx context.Context, rec *domain.Recom
 	if res.RowsAffected == 0 {
 		return domain.ErrNotFound
 	}
+	rec.UpdatedAt = now
 	return nil
 }
 

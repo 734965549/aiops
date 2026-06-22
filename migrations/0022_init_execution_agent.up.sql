@@ -126,15 +126,15 @@ ALTER TABLE exec_step ADD COLUMN IF NOT EXISTS requires_tty BOOLEAN NOT NULL DEF
 
 INSERT INTO iam_permission (permission_id, code, name, resource, action, description, created_at, updated_at)
 VALUES
-    ('00000000-0000-0000-0001-000000000045', 'app:executions:media:read', 'Read execution media', 'executions', 'media:read', 'List and view execution media', NOW(), NOW()),
-    ('00000000-0000-0000-0001-000000000046', 'app:executions:media:create', 'Create execution media', 'executions', 'media:create', 'Register execution media', NOW(), NOW()),
-    ('00000000-0000-0000-0001-000000000047', 'app:executions:media:update', 'Update execution media', 'executions', 'media:update', 'Update execution media', NOW(), NOW()),
-    ('00000000-0000-0000-0001-000000000048', 'app:executions:media:delete', 'Delete execution media', 'executions', 'media:delete', 'Disable or delete execution media', NOW(), NOW()),
-    ('00000000-0000-0000-0001-000000000049', 'app:executions:agents:manage', 'Manage execution agents', 'executions', 'agents:manage', 'Register and manage execution agents', NOW(), NOW()),
-    ('00000000-0000-0000-0001-000000000050', 'app:executions:command_specs:read', 'Read command specs', 'executions', 'command_specs:read', 'View controlled command specifications', NOW(), NOW()),
-    ('00000000-0000-0000-0001-000000000051', 'app:executions:command_specs:create', 'Create command specs', 'executions', 'command_specs:create', 'Create controlled command specifications', NOW(), NOW()),
-    ('00000000-0000-0000-0001-000000000052', 'app:executions:command_specs:update', 'Update command specs', 'executions', 'command_specs:update', 'Update controlled command specifications', NOW(), NOW()),
-    ('00000000-0000-0000-0001-000000000053', 'app:executions:command_specs:delete', 'Delete command specs', 'executions', 'command_specs:delete', 'Disable controlled command specifications', NOW(), NOW())
+    ('00000000-0000-0000-0001-000000000060', 'app:executions:media:read', 'Read execution media', 'executions', 'media:read', 'List and view execution media', NOW(), NOW()),
+    ('00000000-0000-0000-0001-000000000061', 'app:executions:media:create', 'Create execution media', 'executions', 'media:create', 'Register execution media', NOW(), NOW()),
+    ('00000000-0000-0000-0001-000000000062', 'app:executions:media:update', 'Update execution media', 'executions', 'media:update', 'Update execution media', NOW(), NOW()),
+    ('00000000-0000-0000-0001-000000000063', 'app:executions:media:delete', 'Delete execution media', 'executions', 'media:delete', 'Disable or delete execution media', NOW(), NOW()),
+    ('00000000-0000-0000-0001-000000000064', 'app:executions:agents:manage', 'Manage execution agents', 'executions', 'agents:manage', 'Register and manage execution agents', NOW(), NOW()),
+    ('00000000-0000-0000-0001-000000000065', 'app:executions:command_specs:read', 'Read command specs', 'executions', 'command_specs:read', 'View controlled command specifications', NOW(), NOW()),
+    ('00000000-0000-0000-0001-000000000066', 'app:executions:command_specs:create', 'Create command specs', 'executions', 'command_specs:create', 'Create controlled command specifications', NOW(), NOW()),
+    ('00000000-0000-0000-0001-000000000067', 'app:executions:command_specs:update', 'Update command specs', 'executions', 'command_specs:update', 'Update controlled command specifications', NOW(), NOW()),
+    ('00000000-0000-0000-0001-000000000068', 'app:executions:command_specs:delete', 'Delete command specs', 'executions', 'command_specs:delete', 'Disable controlled command specifications', NOW(), NOW())
 ON CONFLICT (code) DO UPDATE SET
     name = EXCLUDED.name,
     resource = EXCLUDED.resource,

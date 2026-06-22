@@ -26,6 +26,28 @@ internal/integration/
 - 连通性失败时 `message` 脱敏，不暴露 AK/SK/Token。
 - 写操作写审计：`integration_account` + `create/update/delete/check`。
 
+## 调用关系（粤语补充）
+
+```text
+前端 / AI 工具 / 管理员
+  -> interfaces/http
+  -> application.AccountService
+  -> domain.Account / CredentialRef / Capability
+  -> infrastructure.persistence + credential.Vault + provider.Checker
+  -> PostgreSQL / 外部只读 Provider
+```
+
+Integration 系只读观测链路嘅入口，但唔负责查询指标、日志或链路。Observability 只会透过 `IntegrationAccountPort` 拿账号摘要、provider、capability 同 `credential_ref_id`；凭据明文唔会跨上下文传出去。后续接真实华为云时，解密同 SDK 调用要留喺 provider adapter 受控边界内，并继续记录脱敏错误同审计。
+
+同其他上下文关系：
+
+| 调用方 | 点样调用 | 边界 |
+| --- | --- | --- |
+| Observability | `IntegrationAccountPort.ResolveAccount` | 只返脱敏账号摘要同能力 |
+| Inspection | 间接经 Observability 查询 | 唔直接读凭据或账号表 |
+| AI 工具网关 | 后续可列账号或触发只读检查 | 要经 RBAC、工具权限同审计 |
+| Execution | 唔直接依赖 Integration | 真实动作仍由 Execution 状态机控制 |
+
 ## 权限
 
 | 权限码 | 说明 |

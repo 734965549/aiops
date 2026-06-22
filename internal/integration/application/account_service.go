@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -162,14 +163,14 @@ func (s *AccountService) Create(ctx context.Context, actor Actor, in CreateAccou
 		enabled = *in.Enabled
 	}
 	acc := &domain.IntegrationAccount{
-		AccountID: accountID,
-		Name:      name,
-		Provider:  provider,
-		AuthType:  authType,
-		Regions:   normalizeRegions(in.Regions),
-		ProjectID: strings.TrimSpace(in.ProjectID),
-		Enabled:   enabled,
-		OwnerTeam: strings.TrimSpace(in.OwnerTeam),
+		AccountID:   accountID,
+		Name:        name,
+		Provider:    provider,
+		AuthType:    authType,
+		Regions:     normalizeRegions(in.Regions),
+		ProjectID:   strings.TrimSpace(in.ProjectID),
+		Enabled:     enabled,
+		OwnerTeam:   strings.TrimSpace(in.OwnerTeam),
 		Description: strings.TrimSpace(in.Description),
 	}
 	defaultCaps := domain.DefaultCapabilitiesForProvider(provider)
@@ -330,7 +331,7 @@ func (s *AccountService) CheckConnectivity(ctx context.Context, accountID string
 	}
 	check, err := checker.CheckConnectivity(ctx, *acc, material)
 	if err != nil {
-		safeMsg := sanitizeConnectivityMessage(err.Error())
+		safeMsg := sanitizeConnectivityMessage(err.Error(), credentialSecretValues(material)...)
 		check = &domain.ConnectivityCheck{
 			CheckID:   "chk-" + uuid.NewString(),
 			AccountID: acc.AccountID,
@@ -361,7 +362,7 @@ func (s *AccountService) CheckConnectivity(ctx context.Context, accountID string
 		return nil, err
 	}
 	s.recordAudit(ctx, acc.AccountID, actor.UserID, AuditAccountCheck, map[string]any{
-		"status": check.Status, "provider": string(check.Provider), "result": "success",
+		"status": string(check.Status), "provider": string(check.Provider), "result": "recorded",
 	})
 	dto := ToConnectivityCheckDTO(*check)
 	return &dto, nil
@@ -580,14 +581,23 @@ func normalizeRegions(in []string) []string {
 	return out
 }
 
-func sanitizeConnectivityMessage(msg string) string {
+func sanitizeConnectivityMessage(msg string, secretValues ...string) string {
 	msg = strings.TrimSpace(msg)
 	if msg == "" {
 		return "connectivity check failed"
 	}
 	lower := strings.ToLower(msg)
-	for _, token := range []string{"access_key", "secret_key", "api_token", "authorization", "bearer ", "ak", "sk"} {
+	for _, token := range []string{"access_key", "secret_key", "api_token", "access_token", "authorization", "bearer ", "secret", "token"} {
 		if strings.Contains(lower, token) {
+			return "connectivity check failed"
+		}
+	}
+	for _, secret := range secretValues {
+		secret = strings.TrimSpace(secret)
+		if secret == "" {
+			continue
+		}
+		if strings.Contains(msg, secret) {
 			return "connectivity check failed"
 		}
 	}
@@ -595,6 +605,20 @@ func sanitizeConnectivityMessage(msg string) string {
 		return msg[:256]
 	}
 	return msg
+}
+
+func credentialSecretValues(material domain.CredentialMaterial) []string {
+	if len(material) == 0 {
+		return nil
+	}
+	keys := []string{"access_key", "secret_key", "api_token", "access_token", "agency_name", "domain_name"}
+	values := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if v := strings.TrimSpace(material[key]); v != "" {
+			values = append(values, v)
+		}
+	}
+	return values
 }
 
 func mapIntegrationError(err error) error {
@@ -618,10 +642,10 @@ func isNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	if err == domain.ErrNotFound {
+	if errors.Is(err, domain.ErrNotFound) {
 		return true
 	}
- ae := apperr.FromError(err)
+	ae := apperr.FromError(err)
 	return ae.Code == apperr.CodeNotFound
 }
 

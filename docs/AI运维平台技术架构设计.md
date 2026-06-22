@@ -1655,6 +1655,7 @@ flowchart TD
 
 详细阶段设计和接口草案见：
 
+- `docs/AI运维平台整体流程与调用关系.md`
 - `docs/cloud-observability-agent-roadmap.md`
 - `ops/cloud-observability-contract.md`
 

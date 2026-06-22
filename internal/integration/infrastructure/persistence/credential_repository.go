@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/734965549/aiops/internal/integration/domain"
 	"github.com/734965549/aiops/pkg/database"
@@ -57,8 +58,10 @@ func (r *CredentialRepository) Update(ctx context.Context, ref *domain.Credentia
 	if ref == nil || strings.TrimSpace(ref.CredentialRefID) == "" {
 		return errors.New("credential ref is nil")
 	}
+	now := time.Now()
 	res := r.db.WithContext(ctx).Model(&credentialModel{}).Where("credential_ref_id = ?", ref.CredentialRefID).Updates(map[string]any{
 		"ciphertext": ref.Ciphertext, "fingerprint": ref.Fingerprint, "external_ref": ref.ExternalRef,
+		"updated_at": now,
 	})
 	if res.Error != nil {
 		return res.Error
@@ -66,6 +69,7 @@ func (r *CredentialRepository) Update(ctx context.Context, ref *domain.Credentia
 	if res.RowsAffected == 0 {
 		return domain.ErrNotFound
 	}
+	ref.UpdatedAt = now
 	return nil
 }
 

@@ -293,6 +293,27 @@ func TestQueryService_QueryMetricsFakeProvider(t *testing.T) {
 	}
 }
 
+func TestQueryService_AuditUsesResolvedProviderWhenRequestOmitsProvider(t *testing.T) {
+	audit := &captureAudit{}
+	svc := NewQueryService(stubAccountPort{acc: &domain.AccountSnapshot{
+		AccountID: "acc-1", Provider: string(integdomain.ProviderHuaweiCloud),
+		Capabilities: []string{string(integdomain.CapabilityMetrics)},
+	}}, stubRegistry{p: stubProviderEntry{}}, nil, audit)
+
+	_, err := svc.QueryMetrics(context.Background(), Actor{UserID: "u1"}, domain.MetricQuery{
+		AccountID: " acc-1 ", Metric: " cpu_util ", From: 1710000000, To: 1710003600, Period: 60,
+	})
+	if err != nil {
+		t.Fatalf("QueryMetrics: %v", err)
+	}
+	if audit.last.Payload["provider"] != string(integdomain.ProviderHuaweiCloud) {
+		t.Fatalf("expected resolved provider in audit payload, got %+v", audit.last.Payload)
+	}
+	if audit.last.Payload["account_id"] != "acc-1" {
+		t.Fatalf("expected normalized account_id in audit payload, got %+v", audit.last.Payload)
+	}
+}
+
 func TestQueryService_CapabilityDenied(t *testing.T) {
 	svc := NewQueryService(stubAccountPort{acc: &domain.AccountSnapshot{
 		AccountID: "acc-1", Provider: string(integdomain.ProviderPrometheus),

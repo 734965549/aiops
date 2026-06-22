@@ -1,4 +1,5 @@
-// Package credential 提供凭据本地加密存储，密文写入 integration_credential_ref，不暴露明文。
+// Package credential 提供 Integration 凭据本地加密保存能力。
 //
-// 加密密钥由启动配置注入（复用 auth.jwt_secret 派生 AES-256 密钥）；生产环境应使用独立密钥源。
+// 加密密钥来自 integration.credential_encryption_key，必须同 auth.jwt_secret
+// 分开，避免 JWT 轮换时令已保存嘅接入账号凭据失效。
 package credential
