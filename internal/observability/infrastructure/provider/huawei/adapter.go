@@ -12,21 +12,26 @@ import (
 	apperr "github.com/734965549/aiops/pkg/errors"
 )
 
-// Adapter 华为云只读观测 Adapter；auth_type=ak_sk 时指标走真实 CES，其余真实凭据账号的非指标能力返回 unsupported。
+// Adapter 华为云只读观测 Adapter；auth_type=ak_sk 时指标与资源发现走真实 API，其余真实凭据账号的非指标能力返回 unsupported。
 type Adapter struct {
 	inner       *fake.Provider
 	credentials *CredentialProvider
 	ces         MetricDataClient
+	resources   ResourceDiscoveryClient
 }
 
-func NewAdapter(credentials *CredentialProvider, ces MetricDataClient) *Adapter {
+func NewAdapter(credentials *CredentialProvider, ces MetricDataClient, resources ResourceDiscoveryClient) *Adapter {
 	if ces == nil {
 		ces = NewCESClient()
+	}
+	if resources == nil {
+		resources = NewResourceClient()
 	}
 	return &Adapter{
 		inner:       fake.New(string(integdomain.ProviderHuaweiCloud)),
 		credentials: credentials,
 		ces:         ces,
+		resources:   resources,
 	}
 }
 
@@ -89,10 +94,58 @@ func (a *Adapter) QueryTopology(ctx context.Context, pctx domain.ProviderContext
 }
 
 func (a *Adapter) ListResources(ctx context.Context, pctx domain.ProviderContext, q domain.AssetDiscoveryQuery) ([]domain.CloudResource, error) {
-	if err := a.requireFakeOnlyCapability(pctx, "assets"); err != nil {
+	authType := integdomain.AuthType(strings.TrimSpace(pctx.Account.AuthType))
+	switch authType {
+	case integdomain.AuthNone:
+		return a.inner.ListResources(ctx, pctx, q)
+	case integdomain.AuthAKSK:
+		return a.listResourcesReal(ctx, pctx, q)
+	case integdomain.AuthAgency:
+		return nil, apperr.Wrap(domain.ErrCapabilityUnsupported, apperr.CodeFailedPrecondition, "huawei assets query with agency auth is not implemented yet")
+	default:
+		return nil, apperr.New(apperr.CodeFailedPrecondition, "unsupported auth type for huawei observability")
+	}
+}
+
+func (a *Adapter) listResourcesReal(ctx context.Context, pctx domain.ProviderContext, q domain.AssetDiscoveryQuery) ([]domain.CloudResource, error) {
+	if a == nil || a.credentials == nil || a.resources == nil {
+		return nil, apperr.New(apperr.CodeUnavailable, "huawei resource adapter is not configured")
+	}
+	region := strings.TrimSpace(q.Region)
+	if region == "" && len(pctx.Account.Regions) > 0 {
+		region = strings.TrimSpace(pctx.Account.Regions[0])
+	}
+	if region == "" {
+		return nil, apperr.New(apperr.CodeInvalidArgument, "region is required")
+	}
+	projectID := strings.TrimSpace(pctx.Account.ProjectID)
+	if projectID == "" {
+		return nil, apperr.New(apperr.CodeInvalidArgument, "project_id is required")
+	}
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	cred, err := a.credentials.ResolveAKSK(ctx, pctx.Account)
+	if err != nil {
 		return nil, err
 	}
-	return a.inner.ListResources(ctx, pctx, q)
+	resources, err := a.resources.ListResources(ctx, cred, projectID, region, q.ResourceType, limit)
+	if err != nil {
+		return nil, err
+	}
+	keyword := strings.ToLower(strings.TrimSpace(q.Keyword))
+	if keyword == "" {
+		return resources, nil
+	}
+	filtered := make([]domain.CloudResource, 0, len(resources))
+	for _, item := range resources {
+		if strings.Contains(strings.ToLower(item.Name), keyword) ||
+			strings.Contains(strings.ToLower(item.ProviderRef), keyword) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, nil
 }
 
 func (a *Adapter) ListAlertRules(ctx context.Context, pctx domain.ProviderContext, q domain.AlertRuleQuery) ([]domain.AlertRule, error) {

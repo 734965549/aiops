@@ -30,7 +30,7 @@ func TestQueryService_QueryMetricsHuaweiAdapterIntegration(t *testing.T) {
 	const accountID = "acc-huawei-metrics"
 	seedHuaweiAKSK(t, credRepo, accountID)
 
-	adapter := huawei.NewAdapter(credProvider, mockCES)
+	adapter := huawei.NewAdapter(credProvider, mockCES, nil)
 	svc := obsapp.NewQueryService(stubAccountPort{acc: &domain.AccountSnapshot{
 		AccountID:       accountID,
 		Provider:        string(integdomain.ProviderHuaweiCloud),
@@ -79,7 +79,7 @@ func TestQueryService_QueryMetricsHuaweiAdapterRedactsAudit(t *testing.T) {
 
 	audit := &captureAudit{}
 	evidence := &memEvidenceRepo{}
-	adapter := huawei.NewAdapter(credProvider, mockCES)
+	adapter := huawei.NewAdapter(credProvider, mockCES, nil)
 	svc := obsapp.NewQueryService(stubAccountPort{acc: &domain.AccountSnapshot{
 		AccountID: accountID, Provider: string(integdomain.ProviderHuaweiCloud),
 		AuthType: string(integdomain.AuthAKSK), ProjectID: "proj-1",

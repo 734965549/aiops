@@ -212,7 +212,8 @@ AI 工具权限建议：
 > - **指标查询** `/api/observability/metrics/query`：`huawei_cloud` + `auth_type=ak_sk` 走真实 CES `ShowMetricData`；返回平台标准 `MetricSeries`，生成 `evidence_id` 并写 `observability_query` 审计。
 > - `signoz` / `prometheus`：全部为 fake adapter（确定性样本），CI 无需外部密钥。
 > - `huawei_cloud` + `auth_type=none`：全部能力仍为 fake，便于无云账号联调。
-> - `huawei_cloud` + `auth_type=ak_sk|agency` 的 logs/traces/topology/assets/alerts：返回 `FAILED_PRECONDITION`（capability unsupported），**不**返回 fake 样本，避免误当作云端数据。
+> - `huawei_cloud` + `auth_type=ak_sk|agency` 的 logs/traces/topology/alerts：返回 `FAILED_PRECONDITION`（capability unsupported），**不**返回 fake 样本，避免误当作云端数据。
+- `huawei_cloud` + `auth_type=ak_sk` 的 **assets**：走真实 ECS/CCE/RDS/ELB `ListResources`（阶段 2）；`auth_type=none` 仍为 fake。
 > - 响应、日志、审计中不出现 AK/SK、`Authorization` header 或原始敏感云端报错；凭据在 API 进程装配时经 `CredentialProvider(integration_credential_ref + vault)` 解密，见 `cmd/api/main.go`。
 
 ### 5.0 Provider Port（Application 层）
@@ -336,6 +337,72 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 - Auth: Bearer + `app:observability:read`
 
 响应包含节点、边、调用量、错误率、P95/P99 等摘要字段。
+
+### 5.5 云资源同步（Asset Sync，阶段 2 已落地）
+
+> **实现状态**：`huawei_cloud` + `auth_type=ak_sk` 的 `ListResources` 走真实 ECS/CCE/RDS/ELB 只读 API；`auth_type=none` 仍为 fake，供 CI/E2E。同步写 `asset_resource`（`source=cloud_sync`）与 `asset_sync_batch`（迁移 `0023`）。
+
+#### 5.5.1 触发同步
+
+- Method: `POST`
+- Path: `/api/assets/sync`
+- Auth: Bearer + `app:assets:write`
+
+请求体：
+
+```json
+{
+  "account_id": "acc_xxx"
+}
+```
+
+响应 `data`：
+
+```json
+{
+  "batch_id": "sync-xxx",
+  "integration_account_id": "acc_xxx",
+  "provider": "huawei_cloud",
+  "status": "success",
+  "created_count": 2,
+  "updated_count": 0,
+  "stale_count": 1,
+  "failed_count": 0,
+  "message": "ok",
+  "application_id": "cloud-acc_xxx",
+  "started_at": 1710000000,
+  "finished_at": 1710000010,
+  "created_at": 1710000000,
+  "updated_at": 1710000010
+}
+```
+
+`status`：`running` / `success` / `partial` / `failed`。云端已删除资源仅标记 `sync_status=stale`，不物理删除。
+
+#### 5.5.2 同步批次列表
+
+- Method: `GET`
+- Path: `/api/assets/sync/batches?page=1&page_size=20&account_id=acc_xxx`
+- Auth: Bearer + `app:assets:read`
+
+响应使用 `pagination.PageData` 形态。
+
+#### 5.5.3 资源注册表扩展字段
+
+`GET /api/assets/applications/:application_id/resources` 的 `Resource` 项新增：
+
+| 字段 | 说明 |
+| --- | --- |
+| `source` | `manual` / `cloud_sync` |
+| `integration_account_id` | 来源接入账号 |
+| `cloud_resource_id` | 华为稳定 ID（如 ECS instance_id） |
+| `cloud_resource_type` | `ecs` / `cce` / `rds` / `elb` |
+| `region` | 区域 |
+| `sync_status` | `active` / `stale`（仅 cloud_sync） |
+| `last_synced_at` | Unix 秒 |
+| `sync_batch_id` | 最近成功批次 |
+
+审计：`resource_type=asset_sync_batch`，`action=sync`。
 
 ## 6. Inspection API
 
@@ -497,6 +564,7 @@ pending -> running -> success|partial|failed|cancelled
 | --- | --- |
 | `scripts/e2e-integration.ps1` | 账号 CRUD、凭据不回显、连通性检查、权限负向 |
 | `scripts/e2e-observability.ps1` | 指标/日志/链路 fake provider 查询、EvidenceRef 生成 |
+| `scripts/e2e-asset-sync.ps1` | 云资源同步、批次、stale 标记、cloud_resource_id 入库 |
 | `scripts/e2e-inspection.ps1` | 策略 CRUD、手动触发、Finding/Recommendation、审计 |
 | `scripts/e2e-notification.ps1` | 通知通道、发送记录、失败重试 |
 | `scripts/e2e-execution-agent.ps1` | Recommendation 创建 agent 模式任务、介体选择、fake agent 领取、日志和结果回传 |

@@ -115,7 +115,7 @@ func TestAdapterQueryMetricsWithMockCESClient(t *testing.T) {
 	const accountID = "acc-ces"
 	seedAKSKCredential(t, provider, repo, vault, accountID)
 
-	adapter := NewAdapter(provider, mockCES)
+	adapter := NewAdapter(provider, mockCES, nil)
 	series, err := adapter.QueryMetrics(context.Background(), domain.ProviderContext{
 		Account: domain.AccountSnapshot{
 			AccountID:       accountID,
@@ -149,7 +149,7 @@ func TestAdapterQueryMetricsMockCESErrorPropagates(t *testing.T) {
 	const accountID = "acc-ces-err"
 	seedAKSKCredential(t, provider, repo, vault, accountID)
 
-	adapter := NewAdapter(provider, mockCES)
+	adapter := NewAdapter(provider, mockCES, nil)
 	_, err := adapter.QueryMetrics(context.Background(), domain.ProviderContext{
 		Account: domain.AccountSnapshot{
 			AccountID: accountID, AuthType: "ak_sk", ProjectID: "proj-1",

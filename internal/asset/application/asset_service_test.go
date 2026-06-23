@@ -150,6 +150,49 @@ func (r *fakeResRepo) CountByApplicationID(_ context.Context, applicationID stri
 	return n, nil
 }
 
+func (r *fakeResRepo) FindByCloudKey(_ context.Context, key domain.CloudResourceKey) (*domain.Resource, error) {
+	for i := range r.rows {
+		row := r.rows[i]
+		if row.IntegrationAccountID == key.IntegrationAccountID &&
+			row.CloudResourceType == key.CloudResourceType &&
+			row.CloudResourceID == key.CloudResourceID {
+			cp := row
+			return &cp, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (r *fakeResRepo) UpsertCloudSync(_ context.Context, res *domain.Resource) (bool, error) {
+	key := domain.CloudResourceKey{
+		IntegrationAccountID: res.IntegrationAccountID,
+		CloudResourceType:    res.CloudResourceType,
+		CloudResourceID:      res.CloudResourceID,
+	}
+	if existing, err := r.FindByCloudKey(context.Background(), key); err == nil && existing != nil {
+		res.ID = existing.ID
+		return false, r.Update(context.Background(), res)
+	}
+	return true, r.Create(context.Background(), res)
+}
+
+func (r *fakeResRepo) MarkStaleByAccountScopeExceptBatch(_ context.Context, accountID, region, cloudResourceType, batchID string) (int64, error) {
+	var n int64
+	for i := range r.rows {
+		row := &r.rows[i]
+		if row.Source == domain.ResourceSourceCloudSync &&
+			row.IntegrationAccountID == accountID &&
+			row.Region == region &&
+			row.CloudResourceType == cloudResourceType &&
+			row.SyncBatchID != batchID &&
+			row.SyncStatus == domain.SyncStatusActive {
+			row.SyncStatus = domain.SyncStatusStale
+			n++
+		}
+	}
+	return n, nil
+}
+
 type fakeRuleRepo struct {
 	rules []domain.MatchRule
 }

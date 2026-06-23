@@ -131,10 +131,18 @@
                 placeholder="全部"
                 style="width: 120px"
               >
-                <a-option value="low">low</a-option>
-                <a-option value="medium">medium</a-option>
-                <a-option value="high">high</a-option>
-                <a-option value="critical">critical</a-option>
+                <a-option value="low">
+                  low
+                </a-option>
+                <a-option value="medium">
+                  medium
+                </a-option>
+                <a-option value="high">
+                  high
+                </a-option>
+                <a-option value="critical">
+                  critical
+                </a-option>
               </a-select>
             </a-form-item>
             <a-form-item>
@@ -236,12 +244,24 @@
             multiple
             placeholder="选择检查项"
           >
-            <a-option value="metrics.cpu">metrics.cpu</a-option>
-            <a-option value="metrics.memory">metrics.memory</a-option>
-            <a-option value="metrics.disk">metrics.disk</a-option>
-            <a-option value="traces.latency">traces.latency</a-option>
-            <a-option value="traces.error_rate">traces.error_rate</a-option>
-            <a-option value="logs.error_burst">logs.error_burst</a-option>
+            <a-option value="metrics.cpu">
+              metrics.cpu
+            </a-option>
+            <a-option value="metrics.memory">
+              metrics.memory
+            </a-option>
+            <a-option value="metrics.disk">
+              metrics.disk
+            </a-option>
+            <a-option value="traces.latency">
+              traces.latency
+            </a-option>
+            <a-option value="traces.error_rate">
+              traces.error_rate
+            </a-option>
+            <a-option value="logs.error_burst">
+              logs.error_burst
+            </a-option>
           </a-select>
         </a-form-item>
         <a-form-item label="Cron 调度">

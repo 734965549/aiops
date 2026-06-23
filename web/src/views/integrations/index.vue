@@ -114,6 +114,14 @@
             <a-button
               type="text"
               size="small"
+              :loading="syncingId === record.account_id"
+              @click="onSyncAssets(record.account_id)"
+            >
+              同步资源
+            </a-button>
+            <a-button
+              type="text"
+              size="small"
               @click="openEdit(record)"
             >
               编辑
@@ -274,11 +282,13 @@ import {
   updateIntegrationAccount,
   type IntegrationAccount
 } from '@/api/integration'
+import { triggerAssetSync } from '@/api/asset'
 import { getApiError } from '@/api/request'
 
 const loading = ref(false)
 const saving = ref(false)
 const checkingId = ref('')
+const syncingId = ref('')
 const accounts = ref<IntegrationAccount[]>([])
 const formVisible = ref(false)
 const editingId = ref('')
@@ -315,7 +325,7 @@ const columns = [
   { title: '状态', slotName: 'enabled', width: 90 },
   { title: '能力', slotName: 'capabilities' },
   { title: '最近检查', slotName: 'last_check', width: 100 },
-  { title: '操作', slotName: 'actions', width: 220 }
+  { title: '操作', slotName: 'actions', width: 300 }
 ]
 
 function parseRegions(text: string): string[] {
@@ -476,6 +486,20 @@ async function onSubmit() {
     Message.error(getApiError(err)?.message || '保存失败')
   } finally {
     saving.value = false
+  }
+}
+
+async function onSyncAssets(accountId: string) {
+  syncingId.value = accountId
+  try {
+    const batch = await triggerAssetSync(accountId)
+    Message.success(
+      `同步完成：新建 ${batch.created_count}，更新 ${batch.updated_count}，stale ${batch.stale_count}（${batch.status}）`
+    )
+  } catch (err) {
+    Message.error(getApiError(err)?.message || '资源同步失败')
+  } finally {
+    syncingId.value = ''
   }
 }
 

@@ -29,6 +29,8 @@ import (
 	alerthttp "github.com/734965549/aiops/internal/alert/interfaces/http"
 	assetapp "github.com/734965549/aiops/internal/asset/application"
 	assetaudit "github.com/734965549/aiops/internal/asset/infrastructure/audit"
+	assetinteg "github.com/734965549/aiops/internal/asset/infrastructure/integration"
+	assetobs "github.com/734965549/aiops/internal/asset/infrastructure/observability"
 	assetpg "github.com/734965549/aiops/internal/asset/infrastructure/persistence"
 	assethttp "github.com/734965549/aiops/internal/asset/interfaces/http"
 	auditapp "github.com/734965549/aiops/internal/audit/application"
@@ -214,7 +216,6 @@ func main() {
 	assetMatcherSvc := assetapp.NewMatcherService(assetAppRepo, assetResRepo, assetRuleRepo)
 	assetSvc := assetapp.NewAssetService(assetAppRepo, assetResRepo, assetRuleRepo, assetAuditRecorder)
 	assetRuleSvc := assetapp.NewMatchRuleService(assetRuleRepo, assetAppRepo, assetResRepo, assetAuditRecorder)
-	assetHandler := assethttp.NewHandler(assetSvc, assetRuleSvc)
 
 	// ---- 装配 Alert 限界上下文（告警中心 Phase 1：接入/去重/状态流转）----
 	alertEventRepo := alertpg.NewAlertEventRepository(app.DB)
@@ -311,6 +312,15 @@ func main() {
 		obsAuditRecorder,
 	)
 	obsHandler := obshttp.NewHandler(obsQuerySvc)
+
+	assetSyncBatchRepo := assetpg.NewSyncBatchRepository(app.DB)
+	assetDiscoveryAdapter := assetobs.NewDiscoveryAdapter(obsQuerySvc)
+	assetIntegAdapter := assetinteg.NewAccountAdapter(integAccountRepo, integCapabilityRepo)
+	assetSyncSvc := assetapp.NewSyncService(
+		assetAppRepo, assetResRepo, assetSyncBatchRepo,
+		assetDiscoveryAdapter, assetIntegAdapter, assetAuditRecorder,
+	)
+	assetHandler := assethttp.NewHandler(assetSvc, assetRuleSvc, assetSyncSvc)
 
 	// ---- 装配 Inspection 限界上下文（巡检策略/运行/发现/建议 + 证据链分析）----
 	inspectionPolicyRepo := inspectionpg.NewPolicyRepository(app.DB)

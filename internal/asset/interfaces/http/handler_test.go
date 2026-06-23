@@ -196,6 +196,49 @@ func (r *assetHTTPTestResRepo) CountByApplicationID(_ context.Context, applicati
 	return n, nil
 }
 
+func (r *assetHTTPTestResRepo) FindByCloudKey(_ context.Context, key assetdomain.CloudResourceKey) (*assetdomain.Resource, error) {
+	for i := range r.rows {
+		row := r.rows[i]
+		if row.IntegrationAccountID == key.IntegrationAccountID &&
+			row.CloudResourceType == key.CloudResourceType &&
+			row.CloudResourceID == key.CloudResourceID {
+			cp := row
+			return &cp, nil
+		}
+	}
+	return nil, assetdomain.ErrNotFound
+}
+
+func (r *assetHTTPTestResRepo) UpsertCloudSync(_ context.Context, res *assetdomain.Resource) (bool, error) {
+	key := assetdomain.CloudResourceKey{
+		IntegrationAccountID: res.IntegrationAccountID,
+		CloudResourceType:    res.CloudResourceType,
+		CloudResourceID:      res.CloudResourceID,
+	}
+	if existing, err := r.FindByCloudKey(context.Background(), key); err == nil && existing != nil {
+		res.ID = existing.ID
+		return false, r.Update(context.Background(), res)
+	}
+	return true, r.Create(context.Background(), res)
+}
+
+func (r *assetHTTPTestResRepo) MarkStaleByAccountScopeExceptBatch(_ context.Context, accountID, region, cloudResourceType, batchID string) (int64, error) {
+	var n int64
+	for i := range r.rows {
+		row := &r.rows[i]
+		if row.Source == assetdomain.ResourceSourceCloudSync &&
+			row.IntegrationAccountID == accountID &&
+			row.Region == region &&
+			row.CloudResourceType == cloudResourceType &&
+			row.SyncBatchID != batchID &&
+			row.SyncStatus == assetdomain.SyncStatusActive {
+			row.SyncStatus = assetdomain.SyncStatusStale
+			n++
+		}
+	}
+	return n, nil
+}
+
 type assetHTTPTestRuleRepo struct {
 	rows []assetdomain.MatchRule
 }
@@ -292,7 +335,7 @@ func newAssetHTTPEngine(t *testing.T, authz *fakeAssetHTTPAuthorizer) (*gin.Engi
 	ruleRepo := &assetHTTPTestRuleRepo{}
 	svc := assetapp.NewAssetService(appRepo, resRepo, ruleRepo, assetapp.NoopAuditRecorder{})
 	matchRules := assetapp.NewMatchRuleService(ruleRepo, appRepo, resRepo, assetapp.NoopAuditRecorder{})
-	handler := NewHandler(svc, matchRules)
+	handler := NewHandler(svc, matchRules, nil)
 	registrar := NewRegistrar(handler, authz)
 
 	engine := server.NewEngine(server.Options{

@@ -13,3 +13,6 @@ var ErrHasResources = errors.New("application has resources")
 
 // ErrHasMatchRules 应用或资源仍被匹配规则引用，不允许删除。
 var ErrHasMatchRules = errors.New("asset has match rules")
+
+// ErrDiscoveryUnavailable 云资源发现端口未配置。
+var ErrDiscoveryUnavailable = errors.New("cloud discovery port is not configured")

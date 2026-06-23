@@ -153,7 +153,7 @@ func containsSensitiveSDKText(mappedMsg string, raw error) bool {
 }
 
 func TestAdapterQueryMetricsUsesFakeForAuthNone(t *testing.T) {
-	adapter := NewAdapter(nil, nil)
+	adapter := NewAdapter(nil, nil, nil)
 	series, err := adapter.QueryMetrics(context.Background(), domain.ProviderContext{
 		Account: domain.AccountSnapshot{AccountID: "acc-1", AuthType: "none"},
 	}, domain.MetricQuery{
@@ -170,7 +170,7 @@ func TestAdapterQueryMetricsUsesFakeForAuthNone(t *testing.T) {
 }
 
 func TestAdapterQueryMetricsAKSKRequiresValidation(t *testing.T) {
-	adapter := NewAdapter(NewCredentialProvider(nil, nil), NewCESClient())
+	adapter := NewAdapter(NewCredentialProvider(nil, nil), NewCESClient(), nil)
 	_, err := adapter.QueryMetrics(context.Background(), domain.ProviderContext{
 		Account: domain.AccountSnapshot{AccountID: "acc-1", AuthType: "ak_sk", ProjectID: "p1"},
 	}, domain.MetricQuery{
@@ -184,7 +184,7 @@ func TestAdapterQueryMetricsAKSKRequiresValidation(t *testing.T) {
 }
 
 func TestAdapterSearchLogsUnsupportedForAKSK(t *testing.T) {
-	adapter := NewAdapter(nil, nil)
+	adapter := NewAdapter(nil, nil, nil)
 	_, err := adapter.SearchLogs(context.Background(), domain.ProviderContext{
 		Account: domain.AccountSnapshot{AccountID: "acc-1", AuthType: "ak_sk"},
 	}, domain.LogQuery{Limit: 10})
@@ -194,7 +194,7 @@ func TestAdapterSearchLogsUnsupportedForAKSK(t *testing.T) {
 }
 
 func TestAdapterSearchLogsUsesFakeForAuthNone(t *testing.T) {
-	adapter := NewAdapter(nil, nil)
+	adapter := NewAdapter(nil, nil, nil)
 	entries, err := adapter.SearchLogs(context.Background(), domain.ProviderContext{
 		Account: domain.AccountSnapshot{AccountID: "acc-1", AuthType: "none"},
 	}, domain.LogQuery{Limit: 10})

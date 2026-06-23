@@ -432,20 +432,21 @@ Recommendation
 - 响应/日志/审计不含 AK/SK、`Authorization`、原始敏感报错。
 - 单测覆盖：`metric_mapper`、`credential` 缺失/错误、`CESClient` mock、`QueryService` 经真实 `huawei.Adapter` 集成路径。
 
-### 阶段 2：资源同步与拓扑
+### 阶段 2：资源同步与拓扑（已落地）
 
 交付：
 
-- Huawei 资源只读 Adapter。
-- 资源同步批次、差异记录、`stale` 标记。
-- Asset 模块扩展同步来源字段。
-- 资源详情展示云资源 ID、region、同步时间。
+- Huawei 资源只读 Adapter（ECS/CCE/RDS/ELB `ListResources`，`auth_type=ak_sk`）。
+- 资源同步批次、`stale` 标记（迁移 `0023`）。
+- Asset 模块扩展同步来源字段 + `POST /api/assets/sync`。
+- 前端 `/assets` 与 `/integrations` 展示来源、云资源 ID、同步批次。
 
 验收：
 
-- 能从华为云只读账号同步 ECS/CCE/RDS/ELB 至资产注册表。
+- 能从华为云只读账号（或 fake `auth_type=none`）同步 ECS/CCE/RDS/ELB 至资产注册表。
 - 同步失败不影响已有 P0 告警闭环。
 - 删除云端资源时平台标记 stale，不直接删除历史数据。
+- `scripts/e2e-asset-sync.ps1` 在 CI 可跑（fake provider）。
 
 ### 阶段 3：指标/日志/链路统一查询
 

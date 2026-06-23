@@ -11,7 +11,7 @@
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
 | 0.1 | 依赖启动 | `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d` | Postgres 健康 |
-| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0001–0022，无报错；当前仓库未包含 `0021` Notification 迁移 |
+| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0001–0023，无报错；当前仓库未包含 `0021` Notification 迁移 |
 | 0.3 | API 启动 | `go run ./cmd/api` 或 compose 内 api 服务 | 登录接口可用 |
 | 0.4 | 前端（UI 验收） | `cd web && npm run dev` | 可登录并访问各页面 |
 | 0.5 | 自动化冒烟 | 见 [§7 推荐验收顺序](#7-推荐验收顺序自动化) | 全部输出 `PASS` |
@@ -77,6 +77,19 @@
 | 2.2.2 | Pod 匹配 | labels 含 `pod=<registered_pod>` | `resource_id` 命中 |
 | 2.2.3 | 精确环境优先 | 同名应用：一条 `environment=''`，一条 `environment=prod` | prod 告警归 prod 应用 |
 | 2.2.4 | 未匹配降级 | 无对应注册表 | 告警仍保存，资产 ID 为空 |
+
+### 2.4 云资源同步（migration 0023，阶段 2）
+
+**脚本**：`scripts/e2e-asset-sync.ps1`
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 2.4.1 | 触发同步 | `POST /api/assets/sync`（`app:assets:write`） | 返回 `batch_id`、`status`、计数摘要 |
+| 2.4.2 | fake 账号同步 | `huawei_cloud` + `auth_type=none` | 资产表出现 `source=cloud_sync` 资源，含 `cloud_resource_id` |
+| 2.4.3 | 批次查询 | `GET /api/assets/sync/batches?account_id=` | 分页返回历史批次 |
+| 2.4.4 | stale 标记 | 二次同步且云端清单变化 | 未出现资源标记 `sync_status=stale`，不物理删除 |
+| 2.4.5 | 前端展示 | `/assets` 资源列表 | 来源、云资源 ID、region、同步状态可见 |
+| 2.4.6 | P0 不受影响 | 同步失败或禁用账号 | 告警 ingest / 匹配 / 执行闭环仍可跑 |
 
 ### 2.3 可配置匹配规则（migration 0014）
 
@@ -245,6 +258,9 @@ go run ./cmd/migrate
 
 # 3. 资产匹配（独立 RunId，可重复跑）
 .\scripts\e2e-asset.ps1
+
+# 3.1 云资源同步（fake provider，migration 0023）
+.\scripts\e2e-asset-sync.ps1
 
 # 4. Runbook 推荐 + 多步执行 + 时间线回写
 .\scripts\e2e-runbook.ps1

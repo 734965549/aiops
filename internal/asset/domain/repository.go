@@ -35,6 +35,24 @@ type ResourceRepository interface {
 	CountByApplicationID(ctx context.Context, applicationID string) (int64, error)
 	FindBestMatch(ctx context.Context, q ResourceMatchQuery) (*Resource, error)
 	Count(ctx context.Context) (int64, error)
+	FindByCloudKey(ctx context.Context, key CloudResourceKey) (*Resource, error)
+	UpsertCloudSync(ctx context.Context, res *Resource) (created bool, err error)
+	MarkStaleByAccountScopeExceptBatch(ctx context.Context, accountID, region, cloudResourceType, batchID string) (int64, error)
+}
+
+// SyncBatchRepository 同步批次持久化接口。
+type SyncBatchRepository interface {
+	Create(ctx context.Context, batch *SyncBatch) error
+	Update(ctx context.Context, batch *SyncBatch) error
+	GetByID(ctx context.Context, batchID string) (*SyncBatch, error)
+	List(ctx context.Context, filter SyncBatchFilter) ([]SyncBatch, int64, error)
+}
+
+// SyncBatchFilter 同步批次列表过滤。
+type SyncBatchFilter struct {
+	IntegrationAccountID string
+	Limit                int
+	Offset               int
 }
 
 // MatchRuleRepository 匹配规则持久化接口。

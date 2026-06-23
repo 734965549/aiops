@@ -19,6 +19,14 @@ export interface Resource {
   pod?: string
   node?: string
   instance?: string
+  source?: string
+  integration_account_id?: string
+  cloud_resource_id?: string
+  cloud_resource_type?: string
+  region?: string
+  sync_status?: string
+  last_synced_at?: number
+  sync_batch_id?: string
   created_at: number
   updated_at: number
 }
@@ -185,5 +193,45 @@ export function deleteMatchRule(id: string) {
   return http<{ deleted: boolean }>({
     url: `/api/assets/match-rules/${encodeURIComponent(id)}`,
     method: 'delete'
+  })
+}
+
+export interface SyncBatch {
+  batch_id: string
+  integration_account_id: string
+  provider: string
+  status: string
+  created_count: number
+  updated_count: number
+  stale_count: number
+  failed_count: number
+  message?: string
+  application_id?: string
+  started_at: number
+  finished_at?: number
+  created_at: number
+  updated_at: number
+}
+
+export function triggerAssetSync(accountId: string) {
+  return http<SyncBatch>({
+    url: '/api/assets/sync',
+    method: 'post',
+    data: { account_id: accountId }
+  })
+}
+
+export function listSyncBatches(params?: { page?: number; page_size?: number; account_id?: string }) {
+  return http<{ items: SyncBatch[]; total: number; page: number; page_size: number }>({
+    url: '/api/assets/sync/batches',
+    method: 'get',
+    params
+  })
+}
+
+export function getSyncBatch(batchId: string) {
+  return http<SyncBatch>({
+    url: `/api/assets/sync/batches/${encodeURIComponent(batchId)}`,
+    method: 'get'
   })
 }

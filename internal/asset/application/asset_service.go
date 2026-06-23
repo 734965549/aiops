@@ -86,8 +86,16 @@ type ResourceDTO struct {
 	Pod           string `json:"pod,omitempty"`
 	Node          string `json:"node,omitempty"`
 	Instance      string `json:"instance,omitempty"`
-	CreatedAt     int64  `json:"created_at"`
-	UpdatedAt     int64  `json:"updated_at"`
+	Source               string `json:"source,omitempty"`
+	IntegrationAccountID string `json:"integration_account_id,omitempty"`
+	CloudResourceID      string `json:"cloud_resource_id,omitempty"`
+	CloudResourceType    string `json:"cloud_resource_type,omitempty"`
+	Region               string `json:"region,omitempty"`
+	SyncStatus           string `json:"sync_status,omitempty"`
+	LastSyncedAt         int64  `json:"last_synced_at,omitempty"`
+	SyncBatchID          string `json:"sync_batch_id,omitempty"`
+	CreatedAt            int64  `json:"created_at"`
+	UpdatedAt            int64  `json:"updated_at"`
 }
 
 func (s *AssetService) ListApplications(ctx context.Context) ([]ApplicationDTO, error) {
@@ -357,18 +365,32 @@ func toApplicationDTO(a domain.Application) ApplicationDTO {
 }
 
 func toResourceDTO(r domain.Resource) ResourceDTO {
-	return ResourceDTO{
-		ID:            r.ID,
-		ApplicationID: r.ApplicationID,
-		Name:          r.Name,
-		ResourceType:  r.ResourceType,
-		Namespace:     r.Namespace,
-		Pod:           r.Pod,
-		Node:          r.Node,
-		Instance:      r.Instance,
-		CreatedAt:     r.CreatedAt.Unix(),
-		UpdatedAt:     r.UpdatedAt.Unix(),
+	dto := ResourceDTO{
+		ID:                   r.ID,
+		ApplicationID:        r.ApplicationID,
+		Name:                 r.Name,
+		ResourceType:         r.ResourceType,
+		Namespace:            r.Namespace,
+		Pod:                  r.Pod,
+		Node:                 r.Node,
+		Instance:             r.Instance,
+		Source:               r.Source,
+		IntegrationAccountID: r.IntegrationAccountID,
+		CloudResourceID:      r.CloudResourceID,
+		CloudResourceType:    r.CloudResourceType,
+		Region:               r.Region,
+		SyncStatus:           r.SyncStatus,
+		SyncBatchID:          r.SyncBatchID,
+		CreatedAt:            r.CreatedAt.Unix(),
+		UpdatedAt:            r.UpdatedAt.Unix(),
 	}
+	if r.LastSyncedAt != nil {
+		dto.LastSyncedAt = r.LastSyncedAt.Unix()
+	}
+	if dto.Source == "" {
+		dto.Source = domain.ResourceSourceManual
+	}
+	return dto
 }
 
 func labelValue(labels map[string]string, key string) string {

@@ -138,7 +138,7 @@ make migrate-up
 go run ./cmd/migrate -config configs/config.yaml
 ```
 
-当前迁移文件（`0001` → `0022`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，唔好手工补空账本）：
+当前迁移文件（`0001` → `0023`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，唔好手工补空账本）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -159,6 +159,7 @@ go run ./cmd/migrate -config configs/config.yaml
 | `0019` | `0019_init_observability.up.sql` | Observability：证据引用与 `app:observability:read` |
 | `0020` | `0020_init_inspection.up.sql` | Inspection：巡检策略、运行、Finding、Recommendation |
 | `0022` | `0022_init_execution_agent.up.sql` | Execution Agent：执行介体、代理、Command Spec、租约、日志流 |
+| `0023` | `0023_asset_cloud_sync.up.sql` | Asset：云资源同步字段、同步批次、stale 标记 |
 
 详见 `ops/migration-contract.md`。
 

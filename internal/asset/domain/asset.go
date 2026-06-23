@@ -14,6 +14,14 @@ type Application struct {
 	UpdatedAt   time.Time
 }
 
+const (
+	ResourceSourceManual    = "manual"
+	ResourceSourceCloudSync = "cloud_sync"
+
+	SyncStatusActive = "active"
+	SyncStatusStale  = "stale"
+)
+
 // Resource 平台注册嘅资源实例，供 Alert 接入时匹配 resource_id。
 type Resource struct {
 	ID            string // 业务 ID（UUID）
@@ -24,6 +32,14 @@ type Resource struct {
 	Pod           string // pod 名
 	Node          string // node 名
 	Instance      string // Prometheus instance 等
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	Source               string     // manual / cloud_sync
+	IntegrationAccountID string     // 云同步来源账号
+	CloudResourceID      string     // 云厂商稳定 ID
+	CloudResourceType    string     // ecs/cce/rds/elb
+	Region               string     // 区域
+	SyncStatus           string     // active/stale（仅 cloud_sync）
+	LastSyncedAt         *time.Time // 最近同步时间
+	SyncBatchID          string     // 最近成功批次
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }

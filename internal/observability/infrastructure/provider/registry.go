@@ -40,7 +40,7 @@ func DefaultFakeRegistry() *Registry {
 // DefaultRegistry 注册 observability provider；传入 huawei 凭据解析器后 ak_sk 账号可走真实 CES。
 func DefaultRegistry(huaweiCredentials *huawei.CredentialProvider) *Registry {
 	return NewRegistry(
-		huawei.NewAdapter(huaweiCredentials, huawei.NewCESClient()),
+		huawei.NewAdapter(huaweiCredentials, huawei.NewCESClient(), huawei.NewResourceClient()),
 		signoz.NewAdapter(),
 		prometheus.NewAdapter(),
 	)

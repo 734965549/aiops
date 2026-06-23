@@ -103,6 +103,40 @@
                 :pagination="false"
                 :row-class="resourceRowClass"
               >
+                <template #source="{ record }">
+                  <a-tag
+                    v-if="(record as Resource).source === 'cloud_sync'"
+                    color="arcoblue"
+                    size="small"
+                  >
+                    云同步
+                  </a-tag>
+                  <a-tag
+                    v-else
+                    size="small"
+                  >
+                    手工
+                  </a-tag>
+                </template>
+                <template #cloud_resource_id="{ record }">
+                  {{ (record as Resource).cloud_resource_id || '—' }}
+                </template>
+                <template #region="{ record }">
+                  {{ (record as Resource).region || '—' }}
+                </template>
+                <template #sync_status="{ record }">
+                  <a-tag
+                    v-if="(record as Resource).sync_status"
+                    :color="(record as Resource).sync_status === 'stale' ? 'orangered' : 'green'"
+                    size="small"
+                  >
+                    {{ (record as Resource).sync_status }}
+                  </a-tag>
+                  <span v-else>—</span>
+                </template>
+                <template #last_synced_at="{ record }">
+                  {{ formatTs((record as Resource).last_synced_at) }}
+                </template>
                 <template #actions="{ record }">
                   <a-space>
                     <a-button
@@ -130,6 +164,50 @@
             </a-card>
           </a-col>
         </a-row>
+      </a-tab-pane>
+
+      <a-tab-pane
+        key="cloud-sync"
+        title="云同步"
+      >
+        <a-card
+          title="同步批次"
+          :bordered="false"
+        >
+          <template #extra>
+            <a-space>
+              <a-input
+                v-model="syncAccountId"
+                placeholder="接入账号 ID"
+                style="width: 280px"
+                allow-clear
+              />
+              <a-button
+                type="primary"
+                :loading="syncLoading"
+                @click="runCloudSync"
+              >
+                立即同步
+              </a-button>
+              <a-button @click="loadSyncBatches">
+                刷新
+              </a-button>
+            </a-space>
+          </template>
+          <a-table
+            :columns="syncBatchColumns"
+            :data="syncBatches"
+            :loading="syncBatchesLoading"
+            row-key="batch_id"
+            :pagination="false"
+          >
+            <template #status="{ record }">
+              <a-tag :color="syncStatusColor((record as assetApi.SyncBatch).status)">
+                {{ (record as assetApi.SyncBatch).status }}
+              </a-tag>
+            </template>
+          </a-table>
+        </a-card>
       </a-tab-pane>
 
       <a-tab-pane
@@ -472,6 +550,10 @@ const ruleModalVisible = ref(false)
 const ruleModalMode = ref<'create' | 'edit'>('create')
 const editingRuleId = ref('')
 const ruleSaving = ref(false)
+const syncAccountId = ref('')
+const syncLoading = ref(false)
+const syncBatchesLoading = ref(false)
+const syncBatches = ref<assetApi.SyncBatch[]>([])
 
 const ruleForm = reactive({
   name: '',
@@ -510,13 +592,28 @@ const appColumns = [
 ]
 
 const resourceColumns = [
-  { title: '资源名', dataIndex: 'name', ellipsis: true },
-  { title: '类型', dataIndex: 'resource_type', width: 90 },
-  { title: 'Namespace', dataIndex: 'namespace', width: 110, ellipsis: true },
-  { title: 'Pod', dataIndex: 'pod', width: 120, ellipsis: true },
-  { title: 'Node', dataIndex: 'node', width: 100, ellipsis: true },
+  { title: '资源名', dataIndex: 'name', ellipsis: true, width: 120 },
+  { title: '来源', slotName: 'source', width: 80 },
+  { title: '类型', dataIndex: 'resource_type', width: 80 },
+  { title: '云资源 ID', slotName: 'cloud_resource_id', width: 140, ellipsis: true },
+  { title: 'Region', slotName: 'region', width: 100 },
+  { title: '同步状态', slotName: 'sync_status', width: 90 },
+  { title: '最近同步', slotName: 'last_synced_at', width: 150 },
+  { title: 'Namespace', dataIndex: 'namespace', width: 100, ellipsis: true },
+  { title: 'Pod', dataIndex: 'pod', width: 100, ellipsis: true },
   { title: 'Instance', dataIndex: 'instance', width: 120, ellipsis: true },
   { title: '操作', slotName: 'actions', width: 120 }
+]
+
+const syncBatchColumns = [
+  { title: '批次 ID', dataIndex: 'batch_id', ellipsis: true },
+  { title: '账号', dataIndex: 'integration_account_id', width: 220, ellipsis: true },
+  { title: '状态', slotName: 'status', width: 90 },
+  { title: '新建', dataIndex: 'created_count', width: 70 },
+  { title: '更新', dataIndex: 'updated_count', width: 70 },
+  { title: 'Stale', dataIndex: 'stale_count', width: 70 },
+  { title: '失败', dataIndex: 'failed_count', width: 70 },
+  { title: '摘要', dataIndex: 'message', ellipsis: true }
 ]
 
 const ruleColumns = [
@@ -560,6 +657,63 @@ async function scrollToHighlightedResource() {
   await nextTick()
   const row = document.querySelector('.assets-row-highlight')
   row?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+}
+
+function formatTs(ts?: number) {
+  if (!ts) return '—'
+  return new Date(ts * 1000).toLocaleString()
+}
+
+function syncStatusColor(status: string) {
+  switch (status) {
+    case 'success':
+      return 'green'
+    case 'partial':
+      return 'orange'
+    case 'failed':
+      return 'red'
+    default:
+      return 'blue'
+  }
+}
+
+async function loadSyncBatches() {
+  syncBatchesLoading.value = true
+  try {
+    const res = await assetApi.listSyncBatches({
+      account_id: syncAccountId.value.trim() || undefined,
+      page: 1,
+      page_size: 20
+    })
+    syncBatches.value = res.items ?? []
+  } finally {
+    syncBatchesLoading.value = false
+  }
+}
+
+async function runCloudSync() {
+  const accountId = syncAccountId.value.trim()
+  if (!accountId) {
+    Message.warning('请填写接入账号 ID')
+    return
+  }
+  syncLoading.value = true
+  try {
+    const batch = await assetApi.triggerAssetSync(accountId)
+    Message.success(
+      `同步完成：新建 ${batch.created_count}，更新 ${batch.updated_count}，stale ${batch.stale_count}`
+    )
+    await loadSyncBatches()
+    await loadApplications()
+    if (batch.application_id) {
+      selectedAppId.value = batch.application_id
+      await loadResources()
+    }
+  } catch (e: unknown) {
+    Message.error(e instanceof Error ? e.message : '同步失败')
+  } finally {
+    syncLoading.value = false
+  }
 }
 
 async function loadMatchRules() {
@@ -877,6 +1031,7 @@ watch(
 onMounted(async () => {
   await loadApplications()
   await loadMatchRules()
+  await loadSyncBatches()
   const q = typeof route.query.application_id === 'string' ? route.query.application_id : ''
   if (q && applications.value.some((a) => a.id === q)) {
     selectedAppId.value = q

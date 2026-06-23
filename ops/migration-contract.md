@@ -36,6 +36,7 @@
 0019_init_observability.up.sql           → Observability 上下文：查询证据引用与 app:observability:read 权限
 0020_init_inspection.up.sql              → Inspection 上下文：巡检策略、运行、发现、建议
 0022_init_execution_agent.up.sql         → Execution Agent：执行介体、代理、Command Spec、租约、日志流
+0023_asset_cloud_sync.up.sql             → Asset 上下文：云资源同步字段、同步批次、stale 标记
 ```
 
 | 职责 | 0001 / 0002 / 0016 迁移 | 启动期 bootstrap（`cmd/api`） |
@@ -66,6 +67,7 @@ psql "$AIOPS_DATABASE_DSN" -f migrations/0001_init_identity.up.sql
 psql "$AIOPS_DATABASE_DSN" -f migrations/0002_seed_admin_permissions.up.sql
 # ...按 migrations/README.md 顺序继续执行...
 psql "$AIOPS_DATABASE_DSN" -f migrations/0022_init_execution_agent.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0023_asset_cloud_sync.up.sql
 psql "$AIOPS_DATABASE_DSN" -f migrations/manual_schema_migrations.sql
 ```
 
@@ -237,6 +239,7 @@ Integration 上下文第一阶段迁移，建表：
 | `0020` | `0020_init_inspection.up.sql` | Inspection | `inspection_policy`、`inspection_run`、`inspection_finding`、`inspection_recommendation` | 已落地 |
 | `0021` | `0021_init_notification.up.sql` | Notification | `notification_channel`、`notification_template`、`notification_delivery` |
 | `0022` | `0022_init_execution_agent.up.sql` | Execution | `exec_medium`、`exec_agent`、`exec_command_spec`、`exec_lease`、`exec_log_stream` | 已落地（当前仓库未包含 `0021` 文件，手工执行按实际文件顺序） |
+| `0023` | `0023_asset_cloud_sync.up.sql` | Asset | `asset_resource` 云同步字段、`asset_sync_batch` | 已落地（资源同步批次与 stale 标记） |
 
 这些迁移必须同步种子化权限和 AI 工具权限，并把 admin 角色绑定到新增权限：
 

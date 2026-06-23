@@ -4,6 +4,7 @@ package http
 import (
 	assetapp "github.com/734965549/aiops/internal/asset/application"
 	apperr "github.com/734965549/aiops/pkg/errors"
+	"github.com/734965549/aiops/pkg/pagination"
 	httpx "github.com/734965549/aiops/pkg/transport/http"
 	"github.com/gin-gonic/gin"
 )
@@ -12,11 +13,12 @@ import (
 type Handler struct {
 	assets     *assetapp.AssetService
 	matchRules *assetapp.MatchRuleService
+	sync       *assetapp.SyncService
 }
 
 // NewHandler 构造 Handler。
-func NewHandler(assets *assetapp.AssetService, matchRules *assetapp.MatchRuleService) *Handler {
-	return &Handler{assets: assets, matchRules: matchRules}
+func NewHandler(assets *assetapp.AssetService, matchRules *assetapp.MatchRuleService, sync *assetapp.SyncService) *Handler {
+	return &Handler{assets: assets, matchRules: matchRules, sync: sync}
 }
 
 type createApplicationRequest struct {
@@ -195,6 +197,68 @@ func (h *Handler) DeleteResource(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, gin.H{"deleted": true})
+}
+
+type triggerSyncRequest struct {
+	AccountID string `json:"account_id" binding:"required"`
+}
+
+// TriggerSync POST /api/assets/sync
+func (h *Handler) TriggerSync(c *gin.Context) {
+	if h.sync == nil {
+		httpx.FailWith(c, apperr.CodeUnavailable, "asset sync service is not enabled")
+		return
+	}
+	var req triggerSyncRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpx.FailWith(c, apperr.CodeInvalidArgument, "account_id is required")
+		return
+	}
+	out, err := h.sync.TriggerSync(c.Request.Context(), actorFromContext(c), assetapp.TriggerSyncInput{
+		AccountID: req.AccountID,
+	})
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	httpx.OK(c, out)
+}
+
+// ListSyncBatches GET /api/assets/sync/batches
+func (h *Handler) ListSyncBatches(c *gin.Context) {
+	if h.sync == nil {
+		httpx.FailWith(c, apperr.CodeUnavailable, "asset sync service is not enabled")
+		return
+	}
+	var q struct {
+		pagination.Query
+		AccountID string `form:"account_id"`
+	}
+	_ = c.ShouldBindQuery(&q)
+	q.Normalize()
+	items, total, err := h.sync.ListBatches(c.Request.Context(), assetapp.ListSyncBatchesQuery{
+		Page: q.Page, PageSize: q.PageSize,
+		IntegrationAccountID: q.AccountID,
+	})
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	httpx.OK(c, pagination.NewResult(items, total, q.Query))
+}
+
+// GetSyncBatch GET /api/assets/sync/batches/:batch_id
+func (h *Handler) GetSyncBatch(c *gin.Context) {
+	if h.sync == nil {
+		httpx.FailWith(c, apperr.CodeUnavailable, "asset sync service is not enabled")
+		return
+	}
+	out, err := h.sync.GetBatch(c.Request.Context(), c.Param("batch_id"))
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	httpx.OK(c, out)
 }
 
 type createMatchRuleRequest struct {

@@ -76,6 +76,17 @@
 
 调用链：页面表单 -> `integration.ts` -> `request.ts` -> `/api/integrations/accounts` -> Integration AccountService -> CredentialVault / Provider checker。前端唔保存明文凭据，更新时若用户唔填 `credential` 就由后端保留原凭据引用。
 
+## Asset（`asset.ts`）
+| 函数 | 接口 | 说明 |
+| --- | --- | --- |
+| `listApplications` / `createApplication` / `updateApplication` / `deleteApplication` | `/api/assets/applications` | 应用注册表 CRUD，需 `app:assets:read/write` |
+| `listResources` / `createResource` / `updateResource` / `deleteResource` | `/api/assets/resources` | 资源注册表 CRUD，云同步字段只由后端同步链路写入 |
+| `triggerAssetSync` | `POST /api/assets/sync` | 触发云资源同步，需 `app:assets:write` |
+| `listSyncBatches` / `getSyncBatch` | `/api/assets/sync/batches` | 查询同步批次，需 `app:assets:read` |
+
+页面：`views/assets/index.vue`。契约：`ops/cloud-observability-contract.md` §5.5。
+调用链：页面触发 -> `asset.ts` -> Asset SyncService -> Observability discovery port -> Provider Adapter。同步失败或局部失败不得破坏 P0 告警匹配闭环。
+
 ## Observability（`observability.ts`）
 
 | 函数 | 接口 | 说明 |
