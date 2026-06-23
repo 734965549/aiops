@@ -7,7 +7,6 @@ import (
 	"github.com/734965549/aiops/pkg/logger"
 	httpx "github.com/734965549/aiops/pkg/transport/http"
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // Recovery 捕获 handler panic，写入日志并返回统一错误响应。
@@ -18,10 +17,10 @@ func Recovery() gin.HandlerFunc {
 		defer func() {
 			if r := recover(); r != nil {
 				logger.From(c.Request.Context()).Error("panic recovered",
-					zap.Any("panic", r),
-					zap.ByteString("stack", debug.Stack()),
-					zap.String("path", c.FullPath()),
-					zap.String("method", c.Request.Method),
+					logger.Any("panic", r),
+					logger.ByteString("stack", debug.Stack()),
+					logger.String("path", c.FullPath()),
+					logger.String("method", c.Request.Method),
 				)
 				c.Abort()
 				httpx.FailWith(c, apperr.CodeInternal, "internal server error")

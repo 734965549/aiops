@@ -28,8 +28,10 @@ type Config struct {
 	Redis    RedisConfig    `mapstructure:"redis"`
 	Auth     AuthConfig     `mapstructure:"auth"`
 	Identity IdentityConfig `mapstructure:"identity"`
-	CORS     CORSConfig     `mapstructure:"cors"`
-	AI       AIConfig       `mapstructure:"ai"`
+	CORS        CORSConfig        `mapstructure:"cors"`
+	AI          AIConfig          `mapstructure:"ai"`
+	Integration IntegrationConfig `mapstructure:"integration"`
+	Execution   ExecutionConfig   `mapstructure:"execution"`
 }
 
 // AppConfig 描述应用元数据。
@@ -290,10 +292,10 @@ func Load(configPath string) (*Config, error) {
 	setDefaults(v)
 
 	v.SetEnvPrefix("AIOPS")
-	v.AutomaticEnv()
 	// yaml 用 "." 表示分段，环境变量分段使用双下划线 "__"，
 	// 避免与 snake_case 键名内部的单下划线发生歧义（如 database.ssl_mode）。
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "__"))
+	v.AutomaticEnv()
 
 	if configPath != "" {
 		v.SetConfigFile(configPath)
@@ -372,6 +374,9 @@ func (c *Config) Validate() error {
 	if c.Server.Port <= 0 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port %d invalid", c.Server.Port)
 	}
+	if err := validateLoggerConfig(c.Logger); err != nil {
+		return err
+	}
 	if c.Database.Host == "" || c.Database.Name == "" {
 		return fmt.Errorf("database.host / database.name must not be empty")
 	}
@@ -395,7 +400,34 @@ func (c *Config) Validate() error {
 	if c.App.Env == "prod" && !c.Redis.Required {
 		return fmt.Errorf("redis.required must be true in prod (refresh token session store)")
 	}
+	if err := validateIntegrationConfig(c.Integration, c.App.Env, c.Auth.JWTSecret); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateLoggerConfig(cfg LoggerConfig) error {
+	switch strings.ToLower(strings.TrimSpace(cfg.Level)) {
+	case "", "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("logger.level must be one of debug/info/warn/error")
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Format)) {
+	case "", "json", "console":
+	default:
+		return fmt.Errorf("logger.format must be json or console")
+	}
+	output := strings.TrimSpace(cfg.Output)
+	switch strings.ToLower(output) {
+	case "", "stdout", "stderr", "file":
+		return nil
+	default:
+		// 兼容老配置把文件路径直接写在 output 的情况；新配置建议使用 output=file + file_path。
+		if strings.ContainsAny(output, `/\`) || strings.HasSuffix(strings.ToLower(output), ".log") {
+			return nil
+		}
+		return fmt.Errorf("logger.output must be stdout, stderr, file or a file path")
+	}
 }
 
 func validateCORS(env string, cfg CORSConfig) error {
@@ -475,6 +507,8 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("redis.required", false)
 	v.SetDefault("redis.addr", "127.0.0.1:6379")
+	v.SetDefault("redis.username", "")
+	v.SetDefault("redis.password", "")
 	v.SetDefault("redis.db", 0)
 	v.SetDefault("redis.pool_size", 50)
 
@@ -486,6 +520,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.bootstrap_password", "")
 	v.SetDefault("auth.bootstrap_display_name", "Administrator")
 	v.SetDefault("auth.grant_cache_ttl_s", 60)
+
+	v.SetDefault("integration.credential_encryption_key", DefaultCredentialEncryptionKeyPlaceholder)
+	v.SetDefault("integration.credential_encryption_key_version", 1)
 	v.SetDefault("auth.login_ip_allowlist", []string{})
 	v.SetDefault("auth.login_rate_limit.enabled", true)
 	v.SetDefault("auth.login_rate_limit.ip_requests_per_window", 30)

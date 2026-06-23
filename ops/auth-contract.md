@@ -156,12 +156,12 @@ Authorization: Bearer <access_token>
 | --- | --- |
 | `auth.jwt_secret` | HS256 对称密钥；非 `dev` 环境拒绝占位值与弱密钥 |
 | `auth.jwt_issuer` | JWT `iss` 声明 |
-| `auth.bootstrap_username` / `bootstrap_password` | 可选；仅 dev/test 幂等创建默认管理员；生产须留空 |
+| `auth.bootstrap_username` / `bootstrap_password` | 可选；dev/test 兼容链路。默认管理员也由迁移 `0016` 种子；生产须留空 |
 | `auth.login_ip_allowlist` | 可选；登录安全 IP 白名单，支持单 IP 同 CIDR，空数组表示唔限制 |
 
 - `dev` 环境允许 `please-change-me-in-production` 等占位值。
 - 非 `dev` 环境要求密钥长度 ≥ 32、具备足够熵与字符多样性。
-- 默认账号 `admin/admin123` 仅用于本地联调，生产必须关闭 bootstrap 并显式配置强密钥。
+- 默认账号 `admin/admin123` 由迁移 `0016` 种子，仅用于本地联调或受控初始化；生产必须关闭 bootstrap、显式配置强密钥，并在发布后立即改密或禁用默认账号。
 - 配置 `auth.login_ip_allowlist` 后，本地登录、LDAP/AD 登录、OAuth authorize/callback、refresh 同 logout 都会先校验客户端 IP；未命中就返回 `PERMISSION_DENIED`。
 
 ## 6. 路由划分（认证视角）
@@ -179,7 +179,7 @@ Authorization: Bearer <access_token>
 
 角色、权限、当前用户与统一授权校验的请求/响应字段见 `identity-api-contract.md`。上述 Authed 接口**不是**公开只读：未登录返回 401（`UNAUTHENTICATED`），权限不足返回 403（`PERMISSION_DENIED`）。
 
-**联调提示**：若仅执行迁移 `0001` 而未执行 `0002`，登录成功后 Authed 接口可能全部 403。请执行 `make migrate` 或叠加 `docker-compose.dev.yml`（`AUTO_MIGRATE=true`），详见 `migration-contract.md`。
+**联调提示**：若仅执行迁移 `0001` 而未执行 `0002` / `0016`，可能没有默认管理员或登录成功后 Authed 接口全部 403。请执行 `make migrate` 或叠加 `docker-compose.dev.yml`（`AUTO_MIGRATE=true`），详见 `migration-contract.md`。
 
 ## 7. 认证相关错误码
 
@@ -188,7 +188,7 @@ Authorization: Bearer <access_token>
 | `OK` | 200 | 成功 |
 | `INVALID_ARGUMENT` | 400 | 参数缺失或非法 |
 | `UNAUTHENTICATED` | 401 | token 缺失、无效或过期；登录凭据错误 |
-| `PERMISSION_DENIED` | 403 | RBAC 权限不足（与 401 区分；常见原因为未执行迁移 0002） |
+| `PERMISSION_DENIED` | 403 | RBAC 权限不足（与 401 区分；常见原因为未执行迁移 0002/0016 或 token 未刷新） |
 | `UNAVAILABLE` | 503 | 认证服务未配置（如未注入 Authenticator） |
 | `INTERNAL` | 500 | 服务内部异常 |
 

@@ -17,7 +17,6 @@ import (
 	httpx "github.com/734965549/aiops/pkg/transport/http"
 	"github.com/734965549/aiops/pkg/transport/http/middleware"
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // UserReader 定义当前用户查询能力。
@@ -685,9 +684,9 @@ func (h *Handler) recordAuthAudit(ctx context.Context, c *gin.Context, audit dom
 	}
 	if err := h.authAudit.Record(ctx, audit); err != nil {
 		logger.From(ctx).Warn("record auth audit failed",
-			zap.String("event", string(audit.Event)),
-			zap.String("result", string(audit.Result)),
-			zap.Error(err),
+			logger.String("event", string(audit.Event)),
+			logger.String("result", string(audit.Result)),
+			logger.Error(err),
 		)
 	}
 }

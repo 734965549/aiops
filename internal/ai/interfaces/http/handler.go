@@ -12,7 +12,6 @@ import (
 	httpx "github.com/734965549/aiops/pkg/transport/http"
 	"github.com/734965549/aiops/pkg/transport/http/middleware"
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 type Gateway interface {
@@ -129,8 +128,8 @@ func (h *Handler) UpsertProvider(c *gin.Context) {
 		return
 	}
 	logger.From(c.Request.Context()).Info("ai provider upserted",
-		zap.String("actor_user_id", c.GetString(middleware.CtxKeyUserID)),
-		zap.Any("provider", cfg.AuditFields()),
+		logger.String("actor_user_id", c.GetString(middleware.CtxKeyUserID)),
+		logger.Any("provider", cfg.AuditFields()),
 	)
 	httpx.OK(c, gin.H{"updated": true})
 }
@@ -143,8 +142,8 @@ func (h *Handler) DeleteProvider(c *gin.Context) {
 	id := c.Param("id")
 	h.registry.DeleteProvider(id)
 	logger.From(c.Request.Context()).Info("ai provider deleted",
-		zap.String("actor_user_id", c.GetString(middleware.CtxKeyUserID)),
-		zap.String("provider_id", id),
+		logger.String("actor_user_id", c.GetString(middleware.CtxKeyUserID)),
+		logger.String("provider_id", id),
 	)
 	httpx.OK(c, gin.H{"deleted": true})
 }

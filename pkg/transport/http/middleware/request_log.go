@@ -5,7 +5,6 @@ import (
 
 	"github.com/734965549/aiops/pkg/logger"
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // RequestLog 输出每次请求的访问日志（method/path/status/latency/ip）。
@@ -25,15 +24,16 @@ func RequestLog() gin.HandlerFunc {
 			fullPath = path + "?" + raw
 		}
 
-		fields := []zap.Field{
-			zap.String("method", c.Request.Method),
-			zap.String("path", fullPath),
-			zap.Int("status", c.Writer.Status()),
-			zap.Duration("latency", latency),
-			zap.String("client_ip", c.ClientIP()),
+		fields := []logger.Field{
+			logger.String("method", c.Request.Method),
+			logger.String("path", fullPath),
+			logger.String("route", c.FullPath()),
+			logger.Int("status", c.Writer.Status()),
+			logger.Duration("latency", latency),
+			logger.String("client_ip", c.ClientIP()),
 		}
 		if ua := c.Request.UserAgent(); ua != "" {
-			fields = append(fields, zap.String("user_agent", ua))
+			fields = append(fields, logger.String("user_agent", ua))
 		}
 
 		l := logger.From(c.Request.Context())

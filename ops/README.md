@@ -13,6 +13,10 @@
 - `migration-contract.md`：数据库迁移运行同约束说明。
 - `execution-contract.md`：告警处置执行任务创建、确认、执行与时间线回写契约。
 - `runbook-contract.md`：处置预案模板、告警推荐、多步骤执行任务生成契约。
+- `cloud-observability-contract.md`：Integration、Observability、Inspection、建议转执行嘅接口契约。
+- `execution-agent-contract.md`：Execution Agent、执行介体、Command Spec、租约同日志回传契约。
+
+全项目串联关系见 `docs/AI运维平台整体流程与调用关系.md`；呢份图用粤语说明前端、HTTP、application、domain、infrastructure、Provider Adapter、Execution Agent 点样一层层调用。
 
 ## 调用关系
 
@@ -34,6 +38,8 @@
 | health | 无或简单 HTTP 请求 |
 | migration | migration 文件、数据库连接、执行环境 |
 | execution / runbook | Bearer token、告警 ID、执行任务参数、Runbook 模板与步骤 |
+| cloud-observability | Bearer token、`account_id`、provider、观测查询条件、巡检策略 |
+| execution-agent | 已确认任务、medium/agent 业务 ID、租约、Command Spec 参数 |
 
 ## 出参
 
@@ -45,6 +51,28 @@
 | health | 服务状态、版本、就绪情况 |
 | migration | 执行成功、失败原因、版本记录 |
 | execution / runbook | 执行任务、步骤状态、推荐预案、时间线回写结果 |
+| cloud-observability | 账号摘要、能力声明、证据引用、Finding、Recommendation |
+| execution-agent | agent 心跳、租约、日志片段、执行结果 |
+
+## 云厂商只读接管契约
+
+- `cloud-observability-contract.md`：P1+ 云账号只读接管、统一观测查询、巡检策略、AI 建议和通知发送契约草案。
+- `execution-agent-contract.md`：P1+ 执行介体、执行代理、受控命令、租约、日志回传和确认后执行契约草案。
+
+该契约用于指导后续实现，当前已落地 P0 闭环仍以 `alert-contract.md`、`ai-contract.md`、`execution-contract.md` 等现有契约为准。实现过程中若新增接口、状态机、权限码、迁移或审计字段，必须先更新该契约再改代码。
+
+## 契约到代码嘅对应关系
+
+```text
+ops/cloud-observability-contract.md
+  -> internal/integration        账号、凭据引用、连通性、能力声明
+  -> internal/observability      查询 API、Provider Port、EvidenceRef
+  -> internal/inspection         策略、运行、Finding、Recommendation
+  -> web/src/api/README.md       前端调用路径同错误处理
+  -> migrations/0018-0020        表结构同权限种子
+```
+
+真实执行相关契约继续落喺 `ops/execution-contract.md` 同 `ops/execution-agent-contract.md`。AI、Inspection 或 Recommendation 只可以创建待确认 Execution Task，唔可以跳过 Execution 状态机。
 
 ## 通俗比喻
 

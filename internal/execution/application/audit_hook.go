@@ -12,6 +12,14 @@ const (
 	AuditExecute           AuditAction = "execute"
 	AuditAlertCreate       AuditAction = "execution_create"
 	AuditCreateFromRunbook AuditAction = "create_from_runbook"
+	AuditMediumCreate      AuditAction = "create"
+	AuditMediumUpdate      AuditAction = "update"
+	AuditMediumDisable     AuditAction = "disable"
+	AuditAgentRegister     AuditAction = "register"
+	AuditAgentHeartbeat    AuditAction = "heartbeat"
+	AuditDispatch          AuditAction = "dispatch"
+	AuditAgentLog          AuditAction = "agent_log"
+	AuditAgentResult       AuditAction = "agent_result"
 )
 
 // AuditRecord 审计载荷。

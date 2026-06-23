@@ -13,7 +13,6 @@ import (
 	"github.com/734965549/aiops/pkg/database"
 	"github.com/734965549/aiops/pkg/logger"
 	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -110,8 +109,8 @@ func Init(ctx context.Context, configPath string) (*App, error) {
 	}
 
 	logger.L().Info("bootstrap start",
-		zap.String("app", cfg.App.Name),
-		zap.String("env", cfg.App.Env),
+		logger.String("app", cfg.App.Name),
+		logger.String("env", cfg.App.Env),
 	)
 
 	db, err := database.NewPostgres(ctx, cfg.Database, cfg.App.Timezone)
@@ -144,7 +143,7 @@ func Init(ctx context.Context, configPath string) (*App, error) {
 	} else {
 		rdb, err = database.NewRedis(ctx, cfg.Redis)
 		if err != nil {
-			logger.L().Warn("redis optional and unavailable, continuing without cache/session store", zap.Error(err))
+			logger.L().Warn("redis optional and unavailable, continuing without cache/session store", logger.Error(err))
 			rdb = nil
 		}
 	}

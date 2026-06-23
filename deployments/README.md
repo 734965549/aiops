@@ -33,7 +33,7 @@ docker-compose.dev.yml（覆盖）
 | 文件 | 入参 | 说明 |
 | --- | --- | --- |
 | `Dockerfile` | 源码、go.mod、go.sum | 构建后端二进制 |
-| `docker-compose.yml` | 可选 `JWT_SECRET`、可选 `AIOPS_VERSION` | 编排服务；PG 默认 aiops/aiops；Web 登录 admin/admin123 须 dev 覆盖 |
+| `docker-compose.yml` | 可选 `JWT_SECRET`、可选 `AIOPS_VERSION` | 编排服务；PG 默认 aiops/aiops；Web 登录 admin/admin123 由完整迁移种子 |
 | `docker-compose.dev.yml` | 叠加于主文件 | dev 就绪：迁移 + admin + YAML |
 | `.env` / 环境变量 | 数据库密码、JWT secret 等 | 覆盖部署配置 |
 
@@ -47,8 +47,8 @@ docker-compose.dev.yml（覆盖）
 
 ## 安全提示
 
-- PostgreSQL 默认 `aiops/aiops`、Web 登录 `admin/admin123`（须 dev 覆盖/bootstrap）、dev JWT 占位值**只适用于本机联调**。
-- 生产部署：勿将 PostgreSQL / Redis 端口发布到公网或宿主机；JWT、DB 密码须通过 secrets / CI 注入；关闭 bootstrap；`database.auto_migrate=false`；先 `make migrate` 再启 API。
+- PostgreSQL 默认 `aiops/aiops`、Web 登录 `admin/admin123`、dev JWT 占位值**只适用于本机联调或受控初始化**。
+- 生产部署：勿将 PostgreSQL / Redis 端口发布到公网或宿主机；JWT、DB 密码须通过 secrets / CI 注入；关闭 bootstrap；`database.auto_migrate=false`；先 `make migrate` 再启 API，并在发布后立即改密或禁用默认账号。
 
 ## 生产前端接入（CORS + VITE_API_BASE）
 

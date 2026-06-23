@@ -24,6 +24,21 @@
 - 任务模板、脚本库 UI。
 - AI 会话来源自动建单（接口预留 `source_type=ai_conversation`）。
 
+## 1.1 P1+ 执行介体与执行代理演进
+
+当平台从“同步模拟执行”演进到真实诊断和处置时，Execution 模块将增加执行介体与执行代理能力。该能力用于支持 AI 分析后生成建议，运维人员确认后，在指定跳板机、诊断 VM、目标机器、Kubernetes Pod 或云厂商受控执行通道上执行命令或脚本。
+
+关键约束：
+
+- AI 只能生成执行计划和参数，不能直接执行命令。
+- 前端不能直接 SSH、K8s exec、云 API 写操作或数据库写操作。
+- 任意真实执行都必须创建 `exec_task`，进入 Execution 状态机。
+- 中高风险动作仍必须 `pending_confirm -> CONFIRM -> pending_execute -> running`。
+- 执行介体必须注册、授权、健康检查、能力匹配和审计。
+- 命令必须匹配平台预置 Command Spec，并通过参数 schema 校验；禁止 AI 或前端提交任意自由 shell 字符串直接执行。
+
+详细契约见 `ops/execution-agent-contract.md`。
+
 ## 2. 统一响应格式
 
 与平台其它接口一致，成功时 `code` 为 `"OK"`。分页接口返回 `PageData<T>`（`items` / `total` / `page` / `page_size`）。
@@ -76,6 +91,7 @@ stateDiagram-v2
 | `alert` | 告警详情发起 |
 | `manual` | 手动创建 |
 | `ai_conversation` | AI 会话（预留） |
+| `inspection` | 巡检建议或观测智能体发现（P1+ 预留） |
 
 ### 4.3 操作类型
 
@@ -85,6 +101,8 @@ stateDiagram-v2
 | `scale` | 扩缩容 | medium |
 | `script` | 脚本执行 | low |
 | `runbook` | 预案执行 | low |
+| `command` | 受控命令执行（P1+，需 Command Spec） | medium |
+| `diagnose` | 只读诊断动作（P1+） | low |
 | `custom` | 自定义 | medium |
 
 ### 4.4 风险等级

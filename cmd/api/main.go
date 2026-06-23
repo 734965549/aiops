@@ -50,6 +50,24 @@ import (
 	identityoauthstate "github.com/734965549/aiops/internal/identity/infrastructure/oauthstate"
 	identitypg "github.com/734965549/aiops/internal/identity/infrastructure/persistence"
 	identityhttp "github.com/734965549/aiops/internal/identity/interfaces/http"
+	inspectionapp "github.com/734965549/aiops/internal/inspection/application"
+	inspectionaudit "github.com/734965549/aiops/internal/inspection/infrastructure/audit"
+	inspectionexec "github.com/734965549/aiops/internal/inspection/infrastructure/execution"
+	inspectionobs "github.com/734965549/aiops/internal/inspection/infrastructure/observability"
+	inspectionpg "github.com/734965549/aiops/internal/inspection/infrastructure/persistence"
+	inspectionhttp "github.com/734965549/aiops/internal/inspection/interfaces/http"
+	integapp "github.com/734965549/aiops/internal/integration/application"
+	integaudit "github.com/734965549/aiops/internal/integration/infrastructure/audit"
+	integcred "github.com/734965549/aiops/internal/integration/infrastructure/credential"
+	integpg "github.com/734965549/aiops/internal/integration/infrastructure/persistence"
+	integprovider "github.com/734965549/aiops/internal/integration/infrastructure/provider"
+	integhttp "github.com/734965549/aiops/internal/integration/interfaces/http"
+	obsapp "github.com/734965549/aiops/internal/observability/application"
+	obsaudit "github.com/734965549/aiops/internal/observability/infrastructure/audit"
+	obsinteg "github.com/734965549/aiops/internal/observability/infrastructure/integration"
+	obspg "github.com/734965549/aiops/internal/observability/infrastructure/persistence"
+	obsprovider "github.com/734965549/aiops/internal/observability/infrastructure/provider"
+	obshttp "github.com/734965549/aiops/internal/observability/interfaces/http"
 	rbapp "github.com/734965549/aiops/internal/runbook/application"
 	rbalert "github.com/734965549/aiops/internal/runbook/infrastructure/alert"
 	rbaudit "github.com/734965549/aiops/internal/runbook/infrastructure/audit"
@@ -61,7 +79,6 @@ import (
 	"github.com/734965549/aiops/pkg/auth"
 	"github.com/734965549/aiops/pkg/config"
 	"github.com/734965549/aiops/pkg/logger"
-	"go.uber.org/zap"
 )
 
 func main() {
@@ -84,9 +101,9 @@ func main() {
 	startedAt := time.Now()
 
 	logger.L().Info("aiops-api starting",
-		zap.String("version", version.Get().Version),
-		zap.String("commit", version.Get().Commit),
-		zap.String("build_at", version.Get().BuildAt),
+		logger.String("version", version.Get().Version),
+		logger.String("commit", version.Get().Commit),
+		logger.String("build_at", version.Get().BuildAt),
 	)
 
 	// ---- 装配 JWT / Authenticator ----
@@ -97,7 +114,7 @@ func main() {
 		RefreshTTL: app.Cfg.Auth.RefreshTTL(),
 	})
 	if err != nil {
-		logger.L().Fatal("init jwt manager failed", zap.Error(err))
+		logger.L().Fatal("init jwt manager failed", logger.Error(err))
 	}
 	authenticator := auth.NewJWTAuthenticator(jwtMgr)
 
@@ -119,7 +136,7 @@ func main() {
 	}
 	identityProviders, err := identityidp.BuildRegistryFromConfig(app.Cfg.App.Env, app.Cfg.Identity.Providers)
 	if err != nil {
-		logger.L().Fatal("build identity providers failed", zap.Error(err))
+		logger.L().Fatal("build identity providers failed", logger.Error(err))
 	}
 	var ldapBrowseStore identityldapsession.Store = identityldapsession.NewMemoryStore()
 	var oauthStateStore identityoauthstate.Store = identityoauthstate.NewMemoryStore()
@@ -138,7 +155,7 @@ func main() {
 	}, app.Redis)
 	loginIPAllowlist, err := auth.NewIPAllowlist(app.Cfg.Auth.LoginIPAllowlist)
 	if err != nil {
-		logger.L().Fatal("init login ip allowlist failed", zap.Error(err))
+		logger.L().Fatal("init login ip allowlist failed", logger.Error(err))
 	}
 	accessSvc := identityapp.NewAccessControlService(accessRepo, userRepo, nil)
 	authorizationSvc := identityapp.NewAuthorizationService(accessRepo)
@@ -149,10 +166,10 @@ func main() {
 		app.Cfg.Auth.BootstrapPassword,
 		app.Cfg.Auth.BootstrapDisplayName,
 	); err != nil {
-		logger.L().Fatal("ensure bootstrap user failed", zap.Error(err))
+		logger.L().Fatal("ensure bootstrap user failed", logger.Error(err))
 	}
 	if err := accessSvc.EnsureBootstrapUserRoleByUsername(bootCtx, userRepo, app.Cfg.Auth.BootstrapUsername, "admin"); err != nil {
-		logger.L().Fatal("ensure bootstrap admin role failed", zap.Error(err))
+		logger.L().Fatal("ensure bootstrap admin role failed", logger.Error(err))
 	}
 
 	// ---- 装配 AI 工具网关 ----
@@ -166,7 +183,7 @@ func main() {
 	providerRegistry.RegisterExecutor(toolgateway.NewInternalServiceExecutor(toolgateway.ProviderTypeC, "/api/tool/invoke"))
 
 	if err := seedProvidersFromConfig(providerRegistry, app.Cfg.AI.Providers); err != nil {
-		logger.L().Fatal("seed ai providers from config failed", zap.Error(err))
+		logger.L().Fatal("seed ai providers from config failed", logger.Error(err))
 	}
 
 	aiGateway := toolgateway.NewGateway(authorizationSvc, providerRegistry)
@@ -228,6 +245,11 @@ func main() {
 	// ---- 装配 Execution 限界上下文（告警处置执行任务）----
 	execTaskRepo := execpg.NewTaskRepository(app.DB)
 	execStepRepo := execpg.NewStepRepository(app.DB)
+	execMediumRepo := execpg.NewMediumRepository(app.DB)
+	execCommandSpecRepo := execpg.NewCommandSpecRepository(app.DB)
+	execAgentRepo := execpg.NewAgentRepository(app.DB)
+	execLeaseRepo := execpg.NewLeaseRepository(app.DB)
+	execLogRepo := execpg.NewLogStreamRepository(app.DB)
 	execAlertAdapter := execalert.NewAdapter(alertRepo, alertSvc)
 	execAuditRecorder := execaudit.NewRecorder(auditSvc)
 
@@ -240,8 +262,13 @@ func main() {
 	rbHandler := rbhttp.NewHandler(rbSvc)
 	rbExecutionAdapter := rbexec.NewAdapter(rbSvc)
 
-	execSvc := execapp.NewTaskService(execTaskRepo, execStepRepo, execTaskRepo, execAlertAdapter, execAlertAdapter, execAuditRecorder, rbExecutionAdapter)
-	execHandler := exechttp.NewHandler(execSvc)
+	execSvc := execapp.NewTaskService(execTaskRepo, execStepRepo, execTaskRepo, execAlertAdapter, execAlertAdapter, execAuditRecorder, rbExecutionAdapter, execMediumRepo, execCommandSpecRepo)
+	execMediumSvc := execapp.NewMediumService(execMediumRepo, execAuditRecorder)
+	execCommandSpecSvc := execapp.NewCommandSpecService(execCommandSpecRepo)
+	execAgentSvc := execapp.NewAgentService(execAgentRepo, execMediumRepo, execAuditRecorder)
+	execDispatchSvc := execapp.NewDispatchService(execTaskRepo, execStepRepo, execLeaseRepo, execLogRepo, execCommandSpecRepo, execMediumRepo, execAuditRecorder, app.Cfg.Execution.LeaseTTLSecondsOrDefault())
+	execHandler := exechttp.NewHandler(execSvc, execMediumSvc, execCommandSpecSvc, execDispatchSvc)
+	execAgentHandler := exechttp.NewAgentHandler(execAgentSvc, execDispatchSvc, app.Cfg.Execution.AgentRegisterTokenOrDefault(app.Cfg.App.Env))
 
 	dashboardStats := &dashinfra.RepoStatsReader{
 		Alerts: alertRepo, Tasks: execTaskRepo, Apps: assetAppRepo, Resources: assetResRepo, Templates: rbTemplateRepo,
@@ -249,15 +276,64 @@ func main() {
 	dashboardSvc := dashapp.NewSummaryService(dashboardStats)
 	dashboardHandler := dashhttp.NewHandler(dashboardSvc)
 
+	// ---- 装配 Integration 限界上下文（云账号/观测平台接入）----
+	integAccountRepo := integpg.NewAccountRepository(app.DB)
+	integCredentialRepo := integpg.NewCredentialRepository(app.DB)
+	integCapabilityRepo := integpg.NewCapabilityRepository(app.DB)
+	integCheckRepo := integpg.NewCheckResultRepository(app.DB)
+	integVault, err := integcred.NewVault(
+		app.Cfg.Integration.CredentialEncryptionKey,
+		app.Cfg.Integration.CredentialEncryptionKeyVersion,
+	)
+	if err != nil {
+		logger.L().Fatal("init integration credential vault failed", logger.Error(err))
+	}
+	integUOW := integpg.NewUnitOfWork(app.DB)
+	integAuditRecorder := integaudit.NewRecorder(auditSvc)
+	integAccountSvc := integapp.NewAccountService(
+		integAccountRepo, integCredentialRepo, integCapabilityRepo, integCheckRepo,
+		integVault, integprovider.AllCheckers(), integAuditRecorder, integUOW,
+	)
+	integHandler := integhttp.NewHandler(integAccountSvc)
+
+	// ---- 装配 Observability 限界上下文（Provider Port + fake adapter）----
+	obsEvidenceRepo := obspg.NewEvidenceRepository(app.DB)
+	obsAccountAdapter := obsinteg.NewAccountAdapter(integAccountRepo, integCapabilityRepo)
+	obsAuditRecorder := obsaudit.NewRecorder(auditSvc)
+	obsQuerySvc := obsapp.NewQueryService(obsAccountAdapter, obsprovider.DefaultFakeRegistry(), obsEvidenceRepo, obsAuditRecorder)
+	obsHandler := obshttp.NewHandler(obsQuerySvc)
+
+	// ---- 装配 Inspection 限界上下文（巡检策略/运行/发现/建议 + 证据链分析）----
+	inspectionPolicyRepo := inspectionpg.NewPolicyRepository(app.DB)
+	inspectionRunRepo := inspectionpg.NewRunRepository(app.DB)
+	inspectionFindingRepo := inspectionpg.NewFindingRepository(app.DB)
+	inspectionRecRepo := inspectionpg.NewRecommendationRepository(app.DB)
+	inspectionArtifactUOW := inspectionpg.NewArtifactUnitOfWork(app.DB)
+	inspectionAuditRecorder := inspectionaudit.NewRecorder(auditSvc)
+	inspectionObsAdapter := inspectionobs.NewQueryAdapter(obsQuerySvc)
+	inspectionAnalyzer := inspectionapp.NewEvidenceAnalyzer(inspectionObsAdapter)
+	inspectionPolicySvc := inspectionapp.NewPolicyService(inspectionPolicyRepo, inspectionAuditRecorder)
+	inspectionRunSvc := inspectionapp.NewRunService(
+		inspectionPolicyRepo, inspectionRunRepo, inspectionFindingRepo, inspectionRecRepo,
+		inspectionAnalyzer, inspectionAuditRecorder,
+	)
+	inspectionRunSvc.SetArtifactUnitOfWork(inspectionArtifactUOW)
+	inspectionExecAdapter := inspectionexec.NewAdapter(execSvc)
+	inspectionRecSvc := inspectionapp.NewRecommendationService(inspectionRecRepo, inspectionExecAdapter, inspectionAuditRecorder)
+	inspectionHandler := inspectionhttp.NewHandler(inspectionPolicySvc, inspectionRunSvc, inspectionRecSvc)
+
 	registrars := []server.RouteRegistrar{
 		identityhttp.NewRegistrar(identityHandler, authorizationSvc),
 		aihttp.NewRegistrar(aiHandler, authorizationSvc),
 		assethttp.NewRegistrar(assetHandler, authorizationSvc),
 		audithttp.NewRegistrar(auditHandler, authorizationSvc),
 		alerthttp.NewRegistrar(alertHandler, alertIngestHandler, authorizationSvc),
-		exechttp.NewRegistrar(execHandler, authorizationSvc),
+		exechttp.NewRegistrar(execHandler, execAgentHandler, authorizationSvc),
 		rbhttp.NewRegistrar(rbHandler, authorizationSvc),
 		dashhttp.NewRegistrar(dashboardHandler, authorizationSvc),
+		integhttp.NewRegistrar(integHandler, authorizationSvc),
+		obshttp.NewRegistrar(obsHandler, authorizationSvc),
+		inspectionhttp.NewRegistrar(inspectionHandler, authorizationSvc),
 	}
 
 	engine := server.NewEngine(server.Options{
@@ -281,10 +357,10 @@ func main() {
 
 	select {
 	case s := <-sigCh:
-		logger.L().Info("signal received, shutting down", zap.String("signal", s.String()))
+		logger.L().Info("signal received, shutting down", logger.String("signal", s.String()))
 	case err := <-errCh:
 		if err != nil {
-			logger.L().Error("http server exited with error", zap.Error(err))
+			logger.L().Error("http server exited with error", logger.Error(err))
 		}
 	}
 
@@ -295,7 +371,7 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.L().Error("server shutdown error", zap.Error(err))
+		logger.L().Error("server shutdown error", logger.Error(err))
 	}
 	logger.L().Info("aiops-api stopped")
 }

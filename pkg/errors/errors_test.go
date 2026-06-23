@@ -26,3 +26,20 @@ func TestFromError_SanitizesPlainError(t *testing.T) {
 		t.Fatalf("expected cause preserved")
 	}
 }
+
+func TestCodeAndMessageOf(t *testing.T) {
+	if got := CodeOf(nil); got != CodeOK {
+		t.Fatalf("nil code = %s, want OK", got)
+	}
+	if got := MessageOf(nil); got != "ok" {
+		t.Fatalf("nil message = %q, want ok", got)
+	}
+
+	raw := errors.New("redis: connection refused")
+	if got := CodeOf(raw); got != CodeInternal {
+		t.Fatalf("plain code = %s, want INTERNAL", got)
+	}
+	if got := MessageOf(raw); got != InternalMessage {
+		t.Fatalf("plain message = %q, want sanitized", got)
+	}
+}

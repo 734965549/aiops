@@ -2,7 +2,7 @@
 #
 # 快速开始（无需 .env，推荐首次联调）：
 #   docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d
-#   # 自动迁移 + bootstrap 管理员 admin/admin123；JWT 使用内置 dev 占位值
+#   # 自动迁移 + 默认管理员 admin/admin123；JWT 使用内置 dev 占位值
 #
 # 可选：cp .env.example .env 后自定义 JWT_SECRET=...，再仅启主文件：
 #   docker compose -f deployments/docker-compose.yml up -d
@@ -13,9 +13,9 @@
 #   docker compose -f deployments/docker-compose.yml down                  # 停止并保留数据卷
 #   docker compose -f deployments/docker-compose.yml down -v               # 停止并清理数据
 #
-# PostgreSQL 默认库账号 aiops/aiops；Web 登录 admin/admin123 须 dev 覆盖或 bootstrap（**仅限本机开发**）。
+# PostgreSQL 默认库账号 aiops/aiops；完整迁移会种子 Web 登录 admin/admin123（**仅限本机开发或受控初始化**）。
 # 默认不自动建表（AIOPS_DATABASE__AUTO_MIGRATE=false）；未迁移时 /readyz 为 not_ready，容器健康检查会等待。
-# 已迁移 0001 但未执行 0002：若 bootstrap 已配置，绑定 admin 角色失败会导致 API 启动失败；未开 bootstrap 时可能仍可登录但受保护 API 返回 403。见 ops/migration-contract.md。
+# 已迁移 0001/0002 但未执行 0016：默认 admin 用户或角色绑定可能缺失，登录或受保护 API 可能失败。见 ops/migration-contract.md。
 # 生产部署：勿将 postgres/redis 端口映射到宿主机，JWT/DB 密码须通过 secrets 注入（见 README）。
 
 x-aiops-env: &aiops-env

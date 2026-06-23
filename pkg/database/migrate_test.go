@@ -3,6 +3,7 @@ package database
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -81,6 +82,32 @@ func TestSplitSQLStatements_AllRepoMigrations(t *testing.T) {
 			if strings.TrimSpace(stmt) == "" {
 				t.Fatalf("%s: empty statement at index %d", e.Name(), i)
 			}
+		}
+	}
+}
+
+func TestMigrationSeedPermissionUUIDsAreUnique(t *testing.T) {
+	dir := filepath.Join("..", "..", "migrations")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Skipf("migrations dir not found: %v", err)
+	}
+	permissionUUID := regexp.MustCompile(`00000000-0000-0000-000[13]-[0-9]{12}`)
+	seen := map[string]string{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".up.sql") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		for _, id := range permissionUUID.FindAllString(string(content), -1) {
+			if prev, ok := seen[id]; ok {
+				t.Fatalf("permission seed UUID %s is reused in %s and %s", id, prev, e.Name())
+			}
+			seen[id] = e.Name()
 		}
 	}
 }

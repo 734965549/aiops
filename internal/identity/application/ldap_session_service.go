@@ -13,7 +13,6 @@ import (
 	apperr "github.com/734965549/aiops/pkg/errors"
 	"github.com/734965549/aiops/pkg/logger"
 	"github.com/google/uuid"
-	"go.uber.org/zap"
 )
 
 // LDAPConnectionInput 是管理员在前端填写的 LDAP/AD 连接参数。
@@ -234,7 +233,7 @@ func (s *AuthService) rollbackImportedExternalIdentity(ctx context.Context, user
 	if s.ac != nil && strings.TrimSpace(userID) != "" {
 		bindings, err := s.ac.ListUserRoleBindings(ctx, userID)
 		if err != nil {
-			logger.From(ctx).Warn("rollback imported roles list failed", zap.String("user_id", userID), zap.Error(err))
+			logger.From(ctx).Warn("rollback imported roles list failed", logger.String("user_id", userID), logger.Error(err))
 		} else {
 			for _, b := range bindings {
 				if b.Source != domain.UserRoleSourceLDAPImport {
@@ -242,9 +241,9 @@ func (s *AuthService) rollbackImportedExternalIdentity(ctx context.Context, user
 				}
 				if err := s.ac.UnbindUserRole(ctx, userID, b.RoleID); err != nil {
 					logger.From(ctx).Warn("rollback imported role unbind failed",
-						zap.String("user_id", userID),
-						zap.String("role_id", b.RoleID),
-						zap.Error(err),
+						logger.String("user_id", userID),
+						logger.String("role_id", b.RoleID),
+						logger.Error(err),
 					)
 				}
 			}
@@ -253,9 +252,9 @@ func (s *AuthService) rollbackImportedExternalIdentity(ctx context.Context, user
 	if s.externalIDs != nil {
 		if err := s.externalIDs.DeleteByProviderSubject(ctx, providerID, externalSubject); err != nil {
 			logger.From(ctx).Warn("rollback external identity failed",
-				zap.String("provider_id", providerID),
-				zap.String("external_subject", externalSubject),
-				zap.Error(err),
+				logger.String("provider_id", providerID),
+				logger.String("external_subject", externalSubject),
+				logger.Error(err),
 			)
 		}
 	}

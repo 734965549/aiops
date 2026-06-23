@@ -69,6 +69,33 @@
 
 任务 `dry_run=true` 时，支持 dry-run 的步骤按 dry-run 模拟；不支持的步骤 output 标记 `skipped_real_execution`。
 
+### 6.1 P1+ 真实执行代理扩展
+
+当 Execution 引入执行介体后，Runbook 步骤不直接保存自由命令，而是引用平台预置 Command Spec：
+
+```json
+{
+  "action_type": "command",
+  "command_spec_id": "cmd_linux_disk_usage",
+  "medium_selector": {
+    "medium_type": "jumpbox",
+    "environment": "prod",
+    "capabilities": ["linux.command.readonly"]
+  },
+  "parameters": {
+    "mount_point": "/"
+  }
+}
+```
+
+约束：
+
+- Runbook 模板只能引用已启用 Command Spec。
+- `parameters` 必须通过 Command Spec 的 schema 校验。
+- prod 环境的 `command` / `script` / `custom` 步骤至少为 medium 风险。
+- 执行介体可由模板建议，但最终必须在 Execution 确认页展示并由运维人员确认。
+- 真实执行细节见 `ops/execution-agent-contract.md`。
+
 ## 7. 审计动作
 
 `runbook_create` / `runbook_update` / `runbook_delete` / `runbook_recommend` / `create_from_runbook`（execution）/ `execution_create`（alert）。

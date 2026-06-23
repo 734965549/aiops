@@ -15,6 +15,12 @@ type Task struct {
 	Environment       string
 	RiskLevel         RiskLevel
 	Status            TaskStatus
+	ExecutionMode     ExecutionMode
+	MediumID          string
+	AgentID           string
+	DispatchStatus    DispatchStatus
+	LeaseID           string
+	CommandSpecID     string
 	Parameters        map[string]any
 	RollbackPlan      map[string]any
 	RunbookTemplateID string
@@ -41,6 +47,12 @@ type Step struct {
 	ActionType      string
 	Status          StepStatus
 	RunbookStepID   string
+	CommandSpecID   string
+	CommandTemplate string
+	Arguments       map[string]any
+	OutputRedaction map[string]any
+	WorkingDir      string
+	RequiresTTY     bool
 	Parameters      map[string]any
 	RiskLevel       RiskLevel
 	DryRun          bool

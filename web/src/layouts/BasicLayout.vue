@@ -73,7 +73,10 @@ import {
   IconCommand,
   IconBook,
   IconFile,
-  IconUserGroup
+  IconUserGroup,
+  IconCloud,
+  IconBarChart,
+  IconBulb
 } from '@arco-design/web-vue/es/icon'
 import { useAuthStore } from '@/stores/auth'
 import { fetchCurrentUser } from '@/api/system'
@@ -91,6 +94,9 @@ const menuItems: MenuItem[] = [
   { path: '/ai-assistant', title: 'AI 运维助手', icon: IconRobot },
   { path: '/alerts', title: '告警中心', icon: IconNotification },
   { path: '/assets', title: '资源与应用', icon: IconStorage },
+  { path: '/integrations', title: '云账号接入', icon: IconCloud },
+  { path: '/observability', title: '观测查询', icon: IconBarChart },
+  { path: '/inspections', title: '智能巡检', icon: IconBulb },
   { path: '/executions', title: '自动化执行', icon: IconCommand },
   { path: '/runbooks', title: 'Runbook 预案', icon: IconBook },
   { path: '/audits', title: '审计中心', icon: IconFile },

@@ -15,9 +15,13 @@
 | Dashboard 首页驾驶舱 | ✅ | `/dashboard` | API 抽检 | 告警/执行/资产/Runbook 聚合摘要 |
 | Audit 审计中心 | ✅ API | `/audits` | UI 查询/导出 | 关键操作审计写入、筛选、详情查看与 CSV 导出 |
 | AI 运维助手 | ✅ API | `/ai-assistant` | — | Provider 管理、告警分析、工具调用 |
+| Integration 接入账号 | ✅ | `/integrations` | 待补 E2E | 云账号/观测平台账号注册、凭据引用、连通性测试 |
+| Observability 统一观测 | ✅ | `/observability` | 待补 E2E | 指标、日志、链路、拓扑统一查询，第一版用 fake provider 跑通 |
+| Inspection 巡检中心 | ✅ | `/inspections` | 待补 E2E | 巡检策略、运行、Finding、Recommendation 同证据链 |
 
 **文档**：
 - [演示流程](docs/demo-flow.md) — 10 步完整闭环演示
+- [整体流程同调用关系（粤语版）](docs/AI运维平台整体流程与调用关系.md) — 将 P0 闭环、只读观测、巡检、执行介体串埋一张图
 - [上线检查清单](docs/release-checklist.md) — 发布前必查项
 - [验收清单](docs/acceptance-checklist.md) — 模块级验收明细
 - [Kubernetes 部署说明](deployments/kubernetes.md) — 外挂 PostgreSQL/Redis 的 K8s 部署参考
@@ -59,7 +63,10 @@ aiops/
 │   ├── execution/            # 执行任务编排与确认
 │   ├── dashboard/            # 首页聚合摘要
 │   ├── audit/                # 操作审计查询
-│   └── ai/                   # AI Provider、工具网关、告警分析
+│   ├── ai/                   # AI Provider、工具网关、告警分析
+│   ├── integration/          # 云账号/观测平台账号接入、凭据引用、能力探测
+│   ├── observability/        # 指标、日志、链路、拓扑统一只读查询
+│   └── inspection/           # 巡检策略、运行、发现同建议
 ├── pkg/                      # 跨模块共享库（可被 internal 与未来 cmd 复用）
 │   ├── config/               # YAML + 环境变量配置加载（viper）
 │   ├── logger/               # zap 日志，trace 注入
@@ -106,7 +113,7 @@ aiops/
 # 仅 PostgreSQL + Redis（本地 go run 联调常用）
 docker compose -f deployments/docker-compose.yml up -d postgres redis
 
-# 全栈：API 会启动，但默认不建表、无 bootstrap 账号 → /readyz 可能 not_ready
+# 全栈：API 会启动，但默认不建表 → /readyz 可能 not_ready
 docker compose -f deployments/docker-compose.yml up -d
 
 # 全栈 dev 就绪：推荐首次容器联调使用（AUTO_MIGRATE + admin 账号）
@@ -115,7 +122,7 @@ docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.d
 
 > **注意**：默认 Compose **不会**自动建表。PostgreSQL 未挂载 `docker-entrypoint-initdb.d`，且 `database.auto_migrate` 在代码默认值、`config.example.yaml`、`.env.example` 与主 `docker-compose.yml` 中均为 `false`；仅当显式设为 `true` 时 `bootstrap.Init` 才会执行迁移。全栈默认模式需先 `make migrate` 或叠加 `docker-compose.dev.yml`。
 
-> **安全**：Compose 主文件将 PostgreSQL（5432）、Redis（6379）映射到宿主机；PG 默认 `aiops/aiops`，Web 登录 `admin/admin123` 须叠加 `docker-compose.dev.yml` 或 bootstrap，**仅限本机开发**。生产环境勿发布 DB/Redis 端口，须 `redis.required=true`、通过 secrets 注入 JWT 与数据库密码，并关闭 bootstrap。
+> **安全**：Compose 主文件将 PostgreSQL（5432）、Redis（6379）映射到宿主机；PG 默认 `aiops/aiops`，完整迁移会种子 Web 登录 `admin/admin123`，**仅限本机开发或受控初始化**。生产环境勿发布 DB/Redis 端口，须 `redis.required=true`、通过 secrets 注入 JWT 与数据库密码，关闭 bootstrap，并在发布后立即改密或禁用默认账号。
 
 ### 2. 数据库迁移（必做）
 
@@ -131,7 +138,7 @@ make migrate-up
 go run ./cmd/migrate -config configs/config.yaml
 ```
 
-当前迁移版本（`0001` → `0015`，顺序不可打乱）：
+当前迁移文件（`0001` → `0022`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，唔好手工补空账本）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -146,6 +153,12 @@ go run ./cmd/migrate -config configs/config.yaml
 | `0013` | `0013_dashboard_permission.up.sql` | Dashboard 读权限 |
 | `0014` | `0014_init_asset_match_rule.up.sql` | 可配置告警匹配规则 |
 | `0015` | `0015_identity_access_control_management.up.sql` | 权限管理 P1：viewer 角色、用户角色绑定、角色权限、数据范围、AI 工具权限 |
+| `0016` | `0016_seed_default_admin_user.up.sql` | 受控初始化默认本地管理员 `admin/admin123`，并将 admin 角色绑定为当前权限全集 |
+| `0017` | `0017_repair_default_admin_superset.up.sql` | 修复已应用旧 `0016` 的环境，重新确保默认 admin 入口和权限全集 |
+| `0018` | `0018_init_integration.up.sql` | Integration：云账号/观测平台账号、凭据引用、能力声明、连通性结果 |
+| `0019` | `0019_init_observability.up.sql` | Observability：证据引用与 `app:observability:read` |
+| `0020` | `0020_init_inspection.up.sql` | Inspection：巡检策略、运行、Finding、Recommendation |
+| `0022` | `0022_init_execution_agent.up.sql` | Execution Agent：执行介体、代理、Command Spec、租约、日志流 |
 
 详见 `ops/migration-contract.md`。
 
@@ -183,9 +196,9 @@ go run ./cmd/api -config configs/config.yaml
 任意接口的响应均带 `X-Trace-Id`，并在标准 `context.Context` 中闭合，
 业务下层可通过 `middleware.TraceIDFromContext(ctx)` 取到完整链路 ID。
 
-> 开发联调默认管理员由 `auth.bootstrap_username` / `auth.bootstrap_password` 控制
-> （`configs/config.example.yaml` 已预填 `admin` / `admin123`，仅当库中不存在该用户时幂等创建）；
-> 生产环境必须留空 bootstrap 配置，由发布流程或运维 SQL 注入正式账号。
+> 完整迁移会通过 `0016_seed_default_admin_user` 种子默认管理员 `admin/admin123`，并把 `admin` 角色绑定到当前全部权限；
+> `auth.bootstrap_username` / `auth.bootstrap_password` 仅保留为 dev/test 兼容链路。
+> 生产环境必须留空 bootstrap 配置，并在发布后立即改密或禁用默认账号。
 
 ### 4. 启动前端
 
@@ -342,6 +355,7 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 - `docs/demo-flow.md` — 演示步骤与自动化验收
 - `docs/release-checklist.md` — 上线前检查清单
 - `docs/acceptance-checklist.md` — 模块验收明细
+- `docs/AI运维平台整体流程与调用关系.md` — 粤语版全链路图、DDD 调用关系同边界说明
 - `deployments/kubernetes.md` — Kubernetes 部署说明（外挂 PostgreSQL/Redis）
 - `docs/AI运维平台核心业务流程图.md`
 - `docs/AI运维平台信息架构.md`
@@ -357,3 +371,16 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 - `ops/runbook-contract.md`
 - `ops/ai-contract.md`
 - `web/src/api/README.md`
+
+## 云厂商只读接管与观测智能体演进
+
+当前 P0 版本已经完成“外部告警进入平台后”的闭环。下一阶段的目标是把华为云、其他云厂商和 Signoz 等可观测平台作为只读数据源接管进来，由平台统一同步资源、查询指标/日志/链路，并让观测智能体持续巡检、分析瓶颈、生成建议。
+
+该方向不是简单新增告警 Webhook，而是新增云账号接入、Provider Adapter、Observability 查询、Inspection 巡检、Agent 工具编排和 Notification 通知等能力。AI/Agent 仍只负责分析和建议，任何真实变更必须进入 Execution 模块并接受权限、风险、确认和审计约束。
+
+详细设计见：
+
+- `docs/cloud-observability-agent-roadmap.md`：DDD 上下文、阶段步骤、数据模型、工作流和验收策略。
+- `docs/AI运维平台整体流程与调用关系.md`：用粤语说明 P0、Integration、Observability、Inspection、Execution Agent 点样串埋，改代码前建议先睇。
+- `ops/cloud-observability-contract.md`：云账号接入、指标/日志/链路查询、巡检策略和建议到执行的 API 契约草案。
+- `ops/execution-agent-contract.md`：执行介体、执行代理、Command Spec、租约、日志回传和确认后执行的契约草案。

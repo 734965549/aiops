@@ -8,7 +8,6 @@ import (
 	identityapp "github.com/734965549/aiops/internal/identity/application"
 	apperr "github.com/734965549/aiops/pkg/errors"
 	"github.com/734965549/aiops/pkg/logger"
-	"go.uber.org/zap"
 )
 
 // ToolRequest 表示一次 AI 工具调用。
@@ -59,7 +58,7 @@ func (g *Gateway) Validate(ctx context.Context, req ToolRequest) (*ToolResponse,
 	}
 	res, err := g.authorizer.Authorize(ctx, identityapp.AuthorizationInput{UserID: strings.TrimSpace(req.UserID), Resource: strings.TrimSpace(req.Resource), Action: strings.TrimSpace(req.Action), ObjectOwner: strings.TrimSpace(req.OwnerID), ObjectDept: strings.TrimSpace(req.Dept), ObjectTeam: strings.TrimSpace(req.Team), ObjectRegion: strings.TrimSpace(req.Region), ObjectTags: req.Tags, ToolCode: strings.TrimSpace(req.ToolCode), UserConfirmed: req.Confirmed})
 	if err != nil {
-		logger.From(ctx).Warn("tool gateway authorization failed", zap.Error(err))
+		logger.From(ctx).Warn("tool gateway authorization failed", logger.Error(err))
 		reason := "authorization failed"
 		if ae := apperr.FromError(err); ae != nil && strings.TrimSpace(ae.Message) != "" {
 			reason = ae.Message

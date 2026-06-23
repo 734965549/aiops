@@ -24,8 +24,14 @@ type stepModel struct {
 	RiskLevel      string     `gorm:"column:risk_level;type:varchar(16);not null;default:''"`
 	DryRun         bool       `gorm:"column:dry_run;not null;default:false"`
 	RollbackPlan   []byte     `gorm:"column:rollback_plan;type:jsonb;not null;default:'{}'::jsonb"`
-	TimeoutSeconds int        `gorm:"column:timeout_seconds;not null;default:0"`
-	Output         []byte     `gorm:"column:output;type:jsonb;not null;default:'{}'::jsonb"`
+	TimeoutSeconds  int        `gorm:"column:timeout_seconds;not null;default:0"`
+	CommandSpecID   string     `gorm:"column:command_spec_id;type:varchar(64);not null;default:''"`
+	CommandTemplate string     `gorm:"column:command_template;type:text;not null;default:''"`
+	Arguments       []byte     `gorm:"column:arguments;type:jsonb;not null;default:'{}'::jsonb"`
+	OutputRedaction []byte     `gorm:"column:output_redaction;type:jsonb;not null;default:'{}'::jsonb"`
+	WorkingDir      string     `gorm:"column:working_dir;type:varchar(256);not null;default:''"`
+	RequiresTTY     bool       `gorm:"column:requires_tty;not null;default:false"`
+	Output          []byte     `gorm:"column:output;type:jsonb;not null;default:'{}'::jsonb"`
 	ErrorMessage   string     `gorm:"column:error_message;type:text;not null;default:''"`
 	StartedAt      *time.Time `gorm:"column:started_at"`
 	FinishedAt     *time.Time `gorm:"column:finished_at"`
@@ -63,6 +69,14 @@ func (r *StepRepository) Create(ctx context.Context, step *domain.Step) error {
 	if err != nil {
 		return err
 	}
+	args, err := marshalAnyMap(step.Arguments)
+	if err != nil {
+		return err
+	}
+	redaction, err := marshalAnyMap(step.OutputRedaction)
+	if err != nil {
+		return err
+	}
 	m := stepModel{
 		StepID:         step.ID,
 		TaskID:         step.TaskID,
@@ -71,6 +85,12 @@ func (r *StepRepository) Create(ctx context.Context, step *domain.Step) error {
 		ActionType:     step.ActionType,
 		Status:         string(step.Status),
 		RunbookStepID:  step.RunbookStepID,
+		CommandSpecID:  step.CommandSpecID,
+		CommandTemplate: step.CommandTemplate,
+		Arguments:      args,
+		OutputRedaction: redaction,
+		WorkingDir:     step.WorkingDir,
+		RequiresTTY:    step.RequiresTTY,
 		Parameters:     params,
 		RiskLevel:      string(step.RiskLevel),
 		DryRun:         step.DryRun,
@@ -152,23 +172,29 @@ func (r *StepRepository) ensureParentTaskExists(ctx context.Context, taskID stri
 
 func toStepDomain(m *stepModel) domain.Step {
 	return domain.Step{
-		ID:             m.StepID,
-		TaskID:         m.TaskID,
-		StepOrder:      m.StepOrder,
-		Name:           m.Name,
-		ActionType:     m.ActionType,
-		Status:         domain.StepStatus(m.Status),
-		RunbookStepID:  m.RunbookStepID,
-		Parameters:     unmarshalAnyMap(m.Parameters),
-		RiskLevel:      domain.RiskLevel(m.RiskLevel),
-		DryRun:         m.DryRun,
-		RollbackPlan:   unmarshalAnyMap(m.RollbackPlan),
-		TimeoutSeconds: m.TimeoutSeconds,
-		Output:         unmarshalAnyMap(m.Output),
-		ErrorMessage:   m.ErrorMessage,
-		StartedAt:      m.StartedAt,
-		FinishedAt:     m.FinishedAt,
-		CreatedAt:      m.CreatedAt,
-		UpdatedAt:      m.UpdatedAt,
+		ID:              m.StepID,
+		TaskID:          m.TaskID,
+		StepOrder:       m.StepOrder,
+		Name:            m.Name,
+		ActionType:      m.ActionType,
+		Status:          domain.StepStatus(m.Status),
+		RunbookStepID:   m.RunbookStepID,
+		CommandSpecID:   m.CommandSpecID,
+		CommandTemplate: m.CommandTemplate,
+		Arguments:       unmarshalAnyMap(m.Arguments),
+		OutputRedaction: unmarshalAnyMap(m.OutputRedaction),
+		WorkingDir:      m.WorkingDir,
+		RequiresTTY:     m.RequiresTTY,
+		Parameters:      unmarshalAnyMap(m.Parameters),
+		RiskLevel:       domain.RiskLevel(m.RiskLevel),
+		DryRun:          m.DryRun,
+		RollbackPlan:    unmarshalAnyMap(m.RollbackPlan),
+		TimeoutSeconds:  m.TimeoutSeconds,
+		Output:          unmarshalAnyMap(m.Output),
+		ErrorMessage:    m.ErrorMessage,
+		StartedAt:       m.StartedAt,
+		FinishedAt:      m.FinishedAt,
+		CreatedAt:       m.CreatedAt,
+		UpdatedAt:       m.UpdatedAt,
 	}
 }

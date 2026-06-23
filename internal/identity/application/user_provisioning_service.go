@@ -9,7 +9,6 @@ import (
 	apperr "github.com/734965549/aiops/pkg/errors"
 	"github.com/734965549/aiops/pkg/logger"
 	"github.com/google/uuid"
-	"go.uber.org/zap"
 )
 
 // CreateLocalUserInput 是管理员创建本地账号（预留注册路径，不对外公开）的入参。
@@ -80,7 +79,7 @@ func (s *AuthService) CreateLocalUser(ctx context.Context, in CreateLocalUserInp
 		}
 		return nil, apperr.Wrap(err, apperr.CodeInternal, "create user failed")
 	}
-	logger.From(ctx).Info("local user provisioned by admin", zap.String("username", username), zap.String("user_id", u.ID))
+	logger.From(ctx).Info("local user provisioned by admin", logger.String("username", username), logger.String("user_id", u.ID))
 	return toCurrentUserDTO(u), nil
 }
 
@@ -187,10 +186,10 @@ func (s *AuthService) ProvisionExternalIdentity(ctx context.Context, in Provisio
 		return nil, apperr.Wrap(err, apperr.CodeInternal, "create external identity failed")
 	}
 	logger.From(ctx).Info("external identity provisioned by admin",
-		zap.String("provider_id", providerID),
-		zap.String("external_subject", externalSubject),
-		zap.String("user_id", u.ID),
-		zap.String("username", u.Username),
+		logger.String("provider_id", providerID),
+		logger.String("external_subject", externalSubject),
+		logger.String("user_id", u.ID),
+		logger.String("username", u.Username),
 	)
 	return toCurrentUserDTO(u), nil
 }
@@ -200,7 +199,7 @@ func (s *AuthService) rollbackCreatedUser(ctx context.Context, userID string) {
 		return
 	}
 	if err := s.users.DeleteByID(ctx, userID); err != nil {
-		logger.From(ctx).Warn("rollback provisioned user failed", zap.String("user_id", userID), zap.Error(err))
+		logger.From(ctx).Warn("rollback provisioned user failed", logger.String("user_id", userID), logger.Error(err))
 	}
 }
 

@@ -10,7 +10,6 @@ import (
 	apperr "github.com/734965549/aiops/pkg/errors"
 	"github.com/734965549/aiops/pkg/logger"
 	"github.com/google/uuid"
-	"go.uber.org/zap"
 )
 
 const confirmTextRequired = "CONFIRM"
@@ -40,6 +39,10 @@ type CreateTaskInput struct {
 	RiskLevel         string
 	RunbookTemplateID string
 	DryRun            bool
+	ExecutionMode     string
+	MediumID          string
+	CommandSpecID     string
+	Arguments         map[string]any
 }
 
 // ConfirmTaskInput 确认入参。
@@ -57,6 +60,8 @@ type TaskService struct {
 	timeline AlertTimelineWriter
 	audit    AuditRecorder
 	runbooks RunbookLoader
+	media    domain.MediumRepository
+	specs    domain.CommandSpecRepository
 	now      func() time.Time
 	simulate StepSimulator
 }
@@ -102,6 +107,8 @@ func NewTaskService(
 	timeline AlertTimelineWriter,
 	audit AuditRecorder,
 	runbooks RunbookLoader,
+	media domain.MediumRepository,
+	specs domain.CommandSpecRepository,
 ) *TaskService {
 	if audit == nil {
 		audit = NoopAuditRecorder{}
@@ -110,15 +117,9 @@ func NewTaskService(
 		runbooks = NoopRunbookLoader{}
 	}
 	return &TaskService{
-		tasks:    tasks,
-		steps:    steps,
-		creator:  creator,
-		alerts:   alerts,
-		timeline: timeline,
-		audit:    audit,
-		runbooks: runbooks,
-		now:      time.Now,
-		simulate: DefaultStepSimulator{},
+		tasks: tasks, steps: steps, creator: creator, alerts: alerts, timeline: timeline,
+		audit: audit, runbooks: runbooks, media: media, specs: specs,
+		now: time.Now, simulate: DefaultStepSimulator{},
 	}
 }
 
@@ -192,6 +193,17 @@ func (s *TaskService) Create(ctx context.Context, actor Actor, in CreateTaskInpu
 	taskDryRun := in.DryRun
 	now := s.now()
 	taskID := uuid.NewString()
+
+	execMode := domain.ExecutionMode(strings.ToLower(strings.TrimSpace(in.ExecutionMode)))
+	if execMode == "" {
+		execMode = domain.ModeSimulated
+	}
+	if !execMode.IsValid() {
+		return nil, apperr.New(apperr.CodeInvalidArgument, "invalid execution_mode")
+	}
+	if execMode == domain.ModeAgent {
+		return s.createAgentTask(ctx, actor, in, taskID, now, params, rollback, taskDryRun)
+	}
 
 	if runbookID != "" {
 		if s.runbooks == nil {
@@ -444,6 +456,9 @@ func (s *TaskService) Confirm(ctx context.Context, taskID string, actor Actor, i
 	task, err := s.tasks.UpdateStatusIf(ctx, strings.TrimSpace(taskID), domain.StatusPendingConfirm, domain.StatusPendingExecute, func(t *domain.Task) {
 		t.ConfirmedBy = strings.TrimSpace(actor.UserID)
 		t.ConfirmedAt = &now
+		if t.ExecutionMode == domain.ModeAgent {
+			t.DispatchStatus = domain.DispatchPending
+		}
 		t.UpdatedAt = now
 	})
 	if err != nil {
@@ -473,6 +488,13 @@ func (s *TaskService) Execute(ctx context.Context, taskID string, actor Actor) (
 		return nil, apperr.New(apperr.CodeUnavailable, "execution service is not enabled")
 	}
 	taskID = strings.TrimSpace(taskID)
+	task, loadErr := s.tasks.GetByID(ctx, taskID)
+	if loadErr != nil {
+		return nil, wrapExecError(loadErr, "load execution task failed")
+	}
+	if task.ExecutionMode == domain.ModeAgent {
+		return nil, apperr.New(apperr.CodeFailedPrecondition, "agent mode tasks must be executed by execution agent after confirm")
+	}
 	now := s.now()
 	task, err := s.tasks.UpdateStatusIf(ctx, taskID, domain.StatusPendingExecute, domain.StatusRunning, func(t *domain.Task) {
 		t.ExecutedBy = strings.TrimSpace(actor.UserID)
@@ -639,10 +661,10 @@ func (s *TaskService) recordExecutionTimeline(ctx context.Context, eventType, al
 	}
 	if err := record(); err != nil {
 		logger.From(ctx).Warn("execution timeline write failed",
-			zap.String("event_type", eventType),
-			zap.String("task_id", taskID),
-			zap.String("alert_id", alertID),
-			zap.Error(err),
+			logger.String("event_type", eventType),
+			logger.String("task_id", taskID),
+			logger.String("alert_id", alertID),
+			logger.Error(err),
 		)
 	}
 }
@@ -676,5 +698,118 @@ func wrapExecError(err error, op string) error {
 		apperr.Sentinel{Err: domain.ErrAlreadyExists, Code: apperr.CodeAlreadyExists},
 		apperr.Sentinel{Err: domain.ErrInvalidTransition, Code: apperr.CodeInvalidArgument},
 		apperr.Sentinel{Err: domain.ErrInvalidArgument, Code: apperr.CodeInvalidArgument},
+		apperr.Sentinel{Err: domain.ErrFailedPrecondition, Code: apperr.CodeFailedPrecondition},
 	)
+}
+
+func (s *TaskService) createAgentTask(
+	ctx context.Context,
+	actor Actor,
+	in CreateTaskInput,
+	taskID string,
+	now time.Time,
+	params map[string]any,
+	rollback map[string]any,
+	taskDryRun bool,
+) (*CreateTaskResult, error) {
+	if s.media == nil || s.specs == nil {
+		return nil, apperr.New(apperr.CodeUnavailable, "execution agent dependencies are not configured")
+	}
+	mediumID := strings.TrimSpace(in.MediumID)
+	commandSpecID := strings.TrimSpace(in.CommandSpecID)
+	arguments := cloneMap(in.Arguments)
+	if mediumID == "" {
+		if v, ok := params["medium_id"].(string); ok {
+			mediumID = strings.TrimSpace(v)
+		}
+	}
+	if commandSpecID == "" {
+		if v, ok := params["command_spec_id"].(string); ok {
+			commandSpecID = strings.TrimSpace(v)
+		}
+	}
+	if len(arguments) == 0 {
+		if raw, ok := params["arguments"].(map[string]any); ok {
+			arguments = cloneMap(raw)
+		}
+	}
+	if mediumID == "" || commandSpecID == "" {
+		return nil, apperr.New(apperr.CodeInvalidArgument, "medium_id and command_spec_id are required for agent execution")
+	}
+	medium, err := s.media.GetByID(ctx, mediumID)
+	if err != nil {
+		return nil, wrapExecError(err, "load execution medium failed")
+	}
+	spec, err := loadEnabledCommandSpec(ctx, s.specs, commandSpecID)
+	if err != nil {
+		return nil, wrapExecError(err, "load command spec failed")
+	}
+	if err := mediumSupportsSpec(medium, spec); err != nil {
+		return nil, wrapExecError(err, "medium does not support command spec")
+	}
+	if err := ValidateCommandArguments(spec.ArgumentSchema, arguments); err != nil {
+		return nil, apperr.New(apperr.CodeInvalidArgument, err.Error())
+	}
+	if _, err := BuildCommandArgv(spec.CommandTemplate, arguments); err != nil {
+		return nil, apperr.New(apperr.CodeInvalidArgument, err.Error())
+	}
+
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		name = spec.Name
+	}
+	environment := strings.TrimSpace(in.Environment)
+	if environment == "" {
+		environment = medium.Environment
+	}
+	targetType := strings.TrimSpace(in.TargetType)
+	targetID := strings.TrimSpace(in.TargetID)
+	targetName := strings.TrimSpace(in.TargetName)
+
+	risk, err := ResolveAgentTaskRisk(medium, spec, environment, in.RiskLevel)
+	if err != nil {
+		return nil, wrapExecError(err, "invalid risk_level")
+	}
+	status := domain.InitialStatusForRisk(risk)
+	dispatchStatus := domain.DispatchStatus("")
+	if status == domain.StatusPendingExecute {
+		dispatchStatus = domain.DispatchPending
+	}
+
+	task := &domain.Task{
+		ID: taskID, Name: name,
+		SourceType: domain.SourceType(strings.ToLower(strings.TrimSpace(in.SourceType))),
+		SourceID: strings.TrimSpace(in.SourceID),
+		OperationType: domain.OpCommand, TargetType: targetType, TargetID: targetID,
+		TargetName: targetName, Environment: environment, RiskLevel: risk, Status: status,
+		ExecutionMode: domain.ModeAgent, MediumID: mediumID, CommandSpecID: commandSpecID,
+		DispatchStatus: dispatchStatus,
+		Parameters: map[string]any{
+			"command_spec_id": commandSpecID,
+			"arguments":       arguments,
+			"medium_id":       mediumID,
+		},
+		RollbackPlan: rollback, DryRun: taskDryRun,
+		CreatedBy: strings.TrimSpace(actor.UserID), CreatedAt: now, UpdatedAt: now,
+	}
+	step := domain.Step{
+		ID: uuid.NewString(), TaskID: taskID, StepOrder: 1, Name: spec.Name,
+		ActionType: string(domain.OpCommand), Status: domain.StepPending,
+		CommandSpecID: commandSpecID, CommandTemplate: spec.CommandTemplate,
+		Arguments: cloneMap(arguments), OutputRedaction: cloneMap(spec.OutputRedaction),
+		TimeoutSeconds: spec.TimeoutSeconds, Parameters: cloneMap(arguments),
+		RiskLevel: risk, Output: map[string]any{}, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.creator.CreateWithSteps(ctx, task, []domain.Step{step}); err != nil {
+		return nil, wrapExecError(err, "create agent execution task failed")
+	}
+	s.recordAudit(ctx, taskID, actor.UserID, AuditCreate, map[string]any{
+		"execution_mode": "agent", "medium_id": mediumID, "command_spec_id": commandSpecID,
+		"risk_level": string(risk), "status": string(status),
+	})
+	result := &CreateTaskResult{TaskID: taskID, Status: string(status), RiskLevel: string(risk)}
+	if status == domain.StatusPendingConfirm {
+		result.ConfirmURL = fmt.Sprintf("/executions?task_id=%s", taskID)
+	}
+	return result, nil
 }

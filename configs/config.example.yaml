@@ -201,3 +201,11 @@ ai:
         X-Trace-Source: "aiops"
       enabled: false
       description: "内部服务工具提供方样例（仅占位）"
+
+integration:
+  credential_encryption_key: "dev-integration-credential-key-change-me"
+  credential_encryption_key_version: 1
+
+execution:
+  agent_register_token: "dev-agent-register-token"
+  lease_ttl_seconds: 300

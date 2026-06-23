@@ -12,7 +12,6 @@ import (
 	"github.com/734965549/aiops/pkg/config"
 	"github.com/734965549/aiops/pkg/logger"
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 )
 
 // Server 封装 http.Server，提供阻塞 Run 与优雅 Shutdown。
@@ -37,7 +36,7 @@ func New(cfg config.ServerConfig, engine *gin.Engine) *Server {
 
 // Run 阻塞监听端口，直到 Shutdown 或发生致命错误。
 func (s *Server) Run() error {
-	logger.L().Info("http server listening", zap.String("addr", s.httpSrv.Addr))
+	logger.L().Info("http server listening", logger.String("addr", s.httpSrv.Addr))
 	if err := s.httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("listen: %w", err)
 	}

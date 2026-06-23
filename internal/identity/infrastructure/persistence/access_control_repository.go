@@ -13,7 +13,6 @@ import (
 	"github.com/734965549/aiops/pkg/database"
 	"github.com/734965549/aiops/pkg/logger"
 	"github.com/redis/go-redis/v9"
-	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -772,8 +771,8 @@ func (r *AccessControlRepository) LoadUserGrantContext(ctx context.Context, user
 	if r.grantCache != nil {
 		if cached, ok, err := r.grantCache.get(ctx, userID); err != nil {
 			logger.From(ctx).Warn("user grant cache get failed, falling back to database",
-				zap.String("user_id", userID),
-				zap.Error(err),
+				logger.String("user_id", userID),
+				logger.Error(err),
 			)
 		} else if ok {
 			return cached, nil
@@ -790,8 +789,8 @@ func (r *AccessControlRepository) LoadUserGrantContext(ctx context.Context, user
 	if r.grantCache != nil {
 		if err := r.grantCache.set(ctx, userID, grant); err != nil {
 			logger.From(ctx).Warn("user grant cache set failed",
-				zap.String("user_id", userID),
-				zap.Error(err),
+				logger.String("user_id", userID),
+				logger.Error(err),
 			)
 		}
 	}
@@ -835,8 +834,8 @@ func (r *AccessControlRepository) invalidateUserGrantCache(ctx context.Context, 
 	}
 	if err := r.grantCache.delete(ctx, userID); err != nil {
 		logger.From(ctx).Warn("user grant cache invalidate failed",
-			zap.String("user_id", userID),
-			zap.Error(err),
+			logger.String("user_id", userID),
+			logger.Error(err),
 		)
 	}
 }
@@ -854,8 +853,8 @@ func (r *AccessControlRepository) invalidateRoleGrantCache(ctx context.Context, 
 		Where("role_id = ?", roleID).
 		Find(&rows).Error; err != nil {
 		logger.From(ctx).Warn("role grant cache users load failed",
-			zap.String("role_id", roleID),
-			zap.Error(err),
+			logger.String("role_id", roleID),
+			logger.Error(err),
 		)
 		return
 	}

@@ -11,7 +11,6 @@ import (
 	"github.com/734965549/aiops/internal/identity/infrastructure/oauthstate"
 	apperr "github.com/734965549/aiops/pkg/errors"
 	"github.com/734965549/aiops/pkg/logger"
-	"go.uber.org/zap"
 )
 
 // ExternalLoginInput 是企业身份源登录参数。
@@ -70,9 +69,9 @@ func (s *AuthService) LoginExternal(ctx context.Context, in ExternalLoginInput) 
 	extUser, err := provider.Authenticate(ctx, username, in.Password)
 	if err != nil {
 		logger.From(ctx).Warn("external login failed",
-			zap.String("provider_id", providerID),
-			zap.String("username", username),
-			zap.Error(err),
+			logger.String("provider_id", providerID),
+			logger.String("username", username),
+			logger.Error(err),
 		)
 		return nil, apperr.New(apperr.CodeUnauthenticated, "invalid username or password")
 	}
@@ -138,12 +137,12 @@ func (s *AuthService) LoginOAuthCallback(ctx context.Context, in OAuthCallbackIn
 		return nil, apperr.New(apperr.CodeInvalidArgument, "identity provider not found or not oauth-based")
 	}
 	if err := s.oauthStateStore.Consume(ctx, state, providerID, oauthStateBinding(in.ClientIP, in.UserAgent)); err != nil {
-		logger.From(ctx).Warn("oauth state validation failed", zap.String("provider_id", providerID), zap.Error(err))
+		logger.From(ctx).Warn("oauth state validation failed", logger.String("provider_id", providerID), logger.Error(err))
 		return nil, apperr.New(apperr.CodeUnauthenticated, "oauth authentication failed")
 	}
 	extUser, err := provider.ExchangeCode(ctx, code)
 	if err != nil {
-		logger.From(ctx).Warn("oauth callback failed", zap.String("provider_id", providerID), zap.Error(err))
+		logger.From(ctx).Warn("oauth callback failed", logger.String("provider_id", providerID), logger.Error(err))
 		return nil, apperr.New(apperr.CodeUnauthenticated, "oauth authentication failed")
 	}
 	u, err := s.provisionExternalUser(ctx, extUser, identityprovider.ProvisioningForOAuthProvider(provider))
@@ -199,8 +198,8 @@ func (s *AuthService) provisionExternalUser(
 
 	// 未预置绑定的外部身份一律拒绝登录，避免按用户名自动关联已有本地账号造成接管风险。
 	logger.From(ctx).Warn("external login rejected: identity not provisioned",
-		zap.String("provider_id", ext.ProviderID),
-		zap.String("external_subject", ext.ExternalSubject),
+		logger.String("provider_id", ext.ProviderID),
+		logger.String("external_subject", ext.ExternalSubject),
 	)
 	return nil, apperr.New(apperr.CodeUnauthenticated, "invalid username or password")
 }
@@ -223,8 +222,8 @@ func (s *AuthService) syncUserProfile(ctx context.Context, u *domain.User, ext *
 	}
 	if err := s.users.Update(ctx, u); err != nil {
 		logger.From(ctx).Warn("sync external user profile failed",
-			zap.String("user_id", u.ID),
-			zap.Error(err),
+			logger.String("user_id", u.ID),
+			logger.Error(err),
 		)
 	}
 }
@@ -254,7 +253,7 @@ func (s *AuthService) syncMappedRoles(
 			return apperr.Wrap(err, apperr.CodeInternal, "find mapped role failed")
 		}
 		if role == nil {
-			logger.From(ctx).Warn("mapped role not found", zap.String("role_code", code))
+			logger.From(ctx).Warn("mapped role not found", logger.String("role_code", code))
 			continue
 		}
 		desiredRoleIDs[role.ID] = struct{}{}

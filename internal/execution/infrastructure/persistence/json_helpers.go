@@ -19,3 +19,39 @@ func unmarshalAnyMap(data []byte) map[string]any {
 	}
 	return out
 }
+
+func marshalStringSlice(items []string) ([]byte, error) {
+	if items == nil {
+		return []byte("[]"), nil
+	}
+	return json.Marshal(items)
+}
+
+func unmarshalStringSlice(data []byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func marshalIntSlice(items []int) ([]byte, error) {
+	if items == nil {
+		return []byte("[]"), nil
+	}
+	return json.Marshal(items)
+}
+
+func unmarshalIntSlice(data []byte) []int {
+	if len(data) == 0 {
+		return nil
+	}
+	var out []int
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
+}

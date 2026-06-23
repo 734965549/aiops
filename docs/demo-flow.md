@@ -199,6 +199,26 @@ GET /api/runbooks/recommendations?alert_id={id}
 .\scripts\e2e-runbook.ps1
 ```
 
+### 8.5 P1+ 执行介体演示扩展
+
+后续演示“AI 分析后到指定介体上排查/处理”时，不把它讲成 AI 直接登录机器执行命令，而是讲成受控执行链路：
+
+| 步骤 | 操作 | 预期 |
+|------|------|------|
+| 8.5.1 | 管理员注册执行介体，例如 `prod-jumpbox-01` 或目标主机 Agent | 介体状态 `online`，能力、环境、网络区域、风险上限可见 |
+| 8.5.2 | AI 根据 CES/APM/AOM/Signoz 证据生成诊断建议 | 建议包含证据、目标资源、推荐 Command Spec 和参数 |
+| 8.5.3 | 运维人员从建议创建执行任务 | 任务状态 `pending_confirm`，展示 `medium_id`、`command_spec_id`、参数和风险 |
+| 8.5.4 | 输入 `CONFIRM` 后确认 | 状态进入 `pending_execute`，Agent 才能领取租约 |
+| 8.5.5 | Fake Agent 或真实 Agent 上报日志与结果 | 任务进入 `running -> success|failed`，日志脱敏，审计可追踪 |
+| 8.5.6 | 回到告警或巡检详情页 | 时间线出现执行创建、开始、完成事件，并能跳转到执行详情 |
+
+自动化脚本建议后续补充：
+
+```powershell
+.\scripts\e2e-execution-agent.ps1
+.\scripts\e2e-execution-agent-permission.ps1
+```
+
 ---
 
 ## 9. 查看 Dashboard 汇总
@@ -283,4 +303,4 @@ cd web && npm run build
 
 ---
 
-**文档版本**：与 migration `0015`（权限管理 P1）及 Dashboard 拆包同期维护。
+**文档版本**：与 migration `0017`（默认管理员权限全集修复）及 Dashboard 拆包同期维护。
