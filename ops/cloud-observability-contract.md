@@ -175,6 +175,17 @@ AI 工具权限建议：
 
 失败时 `message` 只能是脱敏摘要，不返回 AK/SK、Token、原始请求头或完整云端响应。
 
+**实现状态（华为 CES 指标里程碑）**：
+
+| provider / auth_type | 检查方式 | 说明 |
+| --- | --- | --- |
+| `huawei_cloud` + `auth_type=none` | 字段校验 | 无需凭据，直接返回默认能力 |
+| `huawei_cloud` + `auth_type=ak_sk` | **字段校验（准真实）** | 校验 `access_key`/`secret_key` 非空、`regions` 非空；**尚未**调用 IAM/CES 做在线鉴权 |
+| `huawei_cloud` + `auth_type=agency` | 字段校验 | 校验 `agency_name`/`domain_name` 非空、`regions` 非空 |
+| `signoz` / `prometheus` | 字段校验 | 校验 token 或 `base_url` 等非空 |
+
+真实云 API 连通性（如 CES `ShowMetricData` 探活）可在后续阶段替换 `HuaweiCloudChecker`，不影响 Observability HTTP 契约。
+
 ### 4.6 Provider 能力声明
 
 连通性检查与 `integration_capability` 表使用下列 capability 字符串；Observability QueryService 按能力校验后再路由 Provider Port。
@@ -194,7 +205,15 @@ AI 工具权限建议：
 
 ## 5. Observability API
 
-> **实现状态（阶段 1.5）**：下列查询 API 已通过 fake Provider Port 落地；infra 返回确定性样本数据，便于前端与巡检链路联调。真实华为云 Adapter 后续替换 `internal/observability/infrastructure/provider` 中的 fake 实现，不改 application Port 与 HTTP 契约。
+> **实现状态（阶段 3 指标里程碑 — 华为 CES 已落地）**：
+>
+> - **前端** `/integrations`：可创建 `huawei_cloud` + `auth_type=ak_sk` + `regions` + `project_id` 账号；凭据仅写入、不回显。
+> - **连通性** `/api/integrations/accounts/:account_id/check`：`huawei_cloud` + `ak_sk` 当前为**字段级校验**（见 §4.5），不调用云端 API。
+> - **指标查询** `/api/observability/metrics/query`：`huawei_cloud` + `auth_type=ak_sk` 走真实 CES `ShowMetricData`；返回平台标准 `MetricSeries`，生成 `evidence_id` 并写 `observability_query` 审计。
+> - `signoz` / `prometheus`：全部为 fake adapter（确定性样本），CI 无需外部密钥。
+> - `huawei_cloud` + `auth_type=none`：全部能力仍为 fake，便于无云账号联调。
+> - `huawei_cloud` + `auth_type=ak_sk|agency` 的 logs/traces/topology/assets/alerts：返回 `FAILED_PRECONDITION`（capability unsupported），**不**返回 fake 样本，避免误当作云端数据。
+> - 响应、日志、审计中不出现 AK/SK、`Authorization` header 或原始敏感云端报错；凭据在 API 进程装配时经 `CredentialProvider(integration_credential_ref + vault)` 解密，见 `cmd/api/main.go`。
 
 ### 5.0 Provider Port（Application 层）
 
@@ -211,7 +230,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 
 账号解析依赖 `IntegrationAccountPort`（adapter 包装 Integration 仓储），QueryService 编排：能力校验 → Provider Port → `obs_evidence_ref` → 审计。
 
-第一阶段 fake provider 覆盖 `huawei_cloud`、`signoz`、`prometheus`；CI 无需云密钥。
+第一阶段 fake provider 覆盖 `huawei_cloud`、`signoz`、`prometheus`；CI 无需云密钥。`huawei_cloud` 在 API 装配时已注入 `CredentialProvider`（integration credential repo + vault），`auth_type=ak_sk` 可走真实 CES 指标查询；`signoz`/`prometheus` 仍为 fake。
 
 查询服务在 application 层统一归一化默认值和上限后再调用 Provider Port。`ListResources` 与 `ListAlertRules` 的 `limit` 默认 100、最大 500；超过上限返回 `INVALID_ARGUMENT`，不得把超大 limit 透传给真实 provider。
 

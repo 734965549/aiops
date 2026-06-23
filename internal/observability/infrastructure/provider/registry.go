@@ -32,10 +32,15 @@ func NewRegistry(entries ...obsapp.ProviderEntry) *Registry {
 	return &Registry{providers: m}
 }
 
-// DefaultFakeRegistry 返回第一阶段 provider 注册表（厂商 Adapter 均位于 infrastructure/provider/*）。
+// DefaultFakeRegistry 返回第一阶段 provider 注册表（无真实云凭据，huawei ak_sk 不可用）。
 func DefaultFakeRegistry() *Registry {
+	return DefaultRegistry(nil)
+}
+
+// DefaultRegistry 注册 observability provider；传入 huawei 凭据解析器后 ak_sk 账号可走真实 CES。
+func DefaultRegistry(huaweiCredentials *huawei.CredentialProvider) *Registry {
 	return NewRegistry(
-		huawei.NewAdapter(),
+		huawei.NewAdapter(huaweiCredentials, huawei.NewCESClient()),
 		signoz.NewAdapter(),
 		prometheus.NewAdapter(),
 	)

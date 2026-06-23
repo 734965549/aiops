@@ -66,8 +66,15 @@ function Invoke-ApiExpectFail {
         return $json
     } catch {
         if ($_.Exception.Response) {
-            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-            $raw = $reader.ReadToEnd()
+            $raw = $_.ErrorDetails.Message
+            if ([string]::IsNullOrWhiteSpace($raw)) {
+                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                try {
+                    $raw = $reader.ReadToEnd()
+                } finally {
+                    $reader.Dispose()
+                }
+            }
             return ($raw | ConvertFrom-Json)
         }
         throw

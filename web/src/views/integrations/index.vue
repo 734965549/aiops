@@ -200,10 +200,13 @@
             placeholder="逗号分隔，如 cn-north-4"
           />
         </a-form-item>
-        <a-form-item label="Project ID">
+        <a-form-item
+          label="Project ID"
+          :required="needsHuaweiProjectID"
+        >
           <a-input
             v-model="form.project_id"
-            placeholder="华为云 project_id（可选）"
+            :placeholder="needsHuaweiProjectID ? '华为云 project_id（必填）' : '华为云 project_id（可选）'"
           />
         </a-form-item>
         <a-form-item
@@ -298,6 +301,12 @@ const credential = reactive({ access_key: '', secret_key: '', api_token: '', bas
 const needsBaseURL = computed(
   () => form.provider === 'prometheus' && form.auth_type !== 'none'
 )
+
+const needsHuaweiAKSK = computed(
+  () => form.provider === 'huawei_cloud' && form.auth_type === 'ak_sk'
+)
+
+const needsHuaweiProjectID = computed(() => needsHuaweiAKSK.value)
 
 const columns = [
   { title: '账号 ID', dataIndex: 'account_id', width: 280, ellipsis: true },
@@ -416,6 +425,20 @@ async function onSubmit() {
   if (needsBaseURL.value && !credential.base_url.trim()) {
     Message.warning('Prometheus 非 none 认证必须填写 Base URL')
     return
+  }
+  if (needsHuaweiAKSK.value) {
+    if (parseRegions(regionsText.value).length === 0) {
+      Message.warning('华为云 ak_sk 账号必须填写至少一个区域')
+      return
+    }
+    if (!form.project_id.trim()) {
+      Message.warning('华为云 ak_sk 账号必须填写 Project ID')
+      return
+    }
+    if (!credential.access_key.trim() || !credential.secret_key.trim()) {
+      Message.warning('华为云 ak_sk 账号必须填写 Access Key 与 Secret Key')
+      return
+    }
   }
   saving.value = true
   try {

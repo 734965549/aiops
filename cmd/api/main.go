@@ -67,6 +67,7 @@ import (
 	obsinteg "github.com/734965549/aiops/internal/observability/infrastructure/integration"
 	obspg "github.com/734965549/aiops/internal/observability/infrastructure/persistence"
 	obsprovider "github.com/734965549/aiops/internal/observability/infrastructure/provider"
+	huaweiobs "github.com/734965549/aiops/internal/observability/infrastructure/provider/huawei"
 	obshttp "github.com/734965549/aiops/internal/observability/interfaces/http"
 	rbapp "github.com/734965549/aiops/internal/runbook/application"
 	rbalert "github.com/734965549/aiops/internal/runbook/infrastructure/alert"
@@ -296,11 +297,19 @@ func main() {
 	)
 	integHandler := integhttp.NewHandler(integAccountSvc)
 
-	// ---- 装配 Observability 限界上下文（Provider Port + fake adapter）----
+	// ---- 装配 Observability 限界上下文 ----
+	// huawei_cloud：ak_sk 指标经 integration credential repo + vault 解密后走真实 CES；
+	// 其余 huawei 能力与 signoz/prometheus 仍为 fake，供无云密钥环境联调。
 	obsEvidenceRepo := obspg.NewEvidenceRepository(app.DB)
 	obsAccountAdapter := obsinteg.NewAccountAdapter(integAccountRepo, integCapabilityRepo)
 	obsAuditRecorder := obsaudit.NewRecorder(auditSvc)
-	obsQuerySvc := obsapp.NewQueryService(obsAccountAdapter, obsprovider.DefaultFakeRegistry(), obsEvidenceRepo, obsAuditRecorder)
+	huaweiObsCreds := huaweiobs.NewCredentialProvider(integCredentialRepo, integVault)
+	obsQuerySvc := obsapp.NewQueryService(
+		obsAccountAdapter,
+		obsprovider.DefaultRegistry(huaweiObsCreds),
+		obsEvidenceRepo,
+		obsAuditRecorder,
+	)
 	obsHandler := obshttp.NewHandler(obsQuerySvc)
 
 	// ---- 装配 Inspection 限界上下文（巡检策略/运行/发现/建议 + 证据链分析）----

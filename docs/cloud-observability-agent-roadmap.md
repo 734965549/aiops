@@ -407,10 +407,11 @@ Recommendation
 
 - `internal/observability` 上下文。
 - Application 层 Port：`MetricQueryPort`、`LogSearchPort`、`TraceQueryPort`、`TopologyQueryPort`、`AssetDiscoveryPort`、`AlertRuleQueryPort`。
-- `ObservabilityProvider` + `ProviderRegistry`；infra 第一阶段为 `FakeProvider`（`huawei_cloud` / `signoz` / `prometheus`）。
+- `ObservabilityProvider` + `ProviderRegistry`；infra 第一阶段为 `FakeProvider`（`signoz` / `prometheus` 全 fake；`huawei_cloud` 在 `auth_type=none` 时全 fake）。
 - HTTP API：`/api/observability/metrics/query`、`/logs/search`、`/traces/query`、`/topology`。
 - 权限 `app:observability:read`、审计 `observability_query`、证据表 `obs_evidence_ref`（迁移 `0019`）。
-- `IntegrationAccountPort` 适配器复用 Integration 账号与凭据解析，业务层不直接依赖 GORM/云 SDK。
+- `IntegrationAccountPort` 适配器复用 Integration 账号与凭据引用（`credential_ref_id`），业务层不直接依赖 GORM/云 SDK。
+- `cmd/api/main.go` 装配：`huaweiobs.NewCredentialProvider(integCredentialRepo, integVault)` + `obsprovider.DefaultRegistry(huaweiObsCreds)`。
 
 验收：
 
@@ -420,6 +421,16 @@ Recommendation
 - `AssetDiscoveryPort` / `AlertRuleQueryPort` 在 application 层可调用（供后续 Asset Sync 与 Agent 工具注册），HTTP 可在阶段 2 暴露。
 
 后续替换路径：`infrastructure/provider/huawei_ces` 等实现同一组 Port，注册到 `ProviderRegistry`，不影响 application 与 HTTP 契约。
+
+**阶段 3 指标里程碑（已落地）**：`huawei_cloud` + `auth_type=ak_sk` 的 `QueryMetrics` 已走真实 CES；前端可创建带 `project_id` 的华为账号；连通性检查为字段校验；同账号的 logs/traces/topology/assets/alerts 对真实凭据返回 unsupported，对 `auth_type=none` 仍为 fake。
+
+**本阶段验收（华为 CES 指标）**：
+
+- 前端 `/integrations` 可创建 `huawei_cloud` + `ak_sk` + `region` + `project_id` 账号。
+- `/api/integrations/accounts/:account_id/check` 对 `ak_sk` 做字段级校验（凭据非空、regions 非空）；真实 IAM/CES 探活留待后续。
+- `/api/observability/metrics/query` 用该账号查询 `SYS.ECS` / `cpu_util` 等 CES 指标时返回真实 CES 数据点（非 fake）；响应含标准 `MetricSeries`、`evidence_id`，写审计。
+- 响应/日志/审计不含 AK/SK、`Authorization`、原始敏感报错。
+- 单测覆盖：`metric_mapper`、`credential` 缺失/错误、`CESClient` mock、`QueryService` 经真实 `huawei.Adapter` 集成路径。
 
 ### 阶段 2：资源同步与拓扑
 
@@ -441,10 +452,12 @@ Recommendation
 交付：
 
 - `internal/observability` 上下文（**阶段 1.5 已落地 Port + fake provider + HTTP + 审计**）。
-- Huawei CES 指标查询（替换 fake `MetricQueryPort` 实现）。
-- Huawei AOM/LTS 日志查询（替换 fake `LogSearchPort`）。
-- Huawei APM 和 Signoz Trace 查询（替换 fake `TraceQueryPort`）。
+- Huawei CES 指标查询（**已落地真实 metrics**：`auth_type=ak_sk` + `CredentialProvider` → CES `ShowMetricData`；`auth_type=none` 仍为 fake）。
+- Huawei AOM/LTS 日志查询（**待替换** fake `LogSearchPort`）。
+- Huawei APM 和 Signoz Trace 查询（**待替换** fake `TraceQueryPort`）。
 - EvidenceRef 证据引用（`0019` 已建 `obs_evidence_ref` 表）。
+
+**当前边界**：真实凭据的 `huawei_cloud` 账号调用 logs/traces/topology/assets/alerts 时返回 `capability unsupported`，不会返回 fake 样本；`signoz`/`prometheus` 仍为全 fake。
 
 验收：
 

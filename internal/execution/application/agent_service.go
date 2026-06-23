@@ -158,7 +158,7 @@ func (s *AgentService) AuthenticateByToken(ctx context.Context, token string) (*
 	if err != nil {
 		return nil, apperr.New(apperr.CodeUnauthenticated, "invalid agent token")
 	}
-	if agent.Disabled || !agent.Status.CanLease() {
+	if agent.Disabled {
 		return nil, apperr.New(apperr.CodeFailedPrecondition, "execution agent is not available")
 	}
 	return agent, nil

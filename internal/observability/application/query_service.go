@@ -523,8 +523,13 @@ func wrapProviderError(err error, op string) error {
 	if err == nil {
 		return nil
 	}
+	var ae *apperr.Error
+	if errors.As(err, &ae) && ae.Code != apperr.CodeInternal {
+		return ae
+	}
 	mapped := apperr.MapSentinels(err, op,
 		apperr.Sentinel{Err: domain.ErrInvalidArgument, Code: apperr.CodeInvalidArgument},
+		apperr.Sentinel{Err: domain.ErrNotFound, Code: apperr.CodeNotFound},
 		apperr.Sentinel{Err: domain.ErrCapabilityUnsupported, Code: apperr.CodeFailedPrecondition},
 		apperr.Sentinel{Err: domain.ErrUnsupportedProvider, Code: apperr.CodeFailedPrecondition},
 		apperr.Sentinel{Err: domain.ErrProviderUnavailable, Code: apperr.CodeUnavailable},
