@@ -13,7 +13,7 @@
 //   - Audit：AlertService 经 AuditRecorder adapter 写入 audit_operation
 //   - AI：POST /api/alerts/:id/ai-analysis 写时间线；实际分析见 POST /api/ai/analyze-alert
 //
-// 第一阶段暂唔做：告警规则 UI、降噪编排、Incident 聚合、通知模板、云厂商主动拉取。
+// 第一阶段暂不实现：告警规则 UI、降噪编排、Incident 聚合、通知模板、云厂商主动拉取。
 //
 // HTTP 对外响应格式见 ops/alert-contract.md §2（httpx.OK / httpx.Fail，列表 PageData）。
 // 鉴权见 §3；Webhook X-Request-ID 幂等生产须走 RedisStore（多 Pod 共享），

@@ -37,7 +37,7 @@ Authorization: Bearer <access_token>
 
 授权失败返回 `PERMISSION_DENIED`（HTTP 403）。未登录或 token 无效返回 `UNAUTHENTICATED`（HTTP 401）。
 
-系统管理员角色 `admin` 嘅默认权限由迁移 `migrations/0002_seed_admin_permissions.up.sql`、`0004_user_provisioning_permissions.up.sql` 同 `0006_auth_audit.up.sql` 种子；默认管理员用户由 `migrations/0016_seed_default_admin_user.up.sql` 直接种子为 `admin/admin123` 并绑定 `admin` 角色。启动期 `EnsureBootstrapUser` 仍保留作 dev/test 兼容链路。
+系统管理员角色 `admin` 的默认权限由迁移 `migrations/0002_seed_admin_permissions.up.sql`、`0004_user_provisioning_permissions.up.sql` 和 `0006_auth_audit.up.sql` 种子；默认管理员用户由 `migrations/0016_seed_default_admin_user.up.sql` 直接种子为 `admin/admin123` 并绑定 `admin` 角色。启动期 `EnsureBootstrapUser` 仍保留作 dev/test 兼容链路。
 
 ## 3. 统一响应格式
 
@@ -247,7 +247,7 @@ Authorization: Bearer <access_token>
 - Path: `/api/identity/admin/auth-audits`
 - 鉴权: 是（Bearer + `app:identity.auth_audits:read`）
 
-查询本地登录、LDAP/AD 登录、OAuth 回调、refresh 同 logout 嘅成功/失败审计事件。
+查询本地登录、LDAP/AD 登录、OAuth 回调、refresh 和 logout 的成功/失败审计事件。
 
 #### 查询参数
 
@@ -340,7 +340,7 @@ Authorization: Bearer <access_token>
 | `iam_ai_tool_permission` | AI 工具权限 |
 | `iam_role_ai_tool_permission` | 角色 AI 工具权限关联 |
 | `iam_external_identity` | 外部身份与平台用户绑定（LDAP DN / OIDC sub 等） |
-| `iam_auth_audit` | 认证审计事件（登录、刷新、登出嘅成功/失败） |
+| `iam_auth_audit` | 认证审计事件（登录、刷新、登出的成功/失败） |
 
 运行时统一鉴权链路已接入：`AuthRequired` → 路由授权中间件 → `AuthorizationService`（RBAC + 数据范围 + AI 工具权限）。
 

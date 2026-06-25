@@ -6,13 +6,13 @@ import (
 	"strings"
 )
 
-// IPAllowlist 保存登录入口嘅 IP 白名单，支持单个 IP 同 CIDR 网段。
+// IPAllowlist 保存登录入口的 IP 白名单，支持单个 IP 和 CIDR 网段。
 type IPAllowlist struct {
 	ips  map[string]struct{}
 	nets []*net.IPNet
 }
 
-// NewIPAllowlist 解析配置入面嘅白名单；同一个配置项可以用逗号分隔多个地址。
+// NewIPAllowlist 解析配置中的白名单；同一个配置项可以用逗号分隔多个地址。
 func NewIPAllowlist(entries []string) (*IPAllowlist, error) {
 	list := &IPAllowlist{ips: make(map[string]struct{})}
 	for _, raw := range entries {
@@ -39,12 +39,12 @@ func NewIPAllowlist(entries []string) (*IPAllowlist, error) {
 	return list, nil
 }
 
-// Enabled 表示白名单係咪真正启用；空配置会视为未限制。
+// Enabled 表示白名单是否真正启用；空配置会视为未限制。
 func (l *IPAllowlist) Enabled() bool {
 	return l != nil && (len(l.ips) > 0 || len(l.nets) > 0)
 }
 
-// Allows 判断客户端 IP 係咪命中白名单；未启用时默认放行。
+// Allows 判断客户端 IP 是否命中白名单；未启用时默认放行。
 func (l *IPAllowlist) Allows(rawIP string) bool {
 	if l == nil || !l.Enabled() {
 		return true

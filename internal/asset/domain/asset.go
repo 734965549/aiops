@@ -3,7 +3,7 @@ package domain
 
 import "time"
 
-// Application 平台注册嘅应用/服务，供 Alert 接入时匹配 application_id。
+// Application 是平台注册的应用/服务，供 Alert 接入时匹配 application_id。
 type Application struct {
 	ID          string // 业务 ID（UUID）
 	Name        string // 应用名，如 payment-service
@@ -22,7 +22,7 @@ const (
 	SyncStatusStale  = "stale"
 )
 
-// Resource 平台注册嘅资源实例，供 Alert 接入时匹配 resource_id。
+// Resource 是平台注册的资源实例，供 Alert 接入时匹配 resource_id。
 type Resource struct {
 	ID            string // 业务 ID（UUID）
 	ApplicationID string // 所属应用 ID

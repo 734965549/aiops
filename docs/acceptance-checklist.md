@@ -293,9 +293,9 @@ go run ./cmd/migrate
 
 ---
 
-## 9. 云厂商只读接管与观测智能体验收规划（P1+）
+## 9. 云厂商只读接管与观测智能体验收（P1+）
 
-本节用于后续阶段验收，不影响当前 P0 闭环验收。验收前建议先睇 `docs/AI运维平台整体流程与调用关系.md`，确认账号接入、观测查询、巡检证据、建议转执行同审计之间嘅调用关系。
+本节用于 P1+ 收口验收，不影响 P0 闭环验收。验收前建议先读 `docs/AI运维平台整体流程与调用关系.md`，确认账号接入、观测查询、巡检证据、建议转执行与审计之间的调用关系。
 
 ### 9.1 Integration 接入账号
 
@@ -331,6 +331,8 @@ go run ./cmd/migrate
 .\scripts\e2e-integration.ps1
 .\scripts\e2e-observability.ps1
 .\scripts\e2e-inspection.ps1
+.\scripts\e2e-execution-agent.ps1
+.\scripts\e2e-execution-agent-permission.ps1
 ```
 
 > Notification 模块与 `scripts/e2e-notification.ps1` 暂未落地，不纳入当前 P1+ 自动化验收。

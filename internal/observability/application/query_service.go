@@ -31,7 +31,7 @@ const (
 
 // QueryService 统一编排观测查询：账号解析 -> 能力校验 -> Provider Port -> 证据引用 -> 审计。
 //
-// Service 只依赖 application Port，华为云、SigNoz、Prometheus 等差异留喺 infrastructure adapter。
+// Service 只依赖 application Port，华为云、SigNoz、Prometheus 等差异留在 infrastructure adapter。
 type QueryService struct {
 	accounts  IntegrationAccountPort
 	providers ProviderRegistry

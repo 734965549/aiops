@@ -12,7 +12,7 @@ const (
 	SeverityP1 AlertSeverity = "p1"
 	// SeverityP2 中等问题，局部影响或有劣化趋势。
 	SeverityP2 AlertSeverity = "p2"
-	// SeverityP3 低优先级问题，需要跟进但唔紧急。
+	// SeverityP3 低优先级问题，需要跟进但不紧急。
 	SeverityP3 AlertSeverity = "p3"
 	// SeverityInfo 信息类提醒。
 	SeverityInfo AlertSeverity = "info"

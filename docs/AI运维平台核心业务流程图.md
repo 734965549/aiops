@@ -915,7 +915,7 @@ flowchart TD
 
 详细设计见 `docs/cloud-observability-agent-roadmap.md` 和 `ops/cloud-observability-contract.md`。
 
-如果要睇 P0 告警闭环、Integration、Observability、Inspection、Recommendation、Execution Agent 点样串成一条完整调用链，睇 `docs/AI运维平台整体流程与调用关系.md`。该文档用粤语补充咗接口层、application Port、Provider Adapter、凭据边界、审计同权限之间嘅调用关系。
+如果要了解 P0 告警闭环、Integration、Observability、Inspection、Recommendation、Execution Agent 如何串成一条完整调用链，见 `docs/AI运维平台整体流程与调用关系.md`。该文档补充接口层、application Port、Provider Adapter、凭据边界、审计与权限之间的调用关系。
 
 ## 21. 流程总结
 

@@ -11,5 +11,5 @@ var ErrNotFound = errors.New("not found")
 // ErrAlreadyExists 唯一约束冲突（alert_id、dedup_key+lifecycle_seq 等）。
 var ErrAlreadyExists = errors.New("already exists")
 
-// ErrInvalidTransition 状态机不允许嘅流转（由 application 层映射为 INVALID_ARGUMENT）。
+// ErrInvalidTransition 表示状态机不允许的流转（由 application 层映射为 INVALID_ARGUMENT）。
 var ErrInvalidTransition = errors.New("invalid status transition")

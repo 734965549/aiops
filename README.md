@@ -15,13 +15,14 @@
 | Dashboard 首页驾驶舱 | ✅ | `/dashboard` | API 抽检 | 告警/执行/资产/Runbook 聚合摘要 |
 | Audit 审计中心 | ✅ API | `/audits` | UI 查询/导出 | 关键操作审计写入、筛选、详情查看与 CSV 导出 |
 | AI 运维助手 | ✅ API | `/ai-assistant` | — | Provider 管理、告警分析、工具调用 |
-| Integration 接入账号 | ✅ | `/integrations` | 待补 E2E | 云账号/观测平台账号注册、凭据引用、连通性测试 |
-| Observability 统一观测 | ✅ | `/observability` | 待补 E2E | 指标、日志、链路、拓扑统一查询，第一版用 fake provider 跑通 |
-| Inspection 巡检中心 | ✅ | `/inspections` | 待补 E2E | 巡检策略、运行、Finding、Recommendation 同证据链 |
+| Integration 接入账号 | ✅ | `/integrations` | `e2e-integration.ps1` | 云账号/观测平台账号注册、凭据引用、连通性测试 |
+| Observability 统一观测 | ✅ | `/observability` | `e2e-observability.ps1` | 指标、日志、链路、拓扑统一查询，fake provider 与 Huawei CES 指标路径 |
+| Inspection 巡检中心 | ✅ | `/inspections` | `e2e-inspection.ps1` | 巡检策略、运行、Finding、Recommendation 与证据链 |
 
 **文档**：
 - [演示流程](docs/demo-flow.md) — 10 步完整闭环演示
-- [整体流程同调用关系（粤语版）](docs/AI运维平台整体流程与调用关系.md) — 将 P0 闭环、只读观测、巡检、执行介体串埋一张图
+- [整体流程与调用关系](docs/AI运维平台整体流程与调用关系.md) — 将 P0 闭环、只读观测、巡检、执行介体串联到一张图
+- [调用关系图](docs/AI运维平台调用关系图.md) — 后端总图、P0 时序、AI 工具、观测巡检与 Agent 派发图
 - [上线检查清单](docs/release-checklist.md) — 发布前必查项
 - [验收清单](docs/acceptance-checklist.md) — 模块级验收明细
 - [Kubernetes 部署说明](deployments/kubernetes.md) — 外挂 PostgreSQL/Redis 的 K8s 部署参考
@@ -40,9 +41,15 @@ cd web && npm run build
 # 业务链路 E2E
 .\scripts\e2e-alert.ps1
 .\scripts\e2e-asset.ps1
+.\scripts\e2e-asset-sync.ps1
 .\scripts\e2e-runbook.ps1
 .\scripts\e2e-execution.ps1
 .\scripts\e2e-identity-access.ps1
+.\scripts\e2e-integration.ps1
+.\scripts\e2e-observability.ps1
+.\scripts\e2e-inspection.ps1
+.\scripts\e2e-execution-agent.ps1
+.\scripts\e2e-execution-agent-permission.ps1
 ```
 
 ## 目录结构
@@ -138,7 +145,7 @@ make migrate-up
 go run ./cmd/migrate -config configs/config.yaml
 ```
 
-当前迁移文件（`0001` → `0023`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，唔好手工补空账本）：
+当前迁移文件（`0001` → `0023`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -312,6 +319,8 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 - `ops/execution-contract.md`：执行任务创建、确认、执行与时间线回写。
 - `ops/runbook-contract.md`：处置预案模板、告警推荐、多步骤任务生成。
 - `ops/ai-contract.md`：AI 模块 provider 管理、工具调用与前端交互契约。
+- `ops/cloud-observability-contract.md`：云账号只读接管、统一观测查询、巡检策略和建议转执行契约。
+- `ops/execution-agent-contract.md`：执行介体、执行代理、Command Spec、租约和日志回传契约。
 
 ## 当前能力摘要
 
@@ -356,7 +365,8 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 - `docs/demo-flow.md` — 演示步骤与自动化验收
 - `docs/release-checklist.md` — 上线前检查清单
 - `docs/acceptance-checklist.md` — 模块验收明细
-- `docs/AI运维平台整体流程与调用关系.md` — 粤语版全链路图、DDD 调用关系同边界说明
+- `docs/AI运维平台整体流程与调用关系.md` — 全链路图、DDD 调用关系与边界说明
+- `docs/AI运维平台调用关系图.md` — 关键模块与时序调用图
 - `deployments/kubernetes.md` — Kubernetes 部署说明（外挂 PostgreSQL/Redis）
 - `docs/AI运维平台核心业务流程图.md`
 - `docs/AI运维平台信息架构.md`
@@ -382,6 +392,6 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 详细设计见：
 
 - `docs/cloud-observability-agent-roadmap.md`：DDD 上下文、阶段步骤、数据模型、工作流和验收策略。
-- `docs/AI运维平台整体流程与调用关系.md`：用粤语说明 P0、Integration、Observability、Inspection、Execution Agent 点样串埋，改代码前建议先睇。
+- `docs/AI运维平台整体流程与调用关系.md`：说明 P0、Integration、Observability、Inspection、Execution Agent 如何串联，改代码前建议先读。
 - `ops/cloud-observability-contract.md`：云账号接入、指标/日志/链路查询、巡检策略和建议到执行的 API 契约草案。
 - `ops/execution-agent-contract.md`：执行介体、执行代理、Command Spec、租约、日志回传和确认后执行的契约草案。

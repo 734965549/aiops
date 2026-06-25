@@ -19,7 +19,7 @@ func NewAuthAuditService(repo domain.AuthAuditRepository) *AuthAuditService {
 	return &AuthAuditService{repo: repo}
 }
 
-// Record 记录一次认证审计；如果审计仓储未配置，就静默略过，唔影响登录主流程。
+// Record 记录一次认证审计；如果审计仓储未配置，就静默略过，不影响登录主流程。
 func (s *AuthAuditService) Record(ctx context.Context, audit domain.AuthAudit) error {
 	if s == nil || s.repo == nil {
 		return nil
@@ -61,7 +61,7 @@ func (s *AuthAuditService) List(ctx context.Context, filter domain.AuthAuditFilt
 	return rows, nil
 }
 
-// Count 统计符合筛选条件嘅认证审计数量，用嚟配合分页。
+// Count 统计符合筛选条件的认证审计数量，用于配合分页。
 func (s *AuthAuditService) Count(ctx context.Context, filter domain.AuthAuditFilter) (int64, error) {
 	if s == nil || s.repo == nil {
 		return 0, apperr.New(apperr.CodeUnavailable, "auth audit is not enabled")

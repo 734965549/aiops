@@ -157,7 +157,7 @@ Authorization: Bearer <access_token>
 | `auth.jwt_secret` | HS256 对称密钥；非 `dev` 环境拒绝占位值与弱密钥 |
 | `auth.jwt_issuer` | JWT `iss` 声明 |
 | `auth.bootstrap_username` / `bootstrap_password` | 可选；dev/test 兼容链路。默认管理员也由迁移 `0016` 种子；生产须留空 |
-| `auth.login_ip_allowlist` | 可选；登录安全 IP 白名单，支持单 IP 同 CIDR，空数组表示唔限制 |
+| `auth.login_ip_allowlist` | 可选；登录安全 IP 白名单，支持单 IP 和 CIDR，空数组表示不限制 |
 
 - `dev` 环境允许 `please-change-me-in-production` 等占位值。
 - 非 `dev` 环境要求密钥长度 ≥ 32、具备足够熵与字符多样性。
@@ -203,7 +203,7 @@ Authorization: Bearer <access_token>
 | `GET /api/identity/login/providers` | 已启用的身份源列表 |
 | `GET/POST /api/identity/oauth/:provider_id/callback` | OAuth2/OIDC 授权码回调 |
 
-OAuth2/OIDC `state` 由服务端签发并存储；回调时会校验 `provider_id`、发起授权时嘅客户端 IP/User-Agent 指纹，并一次性消费。校验失败统一返回 `UNAUTHENTICATED`。
+OAuth2/OIDC `state` 由服务端签发并存储；回调时会校验 `provider_id`、发起授权时的客户端 IP/User-Agent 指纹，并一次性消费。校验失败统一返回 `UNAUTHENTICATED`。
 
 ### 8.2 预置绑定策略（重要）
 

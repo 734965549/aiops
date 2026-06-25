@@ -1,7 +1,7 @@
 # 云厂商只读接管与观测智能体契约草案
 
 > 本文是 P1+ 演进契约草案，用于指导后续实现。当前 P0 已落地链路仍以 `alert-contract.md`、`ai-contract.md`、`execution-contract.md` 为准。
-> 粤语版全项目调用关系见 `docs/AI运维平台整体流程与调用关系.md`，用嚟对齐 Integration、Observability、Inspection、Execution 之间嘅调用边界。
+> 全项目调用关系见 `docs/AI运维平台整体流程与调用关系.md`，用于对齐 Integration、Observability、Inspection、Execution 之间的调用边界。
 
 ## 1. 范围
 

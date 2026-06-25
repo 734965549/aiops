@@ -11,7 +11,7 @@ import (
 
 // AccountAdapter 实现 IntegrationAccountPort，俾 Observability 只读取账号摘要同能力。
 //
-// 呢个 adapter 唔解密凭据，只传 credential_ref_id，避免明文凭据跨上下文流动。
+// 这个 adapter 不解密凭据，只传 credential_ref_id，避免明文凭据跨上下文流动。
 type AccountAdapter struct {
 	accounts     integdomain.AccountRepository
 	capabilities integdomain.CapabilityRepository

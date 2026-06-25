@@ -124,7 +124,7 @@ type AuthConfig struct {
 	// GrantCacheTTLS 控制 LoadUserGrantContext 的 Redis 短期缓存秒数；0 表示禁用。
 	GrantCacheTTLS int                  `mapstructure:"grant_cache_ttl_s"`
 	LoginRateLimit LoginRateLimitConfig `mapstructure:"login_rate_limit"`
-	// LoginIPAllowlist 控制登录相关入口嘅来源 IP；空列表表示唔限制。
+	// LoginIPAllowlist 控制登录相关入口的来源 IP；空列表表示不限制。
 	LoginIPAllowlist []string `mapstructure:"login_ip_allowlist"`
 }
 
@@ -352,7 +352,7 @@ func normalizeCORSConfig(cfg CORSConfig) CORSConfig {
 	}
 }
 
-// normalizeStringList 展开逗号分隔嘅配置项，方便 YAML 同环境变量共用同一套解析。
+// normalizeStringList 展开逗号分隔的配置项，方便 YAML 和环境变量共用同一套解析。
 func normalizeStringList(items []string) []string {
 	expanded := make([]string, 0, len(items))
 	for _, item := range items {
@@ -451,7 +451,7 @@ func validateCORS(env string, cfg CORSConfig) error {
 	return nil
 }
 
-// validateIPAllowlist 校验登录 IP 白名单入面嘅单 IP 同 CIDR 网段。
+// validateIPAllowlist 校验登录 IP 白名单中的单 IP 和 CIDR 网段。
 func validateIPAllowlist(entries []string) error {
 	for _, entry := range entries {
 		entry = strings.TrimSpace(entry)

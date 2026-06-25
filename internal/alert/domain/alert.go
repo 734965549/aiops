@@ -2,7 +2,7 @@ package domain
 
 import "time"
 
-// Alert 是告警中心主记录，一条记录代表一轮可处理嘅告警生命周期。
+// Alert 是告警中心主记录，一条记录代表一轮可处理的告警生命周期。
 // 字段与 alert_alert 表及 API Alert 对象对齐；application_id/resource_id 为 AI/Execution 预留关联。
 type Alert struct {
 	ID              string            // 告警业务 ID（UUID）

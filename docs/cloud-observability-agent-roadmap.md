@@ -359,7 +359,7 @@ Recommendation
 
 详细 API 草案见 `ops/cloud-observability-contract.md`。
 
-粤语版全项目串联图见 `docs/AI运维平台整体流程与调用关系.md`。该文档将 P0 告警闭环、Integration 账号接入、Observability 查询、Inspection 巡检、Recommendation 转 Execution、Execution Agent 派发关系放喺同一张图，方便评审调用边界。
+全项目串联图见 `docs/AI运维平台整体流程与调用关系.md`。该文档将 P0 告警闭环、Integration 账号接入、Observability 查询、Inspection 巡检、Recommendation 转 Execution、Execution Agent 派发关系放在同一张图中，方便评审调用边界。
 
 | 页面 | 路由建议 | 说明 |
 | --- | --- | --- |

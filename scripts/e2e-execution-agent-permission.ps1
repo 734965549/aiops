@@ -20,8 +20,16 @@ function Invoke-ApiRaw {
         return ($resp.Content | ConvertFrom-Json)
     } catch {
         if ($_.Exception.Response) {
-            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-            return ($reader.ReadToEnd() | ConvertFrom-Json)
+            $raw = $_.ErrorDetails.Message
+            if ([string]::IsNullOrWhiteSpace($raw)) {
+                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                try {
+                    $raw = $reader.ReadToEnd()
+                } finally {
+                    $reader.Dispose()
+                }
+            }
+            return ($raw | ConvertFrom-Json)
         }
         throw
     }

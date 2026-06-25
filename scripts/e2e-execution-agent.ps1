@@ -8,10 +8,20 @@ param(
     [string]$ApiBase = $(if ($env:API_BASE) { $env:API_BASE } else { "http://127.0.0.1:8080" }),
     [string]$Username = "admin",
     [string]$Password = "admin123",
-    [string]$RegisterToken = $(if ($env:EXEC_AGENT_REGISTER_TOKEN) { $env:EXEC_AGENT_REGISTER_TOKEN } else { "dev-agent-register-token" })
+    [string]$RegisterToken = $(if ($env:EXEC_AGENT_REGISTER_TOKEN) { $env:EXEC_AGENT_REGISTER_TOKEN } else { "dev-agent-register-token" }),
+    [string]$RunId = $(if ($env:E2E_RUN_ID) { $env:E2E_RUN_ID } else { [Guid]::NewGuid().ToString("N").Substring(0, 8) }),
+    [string]$MediumId = "",
+    [string]$AgentId = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($MediumId)) {
+    $MediumId = "med-e2e-jumpbox-$RunId"
+}
+if ([string]::IsNullOrWhiteSpace($AgentId)) {
+    $AgentId = "agent-e2e-jumpbox-$RunId"
+}
 
 function Invoke-Api {
     param(
@@ -90,7 +100,7 @@ $auth = @{ Authorization = "Bearer $($login.access_token)" }
 
 Write-Host "==> create execution medium"
 $medium = Invoke-Api -Method POST -Path "/api/executions/media" -Headers $auth -Body @{
-    medium_id = "med-e2e-jumpbox-01"
+    medium_id = $MediumId
     name = "E2E Jumpbox"
     medium_type = "jumpbox"
     environment = "prod"
@@ -104,7 +114,7 @@ Write-Host ("    medium_id=" + $mediumId)
 
 Write-Host "==> register fake execution agent"
 $agent = Invoke-Api -Method POST -Path "/api/executions/agents/register" -Headers @{ "X-Register-Token" = $RegisterToken } -Body @{
-    agent_id = "agent-e2e-jumpbox-01"
+    agent_id = $AgentId
     medium_id = $mediumId
     version = "0.1.0-e2e"
     capabilities = @("linux.command.readonly")
