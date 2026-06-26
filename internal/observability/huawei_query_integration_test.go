@@ -62,8 +62,14 @@ func TestQueryService_QueryMetricsHuaweiAdapterIntegration(t *testing.T) {
 	if len(out.Series) != 1 || out.Series[0].Metric != "cpu_util" || out.Series[0].Points[0].Value != 33.3 {
 		t.Fatalf("unexpected series: %+v", out.Series)
 	}
-	if mockCES.last.region != "cn-north-4" || mockCES.last.query.Namespace != "SYS.ECS" {
-		t.Fatalf("adapter did not reach mock ces: %+v", mockCES.last)
+	if mockCES.last.region != "cn-north-4" {
+		t.Fatalf("adapter did not pass region to mock ces: %+v", mockCES.last)
+	}
+	if mockCES.last.query.Namespace != "SYS.ECS" || mockCES.last.query.MetricName != "cpu_util" || mockCES.last.query.Filter != "average" {
+		t.Fatalf("adapter did not pass metric parameters to mock ces: %+v", mockCES.last.query)
+	}
+	if len(mockCES.last.query.Dimensions) != 1 || mockCES.last.query.Dimensions[0].Name != "instance_id" || mockCES.last.query.Dimensions[0].Value != "ecs-1" {
+		t.Fatalf("adapter did not pass dimensions to mock ces: %+v", mockCES.last.query.Dimensions)
 	}
 }
 
