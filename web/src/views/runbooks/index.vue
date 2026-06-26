@@ -75,7 +75,7 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { Message } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
 import * as runbookApi from '@/api/runbook'
 import type { RunbookTemplate, RunbookTemplateDetail } from '@/api/runbook'
 

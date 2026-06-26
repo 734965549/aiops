@@ -326,7 +326,8 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { Message, type TableData } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
+import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import { ApiHttpError, getApiError } from '@/api/request'
 import * as identityAdminApi from '@/api/identity-admin'
 import type {

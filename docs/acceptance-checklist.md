@@ -90,6 +90,10 @@
 | 2.4.4 | stale 标记 | 二次同步且云端清单变化 | 未出现资源标记 `sync_status=stale`，不物理删除 |
 | 2.4.5 | 前端展示 | `/assets` 资源列表 | 来源、云资源 ID、region、同步状态可见 |
 | 2.4.6 | P0 不受影响 | 同步失败或禁用账号 | 告警 ingest / 匹配 / 执行闭环仍可跑 |
+| 2.4.7 | CES 全量口径 | `huawei_cloud` + `auth_type=ak_sk` + CES 只读权限 | 平台 `cloud_sync` active 资源数与 CES 控制台“全部资源”数量一致，或批次摘要能解释差异 |
+| 2.4.8 | CES 类型覆盖 | CES 中存在 EVS/VPC/OBS/DCS/DMS 等非 ECS 资源 | 对应资源进入 `asset_resource`，`cloud_resource_type` 与 namespace 映射正确 |
+| 2.4.9 | hybrid 增强 | `sync_mode=hybrid` 且授予部分云服务只读权限 | CES 基础资源数不下降，已授权类型补充 IP/VPC/规格/磁盘等详情；增强失败仅记录摘要 |
+| 2.4.10 | native 兼容 | `sync_mode=native` | 沿用旧 ECS/CCE/RDS/ELB 同步路径，但页面和批次摘要不承诺与 CES 总览数量一致 |
 
 ### 2.3 可配置匹配规则（migration 0014）
 

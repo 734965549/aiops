@@ -49,7 +49,13 @@
                   {{ record.environment || '—' }}
                 </template>
                 <template #namespace="{ record }">
-                  {{ record.namespace || '—' }}
+                  <a-tooltip
+                    v-if="record.namespace"
+                    :content="record.namespace"
+                  >
+                    <span class="assets-text-ellipsis">{{ record.namespace }}</span>
+                  </a-tooltip>
+                  <span v-else>—</span>
                 </template>
                 <template #actions="{ record }">
                   <a-space @click.stop>
@@ -136,10 +142,22 @@
                   </a-tag>
                 </template>
                 <template #cloud_resource_id="{ record }">
-                  {{ (record as Resource).cloud_resource_id || '—' }}
+                  <a-tooltip
+                    v-if="(record as Resource).cloud_resource_id"
+                    :content="(record as Resource).cloud_resource_id"
+                  >
+                    <span class="assets-text-ellipsis">{{ (record as Resource).cloud_resource_id }}</span>
+                  </a-tooltip>
+                  <span v-else>—</span>
                 </template>
                 <template #region="{ record }">
-                  {{ (record as Resource).region || '—' }}
+                  <a-tooltip
+                    v-if="(record as Resource).region"
+                    :content="(record as Resource).region"
+                  >
+                    <span class="assets-text-ellipsis">{{ (record as Resource).region }}</span>
+                  </a-tooltip>
+                  <span v-else>—</span>
                 </template>
                 <template #sync_status="{ record }">
                   <a-tag
@@ -547,8 +565,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Message } from '@arco-design/web-vue'
-import type { TableData, TableInstance } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
+import type { TableInstance } from '@arco-design/web-vue/es/table'
+import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import * as assetApi from '@/api/asset'
 import type { Application, MatchRule, Resource } from '@/api/asset'
 
@@ -620,47 +639,47 @@ const resourceForm = reactive({
 })
 
 const appColumns: TableInstance['columns'] = [
-  { title: '应用名', dataIndex: 'name', ellipsis: true, width: 120 },
+  { title: '应用名', dataIndex: 'name', ellipsis: true, tooltip: true, width: 120 },
   { title: '环境', slotName: 'environment', width: 80 },
   { title: 'Namespace', slotName: 'namespace', width: 110, ellipsis: true },
-  { title: '描述', dataIndex: 'description', ellipsis: true },
+  { title: '描述', dataIndex: 'description', ellipsis: true, tooltip: true },
   { title: '操作', slotName: 'actions', width: 100 }
 ]
 
 const resourceColumns: TableInstance['columns'] = [
-  { title: '资源名', dataIndex: 'name', ellipsis: true, width: 140 },
+  { title: '资源名', dataIndex: 'name', ellipsis: true, tooltip: true, width: 140 },
   { title: '来源', slotName: 'source', width: 80 },
   { title: '类型', dataIndex: 'resource_type', width: 80 },
   { title: '云资源 ID', slotName: 'cloud_resource_id', width: 150, ellipsis: true },
   { title: 'Region', slotName: 'region', width: 100 },
   { title: '同步状态', slotName: 'sync_status', width: 90 },
   { title: '最近同步', slotName: 'last_synced_at', width: 150 },
-  { title: 'Namespace', dataIndex: 'namespace', width: 110, ellipsis: true },
-  { title: 'Pod', dataIndex: 'pod', width: 110, ellipsis: true },
-  { title: 'Instance', dataIndex: 'instance', width: 120, ellipsis: true },
+  { title: 'Namespace', dataIndex: 'namespace', width: 110, ellipsis: true, tooltip: true },
+  { title: 'Pod', dataIndex: 'pod', width: 110, ellipsis: true, tooltip: true },
+  { title: 'Instance', dataIndex: 'instance', width: 120, ellipsis: true, tooltip: true },
   { title: '操作', slotName: 'actions', width: 120, fixed: 'right' }
 ]
 
 const syncBatchColumns: TableInstance['columns'] = [
-  { title: '批次 ID', dataIndex: 'batch_id', ellipsis: true },
-  { title: '账号', dataIndex: 'integration_account_id', width: 220, ellipsis: true },
+  { title: '批次 ID', dataIndex: 'batch_id', ellipsis: true, tooltip: true },
+  { title: '账号', dataIndex: 'integration_account_id', width: 220, ellipsis: true, tooltip: true },
   { title: '状态', slotName: 'status', width: 90 },
   { title: '新建', dataIndex: 'created_count', width: 70 },
   { title: '更新', dataIndex: 'updated_count', width: 70 },
   { title: 'Stale', dataIndex: 'stale_count', width: 70 },
   { title: '失败', dataIndex: 'failed_count', width: 70 },
-  { title: '摘要', dataIndex: 'message', ellipsis: true }
+  { title: '摘要', dataIndex: 'message', ellipsis: true, tooltip: true }
 ]
 
 const ruleColumns: TableInstance['columns'] = [
-  { title: '规则名', dataIndex: 'name', ellipsis: true },
+  { title: '规则名', dataIndex: 'name', ellipsis: true, tooltip: true },
   { title: '优先级', dataIndex: 'priority', width: 80 },
   { title: '状态', slotName: 'enabled', width: 80 },
-  { title: 'Label', dataIndex: 'label_key', width: 100 },
-  { title: '模式', dataIndex: 'label_value_pattern', width: 140, ellipsis: true },
+  { title: 'Label', dataIndex: 'label_key', width: 100, ellipsis: true, tooltip: true },
+  { title: '模式', dataIndex: 'label_value_pattern', width: 140, ellipsis: true, tooltip: true },
   { title: '目标', slotName: 'target_type', width: 100 },
-  { title: '接入源', dataIndex: 'source_type', width: 160, ellipsis: true },
-  { title: '应用 ID', dataIndex: 'application_id', width: 120, ellipsis: true },
+  { title: '接入源', dataIndex: 'source_type', width: 160, ellipsis: true, tooltip: true },
+  { title: '应用 ID', dataIndex: 'application_id', width: 120, ellipsis: true, tooltip: true },
   { title: '操作', slotName: 'actions', width: 120 }
 ]
 
@@ -1223,6 +1242,15 @@ onMounted(async () => {
 
 :deep(.assets-card .arco-table-pagination) {
   margin-top: 10px;
+}
+
+.assets-text-ellipsis {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 
 .assets-empty {

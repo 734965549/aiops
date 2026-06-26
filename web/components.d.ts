@@ -49,6 +49,7 @@ declare module 'vue' {
     ATextarea: typeof import('@arco-design/web-vue')['Textarea']
     ATimeline: typeof import('@arco-design/web-vue')['Timeline']
     ATimelineItem: typeof import('@arco-design/web-vue')['TimelineItem']
+    ATooltip: typeof import('@arco-design/web-vue')['Tooltip']
     ATree: typeof import('@arco-design/web-vue')['Tree']
     ATypographyText: typeof import('@arco-design/web-vue')['TypographyText']
     RouterLink: typeof import('vue-router')['RouterLink']

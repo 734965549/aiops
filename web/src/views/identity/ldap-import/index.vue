@@ -275,8 +275,9 @@
 
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { Message } from '@arco-design/web-vue'
-import type { TableColumnData, TableRowSelection, TreeNodeData } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
+import type { TableColumnData, TableRowSelection } from '@arco-design/web-vue/es/table/interface'
+import type { TreeNodeData } from '@arco-design/web-vue/es/tree/interface'
 import {
   browseLDAPOrganizations,
   closeLDAPSession,

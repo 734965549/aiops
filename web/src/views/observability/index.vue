@@ -321,7 +321,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { Message } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
 import { listIntegrationAccounts, type IntegrationAccount } from '@/api/integration'
 import {
   queryMetrics,

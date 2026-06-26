@@ -291,7 +291,8 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { Message, Modal } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
+import Modal from '@arco-design/web-vue/es/modal'
 import { listIntegrationAccounts, type IntegrationAccount } from '@/api/integration'
 import {
   createPolicy,

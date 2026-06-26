@@ -692,7 +692,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Message, type TableData } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
+import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import { useAuthStore } from '@/stores/auth'
 import { getApiError } from '@/api/request'
 import { analyzeAlert, type AnalyzeAlertResult } from '@/api/ai'

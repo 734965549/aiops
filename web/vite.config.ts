@@ -58,9 +58,6 @@ export default defineConfig(({ mode }) => {
             if (!id.includes('node_modules')) {
               return
             }
-            if (id.includes('@arco-design/web-vue')) {
-              return 'arco'
-            }
             if (
               id.includes('/vue/') ||
               id.includes('/vue-router/') ||

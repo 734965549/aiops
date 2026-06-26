@@ -89,7 +89,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { TableData } from '@arco-design/web-vue'
+import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import type { ExecutionTask } from '@/api/execution'
 import type { RecommendationGroup } from '../composables/useDashboardData'
 import {

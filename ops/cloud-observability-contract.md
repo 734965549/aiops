@@ -213,7 +213,7 @@ AI 工具权限建议：
 > - `signoz` / `prometheus`：全部为 fake adapter（确定性样本），CI 无需外部密钥。
 > - `huawei_cloud` + `auth_type=none`：全部能力仍为 fake，便于无云账号联调。
 > - `huawei_cloud` + `auth_type=ak_sk|agency` 的 logs/traces/topology/alerts：返回 `FAILED_PRECONDITION`（capability unsupported），**不**返回 fake 样本，避免误当作云端数据。
-- `huawei_cloud` + `auth_type=ak_sk` 的 **assets**：走真实 ECS/CCE/RDS/ELB `ListResources`（阶段 2）；`auth_type=none` 仍为 fake。
+- `huawei_cloud` + `auth_type=ak_sk` 的 **assets**：当前已落地 ECS/CCE/RDS/ELB 原生只读 `ListResources`（阶段 2）；目标口径调整为 **CES 控制台“全部资源/资源分组”可见多少就同步多少**，实现方案见 `docs/huawei-ces-asset-sync-plan.md`。`auth_type=none` 仍为 fake。
 > - 响应、日志、审计中不出现 AK/SK、`Authorization` header 或原始敏感云端报错；凭据在 API 进程装配时经 `CredentialProvider(integration_credential_ref + vault)` 解密，见 `cmd/api/main.go`。
 
 ### 5.0 Provider Port（Application 层）
@@ -340,7 +340,11 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 
 ### 5.5 云资源同步（Asset Sync，阶段 2 已落地）
 
-> **实现状态**：`huawei_cloud` + `auth_type=ak_sk` 的 `ListResources` 走真实 ECS/CCE/RDS/ELB 只读 API；`auth_type=none` 仍为 fake，供 CI/E2E。同步写 `asset_resource`（`source=cloud_sync`）与 `asset_sync_batch`（迁移 `0023`）。
+> **实现状态**：`huawei_cloud` + `auth_type=ak_sk` 当前 `ListResources` 走真实 ECS/CCE/RDS/ELB 只读 API；`auth_type=none` 仍为 fake，供 CI/E2E。同步写 `asset_resource`（`source=cloud_sync`）与 `asset_sync_batch`（迁移 `0023`）。
+>
+> **目标状态**：华为云真实账号资产同步应以 CES 资源分组为主路径，对齐 CES 控制台“全部资源”数量，覆盖 EVS/VPC/OBS/DCS/DMS/RDS/ELB/ECS 等 CES 可见资源。完整实现顺序、分页、映射、权限和验收标准见 `docs/huawei-ces-asset-sync-plan.md`。
+>
+> **同步模式**：`ces` 是默认推荐模式，仅依赖 CES 资源分组发现资源；`hybrid` 是增强模式，先 CES 全量入库，再按权限调用 ECS/RDS/ELB/EVS/VPC/OBS 等原生 API 补详情；`native` 仅为兼容旧 ECS/CCE/RDS/ELB 路径，不作为 CES 总数完整性验收口径。
 
 #### 5.5.1 触发同步
 

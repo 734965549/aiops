@@ -176,7 +176,8 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { Message, type TableData } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
+import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import * as auditApi from '@/api/audit'
 import type { AuditListQuery, OperationAudit } from '@/api/audit'
 

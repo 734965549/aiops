@@ -273,7 +273,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { Message } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
 import {
   checkIntegrationAccount,
   createIntegrationAccount,

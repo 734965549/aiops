@@ -33,7 +33,7 @@
 </template>
 
 <script setup lang="ts">
-import type { TableData } from '@arco-design/web-vue'
+import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import type { ExecutionTask } from '@/api/execution'
 import { executionStatusColor, executionStatusLabel, formatTime } from '../composables/useDashboardFormat'
 

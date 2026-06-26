@@ -441,9 +441,18 @@ Recommendation
 - Asset 模块扩展同步来源字段 + `POST /api/assets/sync`。
 - 前端 `/assets` 与 `/integrations` 展示来源、云资源 ID、同步批次。
 
+补充目标：
+
+- 华为云资产同步的最终口径调整为 CES 控制台“全部资源/资源分组”口径：CES 页面可见多少资源，平台就同步多少资源。
+- 产品分层采用 `ces` / `hybrid` / `native` 三种同步模式：`ces` 为 P0/P1 默认模式，保证 CES 资源数量完整；`hybrid` 为 P2 增强模式，在 CES 全量发现后补充原生云服务详情；`native` 仅兼容旧 ECS/CCE/RDS/ELB 路径。
+- 当前 ECS/CCE/RDS/ELB 原生 API 同步只作为阶段 2 已落地能力、`hybrid` 增强路径或 `native` 兼容路径，不再作为完整性判断口径。
+- CES 口径全量同步的实现顺序、权限、分页、资源映射、stale 语义和验收标准见 `docs/huawei-ces-asset-sync-plan.md`。
+
 验收：
 
-- 能从华为云只读账号（或 fake `auth_type=none`）同步 ECS/CCE/RDS/ELB 至资产注册表。
+- `sync_mode=ces` 时，仅授予 CES 只读权限的华为云账号即可按 CES 控制台“全部资源”口径同步到资产注册表。
+- `sync_mode=hybrid` 时，先保证 CES 资源完整入库，再按已授权的 ECS/RDS/ELB/EVS/VPC/OBS 等原生 API 补充详情；增强失败不影响基础资源入库。
+- `sync_mode=native` 保留旧 ECS/CCE/RDS/ELB 同步路径，但不承诺与 CES 控制台数量一致。
 - 同步失败不影响已有 P0 告警闭环。
 - 删除云端资源时平台标记 stale，不直接删除历史数据。
 - `scripts/e2e-asset-sync.ps1` 在 CI 可跑（fake provider）。

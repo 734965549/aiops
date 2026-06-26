@@ -1,5 +1,5 @@
 import axios, { AxiosError, type AxiosInstance, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
-import { Message } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
 import { useAuthStore } from '@/stores/auth'
 
 // 与后端 pkg/transport/http.Response 对齐的统一响应结构。
