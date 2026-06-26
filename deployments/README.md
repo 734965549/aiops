@@ -48,7 +48,8 @@ docker-compose.dev.yml（覆盖）
 ## 安全提示
 
 - PostgreSQL 默认 `aiops/aiops`、Web 登录 `admin/admin123`、dev JWT 占位值**只适用于本机联调或受控初始化**。
-- 生产部署：勿将 PostgreSQL / Redis 端口发布到公网或宿主机；JWT、DB 密码须通过 secrets / CI 注入；关闭 bootstrap；`database.auto_migrate=false`；先 `make migrate` 再启 API，并在发布后立即改密或禁用默认账号。
+- 生产部署：勿将 PostgreSQL / Redis 端口发布到公网或宿主机；JWT、DB 密码、Integration 凭据加密密钥须通过 secrets / CI 注入；关闭 bootstrap；`database.auto_migrate=false`；先 `make migrate` 再启 API，并在发布后立即改密或禁用默认账号。
+- `aiops-api:1.2` 起，非 dev 环境必须配置 `AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY`。该密钥用于加密云账号 AK/SK、Token 等接入凭据，必须是独立强随机值，不能为空、不能使用 dev 占位符、不能与 `AIOPS_AUTH__JWT_SECRET` 相同。
 
 ## 生产前端接入（CORS + VITE_API_BASE）
 

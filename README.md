@@ -274,6 +274,11 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 `config.Config.Validate()` 会在 bootstrap 阶段拦截致命错误：
 端口越界、数据库 host/name 为空、非 dev 环境使用占位/弱 JWT secret（含熵与字符多样性检查）等都会直接终止启动。
 
+从 `aiops-api:1.2` 起，启用 Integration 凭据加密校验：非 dev 环境必须配置独立强密钥
+`integration.credential_encryption_key`（环境变量 `AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY`），
+不得为空、不得使用 `dev-integration-credential-key-change-me` 等占位值、不得与 `auth.jwt_secret`
+相同。Kubernetes 部署需把该项放入 `aiops-api-secret`，详见 `deployments/kubernetes.md`。
+
 ### 日志
 
 - 第一阶段使用 `zap` 单进程日志；
