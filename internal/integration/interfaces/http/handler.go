@@ -36,18 +36,20 @@ type createAccountRequest struct {
 	Enabled     *bool           `json:"enabled"`
 	OwnerTeam   string          `json:"owner_team"`
 	Description string          `json:"description"`
+	ExtraConfig map[string]any  `json:"extra_config"`
 }
 
 type updateAccountRequest struct {
-	Name        *string          `json:"name"`
-	Provider    *string          `json:"provider"`
-	AuthType    *string          `json:"auth_type"`
-	Regions     []string         `json:"regions"`
-	ProjectID   *string          `json:"project_id"`
-	Credential  credentialInput  `json:"credential"`
-	Enabled     *bool            `json:"enabled"`
-	OwnerTeam   *string          `json:"owner_team"`
-	Description *string          `json:"description"`
+	Name        *string         `json:"name"`
+	Provider    *string         `json:"provider"`
+	AuthType    *string         `json:"auth_type"`
+	Regions     []string        `json:"regions"`
+	ProjectID   *string         `json:"project_id"`
+	Credential  credentialInput `json:"credential"`
+	Enabled     *bool           `json:"enabled"`
+	OwnerTeam   *string         `json:"owner_team"`
+	Description *string         `json:"description"`
+	ExtraConfig map[string]any  `json:"extra_config"`
 }
 
 // ListAccounts GET /api/integrations/accounts（§4.2 分页列表）。
@@ -97,6 +99,7 @@ func (h *Handler) CreateAccount(c *gin.Context) {
 		AccountID: req.AccountID, Name: req.Name, Provider: req.Provider, AuthType: req.AuthType,
 		Regions: req.Regions, ProjectID: req.ProjectID, Credential: req.Credential,
 		Enabled: req.Enabled, OwnerTeam: req.OwnerTeam, Description: req.Description,
+		ExtraConfig: req.ExtraConfig,
 	})
 	if err != nil {
 		httpx.Fail(c, err)
@@ -118,6 +121,10 @@ func (h *Handler) UpdateAccount(c *gin.Context) {
 	in := integapp.UpdateAccountInput{
 		Name: req.Name, Provider: req.Provider, AuthType: req.AuthType, ProjectID: req.ProjectID,
 		Credential: req.Credential, Enabled: req.Enabled, OwnerTeam: req.OwnerTeam, Description: req.Description,
+	}
+	if req.ExtraConfig != nil {
+		in.ExtraConfig = req.ExtraConfig
+		in.ExtraConfigSet = true
 	}
 	if req.Regions != nil {
 		in.Regions = req.Regions

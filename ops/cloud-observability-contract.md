@@ -108,10 +108,17 @@ AI 工具权限建议：
     "access_key": "AK...",
     "secret_key": "SK..."
   },
+  "extra_config": {
+    "sync_mode": "ces",
+    "resource_group_name": "全部资源",
+    "max_resources": 20000
+  },
   "enabled": true,
   "owner_team": "sre"
 }
 ```
+
+`extra_config` 只允许保存 provider 专属非敏感配置，例如华为云资产同步的 `sync_mode`、`resource_group_name`、`resource_group_id`、`enterprise_project_id`、`max_resources`。密钥、Token、AK/SK、密码等仍只能通过 `credential` 写入凭据仓库，不能进入 `extra_config`。
 
 响应 `data`：
 
@@ -124,6 +131,11 @@ AI 工具权限建议：
   "regions": ["cn-north-4"],
   "project_id": "project-xxx",
   "has_credential": true,
+  "extra_config": {
+    "sync_mode": "ces",
+    "resource_group_name": "全部资源",
+    "max_resources": 20000
+  },
   "enabled": true,
   "owner_team": "sre",
   "created_at": 1710000000,
@@ -146,6 +158,8 @@ AI 工具权限建议：
 - Auth: Bearer + `app:integrations:update`
 
 `credential` 省略时保留原凭据；传入时替换并写审计。
+
+`extra_config` 省略时保留原扩展配置；传入 `{}` 时清空为默认配置。后端会拒绝明显敏感字段名，响应也不会回显敏感键。
 
 ### 4.4 删除或禁用
 
@@ -213,7 +227,7 @@ AI 工具权限建议：
 > - `signoz` / `prometheus`：全部为 fake adapter（确定性样本），CI 无需外部密钥。
 > - `huawei_cloud` + `auth_type=none`：全部能力仍为 fake，便于无云账号联调。
 > - `huawei_cloud` + `auth_type=ak_sk|agency` 的 logs/traces/topology/alerts：返回 `FAILED_PRECONDITION`（capability unsupported），**不**返回 fake 样本，避免误当作云端数据。
-- `huawei_cloud` + `auth_type=ak_sk` 的 **assets**：当前已落地 ECS/CCE/RDS/ELB 原生只读 `ListResources`（阶段 2）；目标口径调整为 **CES 控制台“全部资源/资源分组”可见多少就同步多少**，实现方案见 `docs/huawei-ces-asset-sync-plan.md`。`auth_type=none` 仍为 fake。
+- `huawei_cloud` + `auth_type=ak_sk` 的 **assets**：`sync_mode=ces` 默认走 CES 资源分组/资源列表全量发现，对齐 CES 控制台“全部资源/资源分组”口径；`sync_mode=native` 保留 ECS/CCE/RDS/ELB 原生只读兼容路径；`auth_type=none` 仍为 fake。完整模式定义见 `docs/huawei-ces-asset-sync-plan.md`。
 > - 响应、日志、审计中不出现 AK/SK、`Authorization` header 或原始敏感云端报错；凭据在 API 进程装配时经 `CredentialProvider(integration_credential_ref + vault)` 解密，见 `cmd/api/main.go`。
 
 ### 5.0 Provider Port（Application 层）
@@ -227,6 +241,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 | `TraceQueryPort` | `QueryTraces` | 链路 Span |
 | `TopologyQueryPort` | `QueryTopology` | 服务拓扑（需账号声明 `topology` 能力） |
 | `AssetDiscoveryPort` | `ListResources` | 云资源发现（阶段 2 HTTP / Asset Sync 复用） |
+| `CloudFullSyncPort` | `ListAllResources` | 云资源全量同步发现（Asset Sync 专用，不受交互查询 `limit <= 500` 限制） |
 | `AlertRuleQueryPort` | `ListAlertRules` | 告警规则（阶段 2 Agent 工具复用） |
 
 账号解析依赖 `IntegrationAccountPort`（adapter 包装 Integration 仓储），QueryService 编排：能力校验 → Provider Port → `obs_evidence_ref` → 审计。

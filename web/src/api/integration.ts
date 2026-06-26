@@ -15,6 +15,7 @@ export interface IntegrationAccount {
   enabled: boolean
   owner_team?: string
   description?: string
+  extra_config?: Record<string, unknown>
   capabilities?: string[]
   last_check_status?: string
   created_at: number
@@ -48,6 +49,7 @@ export interface CreateAccountInput {
   enabled?: boolean
   owner_team?: string
   description?: string
+  extra_config?: Record<string, unknown>
 }
 
 export interface UpdateAccountInput {
@@ -60,6 +62,7 @@ export interface UpdateAccountInput {
   enabled?: boolean
   owner_team?: string
   description?: string
+  extra_config?: Record<string, unknown>
 }
 
 export function listIntegrationAccounts(query: ListAccountsQuery = {}) {

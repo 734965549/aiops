@@ -18,6 +18,7 @@ type Adapter struct {
 	credentials *CredentialProvider
 	ces         MetricDataClient
 	resources   ResourceDiscoveryClient
+	cesFullSync CESResourceDiscoveryClient
 }
 
 func NewAdapter(credentials *CredentialProvider, ces MetricDataClient, resources ResourceDiscoveryClient) *Adapter {
@@ -32,7 +33,16 @@ func NewAdapter(credentials *CredentialProvider, ces MetricDataClient, resources
 		credentials: credentials,
 		ces:         ces,
 		resources:   resources,
+		cesFullSync: NewCESResourceClient(),
 	}
+}
+
+// WithCESResourceDiscovery 注入自定义 CES 资源发现客户端，主要用于测试。
+func (a *Adapter) WithCESResourceDiscovery(client CESResourceDiscoveryClient) *Adapter {
+	if client != nil {
+		a.cesFullSync = client
+	}
+	return a
 }
 
 func (a *Adapter) ProviderType() string { return string(integdomain.ProviderHuaweiCloud) }
@@ -155,6 +165,114 @@ func (a *Adapter) ListAlertRules(ctx context.Context, pctx domain.ProviderContex
 	return a.inner.ListAlertRules(ctx, pctx, q)
 }
 
+// ListAllResources 云资源全量同步发现，按 sync_mode 路由，见 docs/huawei-ces-asset-sync-plan.md §7.3。
+// auth_type=ak_sk: ces/hybrid 走 CES 资源分组全量发现；native 走旧 ECS/CCE/RDS/ELB resource client。
+// auth_type=none: 委托 fake；auth_type=agency: 阶段一返回 unsupported。
+func (a *Adapter) ListAllResources(ctx context.Context, pctx domain.ProviderContext, q obsapp.AssetFullSyncQuery) ([]domain.CloudResource, *obsapp.CloudSyncSummary, error) {
+	authType := integdomain.AuthType(strings.TrimSpace(pctx.Account.AuthType))
+	switch authType {
+	case integdomain.AuthNone:
+		resources, err := a.inner.ListResources(ctx, pctx, domain.AssetDiscoveryQuery{
+			AccountID: q.AccountID, Provider: q.Provider, Region: q.Region, Limit: q.MaxResources,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		return resources, &obsapp.CloudSyncSummary{Region: q.Region, Discovered: len(resources)}, nil
+	case integdomain.AuthAKSK:
+		return a.listAllResourcesReal(ctx, pctx, q)
+	case integdomain.AuthAgency:
+		return nil, nil, apperr.Wrap(domain.ErrCapabilityUnsupported, apperr.CodeFailedPrecondition, "huawei full sync with agency auth is not implemented yet")
+	default:
+		return nil, nil, apperr.New(apperr.CodeFailedPrecondition, "unsupported auth type for huawei full sync")
+	}
+}
+
+// listAllResourcesReal 真实账号全量发现，按 SyncModeConfig 路由 ces/native。
+func (a *Adapter) listAllResourcesReal(ctx context.Context, pctx domain.ProviderContext, q obsapp.AssetFullSyncQuery) ([]domain.CloudResource, *obsapp.CloudSyncSummary, error) {
+	if a == nil || a.credentials == nil {
+		return nil, nil, apperr.New(apperr.CodeUnavailable, "huawei resource adapter is not configured")
+	}
+	region := strings.TrimSpace(q.Region)
+	if region == "" && len(pctx.Account.Regions) > 0 {
+		region = strings.TrimSpace(pctx.Account.Regions[0])
+	}
+	if region == "" {
+		return nil, nil, apperr.New(apperr.CodeInvalidArgument, "region is required")
+	}
+	projectID := strings.TrimSpace(pctx.Account.ProjectID)
+	if projectID == "" {
+		return nil, nil, apperr.New(apperr.CodeInvalidArgument, "project_id is required")
+	}
+	cred, err := a.credentials.ResolveAKSK(ctx, pctx.Account)
+	if err != nil {
+		return nil, nil, err
+	}
+	cfg := ParseSyncModeConfig(pctx.Account.ExtraConfig)
+	switch cfg.Mode {
+	case SyncModeNative:
+		return a.listAllResourcesNative(ctx, cred, projectID, region, q, cfg)
+	default:
+		// ces / hybrid / 未知值均走 CES 全量发现。hybrid 的原生 API 增强留待阶段2。
+		return a.listAllResourcesCES(ctx, cred, projectID, region, q, cfg)
+	}
+}
+
+// listAllResourcesCES 走 CES 资源分组全量发现，见 §8.1。
+func (a *Adapter) listAllResourcesCES(ctx context.Context, cred AKSKCredential, projectID, region string, q obsapp.AssetFullSyncQuery, cfg SyncModeConfig) ([]domain.CloudResource, *obsapp.CloudSyncSummary, error) {
+	if a.cesFullSync == nil {
+		return nil, nil, apperr.New(apperr.CodeUnavailable, "huawei ces resource discovery client is not configured")
+	}
+	req := CESResourceDiscoveryRequest{
+		ProjectID:           projectID,
+		Region:              region,
+		EnterpriseProjectID: cfg.EnterpriseProjectID,
+		ResourceGroupName:   cfg.ResourceGroupName,
+		ResourceGroupID:     cfg.ResourceGroupID,
+		MaxResources:        effectiveMaxResources(q.MaxResources, cfg.MaxResources),
+	}
+	result, err := a.cesFullSync.ListCESResources(ctx, cred, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	summary := &obsapp.CloudSyncSummary{
+		Region:                region,
+		ResourceGroupID:       result.Summary.ResourceGroupID,
+		ResourceGroupName:     result.Summary.ResourceGroupName,
+		CESTotal:              result.Summary.CESTotal,
+		Discovered:            result.Summary.Discovered,
+		FailedScopes:          append([]string(nil), result.Summary.FailedScopes...),
+		SuccessfulTypes:       append([]string(nil), result.Summary.SuccessfulTypes...),
+		UnknownNamespaceCount: result.Summary.UnknownNamespaceCount,
+		InvalidResourceCount:  result.Summary.InvalidResourceCount,
+		ProductNamesEmpty:     result.Summary.ProductNamesEmpty,
+	}
+	return result.Resources, summary, nil
+}
+
+// listAllResourcesNative 兼容旧 ECS/CCE/RDS/ELB resource client，见 §8.3。
+func (a *Adapter) listAllResourcesNative(ctx context.Context, cred AKSKCredential, projectID, region string, q obsapp.AssetFullSyncQuery, cfg SyncModeConfig) ([]domain.CloudResource, *obsapp.CloudSyncSummary, error) {
+	if a.resources == nil {
+		return nil, nil, apperr.New(apperr.CodeUnavailable, "huawei resource client is not configured")
+	}
+	limit := effectiveMaxResources(q.MaxResources, cfg.MaxResources)
+	resources, err := a.resources.ListResources(ctx, cred, projectID, region, "", limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	return resources, &obsapp.CloudSyncSummary{Region: region, Discovered: len(resources)}, nil
+}
+
+func effectiveMaxResources(requested, configured int) int {
+	if configured <= 0 {
+		configured = defaultMaxResources
+	}
+	if requested > 0 && requested < configured {
+		return requested
+	}
+	return configured
+}
+
 // requireFakeOnlyCapability 已配置真实凭据的账号不得返回 fake 样本，避免误当作云端数据。
 func (a *Adapter) requireFakeOnlyCapability(pctx domain.ProviderContext, capability string) error {
 	authType := integdomain.AuthType(strings.TrimSpace(pctx.Account.AuthType))
@@ -176,5 +294,6 @@ var (
 	_ obsapp.TraceQueryPort     = (*Adapter)(nil)
 	_ obsapp.TopologyQueryPort  = (*Adapter)(nil)
 	_ obsapp.AssetDiscoveryPort = (*Adapter)(nil)
+	_ obsapp.CloudFullSyncPort  = (*Adapter)(nil)
 	_ obsapp.AlertRuleQueryPort = (*Adapter)(nil)
 )

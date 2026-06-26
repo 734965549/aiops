@@ -159,7 +159,7 @@
 
 页面：`views/integrations/index.vue`。契约：`ops/cloud-observability-contract.md` §4。
 
-调用链：页面表单 -> `integration.ts` -> Integration AccountService -> CredentialVault / Provider checker。前端不保存明文凭据。
+调用链：页面表单 -> `integration.ts` -> Integration AccountService -> CredentialVault / Provider checker。前端不保存明文凭据。`extra_config` 仅用于 provider 非敏感扩展配置，例如华为云 `sync_mode/resource_group_name/max_resources`；密钥、Token、AK/SK、密码仍只能通过 `credential` 写入。
 
 ## Observability（`observability.ts`）
 

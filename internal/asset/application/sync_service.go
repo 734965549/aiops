@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/734965549/aiops/internal/asset/domain"
+	integdomain "github.com/734965549/aiops/internal/integration/domain"
 	obsapp "github.com/734965549/aiops/internal/observability/application"
 	obsdomain "github.com/734965549/aiops/internal/observability/domain"
 	apperr "github.com/734965549/aiops/pkg/errors"
@@ -119,33 +120,38 @@ func (s *SyncService) TriggerSync(ctx context.Context, actor Actor, in TriggerSy
 
 	obsActor := obsapp.Actor{UserID: actor.UserID, DisplayName: actor.DisplayName}
 	var partialErrs []string
+	var summaryLines []string
 	successScopes := make([]discoveredScope, 0, len(regions)*len(defaultCloudResourceTypes))
-	for _, region := range regions {
-		for _, resType := range defaultCloudResourceTypes {
-			result, err := s.discovery.ListResources(ctx, obsActor, obsdomain.AssetDiscoveryQuery{
-				AccountID: accountID, Provider: provider, Region: region,
-				ResourceType: resType, Limit: 500,
-			})
-			if err != nil {
-				batch.FailedCount++
-				partialErrs = append(partialErrs, fmt.Sprintf("%s/%s: %s", region, resType, apperr.FromError(err).Message))
-				continue
-			}
-			successScopes = append(successScopes, discoveredScope{Region: region, ResourceType: resType})
-			if result == nil {
-				continue
-			}
-			for _, cloud := range result.Resources {
-				created, upsertErr := s.upsertCloudResource(ctx, appID, accountID, batchID, now, cloud)
-				if upsertErr != nil {
+	if provider == string(integdomain.ProviderHuaweiCloud) {
+		successScopes, summaryLines, partialErrs = s.syncHuaweiCES(ctx, obsActor, provider, regions, appID, accountID, batchID, now, batch)
+	} else {
+		for _, region := range regions {
+			for _, resType := range defaultCloudResourceTypes {
+				result, err := s.discovery.ListResources(ctx, obsActor, obsdomain.AssetDiscoveryQuery{
+					AccountID: accountID, Provider: provider, Region: region,
+					ResourceType: resType, Limit: 500,
+				})
+				if err != nil {
 					batch.FailedCount++
-					partialErrs = append(partialErrs, upsertErr.Error())
+					partialErrs = append(partialErrs, fmt.Sprintf("%s/%s: %s", region, resType, apperr.FromError(err).Message))
 					continue
 				}
-				if created {
-					batch.CreatedCount++
-				} else {
-					batch.UpdatedCount++
+				successScopes = append(successScopes, discoveredScope{Region: region, ResourceType: resType})
+				if result == nil {
+					continue
+				}
+				for _, cloud := range result.Resources {
+					created, upsertErr := s.upsertCloudResource(ctx, appID, accountID, batchID, now, cloud)
+					if upsertErr != nil {
+						batch.FailedCount++
+						partialErrs = append(partialErrs, upsertErr.Error())
+						continue
+					}
+					if created {
+						batch.CreatedCount++
+					} else {
+						batch.UpdatedCount++
+					}
 				}
 			}
 		}
@@ -163,16 +169,21 @@ func (s *SyncService) TriggerSync(ctx context.Context, actor Actor, in TriggerSy
 
 	finished := time.Now().UTC()
 	batch.FinishedAt = &finished
+	allLines := append(append([]string(nil), summaryLines...), partialErrs...)
+	message := strings.Join(allLines, "; ")
 	switch {
-	case batch.FailedCount > 0 && batch.CreatedCount+batch.UpdatedCount == 0:
+	case batch.FailedCount > 0 && batch.CreatedCount+batch.UpdatedCount == 0 && len(successScopes) == 0:
 		batch.Status = domain.SyncBatchStatusFailed
-		batch.Message = truncateMessage(strings.Join(partialErrs, "; "))
+		batch.Message = truncateMessage(message)
 	case batch.FailedCount > 0:
 		batch.Status = domain.SyncBatchStatusPartial
-		batch.Message = truncateMessage(strings.Join(partialErrs, "; "))
+		batch.Message = truncateMessage(message)
 	default:
 		batch.Status = domain.SyncBatchStatusSuccess
-		batch.Message = "ok"
+		if strings.TrimSpace(message) == "" {
+			message = "ok"
+		}
+		batch.Message = truncateMessage(message)
 	}
 	if err := s.batches.Update(ctx, batch); err != nil {
 		return nil, wrapAssetError(err, "update sync batch failed")
@@ -254,6 +265,79 @@ func (s *SyncService) ensureCloudApplication(ctx context.Context, accountID, pro
 	return appID, nil
 }
 
+// syncHuaweiCES 执行华为云 CES 全量同步，见 docs/huawei-ces-asset-sync-plan.md §8.1。
+// 对每个 region 调用全量同步端口，收集资源与摘要；返回成功 scope、摘要行与错误行。
+func (s *SyncService) syncHuaweiCES(
+	ctx context.Context,
+	obsActor obsapp.Actor,
+	provider string,
+	regions []string,
+	appID, accountID, batchID string,
+	now time.Time,
+	batch *domain.SyncBatch,
+) (successScopes []discoveredScope, summaryLines, partialErrs []string) {
+	for _, region := range regions {
+		result, err := s.discovery.ListAllResources(ctx, obsActor, obsapp.AssetFullSyncQuery{
+			AccountID: accountID, Provider: provider, Region: region, MaxResources: 20000,
+		})
+		if err != nil {
+			batch.FailedCount++
+			partialErrs = append(partialErrs, fmt.Sprintf("%s: %s", region, apperr.FromError(err).Message))
+			continue
+		}
+		if result == nil {
+			continue
+		}
+		regionTypes := map[string]struct{}{}
+		upserted := 0
+		for _, cloud := range result.Resources {
+			created, upsertErr := s.upsertCloudResource(ctx, appID, accountID, batchID, now, cloud)
+			if upsertErr != nil {
+				batch.FailedCount++
+				partialErrs = append(partialErrs, upsertErr.Error())
+				continue
+			}
+			upserted++
+			if created {
+				batch.CreatedCount++
+			} else {
+				batch.UpdatedCount++
+			}
+			if t := strings.ToLower(strings.TrimSpace(cloud.Type)); t != "" {
+				regionTypes[t] = struct{}{}
+			}
+		}
+		// 摘要行，见 §8.1。
+		summary := result.Summary
+		line := fmt.Sprintf("region=%s group=%s ces_total=%d discovered=%d upserted=%d failed_scopes=%d",
+			region, summary.ResourceGroupName, summary.CESTotal, summary.Discovered, upserted, len(summary.FailedScopes))
+		if summary.ProductNamesEmpty {
+			line += " product_names_empty=true"
+		}
+		if summary.UnknownNamespaceCount > 0 {
+			line += fmt.Sprintf(" unknown_namespace=%d", summary.UnknownNamespaceCount)
+		}
+		if summary.InvalidResourceCount > 0 {
+			line += fmt.Sprintf(" invalid_resource=%d", summary.InvalidResourceCount)
+		}
+		summaryLines = append(summaryLines, line)
+		if len(summary.FailedScopes) > 0 {
+			batch.FailedCount += len(summary.FailedScopes)
+			partialErrs = append(partialErrs, summary.FailedScopes...)
+		}
+		for _, t := range summary.SuccessfulTypes {
+			if t = strings.ToLower(strings.TrimSpace(t)); t != "" {
+				regionTypes[t] = struct{}{}
+			}
+		}
+		// Stale scope 以 provider 成功查询的类型为准；旧 adapter 没有 summary 时回退到本轮入库类型。
+		for t := range regionTypes {
+			successScopes = append(successScopes, discoveredScope{Region: region, ResourceType: t})
+		}
+	}
+	return successScopes, summaryLines, partialErrs
+}
+
 func (s *SyncService) upsertCloudResource(
 	ctx context.Context,
 	appID, accountID, batchID string,
@@ -310,10 +394,20 @@ func mapCloudResourceToAssetFields(cloud obsdomain.CloudResource) (resourceType,
 	switch strings.ToLower(strings.TrimSpace(cloud.Type)) {
 	case "ecs":
 		return "host", cloudProviderRef(cloud)
-	case "rds", "elb", "cce":
+	case "evs", "obs", "sfs":
+		return "storage", cloudProviderRef(cloud)
+	case "vpc", "vpcep", "nat":
+		return "network", cloudProviderRef(cloud)
+	case "rds", "elb", "cce", "apm":
 		return "service", cloudProviderRef(cloud)
+	case "dcs", "dms":
+		return "middleware", cloudProviderRef(cloud)
+	case "cbr":
+		return "backup", cloudProviderRef(cloud)
+	case "ces":
+		return "monitor", cloudProviderRef(cloud)
 	default:
-		return "host", cloudProviderRef(cloud)
+		return "service", cloudProviderRef(cloud)
 	}
 }
 

@@ -190,6 +190,35 @@ func TestCreateAuthNoneStoresOptionalConfig(t *testing.T) {
 	}
 }
 
+func TestCreateStoresExtraConfig(t *testing.T) {
+	svc, accounts, _ := newTestAccountService(t)
+	dto, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
+		Name: "hw-ces", Provider: string(domain.ProviderHuaweiCloud), AuthType: string(domain.AuthNone),
+		ExtraConfig: map[string]any{"sync_mode": "ces", "max_resources": float64(5000)},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	acc := accounts.byID[dto.AccountID]
+	if string(acc.ExtraConfig) != `{"max_resources":5000,"sync_mode":"ces"}` {
+		t.Fatalf("extra_config = %s", string(acc.ExtraConfig))
+	}
+	if dto.ExtraConfig["sync_mode"] != "ces" {
+		t.Fatalf("dto extra_config = %+v", dto.ExtraConfig)
+	}
+}
+
+func TestCreateRejectsSecretInExtraConfig(t *testing.T) {
+	svc, _, _ := newTestAccountService(t)
+	_, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
+		Name: "hw-bad", Provider: string(domain.ProviderHuaweiCloud), AuthType: string(domain.AuthNone),
+		ExtraConfig: map[string]any{"secret_key": "do-not-store"},
+	})
+	if err == nil {
+		t.Fatal("expected extra_config secret rejection")
+	}
+}
+
 func TestCheckConnectivityAuthNoneWithoutCredential(t *testing.T) {
 	svc, _, _ := newTestAccountService(t)
 	dto, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{

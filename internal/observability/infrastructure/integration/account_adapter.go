@@ -61,5 +61,6 @@ func (a *AccountAdapter) ResolveAccount(ctx context.Context, accountID string) (
 		CredentialRefID: acc.CredentialRefID,
 		OwnerTeam:       acc.OwnerTeam,
 		Capabilities:    capStrs,
+		ExtraConfig:     acc.ExtraConfig,
 	}, nil
 }

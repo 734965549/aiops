@@ -48,10 +48,11 @@ func (a *AccountAdapter) ResolveSyncAccount(ctx context.Context, accountID strin
 		}
 	}
 	return &assetapp.SyncAccountSnapshot{
-		AccountID: acc.AccountID,
-		Provider:  string(acc.Provider),
-		Regions:   append([]string(nil), acc.Regions...),
-		Enabled:   acc.Enabled,
+		AccountID:   acc.AccountID,
+		Provider:    string(acc.Provider),
+		Regions:     append([]string(nil), acc.Regions...),
+		Enabled:     acc.Enabled,
+		ExtraConfig: acc.ExtraConfig,
 	}, nil
 }
 

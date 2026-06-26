@@ -61,19 +61,22 @@ type CreateAccountInput struct {
 	Enabled     *bool
 	OwnerTeam   string
 	Description string
+	ExtraConfig map[string]any
 }
 
 type UpdateAccountInput struct {
-	Name        *string
-	Provider    *string
-	AuthType    *string
-	Regions     []string
-	RegionsSet  bool
-	ProjectID   *string
-	Credential  map[string]string
-	Enabled     *bool
-	OwnerTeam   *string
-	Description *string
+	Name           *string
+	Provider       *string
+	AuthType       *string
+	Regions        []string
+	RegionsSet     bool
+	ProjectID      *string
+	Credential     map[string]string
+	Enabled        *bool
+	OwnerTeam      *string
+	Description    *string
+	ExtraConfig    map[string]any
+	ExtraConfigSet bool
 }
 
 type ListAccountsQuery struct {
@@ -173,6 +176,11 @@ func (s *AccountService) Create(ctx context.Context, actor Actor, in CreateAccou
 		OwnerTeam:   strings.TrimSpace(in.OwnerTeam),
 		Description: strings.TrimSpace(in.Description),
 	}
+	extraConfig, err := encodeExtraConfigInput(in.ExtraConfig)
+	if err != nil {
+		return nil, err
+	}
+	acc.ExtraConfig = extraConfig
 	defaultCaps := domain.DefaultCapabilitiesForProvider(provider)
 	if err := s.runAccountWriteTransaction(ctx, func(ctx context.Context, repos domain.TransactionRepositories) error {
 		if err := repos.Accounts.Create(ctx, acc); err != nil {
@@ -243,6 +251,11 @@ func (s *AccountService) Update(ctx context.Context, accountID string, actor Act
 	}
 	if in.Description != nil {
 		acc.Description = strings.TrimSpace(*in.Description)
+	}
+	if in.ExtraConfigSet {
+		if acc.ExtraConfig, err = encodeExtraConfigInput(in.ExtraConfig); err != nil {
+			return nil, err
+		}
 	}
 	if err := validateProviderAuthType(acc.Provider, acc.AuthType); err != nil {
 		return nil, err

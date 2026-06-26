@@ -25,4 +25,12 @@ func (a *DiscoveryAdapter) ListResources(ctx context.Context, actor obsapp.Actor
 	return a.svc.ListResources(ctx, actor, q)
 }
 
+// ListAllResources 桥接 QueryService 全量同步发现，供 Asset Sync 调用。
+func (a *DiscoveryAdapter) ListAllResources(ctx context.Context, actor obsapp.Actor, q obsapp.AssetFullSyncQuery) (*obsapp.AssetFullSyncResult, error) {
+	if a == nil || a.svc == nil {
+		return nil, domain.ErrDiscoveryUnavailable
+	}
+	return a.svc.ListAllResources(ctx, actor, q)
+}
+
 var _ assetapp.CloudDiscoveryPort = (*DiscoveryAdapter)(nil)

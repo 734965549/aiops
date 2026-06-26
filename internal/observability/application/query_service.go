@@ -250,6 +250,58 @@ func (s *QueryService) ListResources(ctx context.Context, actor Actor, q domain.
 	return &AssetDiscoveryResult{Resources: resources, EvidenceID: evidenceID}, nil
 }
 
+// ListAllResources 执行云资源全量同步发现，专供 Asset Sync 使用，不受交互查询 limit<=500 限制，
+// 见 docs/huawei-ces-asset-sync-plan.md §7.2。复用 resolveEntry 做能力校验，保留 evidence 与审计。
+func (s *QueryService) ListAllResources(ctx context.Context, actor Actor, q AssetFullSyncQuery) (*AssetFullSyncResult, error) {
+	if s == nil || s.accounts == nil || s.providers == nil {
+		return nil, apperr.New(apperr.CodeUnavailable, "observability query service is not enabled")
+	}
+	q.AccountID = strings.TrimSpace(q.AccountID)
+	q.Provider = strings.TrimSpace(q.Provider)
+	q.Region = strings.TrimSpace(q.Region)
+	if q.AccountID == "" {
+		return nil, apperr.New(apperr.CodeInvalidArgument, "account_id is required")
+	}
+	if q.MaxResources <= 0 {
+		q.MaxResources = 20000
+	}
+	pctx, entry, err := s.resolveEntry(ctx, q.AccountID, q.Provider, integdomain.CapabilityAssets)
+	if err != nil {
+		return nil, err
+	}
+	q.AccountID = pctx.Account.AccountID
+	q.Provider = pctx.Account.Provider
+	port, ok := entry.(CloudFullSyncPort)
+	if !ok {
+		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider does not support full sync")
+	}
+	resources, summary, err := port.ListAllResources(ctx, pctx, q)
+	if err != nil {
+		return nil, wrapProviderError(err, "list all resources failed")
+	}
+	evidenceID, err := s.persistEvidence(ctx, q.AccountID, "assets_full_sync", q, map[string]any{
+		"region": q.Region, "resource_count": len(resources),
+	})
+	if err != nil {
+		return nil, err
+	}
+	_ = s.audit.Record(ctx, AuditRecord{
+		ResourceType: "observability_query",
+		ResourceID:   evidenceID,
+		Action:       AuditResourcesList,
+		UserID:       actor.UserID,
+		Payload: map[string]any{
+			"account_id": q.AccountID, "provider": q.Provider, "region": q.Region,
+			"resource_count": len(resources), "evidence_id": evidenceID,
+		},
+	})
+	result := &AssetFullSyncResult{Resources: resources, EvidenceID: evidenceID}
+	if summary != nil {
+		result.Summary = *summary
+	}
+	return result, nil
+}
+
 func (s *QueryService) ListAlertRules(ctx context.Context, actor Actor, q domain.AlertRuleQuery) (*AlertRuleQueryResult, error) {
 	normalized, err := normalizeAlertQuery(q)
 	if err != nil {

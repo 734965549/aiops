@@ -66,6 +66,8 @@ func (p ProviderType) SupportsAuthType(auth AuthType) bool {
 // IntegrationAccount 云账号或可观测平台账号配置。
 //
 // CredentialRefID 仅保存凭据引用 ID，明文凭据不落库到本表。
+// ExtraConfig 保存 provider 专属扩展配置（JSON 原始字节，由各 provider 自行解析），
+// 例如华为云 sync_mode/resource_group_name/max_resources；禁止存放任何密钥或凭据。
 type IntegrationAccount struct {
 	AccountID       string
 	Name            string
@@ -78,6 +80,7 @@ type IntegrationAccount struct {
 	Deleted         bool
 	OwnerTeam       string
 	Description     string
+	ExtraConfig     []byte
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }

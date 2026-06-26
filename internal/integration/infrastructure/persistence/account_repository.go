@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -24,6 +25,7 @@ type accountModel struct {
 	Deleted         bool   `gorm:"column:deleted;not null;default:false"`
 	OwnerTeam       string `gorm:"column:owner_team;type:varchar(128);not null;default:''"`
 	Description     string `gorm:"column:description;type:varchar(512);not null;default:''"`
+	ExtraConfig     []byte `gorm:"column:extra_config;type:jsonb;not null;default:'{}'"`
 }
 
 func (accountModel) TableName() string { return "integration_account" }
@@ -52,6 +54,7 @@ func (r *AccountRepository) Create(ctx context.Context, account *domain.Integrat
 		AuthType: string(account.AuthType), Regions: regions, ProjectID: account.ProjectID,
 		CredentialRefID: account.CredentialRefID, Enabled: account.Enabled, Deleted: account.Deleted,
 		OwnerTeam: account.OwnerTeam, Description: account.Description,
+		ExtraConfig: normalizeExtraConfig(account.ExtraConfig),
 	}
 	if err := r.db.WithContext(ctx).Create(&m).Error; err != nil {
 		return database.MapUniqueViolation(err, domain.ErrAlreadyExists)
@@ -77,7 +80,7 @@ func (r *AccountRepository) Update(ctx context.Context, account *domain.Integrat
 		"name": account.Name, "provider": string(account.Provider), "auth_type": string(account.AuthType),
 		"regions": regions, "project_id": account.ProjectID, "credential_ref_id": account.CredentialRefID,
 		"enabled": account.Enabled, "owner_team": account.OwnerTeam, "description": account.Description,
-		"updated_at": now,
+		"extra_config": normalizeExtraConfig(account.ExtraConfig), "updated_at": now,
 	})
 	if res.Error != nil {
 		return res.Error
@@ -184,6 +187,16 @@ func toAccountDomain(row *accountModel) domain.IntegrationAccount {
 		AuthType: domain.AuthType(row.AuthType), Regions: unmarshalStringSlice(row.Regions),
 		ProjectID: row.ProjectID, CredentialRefID: row.CredentialRefID, Enabled: row.Enabled,
 		Deleted: row.Deleted, OwnerTeam: row.OwnerTeam, Description: row.Description,
-		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		ExtraConfig: normalizeExtraConfig(row.ExtraConfig),
+		CreatedAt:   row.CreatedAt, UpdatedAt: row.UpdatedAt,
 	}
+}
+
+// normalizeExtraConfig 保证 ExtraConfig 非空时为合法 JSON，空值统一为 {}。
+func normalizeExtraConfig(raw []byte) []byte {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return []byte("{}")
+	}
+	return trimmed
 }

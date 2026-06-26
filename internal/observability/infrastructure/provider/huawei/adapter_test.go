@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	obsapp "github.com/734965549/aiops/internal/observability/application"
 	"github.com/734965549/aiops/internal/observability/domain"
 	apperr "github.com/734965549/aiops/pkg/errors"
 	"github.com/huaweicloud/huaweicloud-sdk-go-v3/core/sdkerr"
@@ -203,5 +204,115 @@ func TestAdapterSearchLogsUsesFakeForAuthNone(t *testing.T) {
 	}
 	if len(entries) == 0 {
 		t.Fatal("expected fake log entries")
+	}
+}
+
+// mockCESDiscovery 用于测试 Adapter.ListAllResources 的 ces 路由。
+type mockCESDiscovery struct {
+	req    CESResourceDiscoveryRequest
+	result *CESResourceDiscoveryResult
+	err    error
+	called bool
+}
+
+func (m *mockCESDiscovery) ListCESResources(_ context.Context, _ AKSKCredential, req CESResourceDiscoveryRequest) (*CESResourceDiscoveryResult, error) {
+	m.called = true
+	m.req = req
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.result, nil
+}
+
+// mockResourceDiscovery 用于测试 native 路由。
+type mockResourceDiscovery struct {
+	limit int
+	out   []domain.CloudResource
+	err   error
+}
+
+func (m *mockResourceDiscovery) ListResources(_ context.Context, _ AKSKCredential, _, _, _ string, limit int) ([]domain.CloudResource, error) {
+	m.limit = limit
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.out, nil
+}
+
+func TestAdapterListAllResourcesCESRoute(t *testing.T) {
+	provider, repo, vault := newTestCredentialProvider(t)
+	const accountID = "acc-ces"
+	seedAKSKCredential(t, provider, repo, vault, accountID)
+	cesMock := &mockCESDiscovery{result: &CESResourceDiscoveryResult{
+		Resources: []domain.CloudResource{{ResourceID: "ces:r:SYS.ECS:i-1", Type: "ecs", Region: "cn-south-1"}},
+		Summary:   CESResourceDiscoverySummary{Region: "cn-south-1", CESTotal: 1, Discovered: 1, ResourceGroupName: "全部资源"},
+	}}
+	adapter := NewAdapter(provider, nil, nil).WithCESResourceDiscovery(cesMock)
+	resources, summary, err := adapter.ListAllResources(context.Background(), domain.ProviderContext{
+		Account: domain.AccountSnapshot{
+			AccountID: accountID, AuthType: "ak_sk", ProjectID: "p1", Regions: []string{"cn-south-1"},
+			CredentialRefID: "ref-ces",
+			ExtraConfig:     []byte(`{"max_resources":3}`),
+		},
+	}, obsapp.AssetFullSyncQuery{AccountID: accountID, Provider: "huawei_cloud", Region: "cn-south-1", MaxResources: 100})
+	if err != nil {
+		t.Fatalf("ListAllResources: %v", err)
+	}
+	if !cesMock.called {
+		t.Fatalf("expected CES discovery client to be called")
+	}
+	if len(resources) != 1 {
+		t.Fatalf("resource count = %d, want 1", len(resources))
+	}
+	if summary == nil || summary.CESTotal != 1 || summary.ResourceGroupName != "全部资源" {
+		t.Fatalf("summary = %+v, want CESTotal=1 group=全部资源", summary)
+	}
+	if cesMock.req.MaxResources != 3 {
+		t.Fatalf("MaxResources = %d, want 3 from extra_config", cesMock.req.MaxResources)
+	}
+}
+
+func TestAdapterListAllResourcesNativeRoute(t *testing.T) {
+	provider, repo, vault := newTestCredentialProvider(t)
+	const accountID = "acc-native"
+	seedAKSKCredential(t, provider, repo, vault, accountID)
+	resMock := &mockResourceDiscovery{out: []domain.CloudResource{{ResourceID: "ecs-1", Type: "ecs"}}}
+	adapter := NewAdapter(provider, nil, resMock)
+	// extra_config 指定 sync_mode=native。
+	_, _, err := adapter.ListAllResources(context.Background(), domain.ProviderContext{
+		Account: domain.AccountSnapshot{
+			AccountID: accountID, AuthType: "ak_sk", ProjectID: "p1", Regions: []string{"cn-south-1"},
+			CredentialRefID: "ref-native",
+			ExtraConfig:     []byte(`{"sync_mode":"native","max_resources":5}`),
+		},
+	}, obsapp.AssetFullSyncQuery{AccountID: accountID, Provider: "huawei_cloud", Region: "cn-south-1", MaxResources: 50})
+	if err != nil {
+		t.Fatalf("ListAllResources: %v", err)
+	}
+	if resMock.limit != 5 {
+		t.Fatalf("native route limit = %d, want 5 from extra_config", resMock.limit)
+	}
+}
+
+func TestAdapterListAllResourcesAgencyUnsupported(t *testing.T) {
+	adapter := NewAdapter(nil, nil, nil)
+	_, _, err := adapter.ListAllResources(context.Background(), domain.ProviderContext{
+		Account: domain.AccountSnapshot{AccountID: "acc-1", AuthType: "agency"},
+	}, obsapp.AssetFullSyncQuery{Region: "cn-south-1"})
+	if !errors.Is(err, domain.ErrCapabilityUnsupported) {
+		t.Fatalf("expected ErrCapabilityUnsupported, got %v", err)
+	}
+}
+
+func TestAdapterListAllResourcesAuthNoneUsesFake(t *testing.T) {
+	adapter := NewAdapter(nil, nil, nil)
+	resources, _, err := adapter.ListAllResources(context.Background(), domain.ProviderContext{
+		Account: domain.AccountSnapshot{AccountID: "acc-1", AuthType: "none"},
+	}, obsapp.AssetFullSyncQuery{Region: "cn-north-4", MaxResources: 10})
+	if err != nil {
+		t.Fatalf("ListAllResources: %v", err)
+	}
+	if len(resources) == 0 {
+		t.Fatal("expected fake resources for auth_type=none")
 	}
 }

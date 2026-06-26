@@ -36,6 +36,12 @@ type AssetDiscoveryPort interface {
 	ListResources(ctx context.Context, pctx domain.ProviderContext, q domain.AssetDiscoveryQuery) ([]domain.CloudResource, error)
 }
 
+// CloudFullSyncPort 云资源全量同步端口（专供 Asset Sync 全量分页发现，不受交互查询 limit<=500 限制），
+// 见 docs/huawei-ces-asset-sync-plan.md §7.2。返回资源列表与同步摘要，摘要用于回写 batch message。
+type CloudFullSyncPort interface {
+	ListAllResources(ctx context.Context, pctx domain.ProviderContext, q AssetFullSyncQuery) ([]domain.CloudResource, *CloudSyncSummary, error)
+}
+
 // AlertRuleQueryPort 告警规则只读查询端口（cloud.alerts.list 复用）。
 type AlertRuleQueryPort interface {
 	ListAlertRules(ctx context.Context, pctx domain.ProviderContext, q domain.AlertRuleQuery) ([]domain.AlertRule, error)

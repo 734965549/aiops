@@ -568,7 +568,7 @@ CES resource
 region=cn-south-1 group=全部资源 ces_total=1614 discovered=1614 upserted=1614 failed_scopes=0
 ```
 
-12. 成功 scope 维度从 `region/resource_type` 调整为 `region/namespace/dim_name/resource_group_id`。
+12. 成功 scope 维度从旧路径的固定 `region/resource_type` 调整为 CES 返回的成功 `region/cloud_resource_type`。
 13. stale 标记只对成功 scope 生效。
 14. 前端批次列表保留 message tooltip，便于排查。
 15. 单测覆盖分页、空 product_names、未知 namespace、无主维度、部分失败。
