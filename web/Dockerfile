@@ -1,6 +1,8 @@
 FROM node:20-alpine AS builder
 WORKDIR /workspace
 
+RUN npm install -g npm@11.6.2
+
 COPY web/package*.json ./
 RUN npm ci
 
