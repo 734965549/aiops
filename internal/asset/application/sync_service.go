@@ -215,14 +215,7 @@ func (s *SyncService) ListBatches(ctx context.Context, q ListSyncBatchesQuery) (
 	if s == nil || s.batches == nil {
 		return nil, 0, apperr.New(apperr.CodeUnavailable, "asset sync service is not enabled")
 	}
-	page := q.Page
-	if page <= 0 {
-		page = 1
-	}
-	pageSize := q.PageSize
-	if pageSize <= 0 {
-		pageSize = 20
-	}
+	page, pageSize := normalizeAssetPage(q.Page, q.PageSize)
 	rows, total, err := s.batches.List(ctx, domain.SyncBatchFilter{
 		IntegrationAccountID: q.IntegrationAccountID,
 		Limit:                pageSize,

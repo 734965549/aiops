@@ -1,15 +1,22 @@
 <template>
   <div class="assets-page">
-    <a-tabs v-model:active-key="activeTab">
+    <a-tabs
+      v-model:active-key="activeTab"
+      class="assets-tabs"
+    >
       <a-tab-pane
         key="registry"
         title="注册表"
       >
-        <a-row :gutter="16">
+        <a-row
+          :gutter="16"
+          class="registry-layout"
+        >
           <a-col :span="10">
             <a-card
               title="应用"
               :bordered="false"
+              class="assets-card assets-card-fixed"
             >
               <template #extra>
                 <a-space>
@@ -30,7 +37,11 @@
                 :data="applications"
                 :loading="appsLoading"
                 row-key="id"
-                :pagination="false"
+                :pagination="appPagination"
+                :scroll="tableScroll"
+                :bordered="false"
+                @page-change="onAppPageChange"
+                @page-size-change="onAppPageSizeChange"
                 :row-class="appRowClass"
                 @row-click="onSelectApplication"
               >
@@ -71,6 +82,7 @@
             <a-card
               :title="resourceCardTitle"
               :bordered="false"
+              class="assets-card assets-card-fixed"
             >
               <template #extra>
                 <a-space>
@@ -92,6 +104,7 @@
 
               <a-empty
                 v-if="!selectedAppId"
+                class="assets-empty"
                 description="请先选择左侧应用"
               />
               <a-table
@@ -100,7 +113,11 @@
                 :data="resources"
                 :loading="resourcesLoading"
                 row-key="id"
-                :pagination="false"
+                :pagination="resourcePagination"
+                :scroll="resourceTableScroll"
+                :bordered="false"
+                @page-change="onResourcePageChange"
+                @page-size-change="onResourcePageSizeChange"
                 :row-class="resourceRowClass"
               >
                 <template #source="{ record }">
@@ -173,6 +190,7 @@
         <a-card
           title="同步批次"
           :bordered="false"
+          class="assets-card assets-card-fixed"
         >
           <template #extra>
             <a-space>
@@ -199,7 +217,11 @@
             :data="syncBatches"
             :loading="syncBatchesLoading"
             row-key="batch_id"
-            :pagination="false"
+            :pagination="syncPagination"
+            :scroll="tableScroll"
+            :bordered="false"
+            @page-change="onSyncPageChange"
+            @page-size-change="onSyncPageSizeChange"
           >
             <template #status="{ record }">
               <a-tag :color="syncStatusColor((record as assetApi.SyncBatch).status)">
@@ -217,6 +239,7 @@
         <a-card
           title="告警匹配规则"
           :bordered="false"
+          class="assets-card assets-card-fixed"
         >
           <template #extra>
             <a-space>
@@ -236,7 +259,11 @@
             :data="matchRules"
             :loading="rulesLoading"
             row-key="id"
-            :pagination="false"
+            :pagination="rulePagination"
+            :scroll="tableScroll"
+            :bordered="false"
+            @page-change="onRulePageChange"
+            @page-size-change="onRulePageSizeChange"
           >
             <template #enabled="{ record }">
               <a-tag :color="(record as MatchRule).enabled ? 'green' : 'gray'">
@@ -485,7 +512,7 @@
             @change="onRuleAppChange"
           >
             <a-option
-              v-for="app in applications"
+              v-for="app in ruleApplicationOptions"
               :key="app.id"
               :value="app.id"
             >
@@ -521,7 +548,7 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Message } from '@arco-design/web-vue'
-import type { TableData } from '@arco-design/web-vue'
+import type { TableData, TableInstance } from '@arco-design/web-vue'
 import * as assetApi from '@/api/asset'
 import type { Application, MatchRule, Resource } from '@/api/asset'
 
@@ -532,6 +559,7 @@ const activeTab = ref('registry')
 const applications = ref<Application[]>([])
 const resources = ref<Resource[]>([])
 const matchRules = ref<MatchRule[]>([])
+const ruleApplicationOptions = ref<Application[]>([])
 const ruleResourceOptions = ref<Resource[]>([])
 const selectedAppId = ref('')
 const highlightedResourceId = ref('')
@@ -554,6 +582,14 @@ const syncAccountId = ref('')
 const syncLoading = ref(false)
 const syncBatchesLoading = ref(false)
 const syncBatches = ref<assetApi.SyncBatch[]>([])
+
+const tableScroll = { y: 'calc(100vh - 330px)' }
+const resourceTableScroll = { x: 1250, y: 'calc(100vh - 330px)' }
+
+const appPagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
+const resourcePagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
+const syncPagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
+const rulePagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
 
 const ruleForm = reactive({
   name: '',
@@ -583,29 +619,29 @@ const resourceForm = reactive({
   instance: ''
 })
 
-const appColumns = [
-  { title: '应用名', dataIndex: 'name', ellipsis: true },
-  { title: '环境', slotName: 'environment', width: 90 },
-  { title: 'Namespace', slotName: 'namespace', width: 120, ellipsis: true },
+const appColumns: TableInstance['columns'] = [
+  { title: '应用名', dataIndex: 'name', ellipsis: true, width: 120 },
+  { title: '环境', slotName: 'environment', width: 80 },
+  { title: 'Namespace', slotName: 'namespace', width: 110, ellipsis: true },
   { title: '描述', dataIndex: 'description', ellipsis: true },
-  { title: '操作', slotName: 'actions', width: 120 }
+  { title: '操作', slotName: 'actions', width: 100 }
 ]
 
-const resourceColumns = [
-  { title: '资源名', dataIndex: 'name', ellipsis: true, width: 120 },
+const resourceColumns: TableInstance['columns'] = [
+  { title: '资源名', dataIndex: 'name', ellipsis: true, width: 140 },
   { title: '来源', slotName: 'source', width: 80 },
   { title: '类型', dataIndex: 'resource_type', width: 80 },
-  { title: '云资源 ID', slotName: 'cloud_resource_id', width: 140, ellipsis: true },
+  { title: '云资源 ID', slotName: 'cloud_resource_id', width: 150, ellipsis: true },
   { title: 'Region', slotName: 'region', width: 100 },
   { title: '同步状态', slotName: 'sync_status', width: 90 },
   { title: '最近同步', slotName: 'last_synced_at', width: 150 },
-  { title: 'Namespace', dataIndex: 'namespace', width: 100, ellipsis: true },
-  { title: 'Pod', dataIndex: 'pod', width: 100, ellipsis: true },
+  { title: 'Namespace', dataIndex: 'namespace', width: 110, ellipsis: true },
+  { title: 'Pod', dataIndex: 'pod', width: 110, ellipsis: true },
   { title: 'Instance', dataIndex: 'instance', width: 120, ellipsis: true },
-  { title: '操作', slotName: 'actions', width: 120 }
+  { title: '操作', slotName: 'actions', width: 120, fixed: 'right' }
 ]
 
-const syncBatchColumns = [
+const syncBatchColumns: TableInstance['columns'] = [
   { title: '批次 ID', dataIndex: 'batch_id', ellipsis: true },
   { title: '账号', dataIndex: 'integration_account_id', width: 220, ellipsis: true },
   { title: '状态', slotName: 'status', width: 90 },
@@ -616,7 +652,7 @@ const syncBatchColumns = [
   { title: '摘要', dataIndex: 'message', ellipsis: true }
 ]
 
-const ruleColumns = [
+const ruleColumns: TableInstance['columns'] = [
   { title: '规则名', dataIndex: 'name', ellipsis: true },
   { title: '优先级', dataIndex: 'priority', width: 80 },
   { title: '状态', slotName: 'enabled', width: 80 },
@@ -628,9 +664,13 @@ const ruleColumns = [
   { title: '操作', slotName: 'actions', width: 120 }
 ]
 
+const selectedApplication = computed(() => {
+  return applications.value.find((a) => a.id === selectedAppId.value)
+    || ruleApplicationOptions.value.find((a) => a.id === selectedAppId.value)
+})
+
 const selectedAppName = computed(() => {
-  const app = applications.value.find((a) => a.id === selectedAppId.value)
-  return app?.name || selectedAppId.value
+  return selectedApplication.value?.name || selectedAppId.value
 })
 
 const resourceCardTitle = computed(() => {
@@ -682,10 +722,11 @@ async function loadSyncBatches() {
   try {
     const res = await assetApi.listSyncBatches({
       account_id: syncAccountId.value.trim() || undefined,
-      page: 1,
-      page_size: 20
+      page: syncPagination.current,
+      page_size: syncPagination.pageSize
     })
     syncBatches.value = res.items ?? []
+    syncPagination.total = res.total ?? 0
   } finally {
     syncBatchesLoading.value = false
   }
@@ -707,6 +748,7 @@ async function runCloudSync() {
     await loadApplications()
     if (batch.application_id) {
       selectedAppId.value = batch.application_id
+      resourcePagination.current = 1
       await loadResources()
     }
   } catch (e: unknown) {
@@ -719,11 +761,37 @@ async function runCloudSync() {
 async function loadMatchRules() {
   rulesLoading.value = true
   try {
-    const res = await assetApi.listMatchRules()
+    const res = await assetApi.listMatchRules({
+      page: rulePagination.current,
+      page_size: rulePagination.pageSize
+    })
     matchRules.value = res.items ?? []
+    rulePagination.total = res.total ?? 0
   } finally {
     rulesLoading.value = false
   }
+}
+
+async function loadAllPages<T>(loader: (page: number, pageSize: number) => Promise<{ items?: T[]; total?: number }>, pageSize = 100) {
+  const items: T[] = []
+  let page = 1
+  let total = 0
+  do {
+    const res = await loader(page, pageSize)
+    const pageItems = res.items ?? []
+    items.push(...pageItems)
+    total = res.total ?? items.length
+    if (pageItems.length === 0) break
+    page += 1
+  } while (items.length < total)
+  return items
+}
+
+async function loadRuleApplications() {
+  ruleApplicationOptions.value = await loadAllPages<Application>((page, pageSize) => assetApi.listApplications({
+    page,
+    page_size: pageSize
+  }))
 }
 
 async function loadRuleResources(appId: string) {
@@ -731,11 +799,13 @@ async function loadRuleResources(appId: string) {
     ruleResourceOptions.value = []
     return
   }
-  const res = await assetApi.listResources(appId)
-  ruleResourceOptions.value = res.items ?? []
+  ruleResourceOptions.value = await loadAllPages<Resource>((page, pageSize) => assetApi.listResources(appId, {
+    page,
+    page_size: pageSize
+  }))
 }
 
-function openCreateMatchRule() {
+async function openCreateMatchRule() {
   ruleModalMode.value = 'create'
   editingRuleId.value = ''
   ruleForm.name = ''
@@ -747,11 +817,12 @@ function openCreateMatchRule() {
   ruleForm.label_value_pattern = ''
   ruleForm.application_id = selectedAppId.value || ''
   ruleForm.resource_id = ''
+  await loadRuleApplications()
   void loadRuleResources(ruleForm.application_id)
   ruleModalVisible.value = true
 }
 
-function openEditMatchRule(rule: MatchRule) {
+async function openEditMatchRule(rule: MatchRule) {
   ruleModalMode.value = 'edit'
   editingRuleId.value = rule.id
   ruleForm.name = rule.name
@@ -763,6 +834,7 @@ function openEditMatchRule(rule: MatchRule) {
   ruleForm.label_value_pattern = rule.label_value_pattern
   ruleForm.application_id = rule.application_id
   ruleForm.resource_id = rule.resource_id || ''
+  await loadRuleApplications()
   void loadRuleResources(rule.application_id)
   ruleModalVisible.value = true
 }
@@ -805,6 +877,7 @@ async function submitMatchRule() {
       Message.success('规则已创建')
     }
     ruleModalVisible.value = false
+    rulePagination.current = 1
     await loadMatchRules()
   } finally {
     ruleSaving.value = false
@@ -824,12 +897,12 @@ async function confirmDeleteMatchRule(rule: MatchRule) {
 async function loadApplications() {
   appsLoading.value = true
   try {
-    const res = await assetApi.listApplications()
+    const res = await assetApi.listApplications({
+      page: appPagination.current,
+      page_size: appPagination.pageSize
+    })
     applications.value = res.items ?? []
-    if (selectedAppId.value && !applications.value.some((a) => a.id === selectedAppId.value)) {
-      selectedAppId.value = ''
-      resources.value = []
-    }
+    appPagination.total = res.total ?? 0
   } finally {
     appsLoading.value = false
   }
@@ -839,8 +912,12 @@ async function loadResources() {
   if (!selectedAppId.value) return
   resourcesLoading.value = true
   try {
-    const res = await assetApi.listResources(selectedAppId.value)
+    const res = await assetApi.listResources(selectedAppId.value, {
+      page: resourcePagination.current,
+      page_size: resourcePagination.pageSize
+    })
     resources.value = res.items ?? []
+    resourcePagination.total = res.total ?? 0
     const resourceId = routeResourceId()
     if (resourceId && resources.value.some((r) => r.id === resourceId)) {
       highlightedResourceId.value = resourceId
@@ -857,6 +934,7 @@ function onSelectApplication(record: TableData) {
   const app = record as Application
   if (selectedAppId.value === app.id) return
   selectedAppId.value = app.id
+  resourcePagination.current = 1
   router.replace({ query: { ...route.query, application_id: app.id } })
   loadResources()
 }
@@ -884,10 +962,9 @@ function openEditApplication(app: Application) {
 function openCreateResource() {
   resourceModalMode.value = 'create'
   editingResourceId.value = ''
-  const app = applications.value.find((a) => a.id === selectedAppId.value)
   resourceForm.name = ''
   resourceForm.resource_type = 'pod'
-  resourceForm.namespace = app?.namespace || ''
+  resourceForm.namespace = selectedApplication.value?.namespace || ''
   resourceForm.pod = ''
   resourceForm.node = ''
   resourceForm.instance = ''
@@ -930,6 +1007,7 @@ async function submitApplication() {
       })
       Message.success('应用已创建')
       selectedAppId.value = created.id
+      resourcePagination.current = 1
       router.replace({ query: { ...route.query, application_id: created.id } })
       await loadResources()
     }
@@ -986,6 +1064,7 @@ async function submitResource() {
       Message.success('资源已创建')
     }
     resourceModalVisible.value = false
+    resourcePagination.current = resourceModalMode.value === 'create' ? 1 : resourcePagination.current
     await loadResources()
   } finally {
     resourceSaving.value = false
@@ -1011,14 +1090,66 @@ async function confirmDeleteResource(res: Resource) {
 async function applyRouteSelection() {
   const q = typeof route.query.application_id === 'string' ? route.query.application_id : ''
   const resourceId = routeResourceId()
+  if (!q && selectedAppId.value) {
+    selectedAppId.value = ''
+    highlightedResourceId.value = ''
+    resources.value = []
+    resourcePagination.total = 0
+    return
+  }
   if (q && q !== selectedAppId.value) {
     selectedAppId.value = q
+    resourcePagination.current = 1
     await loadResources()
     return
   }
   if (resourceId && resourceId !== highlightedResourceId.value && selectedAppId.value) {
     await loadResources()
   }
+}
+
+function onAppPageChange(page: number) {
+  appPagination.current = page
+  loadApplications()
+}
+
+function onAppPageSizeChange(size: number) {
+  appPagination.pageSize = size
+  appPagination.current = 1
+  loadApplications()
+}
+
+function onResourcePageChange(page: number) {
+  resourcePagination.current = page
+  loadResources()
+}
+
+function onResourcePageSizeChange(size: number) {
+  resourcePagination.pageSize = size
+  resourcePagination.current = 1
+  loadResources()
+}
+
+function onSyncPageChange(page: number) {
+  syncPagination.current = page
+  loadSyncBatches()
+}
+
+function onSyncPageSizeChange(size: number) {
+  syncPagination.pageSize = size
+  syncPagination.current = 1
+  loadSyncBatches()
+}
+
+function onRulePageChange(page: number) {
+  rulePagination.current = page
+  loadMatchRules()
+}
+
+function onRulePageSizeChange(size: number) {
+  rulePagination.pageSize = size
+  rulePagination.current = 1
+  loadMatchRules()
 }
 
 watch(
@@ -1033,11 +1164,13 @@ onMounted(async () => {
   await loadMatchRules()
   await loadSyncBatches()
   const q = typeof route.query.application_id === 'string' ? route.query.application_id : ''
-  if (q && applications.value.some((a) => a.id === q)) {
+  if (q) {
     selectedAppId.value = q
+    resourcePagination.current = 1
     await loadResources()
   } else if (applications.value.length === 1) {
     selectedAppId.value = applications.value[0].id
+    resourcePagination.current = 1
     await loadResources()
   }
 })
@@ -1045,7 +1178,58 @@ onMounted(async () => {
 
 <style scoped>
 .assets-page {
-  min-height: 100%;
+  height: calc(100vh - 144px);
+  min-height: 560px;
+  overflow: hidden;
+}
+
+.assets-tabs,
+:deep(.assets-tabs > .arco-tabs-content),
+:deep(.assets-tabs > .arco-tabs-content > .arco-tabs-content-list),
+:deep(.assets-tabs > .arco-tabs-content > .arco-tabs-content-list > .arco-tabs-pane) {
+  height: 100%;
+}
+
+:deep(.assets-tabs > .arco-tabs-nav) {
+  margin-bottom: 12px;
+}
+
+.registry-layout,
+.registry-layout > .arco-col {
+  height: 100%;
+}
+
+.assets-card {
+  overflow: hidden;
+}
+
+.assets-card-fixed {
+  height: calc(100% - 44px);
+}
+
+:deep(.assets-card .arco-card-body) {
+  height: calc(100% - 50px);
+  padding: 0 16px 12px;
+  overflow: hidden;
+}
+
+:deep(.assets-card .arco-table) {
+  height: 100%;
+}
+
+:deep(.assets-card .arco-table-container) {
+  height: calc(100% - 44px);
+}
+
+:deep(.assets-card .arco-table-pagination) {
+  margin-top: 10px;
+}
+
+.assets-empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 :deep(.assets-row-selected .arco-table-td) {

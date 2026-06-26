@@ -50,6 +50,23 @@ func (r *assetHTTPTestAppRepo) List(_ context.Context) ([]assetdomain.Applicatio
 	return out, nil
 }
 
+func (r *assetHTTPTestAppRepo) ListPaged(_ context.Context, filter assetdomain.ApplicationFilter) ([]assetdomain.Application, int64, error) {
+	total := int64(len(r.apps))
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]assetdomain.Application, 0)
+	for i := offset; i < len(r.apps) && len(out) < limit; i++ {
+		out = append(out, r.apps[i])
+	}
+	return out, total, nil
+}
+
 func (r *assetHTTPTestAppRepo) Count(_ context.Context) (int64, error) {
 	return int64(len(r.apps)), nil
 }
@@ -137,6 +154,29 @@ func (r *assetHTTPTestResRepo) ListByApplicationID(_ context.Context, applicatio
 		}
 	}
 	return out, nil
+}
+
+func (r *assetHTTPTestResRepo) ListByApplicationIDPaged(_ context.Context, applicationID string, filter assetdomain.ResourceFilter) ([]assetdomain.Resource, int64, error) {
+	matched := make([]assetdomain.Resource, 0)
+	for _, row := range r.rows {
+		if row.ApplicationID == applicationID {
+			matched = append(matched, row)
+		}
+	}
+	total := int64(len(matched))
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]assetdomain.Resource, 0)
+	for i := offset; i < len(matched) && len(out) < limit; i++ {
+		out = append(out, matched[i])
+	}
+	return out, total, nil
 }
 
 func (r *assetHTTPTestResRepo) FindBestMatch(_ context.Context, q assetdomain.ResourceMatchQuery) (*assetdomain.Resource, error) {
@@ -252,6 +292,23 @@ func (r *assetHTTPTestRuleRepo) List(_ context.Context) ([]assetdomain.MatchRule
 	out := make([]assetdomain.MatchRule, len(r.rows))
 	copy(out, r.rows)
 	return out, nil
+}
+
+func (r *assetHTTPTestRuleRepo) ListPaged(_ context.Context, filter assetdomain.MatchRuleFilter) ([]assetdomain.MatchRule, int64, error) {
+	total := int64(len(r.rows))
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]assetdomain.MatchRule, 0)
+	for i := offset; i < len(r.rows) && len(out) < limit; i++ {
+		out = append(out, r.rows[i])
+	}
+	return out, total, nil
 }
 
 func (r *assetHTTPTestRuleRepo) ListEnabledByPriority(_ context.Context) ([]assetdomain.MatchRule, error) {
@@ -404,6 +461,43 @@ func TestListApplications_PermissionDenied(t *testing.T) {
 	}
 }
 
+func TestListApplications_Success(t *testing.T) {
+	authz := &fakeAssetHTTPAuthorizer{allowed: true}
+	engine, token, appRepo, _ := newAssetHTTPEngine(t, authz)
+	_ = appRepo.Create(context.Background(), &assetdomain.Application{ID: "app-1", Name: "payment-service", Environment: "prod"})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/assets/applications?page=1&page_size=10", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := decodeAssetEnvelope(t, w.Body.Bytes())
+	if resp.Code != "OK" {
+		t.Fatalf("unexpected envelope: %+v", resp)
+	}
+	var data struct {
+		Items []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"items"`
+		Total    int64 `json:"total"`
+		Page     int   `json:"page"`
+		PageSize int   `json:"page_size"`
+	}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Items) != 1 || data.Items[0].ID != "app-1" {
+		t.Fatalf("unexpected items: %+v", data.Items)
+	}
+	if data.Total != 1 || data.Page != 1 || data.PageSize != 10 {
+		t.Fatalf("unexpected pagination: total=%d page=%d page_size=%d", data.Total, data.Page, data.PageSize)
+	}
+}
+
 func TestCreateApplication_Success(t *testing.T) {
 	authz := &fakeAssetHTTPAuthorizer{allowed: true}
 	engine, token, appRepo, _ := newAssetHTTPEngine(t, authz)
@@ -512,7 +606,7 @@ func TestListResources_Success(t *testing.T) {
 	_ = appRepo.Create(context.Background(), &assetdomain.Application{ID: "app-1", Name: "svc", Environment: "prod"})
 	_ = resRepo.Create(context.Background(), &assetdomain.Resource{ID: "res-1", ApplicationID: "app-1", Pod: "p1"})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/assets/applications/app-1/resources", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/assets/applications/app-1/resources?page=1&page_size=10", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	engine.ServeHTTP(w, req)
@@ -526,12 +620,18 @@ func TestListResources_Success(t *testing.T) {
 			ID  string `json:"id"`
 			Pod string `json:"pod"`
 		} `json:"items"`
+		Total    int64 `json:"total"`
+		Page     int   `json:"page"`
+		PageSize int   `json:"page_size"`
 	}
 	if err := json.Unmarshal(resp.Data, &data); err != nil {
 		t.Fatal(err)
 	}
 	if len(data.Items) != 1 || data.Items[0].Pod != "p1" {
 		t.Fatalf("unexpected items: %+v", data.Items)
+	}
+	if data.Total != 1 || data.Page != 1 || data.PageSize != 10 {
+		t.Fatalf("unexpected pagination: total=%d page=%d page_size=%d", data.Total, data.Page, data.PageSize)
 	}
 }
 

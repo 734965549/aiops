@@ -65,19 +65,29 @@ type MatchRuleDTO struct {
 	UpdatedAt         int64  `json:"updated_at"`
 }
 
-func (s *MatchRuleService) List(ctx context.Context) ([]MatchRuleDTO, error) {
+// ListMatchRulesQuery 匹配规则列表分页查询参数（page 从 1 开始，PageSize 默认 20、最大 100）。
+type ListMatchRulesQuery struct {
+	Page     int
+	PageSize int
+}
+
+func (s *MatchRuleService) List(ctx context.Context, q ListMatchRulesQuery) ([]MatchRuleDTO, int64, error) {
 	if s == nil || s.rules == nil {
-		return nil, apperr.New(apperr.CodeUnavailable, "match rule service is not enabled")
+		return nil, 0, apperr.New(apperr.CodeUnavailable, "match rule service is not enabled")
 	}
-	rows, err := s.rules.List(ctx)
+	page, pageSize := normalizeAssetPage(q.Page, q.PageSize)
+	rows, total, err := s.rules.ListPaged(ctx, domain.MatchRuleFilter{
+		Limit:  pageSize,
+		Offset: (page - 1) * pageSize,
+	})
 	if err != nil {
-		return nil, wrapAssetError(err, "list match rules failed")
+		return nil, 0, wrapAssetError(err, "list match rules failed")
 	}
 	out := make([]MatchRuleDTO, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, toMatchRuleDTO(row))
 	}
-	return out, nil
+	return out, total, nil
 }
 
 func (s *MatchRuleService) Create(ctx context.Context, actor Actor, in CreateMatchRuleInput) (*MatchRuleDTO, error) {

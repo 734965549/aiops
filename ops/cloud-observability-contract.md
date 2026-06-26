@@ -385,7 +385,21 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 - Path: `/api/assets/sync/batches?page=1&page_size=20&account_id=acc_xxx`
 - Auth: Bearer + `app:assets:read`
 
-响应使用 `pagination.PageData` 形态。
+响应使用统一 envelope，`data` 为 `pagination.PageData<SyncBatch>`：
+
+```json
+{
+  "code": "OK",
+  "message": "ok",
+  "trace_id": "abc123",
+  "data": {
+    "items": [],
+    "total": 0,
+    "page": 1,
+    "page_size": 20
+  }
+}
+```
 
 #### 5.5.3 资源注册表扩展字段
 
@@ -403,6 +417,38 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 | `sync_batch_id` | 最近成功批次 |
 
 审计：`resource_type=asset_sync_batch`，`action=sync`。
+
+#### 5.5.4 资产注册表列表分页
+
+应用、资源、匹配规则三个列表接口统一采用标准分页（与 §5.5.2 同一 `pagination.PageData` 形态）。`page` 从 1 开始，默认 `page_size=20`，最大 `page_size=100`；HTTP 层通过 `pagination.Query.Normalize` 修正，application 层也会兜底归一化，避免非 HTTP 调用绕过分页上限。
+
+| 接口 | Method | Path | Auth | 排序 |
+| --- | --- | --- | --- | --- |
+| 应用列表 | `GET` | `/api/assets/applications?page=1&page_size=10` | Bearer + `app:assets:read` | `created_at ASC, id ASC` |
+| 资源列表 | `GET` | `/api/assets/applications/:application_id/resources?page=1&page_size=10` | Bearer + `app:assets:read` | `created_at ASC, id ASC` |
+| 匹配规则列表 | `GET` | `/api/assets/match-rules?page=1&page_size=10` | Bearer + `app:assets:read` | `priority DESC, created_at ASC, id ASC` |
+
+响应使用统一 envelope，`data` 为 `pagination.PageData<T>`：
+
+```json
+{
+  "code": "OK",
+  "message": "ok",
+  "trace_id": "abc123",
+  "data": {
+    "items": [],
+    "total": 0,
+    "page": 1,
+    "page_size": 10
+  }
+}
+```
+
+- `items` 元素结构：应用列表为 `Application`；资源列表为 `Resource`（含 §5.5.3 云同步扩展字段）；匹配规则列表为 `MatchRule`。
+- 资源列表按 `application_id` 过滤；`application_id` 缺省返回 `INVALID_ARGUMENT`。
+- 未传 `page` / `page_size` 时分别回退为 `1` / `20`；`page_size > 100` 时按 `100` 返回。
+- 列表接口只承诺返回当前页数据，不是完整字典接口。前端用于下拉选择、按 URL 业务 ID 回显或跨页定位时，不能假设当前页包含目标应用/资源；如需完整选择能力，应使用搜索型选择接口或补充按业务 ID 查询接口。
+- 当前阶段尚未提供 `GET /api/assets/applications/:application_id` 或 `GET /api/assets/resources/:resource_id` 的公开详情接口；新增这类接口时必须同步更新本节、`web/src/api/README.md` 和对应权限/测试。
 
 ## 6. Inspection API
 

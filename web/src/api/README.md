@@ -88,12 +88,15 @@
 
 | 函数 | 接口 | 说明 |
 | --- | --- | --- |
-| `listApplications` / `createApplication` / `updateApplication` / `deleteApplication` | `/api/assets/applications` | 应用注册表 CRUD |
-| `listResources` / `createResource` / `updateResource` / `deleteResource` | `/api/assets/resources` | 资源注册表 CRUD，云同步字段只由后端同步链路写入 |
+| `listApplications` / `createApplication` / `updateApplication` / `deleteApplication` | `/api/assets/applications` | 应用注册表 CRUD；`listApplications` 返回 `PageResult<Application>`，支持 `page` / `page_size` |
+| `listResources` / `createResource` / `updateResource` / `deleteResource` | `/api/assets/applications/:application_id/resources`、`/api/assets/resources` | 资源注册表 CRUD，云同步字段只由后端同步链路写入；`listResources` 按 `application_id` 返回 `PageResult<Resource>` |
+| `listMatchRules` / `createMatchRule` / `updateMatchRule` / `deleteMatchRule` | `/api/assets/match-rules` | 匹配规则 CRUD；`listMatchRules` 返回 `PageResult<MatchRule>` |
 | `triggerAssetSync` | `POST /api/assets/sync` | 触发云资源同步 |
-| `listSyncBatches` / `getSyncBatch` | `/api/assets/sync/batches` | 查询同步批次 |
+| `listSyncBatches` / `getSyncBatch` | `/api/assets/sync/batches` | 查询同步批次，`listSyncBatches` 返回 `PageResult<SyncBatch>` |
 
 页面：`views/assets/index.vue`。契约：`ops/cloud-observability-contract.md` §5.5。
+
+分页约定：`page` 从 1 开始，默认 `page_size=20`，后端最大按 `100` 处理。上述 `list*` 函数只返回当前页，不能当作完整应用/资源字典；下拉选择、深链回显或跨页定位需要额外维护已选项，或后续补充按业务 ID 查询/搜索接口。
 
 调用链：页面触发 -> `asset.ts` -> Asset SyncService -> Observability discovery port -> Provider Adapter。同步失败或局部失败不得破坏 P0 告警匹配闭环。
 

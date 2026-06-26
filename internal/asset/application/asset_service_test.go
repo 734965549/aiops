@@ -18,6 +18,27 @@ func (r *fakeAppRepo) Create(_ context.Context, app *domain.Application) error {
 
 func (r *fakeAppRepo) List(_ context.Context) ([]domain.Application, error) { return nil, nil }
 
+func (r *fakeAppRepo) ListPaged(_ context.Context, filter domain.ApplicationFilter) ([]domain.Application, int64, error) {
+	all := make([]domain.Application, 0, len(r.apps))
+	for _, app := range r.apps {
+		all = append(all, app)
+	}
+	total := int64(len(all))
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]domain.Application, 0)
+	for i := offset; i < len(all) && len(out) < limit; i++ {
+		out = append(out, all[i])
+	}
+	return out, total, nil
+}
+
 func (r *fakeAppRepo) Count(_ context.Context) (int64, error) { return int64(len(r.apps)), nil }
 
 func (r *fakeAppRepo) FindByNameEnv(_ context.Context, name, environment string) (*domain.Application, error) {
@@ -90,6 +111,29 @@ func (r *fakeResRepo) ListByApplicationID(_ context.Context, applicationID strin
 		}
 	}
 	return out, nil
+}
+
+func (r *fakeResRepo) ListByApplicationIDPaged(_ context.Context, applicationID string, filter domain.ResourceFilter) ([]domain.Resource, int64, error) {
+	matched := make([]domain.Resource, 0)
+	for _, row := range r.rows {
+		if row.ApplicationID == applicationID {
+			matched = append(matched, row)
+		}
+	}
+	total := int64(len(matched))
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]domain.Resource, 0)
+	for i := offset; i < len(matched) && len(out) < limit; i++ {
+		out = append(out, matched[i])
+	}
+	return out, total, nil
 }
 
 func (r *fakeResRepo) FindBestMatch(_ context.Context, q domain.ResourceMatchQuery) (*domain.Resource, error) {
@@ -204,6 +248,23 @@ func (r *fakeRuleRepo) Create(_ context.Context, rule *domain.MatchRule) error {
 
 func (r *fakeRuleRepo) List(_ context.Context) ([]domain.MatchRule, error) { return r.rules, nil }
 
+func (r *fakeRuleRepo) ListPaged(_ context.Context, filter domain.MatchRuleFilter) ([]domain.MatchRule, int64, error) {
+	total := int64(len(r.rules))
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]domain.MatchRule, 0)
+	for i := offset; i < len(r.rules) && len(out) < limit; i++ {
+		out = append(out, r.rules[i])
+	}
+	return out, total, nil
+}
+
 func (r *fakeRuleRepo) ListEnabledByPriority(_ context.Context) ([]domain.MatchRule, error) {
 	out := make([]domain.MatchRule, 0)
 	for _, rule := range r.rules {
@@ -262,6 +323,17 @@ func (r *fakeRuleRepo) CountByResourceID(_ context.Context, resourceID string) (
 		}
 	}
 	return n, nil
+}
+
+func TestNormalizeAssetPage(t *testing.T) {
+	page, pageSize := normalizeAssetPage(0, 0)
+	if page != 1 || pageSize != 20 {
+		t.Fatalf("expected defaults page=1 page_size=20, got page=%d page_size=%d", page, pageSize)
+	}
+	page, pageSize = normalizeAssetPage(2, 200)
+	if page != 2 || pageSize != 100 {
+		t.Fatalf("expected capped page_size=100, got page=%d page_size=%d", page, pageSize)
+	}
 }
 
 func TestMatcherService_MatchApplicationAndPod(t *testing.T) {

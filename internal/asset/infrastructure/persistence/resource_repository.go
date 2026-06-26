@@ -84,6 +84,35 @@ func (r *ResourceRepository) ListByApplicationID(ctx context.Context, applicatio
 	return out, nil
 }
 
+// ListByApplicationIDPaged 按应用 + 分页过滤返回资源列表与总数，排序与 ListByApplicationID 一致。
+func (r *ResourceRepository) ListByApplicationIDPaged(ctx context.Context, applicationID string, filter domain.ResourceFilter) ([]domain.Resource, int64, error) {
+	if r == nil || r.db == nil {
+		return nil, 0, errors.New("asset resource repository is not configured")
+	}
+	q := r.db.WithContext(ctx).Model(&resourceModel{}).Where("application_id = ?", applicationID)
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	var rows []resourceModel
+	if err := q.Order("created_at ASC, id ASC").Limit(limit).Offset(offset).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	out := make([]domain.Resource, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toResourceDomain(&row))
+	}
+	return out, total, nil
+}
+
 func (r *ResourceRepository) GetByID(ctx context.Context, id string) (*domain.Resource, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("asset resource repository is not configured")

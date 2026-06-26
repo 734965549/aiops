@@ -1,4 +1,5 @@
 import { http } from './request'
+import type { PageResult } from './audit'
 
 export interface Application {
   id: string
@@ -106,10 +107,11 @@ export interface UpdateApplicationInput {
   description?: string
 }
 
-export function listApplications() {
-  return http<{ items: Application[] }>({
+export function listApplications(params?: { page?: number; page_size?: number }) {
+  return http<PageResult<Application>>({
     url: '/api/assets/applications',
-    method: 'get'
+    method: 'get',
+    params
   })
 }
 
@@ -121,10 +123,11 @@ export function createApplication(input: CreateApplicationInput) {
   })
 }
 
-export function listResources(applicationId: string) {
-  return http<{ items: Resource[] }>({
+export function listResources(applicationId: string, params?: { page?: number; page_size?: number }) {
+  return http<PageResult<Resource>>({
     url: `/api/assets/applications/${encodeURIComponent(applicationId)}/resources`,
-    method: 'get'
+    method: 'get',
+    params
   })
 }
 
@@ -166,10 +169,11 @@ export function deleteResource(id: string) {
   })
 }
 
-export function listMatchRules() {
-  return http<{ items: MatchRule[] }>({
+export function listMatchRules(params?: { page?: number; page_size?: number }) {
+  return http<PageResult<MatchRule>>({
     url: '/api/assets/match-rules',
-    method: 'get'
+    method: 'get',
+    params
   })
 }
 
@@ -222,7 +226,7 @@ export function triggerAssetSync(accountId: string) {
 }
 
 export function listSyncBatches(params?: { page?: number; page_size?: number; account_id?: string }) {
-  return http<{ items: SyncBatch[]; total: number; page: number; page_size: number }>({
+  return http<PageResult<SyncBatch>>({
     url: '/api/assets/sync/batches',
     method: 'get',
     params

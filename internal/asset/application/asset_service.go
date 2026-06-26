@@ -67,6 +67,24 @@ type UpdateResourceInput struct {
 	Instance     string
 }
 
+const (
+	assetDefaultPage     = 1
+	assetDefaultPageSize = 20
+	assetMaxPageSize     = 100
+)
+
+// ListApplicationsQuery 应用列表分页查询参数（page 从 1 开始，PageSize 默认 20、最大 100）。
+type ListApplicationsQuery struct {
+	Page     int
+	PageSize int
+}
+
+// ListResourcesQuery 资源列表分页查询参数（page 从 1 开始，PageSize 默认 20、最大 100）。
+type ListResourcesQuery struct {
+	Page     int
+	PageSize int
+}
+
 type ApplicationDTO struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -78,14 +96,14 @@ type ApplicationDTO struct {
 }
 
 type ResourceDTO struct {
-	ID            string `json:"id"`
-	ApplicationID string `json:"application_id"`
-	Name          string `json:"name,omitempty"`
-	ResourceType  string `json:"resource_type,omitempty"`
-	Namespace     string `json:"namespace,omitempty"`
-	Pod           string `json:"pod,omitempty"`
-	Node          string `json:"node,omitempty"`
-	Instance      string `json:"instance,omitempty"`
+	ID                   string `json:"id"`
+	ApplicationID        string `json:"application_id"`
+	Name                 string `json:"name,omitempty"`
+	ResourceType         string `json:"resource_type,omitempty"`
+	Namespace            string `json:"namespace,omitempty"`
+	Pod                  string `json:"pod,omitempty"`
+	Node                 string `json:"node,omitempty"`
+	Instance             string `json:"instance,omitempty"`
 	Source               string `json:"source,omitempty"`
 	IntegrationAccountID string `json:"integration_account_id,omitempty"`
 	CloudResourceID      string `json:"cloud_resource_id,omitempty"`
@@ -98,19 +116,23 @@ type ResourceDTO struct {
 	UpdatedAt            int64  `json:"updated_at"`
 }
 
-func (s *AssetService) ListApplications(ctx context.Context) ([]ApplicationDTO, error) {
+func (s *AssetService) ListApplications(ctx context.Context, q ListApplicationsQuery) ([]ApplicationDTO, int64, error) {
 	if s == nil || s.apps == nil {
-		return nil, apperr.New(apperr.CodeUnavailable, "asset service is not enabled")
+		return nil, 0, apperr.New(apperr.CodeUnavailable, "asset service is not enabled")
 	}
-	rows, err := s.apps.List(ctx)
+	page, pageSize := normalizeAssetPage(q.Page, q.PageSize)
+	rows, total, err := s.apps.ListPaged(ctx, domain.ApplicationFilter{
+		Limit:  pageSize,
+		Offset: (page - 1) * pageSize,
+	})
 	if err != nil {
-		return nil, wrapAssetError(err, "list applications failed")
+		return nil, 0, wrapAssetError(err, "list applications failed")
 	}
 	out := make([]ApplicationDTO, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, toApplicationDTO(row))
 	}
-	return out, nil
+	return out, total, nil
 }
 
 func (s *AssetService) CreateApplication(ctx context.Context, actor Actor, in CreateApplicationInput) (*ApplicationDTO, error) {
@@ -206,23 +228,27 @@ func (s *AssetService) DeleteApplication(ctx context.Context, id string, actor A
 	return nil
 }
 
-func (s *AssetService) ListResources(ctx context.Context, applicationID string) ([]ResourceDTO, error) {
+func (s *AssetService) ListResources(ctx context.Context, applicationID string, q ListResourcesQuery) ([]ResourceDTO, int64, error) {
 	if s == nil || s.resources == nil {
-		return nil, apperr.New(apperr.CodeUnavailable, "asset service is not enabled")
+		return nil, 0, apperr.New(apperr.CodeUnavailable, "asset service is not enabled")
 	}
 	applicationID = strings.TrimSpace(applicationID)
 	if applicationID == "" {
-		return nil, apperr.New(apperr.CodeInvalidArgument, "application_id is required")
+		return nil, 0, apperr.New(apperr.CodeInvalidArgument, "application_id is required")
 	}
-	rows, err := s.resources.ListByApplicationID(ctx, applicationID)
+	page, pageSize := normalizeAssetPage(q.Page, q.PageSize)
+	rows, total, err := s.resources.ListByApplicationIDPaged(ctx, applicationID, domain.ResourceFilter{
+		Limit:  pageSize,
+		Offset: (page - 1) * pageSize,
+	})
 	if err != nil {
-		return nil, wrapAssetError(err, "list resources failed")
+		return nil, 0, wrapAssetError(err, "list resources failed")
 	}
 	out := make([]ResourceDTO, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, toResourceDTO(row))
 	}
-	return out, nil
+	return out, total, nil
 }
 
 func (s *AssetService) CreateResource(ctx context.Context, actor Actor, in CreateResourceInput) (*ResourceDTO, error) {
@@ -334,6 +360,19 @@ func (s *AssetService) recordAudit(ctx context.Context, resourceType, resourceID
 		UserID:       userID,
 		Payload:      payload,
 	})
+}
+
+func normalizeAssetPage(page, pageSize int) (int, int) {
+	if page <= 0 {
+		page = assetDefaultPage
+	}
+	if pageSize <= 0 {
+		pageSize = assetDefaultPageSize
+	}
+	if pageSize > assetMaxPageSize {
+		pageSize = assetMaxPageSize
+	}
+	return page, pageSize
 }
 
 func wrapAssetError(err error, op string) error {

@@ -62,12 +62,17 @@ func (h *Handler) ListApplications(c *gin.Context) {
 		httpx.FailWith(c, apperr.CodeUnavailable, "asset service is not enabled")
 		return
 	}
-	items, err := h.assets.ListApplications(c.Request.Context())
+	var q pagination.Query
+	_ = c.ShouldBindQuery(&q)
+	q.Normalize()
+	items, total, err := h.assets.ListApplications(c.Request.Context(), assetapp.ListApplicationsQuery{
+		Page: q.Page, PageSize: q.PageSize,
+	})
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
-	httpx.OK(c, gin.H{"items": items})
+	httpx.OK(c, pagination.NewResult(items, total, q))
 }
 
 // CreateApplication POST /api/assets/applications
@@ -133,12 +138,17 @@ func (h *Handler) ListResources(c *gin.Context) {
 		httpx.FailWith(c, apperr.CodeUnavailable, "asset service is not enabled")
 		return
 	}
-	items, err := h.assets.ListResources(c.Request.Context(), c.Param("application_id"))
+	var q pagination.Query
+	_ = c.ShouldBindQuery(&q)
+	q.Normalize()
+	items, total, err := h.assets.ListResources(c.Request.Context(), c.Param("application_id"), assetapp.ListResourcesQuery{
+		Page: q.Page, PageSize: q.PageSize,
+	})
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
-	httpx.OK(c, gin.H{"items": items})
+	httpx.OK(c, pagination.NewResult(items, total, q))
 }
 
 // CreateResource POST /api/assets/resources
@@ -292,12 +302,17 @@ func (h *Handler) ListMatchRules(c *gin.Context) {
 		httpx.FailWith(c, apperr.CodeUnavailable, "match rule service is not enabled")
 		return
 	}
-	items, err := h.matchRules.List(c.Request.Context())
+	var q pagination.Query
+	_ = c.ShouldBindQuery(&q)
+	q.Normalize()
+	items, total, err := h.matchRules.List(c.Request.Context(), assetapp.ListMatchRulesQuery{
+		Page: q.Page, PageSize: q.PageSize,
+	})
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
-	httpx.OK(c, gin.H{"items": items})
+	httpx.OK(c, pagination.NewResult(items, total, q))
 }
 
 // CreateMatchRule POST /api/assets/match-rules
