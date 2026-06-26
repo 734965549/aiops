@@ -462,7 +462,7 @@ server {
 构建和推送：
 
 ```bash
-docker build -f web/Dockerfile -t registry.example.com/aiops/aiops-web:<version> .
+docker build -f web/Dockerfile -t registry.example.com/aiops/aiops-web:<version> web
 docker push registry.example.com/aiops/aiops-web:<version>
 ```
 
