@@ -32,5 +32,6 @@ INSERT INTO public.schema_migrations (version, name, applied_at) VALUES
 ('0018', 'init_integration', NOW()),
 ('0019', 'init_observability', NOW()),
 ('0020', 'init_inspection', NOW()),
-('0022', 'init_execution_agent', NOW())
+('0022', 'init_execution_agent', NOW()),
+('0023', 'asset_cloud_sync', NOW())
 ON CONFLICT (version) DO NOTHING;
