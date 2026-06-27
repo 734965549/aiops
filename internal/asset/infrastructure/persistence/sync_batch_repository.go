@@ -21,9 +21,10 @@ type syncBatchModel struct {
 	UpdatedCount         int        `gorm:"column:updated_count;not null;default:0"`
 	StaleCount           int        `gorm:"column:stale_count;not null;default:0"`
 	FailedCount          int        `gorm:"column:failed_count;not null;default:0"`
-	Message              string     `gorm:"column:message;type:varchar(512);not null;default:''"`
+	Message              string     `gorm:"column:message;type:text;not null;default:''"`
 	StartedAt            time.Time  `gorm:"column:started_at;not null"`
 	FinishedAt           *time.Time `gorm:"column:finished_at"`
+	LeaseExpiresAt       *time.Time `gorm:"column:lease_expires_at"`
 }
 
 func (syncBatchModel) TableName() string { return "asset_sync_batch" }
@@ -61,15 +62,21 @@ func (r *SyncBatchRepository) Update(ctx context.Context, batch *domain.SyncBatc
 		return errors.New("sync batch is nil")
 	}
 	now := time.Now().UTC()
+	// 终态批次清空租约，释放账号级 running 槽位（部分唯一索引 WHERE status='running'）。
+	leaseVal := (*time.Time)(nil)
+	if batch.Status == domain.SyncBatchStatusRunning {
+		leaseVal = batch.LeaseExpiresAt
+	}
 	result := r.db.WithContext(ctx).Model(&syncBatchModel{}).Where("batch_id = ?", batch.BatchID).Updates(map[string]any{
-		"status":        batch.Status,
-		"created_count": batch.CreatedCount,
-		"updated_count": batch.UpdatedCount,
-		"stale_count":   batch.StaleCount,
-		"failed_count":  batch.FailedCount,
-		"message":       batch.Message,
-		"finished_at":   batch.FinishedAt,
-		"updated_at":    now,
+		"status":           batch.Status,
+		"created_count":    batch.CreatedCount,
+		"updated_count":    batch.UpdatedCount,
+		"stale_count":      batch.StaleCount,
+		"failed_count":     batch.FailedCount,
+		"message":          batch.Message,
+		"finished_at":      batch.FinishedAt,
+		"lease_expires_at": leaseVal,
+		"updated_at":       now,
 	})
 	if result.Error != nil {
 		return result.Error
@@ -98,6 +105,59 @@ func (r *SyncBatchRepository) GetByID(ctx context.Context, batchID string) (*dom
 	}
 	out := toSyncBatchDomain(&row)
 	return &out, nil
+}
+
+// ReapExpiredRunning 将指定账号下租约已过期的 running 批次标记为 failed，
+// 释放账号级 running 槽位。对应迁移 0028 的部分唯一索引。
+func (r *SyncBatchRepository) ReapExpiredRunning(ctx context.Context, accountID string, now time.Time) (int64, error) {
+	if r == nil || r.db == nil {
+		return 0, errors.New("asset sync batch repository is not configured")
+	}
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return 0, nil
+	}
+	result := r.db.WithContext(ctx).Model(&syncBatchModel{}).
+		Where("integration_account_id = ? AND status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at < ?",
+			accountID, domain.SyncBatchStatusRunning, now).
+		Updates(map[string]any{
+			"status":           domain.SyncBatchStatusFailed,
+			"finished_at":      now,
+			"lease_expires_at": nil,
+			"message":          "lease expired; previous sync batch interrupted",
+			"updated_at":       now,
+		})
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return result.RowsAffected, nil
+}
+
+// RenewLease 续租 running 批次：把 lease_expires_at 置为 now+ttl，updated_at=now。
+// 仅当 status='running' 时续租；批次已终态（RowsAffected=0）返回 ErrNotFound，
+// 调用方据此停止心跳。
+func (r *SyncBatchRepository) RenewLease(ctx context.Context, batchID string, now time.Time, ttl time.Duration) error {
+	if r == nil || r.db == nil {
+		return errors.New("asset sync batch repository is not configured")
+	}
+	batchID = strings.TrimSpace(batchID)
+	if batchID == "" {
+		return domain.ErrNotFound
+	}
+	expires := now.Add(ttl)
+	result := r.db.WithContext(ctx).Model(&syncBatchModel{}).
+		Where("batch_id = ? AND status = ?", batchID, domain.SyncBatchStatusRunning).
+		Updates(map[string]any{
+			"lease_expires_at": expires,
+			"updated_at":       now,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }
 
 func (r *SyncBatchRepository) List(ctx context.Context, filter domain.SyncBatchFilter) ([]domain.SyncBatch, int64, error) {
@@ -144,6 +204,7 @@ func toSyncBatchModel(batch *domain.SyncBatch) syncBatchModel {
 		Message:              batch.Message,
 		StartedAt:            batch.StartedAt,
 		FinishedAt:           batch.FinishedAt,
+		LeaseExpiresAt:       batch.LeaseExpiresAt,
 	}
 }
 
@@ -163,6 +224,7 @@ func toSyncBatchDomain(m *syncBatchModel) domain.SyncBatch {
 		Message:              m.Message,
 		StartedAt:            m.StartedAt,
 		FinishedAt:           m.FinishedAt,
+		LeaseExpiresAt:       m.LeaseExpiresAt,
 		CreatedAt:            m.CreatedAt,
 		UpdatedAt:            m.UpdatedAt,
 	}

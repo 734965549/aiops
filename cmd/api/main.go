@@ -320,6 +320,10 @@ func main() {
 		assetAppRepo, assetResRepo, assetSyncBatchRepo,
 		assetDiscoveryAdapter, assetIntegAdapter, assetAuditRecorder,
 	)
+	// 注入进程级 context：后台同步 goroutine 的 runCtx 派生自它，关闭时取消可让在途同步尽快落终态。
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+	assetSyncSvc.SetLifecycle(rootCtx)
 	assetHandler := assethttp.NewHandler(assetSvc, assetRuleSvc, assetSyncSvc)
 
 	// ---- 装配 Inspection 限界上下文（巡检策略/运行/发现/建议 + 证据链分析）----
@@ -383,6 +387,10 @@ func main() {
 		}
 	}
 
+	// 1. 取消进程级 context：在途后台同步 goroutine 收到 runCtx 取消，
+	//    discovery 循环退出，finalize 用独立短 ctx 落终态。
+	rootCancel()
+	// 2. 停止接收新 HTTP 请求并处理在途请求。
 	shutdownTimeout := time.Duration(app.Cfg.Server.ShutdownTimeoutS) * time.Second
 	if shutdownTimeout <= 0 {
 		shutdownTimeout = 10 * time.Second
@@ -392,6 +400,8 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.L().Error("server shutdown error", logger.Error(err))
 	}
+	// 3. 等待后台同步 goroutine 落终态收尾，确保进程退出前不留卡 running 的批次。
+	assetSyncSvc.Wait()
 	logger.L().Info("aiops-api stopped")
 }
 

@@ -2,28 +2,45 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/734965549/aiops/internal/asset/domain"
-	integdomain "github.com/734965549/aiops/internal/integration/domain"
 	obsapp "github.com/734965549/aiops/internal/observability/application"
 	obsdomain "github.com/734965549/aiops/internal/observability/domain"
 	apperr "github.com/734965549/aiops/pkg/errors"
+	"github.com/734965549/aiops/pkg/logger"
 	"github.com/google/uuid"
 )
 
 var defaultCloudResourceTypes = []string{"ecs", "cce", "rds", "elb"}
 
+// syncBatchLeaseTTL 是单次续租窗口有效期。后台 goroutine 每 syncLeaseRenewInterval 续租一次，
+// 把 lease_expires_at 推进到 now+TTL；只要心跳正常，批次不会被 reap。
+// 进程崩溃后心跳停止，TTL 到期由下一次同步 ReapExpiredRunning 收尾，实现自愈。
+// 不依赖 Redis，与 redis.required=false 部署姿态一致。
+// 这些时长在测试中可被覆盖（如缩短心跳间隔/硬超时以加速用例），故用 var 而非 const。
+var (
+	syncBatchLeaseTTL        = 5 * time.Minute
+	syncLeaseRenewInterval   = 60 * time.Second
+	syncHardTimeout          = 30 * time.Minute
+	syncTerminalCtxTimeout   = 10 * time.Second
+	syncLeaseRenewCtxTimeout = 5 * time.Second
+)
+
 // SyncService 云资源同步到 Asset 注册表。
 type SyncService struct {
-	apps      domain.ApplicationRepository
-	resources domain.ResourceRepository
-	batches   domain.SyncBatchRepository
-	discovery CloudDiscoveryPort
-	accounts  IntegrationAccountPort
-	audit     AuditRecorder
+	apps        domain.ApplicationRepository
+	resources   domain.ResourceRepository
+	batches     domain.SyncBatchRepository
+	discovery   CloudDiscoveryPort
+	accounts    IntegrationAccountPort
+	audit       AuditRecorder
+	shutdownCtx context.Context // 后台 goroutine 派生 runCtx 的父 context；默认 background，由 main.go 注入
+	wg          sync.WaitGroup  // 跟踪在途同步 goroutine，供关闭时 Wait
 }
 
 func NewSyncService(
@@ -40,8 +57,21 @@ func NewSyncService(
 	return &SyncService{
 		apps: apps, resources: resources, batches: batches,
 		discovery: discovery, accounts: accounts, audit: audit,
+		shutdownCtx: context.Background(),
 	}
 }
+
+// SetLifecycle 注入进程级 context，后台同步 goroutine 的 runCtx 派生自它；
+// 关闭时取消该 context 可让在途同步尽快进入 finalize 落终态。由 main.go 装配。
+func (s *SyncService) SetLifecycle(ctx context.Context) {
+	if ctx != nil {
+		s.shutdownCtx = ctx
+	}
+}
+
+// Wait 等待所有在途同步 goroutine 收尾（finalize 落终态）。
+// 应在 HTTP server 关闭后调用，确保进程退出前不留卡 running 的批次。
+func (s *SyncService) Wait() { s.wg.Wait() }
 
 type TriggerSyncInput struct {
 	AccountID string
@@ -75,6 +105,15 @@ type discoveredScope struct {
 	ResourceType string
 }
 
+// negativeStaleScope 表示一个需要反向 stale 标记的 region：标记该 account+region 下所有
+// active 的 cloud_sync 资源（排除当前批次）为 stale，但跳过 ExceptTypes 中的类型，见 §13.1。
+// 用于 CES/hybrid 权威 scope：从资源组移除的类型不在 ExceptTypes 中，会被标记 stale；
+// ExceptTypes 收集不确定类型（查询失败/转换失败/持久化失败），保持 active 避免误标。
+type negativeStaleScope struct {
+	Region      string
+	ExceptTypes []string
+}
+
 func (s *SyncService) TriggerSync(ctx context.Context, actor Actor, in TriggerSyncInput) (*SyncBatchDTO, error) {
 	if s == nil || s.batches == nil || s.resources == nil || s.apps == nil {
 		return nil, apperr.New(apperr.CodeUnavailable, "asset sync service is not enabled")
@@ -101,64 +140,107 @@ func (s *SyncService) TriggerSync(ctx context.Context, actor Actor, in TriggerSy
 
 	batchID := "sync-" + uuid.NewString()
 	now := time.Now().UTC()
+	// 账号级互斥：先 reap 本账号租约过期的 running 批次（崩溃批次自愈），
+	// 再插入带租约的 running 批次。若账号已有 running 批次，
+	// 0028 部分唯一索引 (integration_account_id) WHERE status='running' 会触发唯一冲突，
+	// 映射为 409，避免并发批次交错互相标记 stale。见 docs/huawei-ces-asset-sync-plan.md §P1。
+	reaped, err := s.batches.ReapExpiredRunning(ctx, accountID, now)
+	if err != nil {
+		return nil, wrapAssetError(err, "reap expired sync batches failed")
+	}
+	if reaped > 0 {
+		_ = s.audit.Record(ctx, AuditRecord{
+			ResourceType: "asset_sync_batch",
+			ResourceID:   accountID,
+			Action:       AuditAssetSync,
+			UserID:       actor.UserID,
+			Payload: map[string]any{
+				"event":        "reap_expired_running",
+				"account_id":   accountID,
+				"reaped_count": reaped,
+				"result":       "success",
+			},
+		})
+	}
+	leaseExpires := now.Add(syncBatchLeaseTTL)
 	batch := &domain.SyncBatch{
 		BatchID:              batchID,
 		IntegrationAccountID: accountID,
 		Provider:             provider,
 		Status:               domain.SyncBatchStatusRunning,
 		StartedAt:            now,
+		LeaseExpiresAt:       &leaseExpires,
 	}
 	if err := s.batches.Create(ctx, batch); err != nil {
+		// batch_id 为 UUID，此处冲突只能是账号 running 槽位被占用。
+		if apperr.CodeOf(err) == apperr.CodeAlreadyExists {
+			return nil, apperr.New(apperr.CodeAlreadyExists, "sync already in progress for this account")
+		}
 		return nil, wrapAssetError(err, "create sync batch failed")
 	}
 
 	appID, err := s.ensureCloudApplication(ctx, accountID, provider)
 	if err != nil {
-		s.finishBatchFailed(ctx, batch, err)
+		// 前置阶段失败：批次刚创建即失败，用独立短 context 落终态，避免请求 ctx 取消导致卡 running。
+		s.finishBatchFailedDetached(batch, err)
 		return nil, err
 	}
 
+	// 立即返回 running 批次，同步在后台 goroutine 执行；前端轮询 GetSyncBatch 到终态。
+	// runCtx 派生自进程级 shutdownCtx（关闭时取消）+ 硬超时，与 HTTP 请求生命周期解耦。
+	runCtx, runCancel := context.WithTimeout(s.shutdownCtx, syncHardTimeout)
+	// 把请求 ctx 的 trace_id/user_id 等 logger 字段带入后台 goroutine，避免请求结束丢链路。
+	runCtx = logger.WithContext(runCtx, logger.From(ctx))
+	s.wg.Add(1)
+	go s.runSync(runCtx, runCancel, actor, batch, appID, regions, provider)
+
+	dto := toSyncBatchDTO(*batch)
+	dto.ApplicationID = appID
+	return &dto, nil
+}
+
+// runSync 后台执行同步主体：心跳续租 + discovery/upsert/stale + finalize 落终态。
+// runCtx 取消（关闭/硬超时）时，finalize 用独立短 context 仍能落终态，保证不卡 running。
+func (s *SyncService) runSync(
+	runCtx context.Context,
+	runCancel context.CancelFunc,
+	actor Actor,
+	batch *domain.SyncBatch,
+	appID string,
+	regions []string,
+	provider string,
+) {
+	defer s.wg.Done()
+	defer runCancel()
+
+	// 心跳：周期续租，独立短 ctx，finalize 时停止。leaseDone 在心跳退出后关闭，
+	// finalize 等待它以确保终态 Update 清空 lease 后不会再被心跳写回（避免竞态）。
+	leaseCtx, leaseCancel := context.WithCancel(context.Background())
+	defer leaseCancel()
+	leaseDone := make(chan struct{})
+	go s.leaseHeartbeat(leaseCtx, batch.BatchID, leaseDone)
+
+	accountID := batch.IntegrationAccountID
+	batchID := batch.BatchID
+	now := batch.StartedAt
 	obsActor := obsapp.Actor{UserID: actor.UserID, DisplayName: actor.DisplayName}
+
 	var partialErrs []string
 	var summaryLines []string
+	var syncSummaries []obsapp.CloudSyncSummary
+	var maxResourcesReached bool
+	var productNamesEmpty bool
+	var negativeScopes []negativeStaleScope
 	successScopes := make([]discoveredScope, 0, len(regions)*len(defaultCloudResourceTypes))
-	if provider == string(integdomain.ProviderHuaweiCloud) {
-		successScopes, summaryLines, partialErrs = s.syncHuaweiCES(ctx, obsActor, provider, regions, appID, accountID, batchID, now, batch)
-	} else {
-		for _, region := range regions {
-			for _, resType := range defaultCloudResourceTypes {
-				result, err := s.discovery.ListResources(ctx, obsActor, obsdomain.AssetDiscoveryQuery{
-					AccountID: accountID, Provider: provider, Region: region,
-					ResourceType: resType, Limit: 500,
-				})
-				if err != nil {
-					batch.FailedCount++
-					partialErrs = append(partialErrs, fmt.Sprintf("%s/%s: %s", region, resType, apperr.FromError(err).Message))
-					continue
-				}
-				successScopes = append(successScopes, discoveredScope{Region: region, ResourceType: resType})
-				if result == nil {
-					continue
-				}
-				for _, cloud := range result.Resources {
-					created, upsertErr := s.upsertCloudResource(ctx, appID, accountID, batchID, now, cloud)
-					if upsertErr != nil {
-						batch.FailedCount++
-						partialErrs = append(partialErrs, upsertErr.Error())
-						continue
-					}
-					if created {
-						batch.CreatedCount++
-					} else {
-						batch.UpdatedCount++
-					}
-				}
-			}
-		}
+	// 优先使用全量同步端口（CloudFullSyncPort）；provider 不支持时回退通用逐类型路径，
+	// 不在 Asset 层硬编码 provider 判断，见 docs/huawei-ces-asset-sync-plan.md §7.2。
+	successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries, fsErr := s.syncCloudFullSync(runCtx, obsActor, provider, regions, appID, accountID, batchID, now, batch)
+	if fsErr != nil {
+		successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries = s.syncGeneric(runCtx, obsActor, provider, regions, appID, accountID, batchID, now, batch)
 	}
 
 	for _, scope := range successScopes {
-		staleCount, err := s.resources.MarkStaleByAccountScopeExceptBatch(ctx, accountID, scope.Region, scope.ResourceType, batchID)
+		staleCount, err := s.resources.MarkStaleByAccountScopeExceptBatch(runCtx, accountID, scope.Region, scope.ResourceType, batchID)
 		if err != nil {
 			batch.FailedCount++
 			partialErrs = append(partialErrs, fmt.Sprintf("%s/%s: mark stale failed", scope.Region, scope.ResourceType))
@@ -166,44 +248,104 @@ func (s *SyncService) TriggerSync(ctx context.Context, actor Actor, in TriggerSy
 		}
 		batch.StaleCount += int(staleCount)
 	}
-
-	finished := time.Now().UTC()
-	batch.FinishedAt = &finished
-	allLines := append(append([]string(nil), summaryLines...), partialErrs...)
-	message := strings.Join(allLines, "; ")
-	switch {
-	case batch.FailedCount > 0 && batch.CreatedCount+batch.UpdatedCount == 0 && len(successScopes) == 0:
-		batch.Status = domain.SyncBatchStatusFailed
-		batch.Message = truncateMessage(message)
-	case batch.FailedCount > 0:
-		batch.Status = domain.SyncBatchStatusPartial
-		batch.Message = truncateMessage(message)
-	default:
-		batch.Status = domain.SyncBatchStatusSuccess
-		if strings.TrimSpace(message) == "" {
-			message = "ok"
+	// CES/hybrid 权威 scope 反向 stale：标记 account+region 下所有 active 资源为 stale，
+	// 但跳过不确定类型（ExceptTypes），见 docs/huawei-ces-asset-sync-plan.md §13.1。
+	for _, scope := range negativeScopes {
+		staleCount, err := s.resources.MarkStaleByAccountRegionExceptTypes(runCtx, accountID, scope.Region, scope.ExceptTypes, batchID)
+		if err != nil {
+			batch.FailedCount++
+			partialErrs = append(partialErrs, fmt.Sprintf("%s: mark stale failed", scope.Region))
+			continue
 		}
-		batch.Message = truncateMessage(message)
+		batch.StaleCount += int(staleCount)
 	}
-	if err := s.batches.Update(ctx, batch); err != nil {
-		return nil, wrapAssetError(err, "update sync batch failed")
+	// product_names 为空时使用兜底白名单（不完整且部分维度可能错误），至少标记 partial
+	// 提示操作人员同步可能不完整，见 docs/huawei-ces-asset-sync-plan.md §8.5。
+	if productNamesEmpty {
+		partialErrs = append(partialErrs, "product_names_empty=true (fallback whitelist used, sync may be incomplete)")
 	}
 
-	_ = s.audit.Record(ctx, AuditRecord{
-		ResourceType: "asset_sync_batch",
-		ResourceID:   batchID,
-		Action:       AuditAssetSync,
-		UserID:       actor.UserID,
-		Payload: map[string]any{
-			"account_id": accountID, "provider": provider, "status": batch.Status,
-			"created_count": batch.CreatedCount, "updated_count": batch.UpdatedCount,
-			"stale_count": batch.StaleCount, "failed_count": batch.FailedCount,
-		},
-	})
+	// finalize：闭包捕获 successScopes/maxResourcesReached/partialErrs/summaryLines/syncSummaries，
+	// 用独立短 ctx 写终态 + 审计，不受 runCtx 取消影响。
+	finalize := func() {
+		leaseCancel() // 停止心跳，终态不再续租
+		termCtx, termCancel := context.WithTimeout(context.Background(), syncTerminalCtxTimeout)
+		defer termCancel()
+		finished := time.Now().UTC()
+		batch.FinishedAt = &finished
+		allLines := append(append([]string(nil), summaryLines...), partialErrs...)
+		message := strings.Join(allLines, "; ")
+		// hasStaleScope 表示本轮至少有一个可执行 stale 的 scope（逐类型或反向），
+		// 用于判定"零入库且无成功 scope"的 failed 场景，见 §13。
+		hasStaleScope := len(successScopes) > 0 || len(negativeScopes) > 0
+		switch {
+		case runCtx.Err() != nil:
+			batch.Status = domain.SyncBatchStatusFailed
+			batch.Message = truncateMessage("sync cancelled or timed out; " + message)
+		case batch.FailedCount > 0 && batch.CreatedCount+batch.UpdatedCount == 0 && !hasStaleScope:
+			batch.Status = domain.SyncBatchStatusFailed
+			batch.Message = truncateMessage(message)
+		case batch.FailedCount > 0 || maxResourcesReached || productNamesEmpty:
+			batch.Status = domain.SyncBatchStatusPartial
+			batch.Message = truncateMessage(message)
+		default:
+			batch.Status = domain.SyncBatchStatusSuccess
+			if strings.TrimSpace(message) == "" {
+				message = "ok"
+			}
+			batch.Message = truncateMessage(message)
+		}
+		if err := s.batches.Update(termCtx, batch); err != nil {
+			logger.From(runCtx).Error("finalize sync batch failed", logger.String("batch_id", batchID), logger.Error(err))
+		}
+		_ = s.audit.Record(termCtx, AuditRecord{
+			ResourceType: "asset_sync_batch",
+			ResourceID:   batchID,
+			Action:       AuditAssetSync,
+			UserID:       actor.UserID,
+			Payload:      buildAssetSyncAuditPayload(accountID, provider, regions, batch, syncSummaries),
+		})
+	}
+	finalize()
+}
 
-	dto := toSyncBatchDTO(*batch)
-	dto.ApplicationID = appID
-	return &dto, nil
+// leaseHeartbeat 周期续租 running 批次的 lease_expires_at，直到 ctx 取消或批次已终态。
+// 续租用独立短 ctx，不依赖 runCtx（runCtx 取消时终态已由 finalize 处理，心跳应先停）。
+// 退出时关闭 done，供 finalize 等待心跳完全停止后再写终态，避免清空 lease 后被写回。
+func (s *SyncService) leaseHeartbeat(ctx context.Context, batchID string, done chan<- struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(syncLeaseRenewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			renewCtx, cancel := context.WithTimeout(context.Background(), syncLeaseRenewCtxTimeout)
+			err := s.batches.RenewLease(renewCtx, batchID, time.Now().UTC(), syncBatchLeaseTTL)
+			cancel()
+			if err != nil {
+				// 批次已终态（ErrNotFound）或 DB 异常：停止续租。
+				// 终态由 finalize 落库；DB 异常时 lease 不再推进，5min 后由下次同步 reap 兜底。
+				return
+			}
+		}
+	}
+}
+
+// finishBatchFailedDetached 用于前置阶段失败（如 ensureCloudApplication 失败）：
+// 批次刚创建即需落 failed，用独立短 ctx 避免请求 ctx 取消导致卡 running。
+func (s *SyncService) finishBatchFailedDetached(batch *domain.SyncBatch, cause error) {
+	if batch == nil || s.batches == nil {
+		return
+	}
+	termCtx, cancel := context.WithTimeout(context.Background(), syncTerminalCtxTimeout)
+	defer cancel()
+	finished := time.Now().UTC()
+	batch.Status = domain.SyncBatchStatusFailed
+	batch.FinishedAt = &finished
+	batch.Message = truncateMessage(apperr.FromError(cause).Message)
+	_ = s.batches.Update(termCtx, batch)
 }
 
 func (s *SyncService) GetBatch(ctx context.Context, batchID string) (*SyncBatchDTO, error) {
@@ -265,9 +407,15 @@ func (s *SyncService) ensureCloudApplication(ctx context.Context, accountID, pro
 	return appID, nil
 }
 
-// syncHuaweiCES 执行华为云 CES 全量同步，见 docs/huawei-ces-asset-sync-plan.md §8.1。
-// 对每个 region 调用全量同步端口，收集资源与摘要；返回成功 scope、摘要行与错误行。
-func (s *SyncService) syncHuaweiCES(
+// errFullSyncUnsupported 表示 provider 未实现 CloudFullSyncPort，调用方应回退通用逐类型路径。
+var errFullSyncUnsupported = errors.New("provider does not support full sync")
+
+// syncCloudFullSync 全量同步路径：通过 CloudFullSyncPort 按 region 全量发现，不受交互查询 limit<=500 限制，
+// 见 docs/huawei-ces-asset-sync-plan.md §7.2/§8.1。对每个 region 调用全量同步端口，收集资源与摘要；
+// 返回逐类型成功 scope（native/generic/fake 用）、反向 stale scope（CES/hybrid 权威 scope 用，见 §13.1）、
+// 摘要行与错误行。若 provider 不支持全量同步（首 region 返回 CodeFailedPrecondition），
+// 返回 errFullSyncUnsupported 供调用方回退 syncGeneric，此时尚未处理任何资源。
+func (s *SyncService) syncCloudFullSync(
 	ctx context.Context,
 	obsActor obsapp.Actor,
 	provider string,
@@ -275,26 +423,43 @@ func (s *SyncService) syncHuaweiCES(
 	appID, accountID, batchID string,
 	now time.Time,
 	batch *domain.SyncBatch,
-) (successScopes []discoveredScope, summaryLines, partialErrs []string) {
-	for _, region := range regions {
+) (successScopes []discoveredScope, negativeScopes []negativeStaleScope, summaryLines, partialErrs []string, maxResourcesReached, productNamesEmpty bool, syncSummaries []obsapp.CloudSyncSummary, fullSyncErr error) {
+	for i, region := range regions {
 		result, err := s.discovery.ListAllResources(ctx, obsActor, obsapp.AssetFullSyncQuery{
-			AccountID: accountID, Provider: provider, Region: region, MaxResources: 20000,
+			AccountID: accountID, Provider: provider, Region: region,
 		})
 		if err != nil {
+			// 首 region 返回 CodeFailedPrecondition 说明 provider 不支持全量同步，回退通用路径。
+			if i == 0 && apperr.CodeOf(err) == apperr.CodeFailedPrecondition {
+				fullSyncErr = errFullSyncUnsupported
+				return
+			}
 			batch.FailedCount++
 			partialErrs = append(partialErrs, fmt.Sprintf("%s: %s", region, apperr.FromError(err).Message))
 			continue
 		}
 		if result == nil {
+			// provider 返回 nil result 且无错误属于契约违规，不能静默跳过，
+			// 否则该 region 可能被当作成功而遗漏资源，最终得到 success/ok。
+			batch.FailedCount++
+			partialErrs = append(partialErrs, fmt.Sprintf("%s: %s", region, "provider returned nil discovery result without error"))
 			continue
 		}
-		regionTypes := map[string]struct{}{}
+		regionTypes := map[string]struct{}{}        // 本轮成功入库的类型（无 summary 时回退用）
+		persistFailedTypes := map[string]struct{}{} // 存在 upsert 失败的类型，见 §13
 		upserted := 0
 		for _, cloud := range result.Resources {
 			created, upsertErr := s.upsertCloudResource(ctx, appID, accountID, batchID, now, cloud)
 			if upsertErr != nil {
 				batch.FailedCount++
-				partialErrs = append(partialErrs, upsertErr.Error())
+				// 原始错误仅写日志，对外只保留脱敏摘要，避免表名/约束名等底层细节泄露，见 §13。
+				logger.From(ctx).Warn("upsert cloud resource failed",
+					logger.String("region", region), logger.String("cloud_resource_type", cloud.Type),
+					logger.Error(upsertErr))
+				partialErrs = append(partialErrs, fmt.Sprintf("%s: %s", region, apperr.FromError(upsertErr).Message))
+				if t := strings.ToLower(strings.TrimSpace(cloud.Type)); t != "" {
+					persistFailedTypes[t] = struct{}{}
+				}
 				continue
 			}
 			upserted++
@@ -309,8 +474,12 @@ func (s *SyncService) syncHuaweiCES(
 		}
 		// 摘要行，见 §8.1。
 		summary := result.Summary
-		line := fmt.Sprintf("region=%s group=%s ces_total=%d discovered=%d upserted=%d failed_scopes=%d",
-			region, summary.ResourceGroupName, summary.CESTotal, summary.Discovered, upserted, len(summary.FailedScopes))
+		syncSummaries = append(syncSummaries, summary)
+		line := fmt.Sprintf("region=%s project=%s group=%s group_id=%s ces_total=%d discovered=%d upserted=%d failed_scopes=%d",
+			region, summary.ProjectID, summary.ResourceGroupName, summary.ResourceGroupID, summary.CESTotal, summary.Discovered, upserted, len(summary.FailedScopes))
+		if summary.ResourceGroupSelection != "" {
+			line += fmt.Sprintf(" selected_resource_group=%s", summary.ResourceGroupSelection)
+		}
 		if summary.ProductNamesEmpty {
 			line += " product_names_empty=true"
 		}
@@ -320,22 +489,189 @@ func (s *SyncService) syncHuaweiCES(
 		if summary.InvalidResourceCount > 0 {
 			line += fmt.Sprintf(" invalid_resource=%d", summary.InvalidResourceCount)
 		}
+		if len(summary.QueryFailedTypes) > 0 {
+			line += fmt.Sprintf(" query_failed_types=%s", strings.Join(summary.QueryFailedTypes, ","))
+		}
+		if summary.EnrichedCount > 0 || len(summary.EnrichmentFailedTypes) > 0 {
+			line += fmt.Sprintf(" enriched=%d", summary.EnrichedCount)
+			if len(summary.EnrichmentFailedTypes) > 0 {
+				line += fmt.Sprintf(" enrichment_failed=%s", strings.Join(summary.EnrichmentFailedTypes, ","))
+			}
+		}
+		if summary.MaxResourcesReached {
+			line += " max_resources_reached=true"
+			maxResourcesReached = true
+		}
+		if summary.ProductNamesEmpty {
+			productNamesEmpty = true
+		}
 		summaryLines = append(summaryLines, line)
 		if len(summary.FailedScopes) > 0 {
 			batch.FailedCount += len(summary.FailedScopes)
 			partialErrs = append(partialErrs, summary.FailedScopes...)
 		}
-		for _, t := range summary.SuccessfulTypes {
-			if t = strings.ToLower(strings.TrimSpace(t)); t != "" {
-				regionTypes[t] = struct{}{}
-			}
+		// 达到 max_resources 时该 region 的类型不完整，禁止执行 stale 标记，见 §13。
+		if summary.MaxResourcesReached {
+			continue
 		}
-		// Stale scope 以 provider 成功查询的类型为准；旧 adapter 没有 summary 时回退到本轮入库类型。
-		for t := range regionTypes {
+		// CES/hybrid 的资源组 product_names 是权威 scope：不在 scope 内的类型视为已从资源组移除，
+		// 应标记 stale。改用反向 stale 标记（account+region 下除不确定类型外全部 stale），
+		// 避免删除资源类型后旧资产永久保持 active，见 docs/huawei-ces-asset-sync-plan.md §13.1。
+		// native/generic/fake 路径 scope 非权威，仍用逐类型标记（只标查询成功的类型）。
+		if isAuthoritativeScope(summary.SyncMode) {
+			negativeScopes = append(negativeScopes, negativeStaleScope{
+				Region:      region,
+				ExceptTypes: mergeLowerStrings(summary.QueryFailedTypes, summary.ConversionFailedTypes, mapStringSetKeys(persistFailedTypes)),
+			})
+			continue
+		}
+		// stale 门控：只有 provider 查询完整、资源转换完整、全部资源成功持久化三者都成立
+		// 的类型才允许执行 stale，见 docs/huawei-ces-asset-sync-plan.md §13。
+		// 旧 adapter 没有 SuccessfulTypes 时回退到本轮成功入库类型（仍排除持久化失败的类型）。
+		eligibleTypes := resolveStaleScope(summary.SuccessfulTypes, summary.ConversionFailedTypes, regionTypes, persistFailedTypes)
+		for t := range eligibleTypes {
 			successScopes = append(successScopes, discoveredScope{Region: region, ResourceType: t})
 		}
 	}
-	return successScopes, summaryLines, partialErrs
+	return successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries, nil
+}
+
+// syncGeneric 通用逐类型同步路径：按 region × resource_type 调用 ListResources（limit 500），
+// 适用于不支持 CloudFullSyncPort 的 provider，见 docs/huawei-ces-asset-sync-plan.md §7.2。
+func (s *SyncService) syncGeneric(
+	ctx context.Context,
+	obsActor obsapp.Actor,
+	provider string,
+	regions []string,
+	appID, accountID, batchID string,
+	now time.Time,
+	batch *domain.SyncBatch,
+) (successScopes []discoveredScope, negativeScopes []negativeStaleScope, summaryLines, partialErrs []string, maxResourcesReached, productNamesEmpty bool, syncSummaries []obsapp.CloudSyncSummary) {
+	for _, region := range regions {
+		for _, resType := range defaultCloudResourceTypes {
+			result, err := s.discovery.ListResources(ctx, obsActor, obsdomain.AssetDiscoveryQuery{
+				AccountID: accountID, Provider: provider, Region: region,
+				ResourceType: resType, Limit: 500,
+			})
+			if err != nil {
+				batch.FailedCount++
+				partialErrs = append(partialErrs, fmt.Sprintf("%s/%s: %s", region, resType, apperr.FromError(err).Message))
+				continue
+			}
+			// provider 查询成功；先 upsert，全部资源成功持久化后才把该 scope 纳入 stale 标记，见 §13。
+			typePersistFailed := false
+			if result != nil {
+				for _, cloud := range result.Resources {
+					created, upsertErr := s.upsertCloudResource(ctx, appID, accountID, batchID, now, cloud)
+					if upsertErr != nil {
+						batch.FailedCount++
+						// 原始错误仅写日志，对外只保留脱敏摘要，避免表名/约束名等底层细节泄露，见 §13。
+						logger.From(ctx).Warn("upsert cloud resource failed",
+							logger.String("region", region), logger.String("cloud_resource_type", cloud.Type),
+							logger.Error(upsertErr))
+						partialErrs = append(partialErrs, fmt.Sprintf("%s/%s: %s", region, resType, apperr.FromError(upsertErr).Message))
+						typePersistFailed = true
+						continue
+					}
+					if created {
+						batch.CreatedCount++
+					} else {
+						batch.UpdatedCount++
+					}
+				}
+			}
+			if typePersistFailed {
+				continue
+			}
+			// 截断门控：provider 返回 HasMore=true 表示因达到 limit 而截断，云端仍有更多资源，
+			// 该类型跳过 stale 标记，避免未返回资源被误标 stale，见 §13.1。
+			if result != nil && result.HasMore {
+				continue
+			}
+			successScopes = append(successScopes, discoveredScope{Region: region, ResourceType: resType})
+		}
+	}
+	return successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries
+}
+
+// resolveStaleScope 计算允许执行 stale 标记的类型集合，见 docs/huawei-ces-asset-sync-plan.md §13。
+// 只有 provider 查询完整(SuccessfulTypes)、资源转换完整(非 ConversionFailedTypes)、
+// 全部资源成功持久化(非 persistFailedTypes)三者都成立的类型才返回。
+// 当 provider 未提供 SuccessfulTypes（旧 adapter）时回退到本轮成功入库类型，仍排除持久化失败的类型。
+func resolveStaleScope(successfulTypes, conversionFailedTypes []string, upsertedTypes, persistFailedTypes map[string]struct{}) map[string]struct{} {
+	out := map[string]struct{}{}
+	convertFailed := lowerStringSet(conversionFailedTypes)
+	if len(successfulTypes) > 0 {
+		for _, t := range successfulTypes {
+			t = strings.ToLower(strings.TrimSpace(t))
+			if t == "" {
+				continue
+			}
+			if _, bad := convertFailed[t]; bad {
+				continue
+			}
+			if _, bad := persistFailedTypes[t]; bad {
+				continue
+			}
+			out[t] = struct{}{}
+		}
+		return out
+	}
+	// 旧 adapter 无 SuccessfulTypes：回退到本轮成功入库类型，仍排除持久化失败的类型。
+	for t := range upsertedTypes {
+		if _, bad := persistFailedTypes[t]; bad {
+			continue
+		}
+		out[t] = struct{}{}
+	}
+	return out
+}
+
+// lowerStringSet 将字符串切片归一化为小写去重集合。
+func lowerStringSet(values []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, v := range values {
+		if v = strings.ToLower(strings.TrimSpace(v)); v != "" {
+			out[v] = struct{}{}
+		}
+	}
+	return out
+}
+
+// isAuthoritativeScope 判断 sync_mode 是否代表权威 scope（CES 资源分组 product_names 完整定义了
+// 资源组内类型集合）。权威 scope 用反向 stale 标记：不在 scope 内的类型视为已移除，见 §13.1。
+// native 只覆盖固定 4 类、generic/fake 覆盖范围有限，均非权威，不能反向标记。
+func isAuthoritativeScope(syncMode string) bool {
+	mode := strings.ToLower(strings.TrimSpace(syncMode))
+	return mode == "ces" || mode == "hybrid"
+}
+
+// mergeLowerStrings 将多组字符串合并为小写去重切片，用于聚合反向 stale 的 exceptTypes
+// （QueryFailedTypes ∪ ConversionFailedTypes ∪ persistFailedTypes），见 §13.1。
+func mergeLowerStrings(sets ...[]string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, set := range sets {
+		for _, v := range set {
+			if v = strings.ToLower(strings.TrimSpace(v)); v != "" {
+				if _, ok := seen[v]; ok {
+					continue
+				}
+				seen[v] = struct{}{}
+				out = append(out, v)
+			}
+		}
+	}
+	return out
+}
+
+// mapStringSetKeys 返回 map[string]struct{} 的 key 切片，用于把 persistFailedTypes 转为切片。
+func mapStringSetKeys(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 func (s *SyncService) upsertCloudResource(
@@ -367,19 +703,9 @@ func (s *SyncService) upsertCloudResource(
 		SyncStatus:           domain.SyncStatusActive,
 		LastSyncedAt:         &syncedAt,
 		SyncBatchID:          batchID,
+		Labels:               cloud.Labels,
 	}
 	return s.resources.UpsertCloudSync(ctx, res)
-}
-
-func (s *SyncService) finishBatchFailed(ctx context.Context, batch *domain.SyncBatch, cause error) {
-	if batch == nil || s.batches == nil {
-		return
-	}
-	finished := time.Now().UTC()
-	batch.Status = domain.SyncBatchStatusFailed
-	batch.FinishedAt = &finished
-	batch.Message = truncateMessage(apperr.FromError(cause).Message)
-	_ = s.batches.Update(ctx, batch)
 }
 
 func cloudApplicationID(accountID string) string {
@@ -398,7 +724,10 @@ func mapCloudResourceToAssetFields(cloud obsdomain.CloudResource) (resourceType,
 		return "storage", cloudProviderRef(cloud)
 	case "vpc", "vpcep", "nat":
 		return "network", cloudProviderRef(cloud)
-	case "rds", "elb", "cce", "apm":
+	case "rds":
+		// SYS.RDS -> database，对齐 docs/huawei-ces-asset-sync-plan.md §9.3 namespace 映射表。
+		return "database", cloudProviderRef(cloud)
+	case "elb", "cce", "apm":
 		return "service", cloudProviderRef(cloud)
 	case "dcs", "dms":
 		return "middleware", cloudProviderRef(cloud)
@@ -440,12 +769,80 @@ func normalizeRegions(regions []string) []string {
 	return out
 }
 
+const syncBatchMessageMaxRunes = 2000
+
 func truncateMessage(msg string) string {
 	msg = strings.TrimSpace(msg)
-	if len(msg) <= 500 {
+	runes := []rune(msg)
+	if len(runes) <= syncBatchMessageMaxRunes {
 		return msg
 	}
-	return msg[:500]
+	return string(runes[:syncBatchMessageMaxRunes])
+}
+
+func buildAssetSyncAuditPayload(accountID, provider string, regions []string, batch *domain.SyncBatch, summaries []obsapp.CloudSyncSummary) map[string]any {
+	payload := map[string]any{
+		"account_id": accountID, "provider": provider, "status": batch.Status,
+		"regions":       append([]string(nil), regions...),
+		"created_count": batch.CreatedCount, "updated_count": batch.UpdatedCount,
+		"stale_count": batch.StaleCount, "failed_count": batch.FailedCount,
+	}
+	if len(summaries) == 0 {
+		return payload
+	}
+	payload["sync_mode"] = firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.SyncMode })
+	payload["resource_group"] = firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.ResourceGroupName })
+	payload["resource_group_id"] = firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.ResourceGroupID })
+	payload["projects"] = uniqueSummaryStrings(summaries, func(s obsapp.CloudSyncSummary) string { return s.ProjectID })
+	payload["ces_total"] = sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.CESTotal })
+	payload["discovered_count"] = sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.Discovered })
+	payload["unknown_namespace_count"] = sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.UnknownNamespaceCount })
+	payload["invalid_resource_count"] = sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.InvalidResourceCount })
+	payload["max_resources_reached"] = anySummaryBool(summaries, func(s obsapp.CloudSyncSummary) bool { return s.MaxResourcesReached })
+	return payload
+}
+
+func firstSummaryString(summaries []obsapp.CloudSyncSummary, pick func(obsapp.CloudSyncSummary) string) string {
+	for _, s := range summaries {
+		if v := strings.TrimSpace(pick(s)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func uniqueSummaryStrings(summaries []obsapp.CloudSyncSummary, pick func(obsapp.CloudSyncSummary) string) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, s := range summaries {
+		v := strings.TrimSpace(pick(s))
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
+func sumSummaryInt(summaries []obsapp.CloudSyncSummary, pick func(obsapp.CloudSyncSummary) int) int {
+	total := 0
+	for _, s := range summaries {
+		total += pick(s)
+	}
+	return total
+}
+
+func anySummaryBool(summaries []obsapp.CloudSyncSummary, pick func(obsapp.CloudSyncSummary) bool) bool {
+	for _, s := range summaries {
+		if pick(s) {
+			return true
+		}
+	}
+	return false
 }
 
 func isAlreadyExists(err error) bool {

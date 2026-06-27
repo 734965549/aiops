@@ -38,6 +38,52 @@ function Invoke-Api {
     return $json.data
 }
 
+# 触发同步后立即返回 running 批次，需轮询到终态再断言。
+function Wait-SyncBatch {
+    param(
+        [hashtable]$Headers,
+        [string]$BatchId,
+        [int]$IntervalMs = 1000,
+        [int]$TimeoutMs = 60000
+    )
+    $deadline = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        $b = Invoke-Api -Method GET -Path "/api/assets/sync/batches/$BatchId" -Headers $Headers
+        if ($b.status -ne "running") {
+            return $b
+        }
+        if ($deadline.ElapsedMilliseconds -gt $TimeoutMs) {
+            throw "sync batch $BatchId still running after ${TimeoutMs}ms"
+        }
+        Start-Sleep -Milliseconds $IntervalMs
+    }
+}
+
+function Remove-CloudSyncApplication {
+    param(
+        [hashtable]$Headers,
+        [string]$ApplicationId
+    )
+    if (-not $ApplicationId) { return }
+    $pageSize = 100
+    $page = 1
+    $fetched = 0
+    $total = 0
+    $resourceIds = @()
+    do {
+        $resources = Invoke-Api -Method GET -Path ("/api/assets/applications/" + $ApplicationId + "/resources?page=$page&page_size=$pageSize") -Headers $Headers
+        $total = [int]$resources.total
+        $items = @($resources.items)
+        $resourceIds += @($items | Where-Object { $_.source -eq "cloud_sync" } | ForEach-Object { $_.id })
+        $fetched += $items.Count
+        $page++
+    } while ($fetched -lt $total -and $items.Count -gt 0)
+    foreach ($resourceId in @($resourceIds | Select-Object -Unique)) {
+        Invoke-Api -Method DELETE -Path ("/api/assets/resources/" + $resourceId) -Headers $Headers | Out-Null
+    }
+    Invoke-Api -Method DELETE -Path ("/api/assets/applications/" + $ApplicationId) -Headers $Headers | Out-Null
+}
+
 Write-Host "==> login as $Username"
 $login = Invoke-Api -Method POST -Path "/api/identity/login" -Body @{
     username = $Username
@@ -66,6 +112,11 @@ $batch = Invoke-Api -Method POST -Path "/api/assets/sync" -Headers $auth -Body @
 if (-not $batch.batch_id) {
     throw "sync response missing batch_id"
 }
+if ($batch.status -ne "running") {
+    throw "expected sync status running immediately after trigger, got $($batch.status)"
+}
+# 异步同步：轮询到终态再断言。
+$batch = Wait-SyncBatch -Headers $auth -BatchId $batch.batch_id
 if ($batch.status -ne "success") {
     throw "expected sync status success, got $($batch.status) message=$($batch.message)"
 }
@@ -100,6 +151,10 @@ Write-Host "==> second sync keeps stable fake inventory active"
 $batch2 = Invoke-Api -Method POST -Path "/api/assets/sync" -Headers $auth -Body @{
     account_id = $accountId
 }
+if ($batch2.status -ne "running") {
+    throw "expected second sync status running immediately after trigger, got $($batch2.status)"
+}
+$batch2 = Wait-SyncBatch -Headers $auth -BatchId $batch2.batch_id
 if ($batch2.status -ne "success") {
     throw "second sync unexpected status $($batch2.status)"
 }
@@ -112,7 +167,8 @@ if ($staleItems.Count -ne 0) {
     throw "stable fake inventory should not contain stale resources"
 }
 
-Write-Host "==> cleanup account"
+Write-Host "==> cleanup synced cloud resources, application and account"
+Remove-CloudSyncApplication -Headers $auth -ApplicationId $appId
 Invoke-Api -Method DELETE -Path ("/api/integrations/accounts/" + $accountId) -Headers $auth | Out-Null
 
 Write-Host ""

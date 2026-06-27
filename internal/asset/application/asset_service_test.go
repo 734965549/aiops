@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/734965549/aiops/internal/asset/domain"
@@ -93,7 +94,9 @@ func (r *fakeAppRepo) Delete(_ context.Context, id string) error {
 }
 
 type fakeResRepo struct {
-	rows []domain.Resource
+	rows         []domain.Resource
+	upsertErr    error            // 非 nil 时所有 UpsertCloudSync 失败
+	upsertErrFor map[string]error // 按 CloudResourceType 注入 upsert 失败
 }
 
 func (r *fakeResRepo) Create(_ context.Context, res *domain.Resource) error {
@@ -199,7 +202,8 @@ func (r *fakeResRepo) FindByCloudKey(_ context.Context, key domain.CloudResource
 		row := r.rows[i]
 		if row.IntegrationAccountID == key.IntegrationAccountID &&
 			row.CloudResourceType == key.CloudResourceType &&
-			row.CloudResourceID == key.CloudResourceID {
+			row.CloudResourceID == key.CloudResourceID &&
+			row.Region == key.Region {
 			cp := row
 			return &cp, nil
 		}
@@ -208,10 +212,19 @@ func (r *fakeResRepo) FindByCloudKey(_ context.Context, key domain.CloudResource
 }
 
 func (r *fakeResRepo) UpsertCloudSync(_ context.Context, res *domain.Resource) (bool, error) {
+	if r.upsertErr != nil {
+		return false, r.upsertErr
+	}
+	if r.upsertErrFor != nil {
+		if err := r.upsertErrFor[res.CloudResourceType]; err != nil {
+			return false, err
+		}
+	}
 	key := domain.CloudResourceKey{
 		IntegrationAccountID: res.IntegrationAccountID,
 		CloudResourceType:    res.CloudResourceType,
 		CloudResourceID:      res.CloudResourceID,
+		Region:               res.Region,
 	}
 	if existing, err := r.FindByCloudKey(context.Background(), key); err == nil && existing != nil {
 		res.ID = existing.ID
@@ -230,6 +243,31 @@ func (r *fakeResRepo) MarkStaleByAccountScopeExceptBatch(_ context.Context, acco
 			row.CloudResourceType == cloudResourceType &&
 			row.SyncBatchID != batchID &&
 			row.SyncStatus == domain.SyncStatusActive {
+			row.SyncStatus = domain.SyncStatusStale
+			n++
+		}
+	}
+	return n, nil
+}
+
+// MarkStaleByAccountRegionExceptTypes 模拟反向 stale：account+region 下所有 active 的 cloud_sync
+// 资源（排除当前批次）标记 stale，但跳过 exceptTypes 中的类型，见 §13.1。
+func (r *fakeResRepo) MarkStaleByAccountRegionExceptTypes(_ context.Context, accountID, region string, exceptTypes []string, batchID string) (int64, error) {
+	except := make(map[string]struct{}, len(exceptTypes))
+	for _, t := range exceptTypes {
+		except[strings.ToLower(strings.TrimSpace(t))] = struct{}{}
+	}
+	var n int64
+	for i := range r.rows {
+		row := &r.rows[i]
+		if row.Source == domain.ResourceSourceCloudSync &&
+			row.IntegrationAccountID == accountID &&
+			row.Region == region &&
+			row.SyncBatchID != batchID &&
+			row.SyncStatus == domain.SyncStatusActive {
+			if _, skip := except[strings.ToLower(strings.TrimSpace(row.CloudResourceType))]; skip {
+				continue
+			}
 			row.SyncStatus = domain.SyncStatusStale
 			n++
 		}

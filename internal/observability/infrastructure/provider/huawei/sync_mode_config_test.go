@@ -92,3 +92,57 @@ func TestParseSyncModeConfig_BlankResourceGroupNameKeepsDefault(t *testing.T) {
 		t.Fatalf("ResourceGroupName = %q, want %q", cfg.ResourceGroupName, defaultResourceGroupName)
 	}
 }
+
+func TestParseSyncModeConfig_RegionProjects(t *testing.T) {
+	raw := []byte(`{
+		"region_projects": [
+			{"region": "cn-south-1", "project_id": "pid-south"},
+			{"region": " cn-north-4 ", "project_id": " pid-north "},
+			{"region": "", "project_id": "skip-empty-region"},
+			{"region": "skip-empty-pid", "project_id": ""},
+			{"region": "CN-SOUTH-1", "project_id": "should-be-dedup"},
+			"not-an-object"
+		]
+	}`)
+	cfg := ParseSyncModeConfig(raw)
+	if len(cfg.RegionProjects) != 2 {
+		t.Fatalf("RegionProjects len = %d, want 2 (empty/非法项应过滤，重复 region 去重)", len(cfg.RegionProjects))
+	}
+	if cfg.RegionProjects[0].Region != "cn-south-1" || cfg.RegionProjects[0].ProjectID != "pid-south" {
+		t.Fatalf("RegionProjects[0] = %+v", cfg.RegionProjects[0])
+	}
+	// 第二项 region/project_id 被 trim。
+	if cfg.RegionProjects[1].Region != "cn-north-4" || cfg.RegionProjects[1].ProjectID != "pid-north" {
+		t.Fatalf("RegionProjects[1] = %+v", cfg.RegionProjects[1])
+	}
+}
+
+func TestResolveProjectID(t *testing.T) {
+	cfg := SyncModeConfig{
+		RegionProjects: []RegionProject{
+			{Region: "cn-south-1", ProjectID: "pid-south"},
+			{Region: "cn-north-4", ProjectID: "pid-north"},
+		},
+	}
+	cases := map[string]struct {
+		region   string
+		fallback string
+		want     string
+	}{
+		"hit south":         {"cn-south-1", "fallback", "pid-south"},
+		"hit north":         {"cn-north-4", "fallback", "pid-north"},
+		"case insensitive":  {"CN-SOUTH-1", "fallback", "pid-south"},
+		"miss falls back":   {"cn-east-3", "fallback", "fallback"},
+		"empty region":      {"", "fallback", "fallback"},
+		"empty fallback":    {"cn-east-3", "", ""},
+		"hit but empty pid": {"cn-south-1", "fallback", "pid-south"}, // 解析阶段已过滤空 pid，命中即非空
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := cfg.ResolveProjectID(c.region, c.fallback)
+			if got != c.want {
+				t.Fatalf("ResolveProjectID(%q, %q) = %q, want %q", c.region, c.fallback, got, c.want)
+			}
+		})
+	}
+}

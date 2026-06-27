@@ -24,7 +24,7 @@ internal/observability/
 | `LogSearchPort` | 日志搜索（脱敏摘要） | `cloud.logs.search` |
 | `TraceQueryPort` | 链路 Span 查询 | `cloud.traces.query` |
 | `TopologyQueryPort` | 服务拓扑快照（需 `topology` 能力） | `cloud.topology.get` |
-| `AssetDiscoveryPort` | 云资源只读发现 | `cloud.resources.list` |
+| `AssetDiscoveryPort` | 云资源只读发现（返回 `resources, hasMore, err`；`hasMore=true` 表示因达到查询上限而截断，Asset Sync 通用路径据此跳过该类型 stale） | `cloud.resources.list` |
 | `AlertRuleQueryPort` | 告警规则列表 | `cloud.alerts.list` |
 
 `ProviderEntry` 仅标识 provider 类型；`ProviderRegistry` 按 `provider` 路由，`QueryService` 按需断言上述小 Port（Prometheus 等 partial provider 无需实现全部方法）。

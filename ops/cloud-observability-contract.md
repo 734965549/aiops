@@ -111,14 +111,17 @@ AI 工具权限建议：
   "extra_config": {
     "sync_mode": "ces",
     "resource_group_name": "全部资源",
-    "max_resources": 20000
+    "max_resources": 20000,
+    "region_projects": [
+      { "region": "cn-south-1", "project_id": "pid-south" }
+    ]
   },
   "enabled": true,
   "owner_team": "sre"
 }
 ```
 
-`extra_config` 只允许保存 provider 专属非敏感配置，例如华为云资产同步的 `sync_mode`、`resource_group_name`、`resource_group_id`、`enterprise_project_id`、`max_resources`。密钥、Token、AK/SK、密码等仍只能通过 `credential` 写入凭据仓库，不能进入 `extra_config`。
+`extra_config` 只允许保存 provider 专属非敏感配置，例如华为云资产同步的 `sync_mode`、`resource_group_name`、`resource_group_id`、`enterprise_project_id`、`max_resources`、`region_projects`（region → project_id 映射，多区域账号按 region 选用对应 project_id，未命中回落账号 `project_id`）。密钥、Token、AK/SK、密码等仍只能通过 `credential` 写入凭据仓库，不能进入 `extra_config`。
 
 响应 `data`：
 
@@ -134,7 +137,10 @@ AI 工具权限建议：
   "extra_config": {
     "sync_mode": "ces",
     "resource_group_name": "全部资源",
-    "max_resources": 20000
+    "max_resources": 20000,
+    "region_projects": [
+      { "region": "cn-south-1", "project_id": "pid-south" }
+    ]
   },
   "enabled": true,
   "owner_team": "sre",
@@ -167,7 +173,7 @@ AI 工具权限建议：
 - Path: `/api/integrations/accounts/:account_id`
 - Auth: Bearer + `app:integrations:delete`
 
-第一阶段建议软删除或禁用，不直接删除历史巡检证据。
+第一阶段账号行软删除（保留用于审计/巡检证据，不直接删除历史巡检证据）；`integration_credential_ref` 中的凭据密文会在删除时一并硬删除，不再保留。
 
 ### 4.5 连通性测试
 
@@ -227,7 +233,7 @@ AI 工具权限建议：
 > - `signoz` / `prometheus`：全部为 fake adapter（确定性样本），CI 无需外部密钥。
 > - `huawei_cloud` + `auth_type=none`：全部能力仍为 fake，便于无云账号联调。
 > - `huawei_cloud` + `auth_type=ak_sk|agency` 的 logs/traces/topology/alerts：返回 `FAILED_PRECONDITION`（capability unsupported），**不**返回 fake 样本，避免误当作云端数据。
-- `huawei_cloud` + `auth_type=ak_sk` 的 **assets**：`sync_mode=ces` 默认走 CES 资源分组/资源列表全量发现，对齐 CES 控制台“全部资源/资源分组”口径；`sync_mode=native` 保留 ECS/CCE/RDS/ELB 原生只读兼容路径；`auth_type=none` 仍为 fake。完整模式定义见 `docs/huawei-ces-asset-sync-plan.md`。
+- `huawei_cloud` + `auth_type=ak_sk` 的 **assets**：`sync_mode=ces` 默认走 CES 资源分组/资源列表发现，同步范围为**指定资源分组**下资源（默认候选名“全部资源”，需用户在 CES 控制台预先创建；未命中即失败，不静默回退最大资源组）；`sync_mode=native` 保留 ECS/CCE/RDS/ELB 原生只读兼容路径；`auth_type=none` 仍为 fake。完整模式定义见 `docs/huawei-ces-asset-sync-plan.md`。
 > - 响应、日志、审计中不出现 AK/SK、`Authorization` header 或原始敏感云端报错；凭据在 API 进程装配时经 `CredentialProvider(integration_credential_ref + vault)` 解密，见 `cmd/api/main.go`。
 
 ### 5.0 Provider Port（Application 层）
@@ -355,11 +361,13 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 
 ### 5.5 云资源同步（Asset Sync，阶段 2 已落地）
 
-> **实现状态**：`huawei_cloud` + `auth_type=ak_sk` 当前 `ListResources` 走真实 ECS/CCE/RDS/ELB 只读 API；`auth_type=none` 仍为 fake，供 CI/E2E。同步写 `asset_resource`（`source=cloud_sync`）与 `asset_sync_batch`（迁移 `0023`）。
+> **实现状态**：`huawei_cloud` + `auth_type=ak_sk` 默认 `sync_mode=ces`，走 CES 资源分组/资源列表发现，同步范围为指定资源分组下资源；`sync_mode=hybrid` 先按指定资源分组入库，再按权限调用 ECS/CCE/RDS/ELB/EVS/VPC/DCS/DMS 原生 API 补充详情；`sync_mode=native` 才走旧 ECS/CCE/RDS/ELB 兼容路径。`auth_type=none` 仍为 fake，供 CI/E2E。同步写 `asset_resource`（`source=cloud_sync`）与 `asset_sync_batch`。完整功能依赖迁移链：`0023`（`asset_resource`/`asset_sync_batch` 基表）、`0024`（`integration_account.extra_config` 存放 `sync_mode`/`max_resources`/`region_projects` 等配置）、`0025`（`asset_resource.labels`）、`0026`（含 `region` 的部分唯一索引，区分多区域同类型同云 ID）、`0028`（`asset_sync_batch` 账号级 running 互斥与租约自愈）。
 >
-> **目标状态**：华为云真实账号资产同步应以 CES 资源分组为主路径，对齐 CES 控制台“全部资源”数量，覆盖 EVS/VPC/OBS/DCS/DMS/RDS/ELB/ECS 等 CES 可见资源。完整实现顺序、分页、映射、权限和验收标准见 `docs/huawei-ces-asset-sync-plan.md`。
+> **目标状态**：华为云真实账号资产同步以 CES 资源分组为主路径，同步范围为**指定资源分组**下资源（默认候选名“全部资源”需用户在 CES 控制台预先创建；不存在“CES 总览全量”隐式口径，未命中指定组即失败，不回退最大资源组），覆盖 EVS/VPC/OBS/DCS/DMS/RDS/ELB/ECS 等 CES 可见资源。完整实现顺序、分页、映射、权限和验收标准见 `docs/huawei-ces-asset-sync-plan.md`。
 >
-> **同步模式**：`ces` 是默认推荐模式，仅依赖 CES 资源分组发现资源；`hybrid` 是增强模式，先 CES 全量入库，再按权限调用 ECS/RDS/ELB/EVS/VPC/OBS 等原生 API 补详情；`native` 仅为兼容旧 ECS/CCE/RDS/ELB 路径，不作为 CES 总数完整性验收口径。
+> **同步模式**：`ces` 是默认推荐模式，仅依赖 CES 资源分组发现指定分组下资源；`hybrid` 是增强模式，先按指定资源分组入库，再按权限调用 ECS/CCE/RDS/ELB/EVS/VPC/DCS/DMS 等原生 API 补详情；`native` 仅为兼容旧 ECS/CCE/RDS/ELB 路径，不作为资源分组完整性验收口径。
+>
+> **当前增强状态**：`sync_mode=hybrid` 已落地指定资源分组发现 + ECS/CCE/RDS/ELB/EVS/VPC/DCS/DMS 原生 API 增强路由；其中 ECS 当前补充 `private_ip`、`flavor`、`vpc_id`、`az`，RDS 当前补充 `private_ip`、`vpc_id`、`subnet_id`、`flavor`，EVS 补充 `volume_id/volume_type/size_gb/attached_to/az/created_at/charging_mode`，VPC 补充 `vpc_name/cidr/status/enterprise_project_id/created_at/subnet_count`，DCS 补充 `instance_name/engine/engine_version/capacity_gb/spec_code/private_ip/az/vpc_id/charging_mode/created_at`，DMS（Kafka+RocketMQ 合并）补充 `instance_name/engine/engine_version/spec_code/capacity_gb/vpc_id/charging_mode/created_at`（Kafka 含 `private_ip`、无 `az`；RocketMQ 含 `az`、无 `private_ip`）。增强按 `ProviderRef` 匹配并只新增缺失 label，不覆盖 CES 已有 label；增强失败不影响 CES 基础资源入库，批次 `message` 追加 `enriched=N enrichment_failed=type1,type2` 摘要。OBS 原生增强仍属于后续扩展（需另引 OBS SDK）。
 
 #### 5.5.1 触发同步
 
@@ -375,28 +383,33 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 }
 ```
 
-响应 `data`：
+响应 `data`（触发后立即返回 `running` 批次，同步在后台执行）：
 
 ```json
 {
   "batch_id": "sync-xxx",
   "integration_account_id": "acc_xxx",
   "provider": "huawei_cloud",
-  "status": "success",
-  "created_count": 2,
+  "status": "running",
+  "created_count": 0,
   "updated_count": 0,
-  "stale_count": 1,
+  "stale_count": 0,
   "failed_count": 0,
-  "message": "ok",
+  "message": "",
   "application_id": "cloud-acc_xxx",
   "started_at": 1710000000,
-  "finished_at": 1710000010,
   "created_at": 1710000000,
-  "updated_at": 1710000010
+  "updated_at": 1710000000
 }
 ```
 
-`status`：`running` / `success` / `partial` / `failed`。云端已删除资源仅标记 `sync_status=stale`，不物理删除。
+`status`：`running` / `success` / `partial` / `failed`。触发同步立即返回 `running`；客户端应轮询 `GET /api/assets/sync/batches/:batch_id` 到终态（`success`/`partial`/`failed`）。云端已删除资源仅标记 `sync_status=stale`，不物理删除。
+
+**stale 标记语义**：`ces`/`hybrid` 模式下资源组 `product_names` 是权威 scope，采用反向 stale 标记——把 account+region 下所有 `active` 的 cloud_sync 资源（排除当前批次）标记为 `stale`，但跳过不确定类型（查询失败/转换失败/持久化失败）。这样从资源组移除的类型其旧资产也会被标记 stale，避免永久保持 `active`。`native`/通用/fake 路径 scope 非权威，仅对查询成功的类型逐类型标记 stale。`product_names` 为空时回落兜底白名单（不完整），批次至少标记 `partial`，message 含 `product_names_empty=true`。
+
+**账号级并发互斥**：同一 `integration_account_id` 同一时刻仅允许一个 `running` 批次（迁移 `0028` 部分唯一索引 `(integration_account_id) WHERE status='running'`）。若已有 `running` 批次，`POST /api/assets/sync` 返回 `409 ALREADY_EXISTS`，`message` 为 `sync already in progress for this account`，前端应提示「该账号正在同步，请稍后重试」。
+
+**异步生命周期与租约续租**：同步在后台 goroutine 执行（`runCtx` 派生自进程级 `shutdownCtx` + 30 分钟硬超时），与 HTTP 请求生命周期解耦。`running` 批次写入 `lease_expires_at`（单次窗口 TTL 5 分钟）；后台 goroutine 每 60 秒续租一次，把 `lease_expires_at` 推进到 `now+TTL`，保证正常同步不会因超时被 reap。终态写入与审计使用独立短 context（10 秒超时），即便 `runCtx` 取消（进程关闭/硬超时）也能落终态，不卡 `running`。进程崩溃遗留的 `running` 批次由下一次同步在插入前 reap 为 `failed`（`message=lease expired; previous sync batch interrupted`），实现自愈，不依赖 Redis。该约束避免并发批次交错执行 `MarkStaleByAccountScopeExceptBatch` 时把对方刚写入的资源错误标记为 stale。
 
 #### 5.5.2 同步批次列表
 
@@ -429,11 +442,12 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 | `source` | `manual` / `cloud_sync` |
 | `integration_account_id` | 来源接入账号 |
 | `cloud_resource_id` | 华为稳定 ID（如 ECS instance_id） |
-| `cloud_resource_type` | `ecs` / `cce` / `rds` / `elb` |
+| `cloud_resource_type` | 云资源类型，如 `ecs` / `cce` / `rds` / `elb` / `evs` / `vpc` / `dcs` / `dms` / `obs`；CES 新增 namespace 映射出的类型应原样返回 |
 | `region` | 区域 |
 | `sync_status` | `active` / `stale`（仅 cloud_sync） |
 | `last_synced_at` | Unix 秒 |
 | `sync_batch_id` | 最近成功批次 |
+| `labels` | 云同步标签对象，空时返回 `{}`。CES 同步写入 `namespace/dim_name/resource_group`；原生 API 增强按类型写入 ECS `private_ip/flavor/vpc_id/az`、EVS `volume_type/size_gb/attached_to`、VPC `cidr/subnet_count`、DCS `engine/capacity_gb`、DMS `engine/spec_code` 等；manual 资源为 `{}`。每次同步整体覆盖 |
 
 审计：`resource_type=asset_sync_batch`，`action=sync`。
 

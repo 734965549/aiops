@@ -79,12 +79,20 @@ func capabilitiesToStrings(caps []domain.Capability) []string {
 	return out
 }
 
-func encodeExtraConfigInput(extra map[string]any) ([]byte, error) {
-	if extra == nil {
+func encodeExtraConfigInput(provider domain.ProviderType, extra map[string]any) ([]byte, error) {
+	if len(extra) == 0 {
+		// 华为云新账号默认 CES 同步模式，显式落库避免依赖解析器默认值；
+		// 其它 provider 仍写 {} 由各自逻辑处理。见 docs/huawei-ces-asset-sync-plan.md §17。
+		if provider == domain.ProviderHuaweiCloud {
+			return []byte(`{"sync_mode":"ces"}`), nil
+		}
 		return []byte("{}"), nil
 	}
 	if containsSensitiveExtraConfigKey(extra) {
 		return nil, apperr.New(apperr.CodeInvalidArgument, "extra_config must not contain secrets")
+	}
+	if err := validateProviderExtraConfig(provider, extra); err != nil {
+		return nil, err
 	}
 	raw, err := json.Marshal(extra)
 	if err != nil {
@@ -94,6 +102,93 @@ func encodeExtraConfigInput(extra map[string]any) ([]byte, error) {
 		return []byte("{}"), nil
 	}
 	return raw, nil
+}
+
+func validateProviderExtraConfig(provider domain.ProviderType, extra map[string]any) error {
+	if provider != domain.ProviderHuaweiCloud {
+		return nil
+	}
+	return validateHuaweiExtraConfig(extra)
+}
+
+func validateHuaweiExtraConfig(extra map[string]any) error {
+	for key, value := range extra {
+		switch key {
+		case "sync_mode":
+			mode, ok := value.(string)
+			if !ok {
+				return apperr.New(apperr.CodeInvalidArgument, "extra_config.sync_mode must be a string")
+			}
+			switch strings.ToLower(strings.TrimSpace(mode)) {
+			case "ces", "hybrid", "native":
+			default:
+				return apperr.New(apperr.CodeInvalidArgument, "extra_config.sync_mode must be one of ces, hybrid, native")
+			}
+		case "resource_group_name", "resource_group_id", "enterprise_project_id":
+			if _, ok := value.(string); !ok {
+				return apperr.Newf(apperr.CodeInvalidArgument, "extra_config.%s must be a string", key)
+			}
+		case "max_resources":
+			if err := validateHuaweiMaxResources(value); err != nil {
+				return err
+			}
+		case "region_projects":
+			items, ok := value.([]any)
+			if !ok {
+				return apperr.New(apperr.CodeInvalidArgument, "extra_config.region_projects must be an array")
+			}
+			seen := map[string]struct{}{}
+			for _, item := range items {
+				m, ok := item.(map[string]any)
+				if !ok {
+					return apperr.New(apperr.CodeInvalidArgument, "extra_config.region_projects items must be objects")
+				}
+				region, ok := m["region"].(string)
+				if !ok || strings.TrimSpace(region) == "" {
+					return apperr.New(apperr.CodeInvalidArgument, "extra_config.region_projects[].region is required")
+				}
+				projectID, ok := m["project_id"].(string)
+				if !ok || strings.TrimSpace(projectID) == "" {
+					return apperr.New(apperr.CodeInvalidArgument, "extra_config.region_projects[].project_id is required")
+				}
+				key := strings.ToLower(strings.TrimSpace(region))
+				if _, dup := seen[key]; dup {
+					return apperr.New(apperr.CodeInvalidArgument, "extra_config.region_projects contains duplicate region")
+				}
+				seen[key] = struct{}{}
+			}
+		}
+	}
+	return nil
+}
+
+func validateHuaweiMaxResources(value any) error {
+	var n float64
+	switch v := value.(type) {
+	case float64:
+		n = v
+	case float32:
+		n = float64(v)
+	case int:
+		n = float64(v)
+	case int64:
+		n = float64(v)
+	case json.Number:
+		parsed, err := v.Float64()
+		if err != nil {
+			return apperr.New(apperr.CodeInvalidArgument, "extra_config.max_resources must be an integer")
+		}
+		n = parsed
+	default:
+		return apperr.New(apperr.CodeInvalidArgument, "extra_config.max_resources must be an integer")
+	}
+	if n != float64(int(n)) || n <= 0 {
+		return apperr.New(apperr.CodeInvalidArgument, "extra_config.max_resources must be a positive integer")
+	}
+	if int(n) > 20000 {
+		return apperr.New(apperr.CodeInvalidArgument, "extra_config.max_resources must not exceed 20000")
+	}
+	return nil
 }
 
 func safeExtraConfig(raw []byte) map[string]any {

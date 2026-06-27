@@ -24,6 +24,10 @@ export class ApiHttpError extends Error {
   }
 }
 
+export function isApiHttpError(error: unknown): error is ApiHttpError {
+  return error instanceof ApiHttpError
+}
+
 type RetryableConfig = InternalAxiosRequestConfig & { _retry?: boolean }
 
 const MIGRATION_HINT =
@@ -70,6 +74,15 @@ function permissionDeniedMessage(body?: ApiResponse) {
     return `权限不足：${detail}。${MIGRATION_HINT}`
   }
   return `权限不足：${detail}`
+}
+
+function isAssetSyncInProgressResponse(status: number, body?: ApiResponse, url?: string) {
+  return (
+    status === 409 &&
+    body?.code === 'ALREADY_EXISTS' &&
+    body?.message === 'sync already in progress for this account' &&
+    url === '/api/assets/sync'
+  )
 }
 
 request.interceptors.request.use((config: InternalAxiosRequestConfig) => {
@@ -129,6 +142,10 @@ request.interceptors.response.use(
 
       if (status === 503 || body?.code === 'UNAVAILABLE') {
         Message.warning(body?.message || '服务暂不可用，请检查后端配置与依赖')
+        return Promise.reject(apiError)
+      }
+
+      if (isAssetSyncInProgressResponse(status, body, original?.url)) {
         return Promise.reject(apiError)
       }
 

@@ -8,6 +8,7 @@
 
 - 401：尝试 `auth.refresh()`，失败则登出并跳转 `/login`。
 - 403：`Message.warning`；`PERMISSION_DENIED` 时提示检查权限迁移与角色绑定。
+- 409 `ALREADY_EXISTS` 且 `POST /api/assets/sync` 返回 `sync already in progress for this account`：`request.ts` 不弹全局错误，由页面用 `isAssetSyncInProgressError` 统一提示“该账号正在同步，请稍后重试”。
 - 503 / `UNAVAILABLE`：服务未就绪提示。
 - AI 工具调用即使 HTTP 200 且 `code="OK"`，也必须检查 `data.allowed`。
 
@@ -91,12 +92,23 @@
 | `listApplications` / `createApplication` / `updateApplication` / `deleteApplication` | `/api/assets/applications` | 应用注册表 CRUD；`listApplications` 返回 `PageResult<Application>`，支持 `page` / `page_size` |
 | `listResources` / `createResource` / `updateResource` / `deleteResource` | `/api/assets/applications/:application_id/resources`、`/api/assets/resources` | 资源注册表 CRUD，云同步字段只由后端同步链路写入；`listResources` 按 `application_id` 返回 `PageResult<Resource>` |
 | `listMatchRules` / `createMatchRule` / `updateMatchRule` / `deleteMatchRule` | `/api/assets/match-rules` | 匹配规则 CRUD；`listMatchRules` 返回 `PageResult<MatchRule>` |
-| `triggerAssetSync` | `POST /api/assets/sync` | 触发云资源同步 |
+| `triggerAssetSync` | `POST /api/assets/sync` | 触发云资源同步，立即返回 `running` 批次 |
+| `pollSyncBatch` | 轮询 `GET /api/assets/sync/batches/:batch_id` | 触发后轮询到终态（`success`/`partial`/`failed`）或超时（默认 10 分钟）抛 `SyncStillRunningError`；支持 `shouldStop` 取消（组件卸载） |
 | `listSyncBatches` / `getSyncBatch` | `/api/assets/sync/batches` | 查询同步批次，`listSyncBatches` 返回 `PageResult<SyncBatch>` |
 
-页面：`views/assets/index.vue`。契约：`ops/cloud-observability-contract.md` §5.5。
+页面：`views/assets/index.vue`。契约：`ops/cloud-observability-contract.md` §5.5、`docs/huawei-ces-asset-sync-plan.md` §15。
 
 分页约定：`page` 从 1 开始，默认 `page_size=20`，后端最大按 `100` 处理。上述 `list*` 函数只返回当前页，不能当作完整应用/资源字典；下拉选择、深链回显或跨页定位需要额外维护已选项，或后续补充按业务 ID 查询/搜索接口。
+
+云同步字段由后端写入，前端只读展示：`source`、`integration_account_id`、`cloud_resource_id`、`cloud_resource_type`、`region`、`sync_status`、`last_synced_at`、`sync_batch_id`、`labels`。未知 `cloud_resource_type` 必须原样展示，不能在前端丢弃。`sync_status=stale` 应明显标识。
+
+`Resource.labels` 来源于后端 `asset_resource.labels`，页面只读展示 CES `namespace/dim_name/resource_group`、hybrid 增强字段以及未知 key；未知 key 不丢弃，敏感 key 名称命中 `secret/token/password/key/authorization/credential` 等兜底掩码。
+
+同步批次展示约定：`status` 至少区分 `running` / `success` / `partial` / `failed`；`message` 必须保留 tooltip 或可展开展示，用于排查 `ces_total`、`discovered`、`failed_scopes`、`enriched`、`enrichment_failed` 等摘要。当前页面从 `message` 解析这些字段做详情结构化展示，不改变后端 `SyncBatch` 契约。`partial` 表示部分资源或增强信息失败，不等同于整个同步失败。
+
+触发同步错误提示约定：同账号已有 `running` 批次时，后端返回 409 `ALREADY_EXISTS` 与 `message=sync already in progress for this account`。页面必须通过 `asset.ts` 的 `isAssetSyncInProgressError` 判断该错误，并提示“该账号正在同步，请稍后重试”；不要只依赖按钮 loading，也不要直接展示英文后端 message。
+
+异步同步轮询约定：`triggerAssetSync` 立即返回 `running` 批次（后端后台 goroutine 执行同步），页面须用 `pollSyncBatch(batch_id)` 轮询到终态再展示结果。轮询默认 2 秒间隔、10 分钟上限；超时抛 `SyncStillRunningError`，页面应提示「同步仍在进行，可在同步批次页查看」。组件卸载时通过 `shouldStop` 取消轮询，避免泄漏。全局 30 秒超时不影响同步：触发是瞬时 POST，轮询是快速 GET。
 
 调用链：页面触发 -> `asset.ts` -> Asset SyncService -> Observability discovery port -> Provider Adapter。同步失败或局部失败不得破坏 P0 告警匹配闭环。
 
@@ -154,12 +166,35 @@
 | `getIntegrationAccount` | `GET /api/integrations/accounts/:account_id` | 账号详情 |
 | `createIntegrationAccount` | `POST /api/integrations/accounts` | 创建账号；凭据只写入不回显 |
 | `updateIntegrationAccount` | `PUT /api/integrations/accounts/:account_id` | 更新；`credential` 省略时后端保留原凭据 |
-| `deleteIntegrationAccount` | `DELETE /api/integrations/accounts/:account_id` | 软删除 |
+| `deleteIntegrationAccount` | `DELETE /api/integrations/accounts/:account_id` | 软删除账号行；凭据密文一并硬删除 |
 | `checkIntegrationAccount` | `POST /api/integrations/accounts/:account_id/check` | 连通性测试 |
 
-页面：`views/integrations/index.vue`。契约：`ops/cloud-observability-contract.md` §4。
+页面：`views/integrations/index.vue`。契约：`ops/cloud-observability-contract.md` §4、`docs/huawei-ces-asset-sync-plan.md` §20。
 
 调用链：页面表单 -> `integration.ts` -> Integration AccountService -> CredentialVault / Provider checker。前端不保存明文凭据。`extra_config` 仅用于 provider 非敏感扩展配置，例如华为云 `sync_mode/resource_group_name/max_resources`；密钥、Token、AK/SK、密码仍只能通过 `credential` 写入。
+
+### 华为云 CES 资源同步前端契约
+
+`huawei_cloud` 账号的 CES 同步配置统一写入 `extra_config`，不要平铺为账号顶层字段。TypeScript 类型以 `integration.ts` 中的 `HuaweiCloudExtraConfig`、`HuaweiCloudRegionProject`、`HuaweiCloudSyncMode` 为准。
+
+| 字段 | 类型 | 默认/建议值 | 提交与回显规则 | 说明 |
+| --- | --- | --- | --- | --- |
+| `sync_mode` | `ces` / `hybrid` / `native` | `ces` | 新建 `huawei_cloud + ak_sk` 推荐默认提交 `ces`；编辑时回显后端值 | `ces` 按**指定 CES 资源分组**口径同步（默认候选名“全部资源”需预先创建，未命中即失败）；`hybrid` 先 CES 后原生 API 增强；`native` 仅旧路径兼容，不承诺与资源分组数量一致 |
+| `resource_group_name` | `string` | `全部资源` | 空值可省略；填写后写入 `extra_config` | 默认候选名，需在 CES 控制台预先创建同名分组；未指定 `resource_group_id` 时后端按名称匹配，未命中即失败 |
+| `resource_group_id` | `string` | 空 | 可选；填写后写入 `extra_config` | 指定后后端优先使用该资源组，优先级高于 `resource_group_name` |
+| `enterprise_project_id` | `string` | 空 | 可选；支持 `all_granted_eps` | 企业项目过滤或授权范围控制 |
+| `max_resources` | `number` | `20000` | 只提交正整数；空值可省略让后端兜底 | 单区域单次同步保护上限，按 region 独立计额；多区域账号实际可同步 `区域数 × max_resources` |
+| `region_projects` | `{ region: string; project_id: string }[]` | 空数组 | 过滤空行后提交；编辑时按数组回显 | 多区域 `region -> project_id` 映射；未配置的区域后端回落账号顶层 `project_id` |
+
+前端实现要求：
+
+- 创建/编辑账号时必须保留后端返回的 `extra_config` 中未知 key，不能因为页面未渲染而丢弃。
+- 编辑账号时回显 `extra_config`；未修改凭据时不要提交 `credential`，后端会保留原凭据。
+- `extra_config` 不允许放 AK/SK、Token、密码、Authorization header 或任何密钥类字段。
+- 多区域账号缺少 `region_projects` 时，页面应提示未配置区域会回落使用账号 `project_id`。
+- `sync_mode=native` 需要提示“兼容旧路径，不保证与 CES 控制台全部资源数量一致”。
+- `sync_mode=hybrid` 需要提示“增强失败只影响详情丰富度，不影响 CES 基础资源入库”。
+- `views/integrations/index.vue` 已渲染上述字段；后续若调整 UI，仍必须保持本节 `extra_config` 写入、回显、未知 key 保留和凭据不回显规则。
 
 ## Observability（`observability.ts`）
 

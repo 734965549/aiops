@@ -40,9 +40,9 @@
                 :pagination="appPagination"
                 :scroll="tableScroll"
                 :bordered="false"
+                :row-class="appRowClass"
                 @page-change="onAppPageChange"
                 @page-size-change="onAppPageSizeChange"
-                :row-class="appRowClass"
                 @row-click="onSelectApplication"
               >
                 <template #environment="{ record }">
@@ -122,9 +122,9 @@
                 :pagination="resourcePagination"
                 :scroll="resourceTableScroll"
                 :bordered="false"
+                :row-class="resourceRowClass"
                 @page-change="onResourcePageChange"
                 @page-size-change="onResourcePageSizeChange"
-                :row-class="resourceRowClass"
               >
                 <template #source="{ record }">
                   <a-tag
@@ -171,6 +171,41 @@
                 </template>
                 <template #last_synced_at="{ record }">
                   {{ formatTs((record as Resource).last_synced_at) }}
+                </template>
+                <template #labels="{ record }">
+                  <a-popover
+                    v-if="labelEntries((record as Resource).labels).length"
+                    title="Labels"
+                  >
+                    <template #content>
+                      <div class="asset-label-popover">
+                        <div
+                          v-for="item in labelEntries((record as Resource).labels)"
+                          :key="item.key"
+                          class="asset-label-row"
+                        >
+                          <span class="asset-label-key">{{ item.key }}</span>
+                          <span class="asset-label-value">{{ item.displayValue }}</span>
+                        </div>
+                      </div>
+                    </template>
+                    <div class="asset-label-tags">
+                      <a-tag
+                        v-for="item in labelPreviewEntries(record as Resource)"
+                        :key="item.key"
+                        size="small"
+                      >
+                        {{ item.key }}={{ item.displayValue }}
+                      </a-tag>
+                      <a-tag
+                        v-if="labelEntries((record as Resource).labels).length > 3"
+                        size="small"
+                      >
+                        +{{ labelEntries((record as Resource).labels).length - 3 }}
+                      </a-tag>
+                    </div>
+                  </a-popover>
+                  <span v-else>—</span>
                 </template>
                 <template #actions="{ record }">
                   <a-space>
@@ -245,6 +280,24 @@
               <a-tag :color="syncStatusColor((record as assetApi.SyncBatch).status)">
                 {{ (record as assetApi.SyncBatch).status }}
               </a-tag>
+            </template>
+            <template #message="{ record }">
+              <a-tooltip
+                v-if="(record as assetApi.SyncBatch).message"
+                :content="(record as assetApi.SyncBatch).message"
+              >
+                <span class="assets-text-ellipsis">{{ (record as assetApi.SyncBatch).message }}</span>
+              </a-tooltip>
+              <span v-else>—</span>
+            </template>
+            <template #actions="{ record }">
+              <a-button
+                type="text"
+                size="small"
+                @click="openSyncBatchDetail(record as assetApi.SyncBatch)"
+              >
+                详情
+              </a-button>
             </template>
           </a-table>
         </a-card>
@@ -428,8 +481,103 @@
             placeholder="Prometheus instance 等"
           />
         </a-form-item>
+        <a-form-item
+          v-if="resourceModalMode === 'edit'"
+          label="云资源 Labels"
+        >
+          <a-empty
+            v-if="!editingResourceLabelEntries.length"
+            description="暂无 labels"
+          />
+          <div
+            v-else
+            class="asset-label-panel"
+          >
+            <div
+              v-for="item in editingResourceLabelEntries"
+              :key="item.key"
+              class="asset-label-row"
+            >
+              <span class="asset-label-key">{{ item.key }}</span>
+              <span class="asset-label-value">{{ item.displayValue }}</span>
+            </div>
+          </div>
+        </a-form-item>
       </a-form>
     </a-modal>
+
+    <a-drawer
+      v-model:visible="syncBatchDetailVisible"
+      width="520px"
+      title="同步批次详情"
+      :footer="false"
+    >
+      <a-spin
+        :loading="syncBatchDetailLoading"
+        style="width: 100%"
+      >
+        <a-empty
+          v-if="!syncBatchDetail"
+          description="暂无批次详情"
+        />
+        <template v-else>
+          <a-alert
+            v-if="syncBatchDetail.status === 'partial'"
+            type="warning"
+            class="sync-detail-alert"
+          >
+            部分资源或增强信息失败，基础同步结果以批次 message 为准。
+          </a-alert>
+          <a-descriptions
+            :column="1"
+            bordered
+            size="small"
+          >
+            <a-descriptions-item label="批次 ID">
+              {{ syncBatchDetail.batch_id }}
+            </a-descriptions-item>
+            <a-descriptions-item label="账号">
+              {{ syncBatchDetail.integration_account_id }}
+            </a-descriptions-item>
+            <a-descriptions-item label="Provider">
+              {{ syncBatchDetail.provider }}
+            </a-descriptions-item>
+            <a-descriptions-item label="状态">
+              <a-tag :color="syncStatusColor(syncBatchDetail.status)">
+                {{ syncBatchDetail.status }}
+              </a-tag>
+            </a-descriptions-item>
+            <a-descriptions-item label="数量摘要">
+              新建 {{ syncBatchDetail.created_count }}，更新 {{ syncBatchDetail.updated_count }}，stale {{ syncBatchDetail.stale_count }}，失败 {{ syncBatchDetail.failed_count }}
+            </a-descriptions-item>
+            <a-descriptions-item label="CES total">
+              {{ syncBatchMessageSummary.ces_total || '—' }}
+            </a-descriptions-item>
+            <a-descriptions-item label="Discovered">
+              {{ syncBatchMessageSummary.discovered || '—' }}
+            </a-descriptions-item>
+            <a-descriptions-item label="Failed scopes">
+              {{ syncBatchMessageSummary.failed_scopes || '—' }}
+            </a-descriptions-item>
+            <a-descriptions-item label="Enriched">
+              {{ syncBatchMessageSummary.enriched || '—' }}
+            </a-descriptions-item>
+            <a-descriptions-item label="Enrichment failed">
+              {{ syncBatchMessageSummary.enrichment_failed || '—' }}
+            </a-descriptions-item>
+            <a-descriptions-item label="原始 message">
+              <span class="sync-detail-message">{{ syncBatchDetail.message || '—' }}</span>
+            </a-descriptions-item>
+            <a-descriptions-item label="开始时间">
+              {{ formatTs(syncBatchDetail.started_at) }}
+            </a-descriptions-item>
+            <a-descriptions-item label="结束时间">
+              {{ formatTs(syncBatchDetail.finished_at) }}
+            </a-descriptions-item>
+          </a-descriptions>
+        </template>
+      </a-spin>
+    </a-drawer>
 
     <a-modal
       v-model:visible="ruleModalVisible"
@@ -570,6 +718,7 @@ import type { TableInstance } from '@arco-design/web-vue/es/table'
 import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import * as assetApi from '@/api/asset'
 import type { Application, MatchRule, Resource } from '@/api/asset'
+import { labelEntries, parseSyncBatchMessage } from './composables/assetUtils'
 
 const route = useRoute()
 const router = useRouter()
@@ -601,9 +750,12 @@ const syncAccountId = ref('')
 const syncLoading = ref(false)
 const syncBatchesLoading = ref(false)
 const syncBatches = ref<assetApi.SyncBatch[]>([])
+const syncBatchDetailVisible = ref(false)
+const syncBatchDetailLoading = ref(false)
+const syncBatchDetail = ref<assetApi.SyncBatch | null>(null)
 
 const tableScroll = { y: 'calc(100vh - 330px)' }
-const resourceTableScroll = { x: 1250, y: 'calc(100vh - 330px)' }
+const resourceTableScroll = { x: 1450, y: 'calc(100vh - 330px)' }
 
 const appPagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
 const resourcePagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
@@ -654,6 +806,7 @@ const resourceColumns: TableInstance['columns'] = [
   { title: 'Region', slotName: 'region', width: 100 },
   { title: '同步状态', slotName: 'sync_status', width: 90 },
   { title: '最近同步', slotName: 'last_synced_at', width: 150 },
+  { title: 'Labels', slotName: 'labels', width: 220 },
   { title: 'Namespace', dataIndex: 'namespace', width: 110, ellipsis: true, tooltip: true },
   { title: 'Pod', dataIndex: 'pod', width: 110, ellipsis: true, tooltip: true },
   { title: 'Instance', dataIndex: 'instance', width: 120, ellipsis: true, tooltip: true },
@@ -668,7 +821,8 @@ const syncBatchColumns: TableInstance['columns'] = [
   { title: '更新', dataIndex: 'updated_count', width: 70 },
   { title: 'Stale', dataIndex: 'stale_count', width: 70 },
   { title: '失败', dataIndex: 'failed_count', width: 70 },
-  { title: '摘要', dataIndex: 'message', ellipsis: true, tooltip: true }
+  { title: '摘要', slotName: 'message', ellipsis: true, tooltip: true },
+  { title: '操作', slotName: 'actions', width: 80, fixed: 'right' }
 ]
 
 const ruleColumns: TableInstance['columns'] = [
@@ -697,6 +851,15 @@ const resourceCardTitle = computed(() => {
   return `资源 · ${selectedAppName.value}`
 })
 
+const editingResource = computed(() => {
+  if (!editingResourceId.value) return undefined
+  return resources.value.find((r) => r.id === editingResourceId.value)
+})
+
+const editingResourceLabelEntries = computed(() => labelEntries(editingResource.value?.labels))
+
+const syncBatchMessageSummary = computed(() => parseSyncBatchMessage(syncBatchDetail.value?.message || ''))
+
 function appRowClass(record: TableData) {
   const app = record as Application
   return app.id === selectedAppId.value ? 'assets-row-selected' : ''
@@ -721,6 +884,10 @@ async function scrollToHighlightedResource() {
 function formatTs(ts?: number) {
   if (!ts) return '—'
   return new Date(ts * 1000).toLocaleString()
+}
+
+function labelPreviewEntries(resource: Resource) {
+  return labelEntries(resource.labels).slice(0, 3)
 }
 
 function syncStatusColor(status: string) {
@@ -760,9 +927,8 @@ async function runCloudSync() {
   syncLoading.value = true
   try {
     const batch = await assetApi.triggerAssetSync(accountId)
-    Message.success(
-      `同步完成：新建 ${batch.created_count}，更新 ${batch.updated_count}，stale ${batch.stale_count}`
-    )
+    const notice = assetApi.getSyncBatchNotice(batch)
+    Message[notice.type](notice.content)
     await loadSyncBatches()
     await loadApplications()
     if (batch.application_id) {
@@ -771,9 +937,26 @@ async function runCloudSync() {
       await loadResources()
     }
   } catch (e: unknown) {
+    if (assetApi.isAssetSyncInProgressError(e)) {
+      Message.warning('该账号正在同步，请稍后重试')
+      return
+    }
     Message.error(e instanceof Error ? e.message : '同步失败')
   } finally {
     syncLoading.value = false
+  }
+}
+
+async function openSyncBatchDetail(batch: assetApi.SyncBatch) {
+  syncBatchDetailVisible.value = true
+  syncBatchDetail.value = batch
+  syncBatchDetailLoading.value = true
+  try {
+    syncBatchDetail.value = await assetApi.getSyncBatch(batch.batch_id)
+  } catch (e: unknown) {
+    Message.error(e instanceof Error ? e.message : '加载批次详情失败')
+  } finally {
+    syncBatchDetailLoading.value = false
   }
 }
 
@@ -1266,5 +1449,54 @@ onMounted(async () => {
 
 :deep(.assets-row-highlight .arco-table-td) {
   background-color: rgb(var(--primary-1));
+}
+
+.asset-label-tags {
+  display: flex;
+  gap: 4px;
+  max-width: 100%;
+  overflow: hidden;
+  flex-wrap: nowrap;
+}
+
+.asset-label-popover,
+.asset-label-panel {
+  max-width: 440px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.asset-label-panel {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border-2);
+  border-radius: 4px;
+  background: var(--color-fill-1);
+}
+
+.asset-label-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 180px) minmax(0, 1fr);
+  gap: 8px;
+  line-height: 24px;
+}
+
+.asset-label-key {
+  color: var(--color-text-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-label-value,
+.sync-detail-message {
+  color: var(--color-text-1);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.sync-detail-alert {
+  margin-bottom: 12px;
 }
 </style>

@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -25,10 +26,11 @@ type resourceModel struct {
 	IntegrationAccountID string     `gorm:"column:integration_account_id;type:varchar(64);not null;default:'';index:idx_asset_resource_cloud_key,priority:1"`
 	CloudResourceID      string     `gorm:"column:cloud_resource_id;type:varchar(255);not null;default:'';index:idx_asset_resource_cloud_key,priority:3"`
 	CloudResourceType    string     `gorm:"column:cloud_resource_type;type:varchar(64);not null;default:'';index:idx_asset_resource_cloud_key,priority:2"`
-	Region               string     `gorm:"column:region;type:varchar(64);not null;default:''"`
+	Region               string     `gorm:"column:region;type:varchar(64);not null;default:'';index:idx_asset_resource_cloud_key,priority:4"`
 	SyncStatus           string     `gorm:"column:sync_status;type:varchar(32);not null;default:''"`
 	LastSyncedAt         *time.Time `gorm:"column:last_synced_at"`
 	SyncBatchID          string     `gorm:"column:sync_batch_id;type:varchar(64);not null;default:''"`
+	Labels               []byte     `gorm:"column:labels;type:jsonb;not null;default:'{}'::jsonb"`
 }
 
 func (resourceModel) TableName() string { return "asset_resource" }
@@ -276,13 +278,14 @@ func (r *ResourceRepository) FindByCloudKey(ctx context.Context, key domain.Clou
 	accountID := strings.TrimSpace(key.IntegrationAccountID)
 	cloudType := strings.TrimSpace(key.CloudResourceType)
 	cloudID := strings.TrimSpace(key.CloudResourceID)
+	region := strings.TrimSpace(key.Region)
 	if accountID == "" || cloudType == "" || cloudID == "" {
 		return nil, domain.ErrNotFound
 	}
 	var row resourceModel
 	err := r.db.WithContext(ctx).
-		Where("source = ? AND integration_account_id = ? AND cloud_resource_type = ? AND cloud_resource_id = ?",
-			domain.ResourceSourceCloudSync, accountID, cloudType, cloudID).
+		Where("source = ? AND integration_account_id = ? AND cloud_resource_type = ? AND cloud_resource_id = ? AND region = ?",
+			domain.ResourceSourceCloudSync, accountID, cloudType, cloudID, region).
 		First(&row).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -305,6 +308,7 @@ func (r *ResourceRepository) UpsertCloudSync(ctx context.Context, res *domain.Re
 		IntegrationAccountID: res.IntegrationAccountID,
 		CloudResourceType:    res.CloudResourceType,
 		CloudResourceID:      res.CloudResourceID,
+		Region:               res.Region,
 	}
 	existing, err := r.FindByCloudKey(ctx, key)
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
@@ -341,6 +345,7 @@ func (r *ResourceRepository) createCloudSync(ctx context.Context, res *domain.Re
 
 func (r *ResourceRepository) updateCloudSync(ctx context.Context, res *domain.Resource) error {
 	now := time.Now().UTC()
+	labels, _ := marshalResourceLabels(res.Labels)
 	result := r.db.WithContext(ctx).Model(&resourceModel{}).Where("resource_id = ?", res.ID).Updates(map[string]any{
 		"name": res.Name, "resource_type": res.ResourceType, "namespace": res.Namespace,
 		"pod": res.Pod, "node": res.Node, "instance": res.Instance,
@@ -351,6 +356,7 @@ func (r *ResourceRepository) updateCloudSync(ctx context.Context, res *domain.Re
 		"sync_status":            res.SyncStatus,
 		"last_synced_at":         res.LastSyncedAt,
 		"sync_batch_id":          res.SyncBatchID,
+		"labels":                 labels,
 		"updated_at":             now,
 	})
 	if result.Error != nil {
@@ -385,6 +391,46 @@ func (r *ResourceRepository) MarkStaleByAccountScopeExceptBatch(ctx context.Cont
 	return result.RowsAffected, result.Error
 }
 
+// MarkStaleByAccountRegionExceptTypes 将指定账号+region 下所有 active 的 cloud_sync 资源
+// （排除当前批次）标记为 stale，但跳过 cloud_resource_type 命中 exceptTypes 的类型，见 §13.1。
+// 用于 CES/hybrid 权威 scope 反向标记：从资源组移除的类型不在 exceptTypes 中，会被标记 stale；
+// 查询失败/转换失败/持久化失败的类型放入 exceptTypes，保持 active 避免误标。
+func (r *ResourceRepository) MarkStaleByAccountRegionExceptTypes(ctx context.Context, accountID, region string, exceptTypes []string, batchID string) (int64, error) {
+	if r == nil || r.db == nil {
+		return 0, errors.New("asset resource repository is not configured")
+	}
+	accountID = strings.TrimSpace(accountID)
+	region = strings.TrimSpace(region)
+	batchID = strings.TrimSpace(batchID)
+	if accountID == "" || region == "" || batchID == "" {
+		return 0, nil
+	}
+	// 归一化 exceptTypes：小写去重去空。
+	except := make([]string, 0, len(exceptTypes))
+	seen := make(map[string]struct{}, len(exceptTypes))
+	for _, t := range exceptTypes {
+		if t = strings.ToLower(strings.TrimSpace(t)); t != "" {
+			if _, ok := seen[t]; ok {
+				continue
+			}
+			seen[t] = struct{}{}
+			except = append(except, t)
+		}
+	}
+	now := time.Now().UTC()
+	query := r.db.WithContext(ctx).Model(&resourceModel{}).
+		Where("source = ? AND integration_account_id = ? AND region = ? AND sync_batch_id <> ? AND sync_status = ?",
+			domain.ResourceSourceCloudSync, accountID, region, batchID, domain.SyncStatusActive)
+	if len(except) > 0 {
+		query = query.Where("cloud_resource_type NOT IN ?", except)
+	}
+	result := query.Updates(map[string]any{
+		"sync_status": domain.SyncStatusStale,
+		"updated_at":  now,
+	})
+	return result.RowsAffected, result.Error
+}
+
 func defaultSource(source string) string {
 	source = strings.TrimSpace(source)
 	if source == "" {
@@ -397,6 +443,7 @@ func toResourceModel(res *domain.Resource) resourceModel {
 	if res == nil {
 		return resourceModel{}
 	}
+	labels, _ := marshalResourceLabels(res.Labels)
 	return resourceModel{
 		ResourceID:           res.ID,
 		ApplicationID:        res.ApplicationID,
@@ -414,6 +461,7 @@ func toResourceModel(res *domain.Resource) resourceModel {
 		SyncStatus:           res.SyncStatus,
 		LastSyncedAt:         res.LastSyncedAt,
 		SyncBatchID:          res.SyncBatchID,
+		Labels:               labels,
 	}
 }
 
@@ -438,7 +486,28 @@ func toResourceDomain(m *resourceModel) domain.Resource {
 		SyncStatus:           m.SyncStatus,
 		LastSyncedAt:         m.LastSyncedAt,
 		SyncBatchID:          m.SyncBatchID,
+		Labels:               unmarshalResourceLabels(m.Labels),
 		CreatedAt:            m.CreatedAt,
 		UpdatedAt:            m.UpdatedAt,
 	}
+}
+
+// marshalResourceLabels 将 labels map 序列化为 JSONB 字节，空值返回 "{}"。
+func marshalResourceLabels(m map[string]string) ([]byte, error) {
+	if m == nil {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(m)
+}
+
+// unmarshalResourceLabels 将 JSONB 字节反序列化为 labels map，异常时返回空 map。
+func unmarshalResourceLabels(data []byte) map[string]string {
+	if len(data) == 0 {
+		return map[string]string{}
+	}
+	out := map[string]string{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return map[string]string{}
+	}
+	return out
 }

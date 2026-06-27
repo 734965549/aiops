@@ -217,6 +217,88 @@
             :placeholder="needsHuaweiProjectID ? '华为云 project_id（必填）' : '华为云 project_id（可选）'"
           />
         </a-form-item>
+
+        <template v-if="isHuaweiCloud">
+          <a-divider orientation="left">
+            CES 资源同步配置
+          </a-divider>
+          <a-alert
+            type="info"
+            class="sync-config-alert"
+          >
+            配置将写入 extra_config；AK/SK、Token、密码仍只能通过凭据字段写入。
+          </a-alert>
+          <a-form-item label="同步模式">
+            <a-select v-model="huaweiExtra.sync_mode">
+              <a-option value="ces">
+                CES 资源同步（推荐）
+              </a-option>
+              <a-option value="hybrid">
+                混合同步
+              </a-option>
+              <a-option value="native">
+                原生云资产同步（兼容旧路径）
+              </a-option>
+            </a-select>
+          </a-form-item>
+          <a-alert
+            v-if="huaweiExtra.sync_mode === 'hybrid'"
+            type="warning"
+            class="sync-config-alert"
+          >
+            混合同步会先按 CES 全量发现资源，再按权限补充详情；增强失败不影响基础资源入库。
+          </a-alert>
+          <a-alert
+            v-if="huaweiExtra.sync_mode === 'native'"
+            type="warning"
+            class="sync-config-alert"
+          >
+            原生云资产同步仅兼容旧路径，不保证与 CES 控制台全部资源数量一致。
+          </a-alert>
+          <a-form-item label="资源组名称">
+            <a-input
+              v-model="huaweiExtra.resource_group_name"
+              placeholder="默认 全部资源"
+            />
+          </a-form-item>
+          <a-form-item label="资源组 ID">
+            <a-input
+              v-model="huaweiExtra.resource_group_id"
+              placeholder="可选；填写后优先于资源组名称"
+            />
+          </a-form-item>
+          <a-form-item label="企业项目 ID">
+            <a-input
+              v-model="huaweiExtra.enterprise_project_id"
+              placeholder="可选；如 all_granted_eps"
+            />
+          </a-form-item>
+          <a-form-item label="单次同步上限">
+            <a-input-number
+              v-model="huaweiExtra.max_resources"
+              :min="1"
+              :max="20000"
+              :precision="0"
+              placeholder="默认 20000"
+              style="width: 100%"
+            />
+          </a-form-item>
+          <a-form-item label="Region Project 映射">
+            <a-textarea
+              v-model="regionProjectsText"
+              placeholder="每行一个：cn-south-1=project_id"
+              :auto-size="{ minRows: 2, maxRows: 5 }"
+            />
+          </a-form-item>
+          <a-alert
+            v-if="showRegionProjectFallback"
+            type="warning"
+            class="sync-config-alert"
+          >
+            多区域未配置完整 region_projects 时，未配置区域会回落使用账号 Project ID：{{ missingRegionProjects.join(', ') }}。
+          </a-alert>
+        </template>
+
         <a-form-item
           v-if="form.auth_type === 'ak_sk'"
           label="Access Key"
@@ -272,7 +354,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import Message from '@arco-design/web-vue/es/message'
 import {
   checkIntegrationAccount,
@@ -280,10 +362,25 @@ import {
   deleteIntegrationAccount,
   listIntegrationAccounts,
   updateIntegrationAccount,
+  type HuaweiCloudExtraConfig,
+  type HuaweiCloudSyncMode,
   type IntegrationAccount
 } from '@/api/integration'
-import { triggerAssetSync } from '@/api/asset'
+import {
+  getSyncBatchNotice,
+  isAssetSyncInProgressError,
+  pollSyncBatch,
+  SyncStillRunningError,
+  triggerAssetSync
+} from '@/api/asset'
 import { getApiError } from '@/api/request'
+import {
+  extractUnknownExtraConfig,
+  formatRegionProjects,
+  mergeHuaweiExtraConfig,
+  parseRegionProjects,
+  parseRegions
+} from './composables/huaweiConfig'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -306,7 +403,18 @@ const form = reactive({
   enabled: true
 })
 const regionsText = ref('')
+const regionProjectsText = ref('')
 const credential = reactive({ access_key: '', secret_key: '', api_token: '', base_url: '' })
+const huaweiExtra = reactive({
+  sync_mode: 'ces' as HuaweiCloudSyncMode,
+  resource_group_name: '全部资源',
+  resource_group_id: '',
+  enterprise_project_id: '',
+  max_resources: 20000
+})
+const preservedExtraConfig = ref<Record<string, unknown>>({})
+
+const isHuaweiCloud = computed(() => form.provider === 'huawei_cloud')
 
 const needsBaseURL = computed(
   () => form.provider === 'prometheus' && form.auth_type !== 'none'
@@ -318,6 +426,17 @@ const needsHuaweiAKSK = computed(
 
 const needsHuaweiProjectID = computed(() => needsHuaweiAKSK.value)
 
+const parsedRegionProjects = computed(() => parseRegionProjects(regionProjectsText.value).items)
+
+const missingRegionProjects = computed(() => {
+  const configured = new Set(parsedRegionProjects.value.map((item) => item.region.toLowerCase()))
+  return parseRegions(regionsText.value).filter((region) => !configured.has(region.toLowerCase()))
+})
+
+const showRegionProjectFallback = computed(() => {
+  return isHuaweiCloud.value && parseRegions(regionsText.value).length > 1 && missingRegionProjects.value.length > 0
+})
+
 const columns = [
   { title: '账号 ID', dataIndex: 'account_id', width: 280, ellipsis: true },
   { title: '名称', dataIndex: 'name', width: 160 },
@@ -328,8 +447,41 @@ const columns = [
   { title: '操作', slotName: 'actions', width: 300 }
 ]
 
-function parseRegions(text: string): string[] {
-  return text.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean)
+function resetHuaweiExtra() {
+  huaweiExtra.sync_mode = 'ces'
+  huaweiExtra.resource_group_name = '全部资源'
+  huaweiExtra.resource_group_id = ''
+  huaweiExtra.enterprise_project_id = ''
+  huaweiExtra.max_resources = 20000
+  regionProjectsText.value = ''
+  preservedExtraConfig.value = {}
+}
+
+function readHuaweiExtraConfig(record: IntegrationAccount) {
+  resetHuaweiExtra()
+  const extra = record.extra_config
+  if (!extra || typeof extra !== 'object' || Array.isArray(extra)) return
+  const config = extra as HuaweiCloudExtraConfig
+  preservedExtraConfig.value = extractUnknownExtraConfig(config as Record<string, unknown>)
+  if (config.sync_mode) huaweiExtra.sync_mode = config.sync_mode
+  if (typeof config.resource_group_name === 'string') huaweiExtra.resource_group_name = config.resource_group_name
+  if (typeof config.resource_group_id === 'string') huaweiExtra.resource_group_id = config.resource_group_id
+  if (typeof config.enterprise_project_id === 'string') huaweiExtra.enterprise_project_id = config.enterprise_project_id
+  if (typeof config.max_resources === 'number') huaweiExtra.max_resources = config.max_resources
+  regionProjectsText.value = formatRegionProjects(config.region_projects)
+}
+
+function buildHuaweiExtraConfig(): HuaweiCloudExtraConfig | undefined {
+  if (!isHuaweiCloud.value) return undefined
+  const regionProjects = parseRegionProjects(regionProjectsText.value).items
+  return mergeHuaweiExtraConfig(preservedExtraConfig.value, {
+    sync_mode: huaweiExtra.sync_mode,
+    resource_group_name: huaweiExtra.resource_group_name,
+    resource_group_id: huaweiExtra.resource_group_id,
+    enterprise_project_id: huaweiExtra.enterprise_project_id,
+    max_resources: huaweiExtra.max_resources,
+    region_projects: regionProjects
+  })
 }
 
 function buildCredential(): Record<string, string> | undefined {
@@ -395,6 +547,7 @@ function resetForm() {
   form.description = ''
   form.enabled = true
   regionsText.value = ''
+  resetHuaweiExtra()
   credential.access_key = ''
   credential.secret_key = ''
   credential.api_token = ''
@@ -416,6 +569,7 @@ function openEdit(record: IntegrationAccount) {
   form.description = record.description || ''
   form.enabled = record.enabled
   regionsText.value = (record.regions || []).join(', ')
+  readHuaweiExtraConfig(record)
   credential.access_key = ''
   credential.secret_key = ''
   credential.api_token = ''
@@ -445,8 +599,19 @@ async function onSubmit() {
       Message.warning('华为云 ak_sk 账号必须填写 Project ID')
       return
     }
-    if (!credential.access_key.trim() || !credential.secret_key.trim()) {
-      Message.warning('华为云 ak_sk 账号必须填写 Access Key 与 Secret Key')
+    if (!editingId.value && (!credential.access_key.trim() || !credential.secret_key.trim())) {
+      Message.warning('新建华为云 ak_sk 账号必须填写 Access Key 与 Secret Key')
+      return
+    }
+  }
+  if (isHuaweiCloud.value) {
+    if (!huaweiExtra.max_resources || huaweiExtra.max_resources < 1 || huaweiExtra.max_resources > 20000) {
+      Message.warning('单次同步上限必须在 1 到 20000 之间')
+      return
+    }
+    const parsedRegionProjectResult = parseRegionProjects(regionProjectsText.value)
+    if (parsedRegionProjectResult.errors.length > 0) {
+      Message.warning(parsedRegionProjectResult.errors[0])
       return
     }
   }
@@ -454,6 +619,7 @@ async function onSubmit() {
   try {
     const regions = parseRegions(regionsText.value)
     const cred = buildCredential()
+    const extraConfig = buildHuaweiExtraConfig()
     if (editingId.value) {
       await updateIntegrationAccount(editingId.value, {
         name: form.name,
@@ -463,6 +629,7 @@ async function onSubmit() {
         owner_team: form.owner_team,
         description: form.description,
         enabled: form.enabled,
+        ...(extraConfig ? { extra_config: extraConfig } : {}),
         ...(cred ? { credential: cred } : {})
       })
       Message.success('账号已更新')
@@ -476,6 +643,7 @@ async function onSubmit() {
         owner_team: form.owner_team,
         description: form.description,
         enabled: form.enabled,
+        ...(extraConfig ? { extra_config: extraConfig } : {}),
         ...(cred ? { credential: cred } : {})
       })
       Message.success('账号已创建')
@@ -489,14 +657,33 @@ async function onSubmit() {
   }
 }
 
+// 组件卸载时取消进行中的同步轮询，避免泄漏与对已销毁组件的 Message 调用。
+let syncPollingStopped = false
+onBeforeUnmount(() => {
+  syncPollingStopped = true
+})
+
 async function onSyncAssets(accountId: string) {
   syncingId.value = accountId
   try {
-    const batch = await triggerAssetSync(accountId)
-    Message.success(
-      `同步完成：新建 ${batch.created_count}，更新 ${batch.updated_count}，stale ${batch.stale_count}（${batch.status}）`
-    )
+    // 触发同步：后端立即返回 running 批次，随后轮询到终态。
+    const running = await triggerAssetSync(accountId)
+    const batch = await pollSyncBatch(running.batch_id, { shouldStop: () => syncPollingStopped })
+    const notice = getSyncBatchNotice(batch)
+    Message[notice.type](notice.content)
   } catch (err) {
+    if (isAssetSyncInProgressError(err)) {
+      Message.warning('该账号正在同步，请稍后重试')
+      return
+    }
+    if (err instanceof SyncStillRunningError) {
+      Message.info(err.message)
+      return
+    }
+    if (err instanceof Error && err.message === 'polling cancelled') {
+      // 组件卸载取消，不提示
+      return
+    }
     Message.error(getApiError(err)?.message || '资源同步失败')
   } finally {
     syncingId.value = ''
@@ -531,6 +718,10 @@ onMounted(loadAccounts)
 
 <style scoped lang="scss">
 .filter-form {
+  margin-bottom: 16px;
+}
+
+.sync-config-alert {
   margin-bottom: 16px;
 }
 </style>

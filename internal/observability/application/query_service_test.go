@@ -66,8 +66,8 @@ func (stubProviderEntry) QueryTraces(_ context.Context, _ domain.ProviderContext
 func (stubProviderEntry) QueryTopology(context.Context, domain.ProviderContext, domain.TopologyQuery) (*domain.TopologySnapshot, error) {
 	return &domain.TopologySnapshot{}, nil
 }
-func (stubProviderEntry) ListResources(context.Context, domain.ProviderContext, domain.AssetDiscoveryQuery) ([]domain.CloudResource, error) {
-	return []domain.CloudResource{{ResourceID: "res-1", Name: "demo", Type: "ecs", Region: "cn-north-4", Status: "running"}}, nil
+func (stubProviderEntry) ListResources(context.Context, domain.ProviderContext, domain.AssetDiscoveryQuery) ([]domain.CloudResource, bool, error) {
+	return []domain.CloudResource{{ResourceID: "res-1", Name: "demo", Type: "ecs", Region: "cn-north-4", Status: "running"}}, false, nil
 }
 func (stubProviderEntry) ListAlertRules(context.Context, domain.ProviderContext, domain.AlertRuleQuery) ([]domain.AlertRule, error) {
 	return []domain.AlertRule{{RuleID: "rule-1", Name: "cpu", Enabled: true}}, nil

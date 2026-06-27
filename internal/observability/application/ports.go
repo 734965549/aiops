@@ -32,8 +32,10 @@ type TopologyQueryPort interface {
 }
 
 // AssetDiscoveryPort 云资源只读发现端口（Asset Sync / cloud.resources.list 复用）。
+// ListResources 返回 (resources, hasMore, err)：hasMore=true 表示因达到查询上限而截断，
+// 云端仍有更多资源。Asset Sync 通用同步路径据此跳过该类型 stale 标记，见 §13.1。
 type AssetDiscoveryPort interface {
-	ListResources(ctx context.Context, pctx domain.ProviderContext, q domain.AssetDiscoveryQuery) ([]domain.CloudResource, error)
+	ListResources(ctx context.Context, pctx domain.ProviderContext, q domain.AssetDiscoveryQuery) ([]domain.CloudResource, bool, error)
 }
 
 // CloudFullSyncPort 云资源全量同步端口（专供 Asset Sync 全量分页发现，不受交互查询 limit<=500 限制），

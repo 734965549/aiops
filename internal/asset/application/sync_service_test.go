@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,13 +10,26 @@ import (
 	"github.com/734965549/aiops/internal/asset/domain"
 	obsapp "github.com/734965549/aiops/internal/observability/application"
 	obsdomain "github.com/734965549/aiops/internal/observability/domain"
+	apperr "github.com/734965549/aiops/pkg/errors"
 )
 
 type fakeSyncBatchRepo struct {
 	rows []domain.SyncBatch
+	// enforceRunningMutex 为 true 时模拟迁移 0028 的部分唯一索引：
+	// 同一 integration_account_id 已有 running 批次时 Create 返回 ErrAlreadyExists。
+	enforceRunningMutex bool
+	// renewLeaseCount 记录 RenewLease 被成功调用的次数，供异步续租测试断言。
+	renewLeaseCount int
 }
 
 func (r *fakeSyncBatchRepo) Create(_ context.Context, batch *domain.SyncBatch) error {
+	if r.enforceRunningMutex {
+		for _, row := range r.rows {
+			if row.IntegrationAccountID == batch.IntegrationAccountID && row.Status == domain.SyncBatchStatusRunning {
+				return domain.ErrAlreadyExists
+			}
+		}
+	}
 	now := time.Now().UTC()
 	batch.CreatedAt = now
 	batch.UpdatedAt = now
@@ -27,6 +41,10 @@ func (r *fakeSyncBatchRepo) Update(_ context.Context, batch *domain.SyncBatch) e
 	for i := range r.rows {
 		if r.rows[i].BatchID == batch.BatchID {
 			r.rows[i] = *batch
+			// 对齐生产 SyncBatchRepository.Update：终态批次清空 lease，释放账号 running 槽位。
+			if batch.Status != domain.SyncBatchStatusRunning {
+				r.rows[i].LeaseExpiresAt = nil
+			}
 			return nil
 		}
 	}
@@ -41,6 +59,43 @@ func (r *fakeSyncBatchRepo) GetByID(_ context.Context, batchID string) (*domain.
 		}
 	}
 	return nil, domain.ErrNotFound
+}
+
+// ReapExpiredRunning 模拟迁移 0028 的租约自愈：把本账号下租约过期的 running 批次标记 failed。
+func (r *fakeSyncBatchRepo) ReapExpiredRunning(_ context.Context, accountID string, now time.Time) (int64, error) {
+	var reaped int64
+	for i := range r.rows {
+		row := &r.rows[i]
+		if row.IntegrationAccountID != accountID || row.Status != domain.SyncBatchStatusRunning {
+			continue
+		}
+		if row.LeaseExpiresAt == nil || !row.LeaseExpiresAt.Before(now) {
+			continue
+		}
+		finished := now
+		row.Status = domain.SyncBatchStatusFailed
+		row.FinishedAt = &finished
+		row.LeaseExpiresAt = nil
+		row.Message = "lease expired; previous sync batch interrupted"
+		row.UpdatedAt = now
+		reaped++
+	}
+	return reaped, nil
+}
+
+// RenewLease 续租 running 批次；阶段 6 会补充正式断言，此处先保证接口实现。
+func (r *fakeSyncBatchRepo) RenewLease(_ context.Context, batchID string, now time.Time, ttl time.Duration) error {
+	for i := range r.rows {
+		if r.rows[i].BatchID != batchID || r.rows[i].Status != domain.SyncBatchStatusRunning {
+			continue
+		}
+		expires := now.Add(ttl)
+		r.rows[i].LeaseExpiresAt = &expires
+		r.rows[i].UpdatedAt = now
+		r.renewLeaseCount++
+		return nil
+	}
+	return domain.ErrNotFound
 }
 
 func (r *fakeSyncBatchRepo) List(_ context.Context, filter domain.SyncBatchFilter) ([]domain.SyncBatch, int64, error) {
@@ -63,9 +118,13 @@ func (r *fakeSyncBatchRepo) List(_ context.Context, filter domain.SyncBatchFilte
 }
 
 type fakeDiscoveryPort struct {
-	resources   []obsdomain.CloudResource
-	errors      map[string]error
-	fullSummary *obsapp.CloudSyncSummary
+	resources    []obsdomain.CloudResource
+	errors       map[string]error
+	fullSummary  *obsapp.CloudSyncSummary
+	hasMoreTypes map[string]bool
+	// fullSyncUnsupported 为 true 时 ListAllResources 返回 CodeFailedPrecondition，
+	// 模拟 provider 未实现 CloudFullSyncPort，强制走 syncGeneric 通用路径。
+	fullSyncUnsupported bool
 }
 
 func (p *fakeDiscoveryPort) ListResources(_ context.Context, _ obsapp.Actor, q obsdomain.AssetDiscoveryQuery) (*obsapp.AssetDiscoveryResult, error) {
@@ -84,10 +143,20 @@ func (p *fakeDiscoveryPort) ListResources(_ context.Context, _ obsapp.Actor, q o
 		}
 		out = append(out, item)
 	}
-	return &obsapp.AssetDiscoveryResult{Resources: out, EvidenceID: "ev-fake"}, nil
+	hasMore := false
+	if p.hasMoreTypes != nil {
+		hasMore = p.hasMoreTypes[q.ResourceType]
+	}
+	return &obsapp.AssetDiscoveryResult{Resources: out, EvidenceID: "ev-fake", HasMore: hasMore}, nil
 }
 
 func (p *fakeDiscoveryPort) ListAllResources(_ context.Context, _ obsapp.Actor, q obsapp.AssetFullSyncQuery) (*obsapp.AssetFullSyncResult, error) {
+	if p.fullSyncUnsupported {
+		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider does not support full sync")
+	}
+	if q.MaxResources != 0 {
+		return nil, errors.New("asset sync should let provider extra_config decide max_resources")
+	}
 	if p.errors != nil {
 		if err := p.errors[q.Region+"/"]; err != nil {
 			return nil, err
@@ -145,11 +214,20 @@ func TestSyncService_TriggerSyncCreatesCloudResources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TriggerSync: %v", err)
 	}
-	if out.Status != domain.SyncBatchStatusSuccess {
-		t.Fatalf("expected success batch, got %+v", out)
+	if out.Status != domain.SyncBatchStatusRunning {
+		t.Fatalf("expected running batch immediately after trigger, got %+v", out)
 	}
-	if out.CreatedCount < 2 {
-		t.Fatalf("expected at least 2 created resources across types, got created=%d updated=%d", out.CreatedCount, out.UpdatedCount)
+	// 异步同步：等待后台 goroutine 落终态后再断言。
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	if final.Status != domain.SyncBatchStatusSuccess {
+		t.Fatalf("expected success batch, got %+v", final)
+	}
+	if final.CreatedCount < 2 {
+		t.Fatalf("expected at least 2 created resources across types, got created=%d updated=%d", final.CreatedCount, final.UpdatedCount)
 	}
 	if len(resources.rows) < 2 {
 		t.Fatalf("expected synced resources in repo, got %d", len(resources.rows))
@@ -194,8 +272,13 @@ func TestSyncService_TriggerSyncMarksStale(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TriggerSync: %v", err)
 	}
-	if out.StaleCount < 1 {
-		t.Fatalf("expected stale count >= 1, got %+v", out)
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	if final.StaleCount < 1 {
+		t.Fatalf("expected stale count >= 1, got %+v", final)
 	}
 	var staleFound bool
 	for _, row := range resources.rows {
@@ -244,9 +327,14 @@ func TestSyncService_TriggerSyncOnlyMarksStaleForSuccessfulScopes(t *testing.T) 
 	if err != nil {
 		t.Fatalf("TriggerSync: %v", err)
 	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
 	// CES 全量同步整 region 成功；本批只发现 ecs，rds 未入库，rds 旧资源应保持 active。
-	if out.Status != domain.SyncBatchStatusSuccess {
-		t.Fatalf("expected success batch, got %+v", out)
+	if final.Status != domain.SyncBatchStatusSuccess {
+		t.Fatalf("expected success batch, got %+v", final)
 	}
 	statusByID := map[string]string{}
 	for _, row := range resources.rows {
@@ -284,14 +372,19 @@ func TestSyncService_HuaweiCESFailedScopesMakeBatchPartial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TriggerSync: %v", err)
 	}
-	if out.Status != domain.SyncBatchStatusPartial {
-		t.Fatalf("expected partial batch, got %+v", out)
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
 	}
-	if out.FailedCount != 1 {
-		t.Fatalf("expected failed_count=1, got %+v", out)
+	if final.Status != domain.SyncBatchStatusPartial {
+		t.Fatalf("expected partial batch, got %+v", final)
 	}
-	if !strings.Contains(out.Message, "failed_scopes=1") || !strings.Contains(out.Message, "SYS.RDS") {
-		t.Fatalf("expected failed scope in message, got %q", out.Message)
+	if final.FailedCount != 1 {
+		t.Fatalf("expected failed_count=1, got %+v", final)
+	}
+	if !strings.Contains(final.Message, "failed_scopes=1") || !strings.Contains(final.Message, "SYS.RDS") {
+		t.Fatalf("expected failed scope in message, got %q", final.Message)
 	}
 }
 
@@ -326,13 +419,962 @@ func TestSyncService_HuaweiCESSuccessfulEmptyScopeMarksStale(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TriggerSync: %v", err)
 	}
-	if out.Status != domain.SyncBatchStatusSuccess {
-		t.Fatalf("expected success batch, got %+v", out)
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
 	}
-	if out.StaleCount != 1 {
-		t.Fatalf("expected stale_count=1, got %+v", out)
+	if final.Status != domain.SyncBatchStatusSuccess {
+		t.Fatalf("expected success batch, got %+v", final)
+	}
+	if final.StaleCount != 1 {
+		t.Fatalf("expected stale_count=1, got %+v", final)
 	}
 	if resources.rows[0].SyncStatus != domain.SyncStatusStale {
 		t.Fatalf("expected old ecs stale, got %s", resources.rows[0].SyncStatus)
+	}
+}
+
+// TestSyncService_HuaweiCESAllUpsertFailSkipsStale 验证某类型 CES 查询成功但写库全部失败时，
+// 该类型不进 stale scope，旧资产保持 active，见 docs/huawei-ces-asset-sync-plan.md §13（条件3：全部资源成功持久化）。
+func TestSyncService_HuaweiCESAllUpsertFailSkipsStale(t *testing.T) {
+	appID := cloudApplicationID("acc-fake")
+	apps := &fakeAppRepo{apps: map[string]domain.Application{
+		"cloud": {ID: appID, Name: "huawei_cloud-cloud", Environment: "cloud"},
+	}}
+	syncedAt := time.Now().UTC().Add(-time.Hour)
+	resources := &fakeResRepo{
+		rows: []domain.Resource{
+			{
+				ID: "old-ecs", ApplicationID: appID, Name: "old-ecs",
+				Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+				CloudResourceType: "ecs", CloudResourceID: "gone-ecs", Region: "cn-north-4",
+				SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+			},
+		},
+		upsertErr: errors.New("db unavailable"),
+	}
+	batches := &fakeSyncBatchRepo{}
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{
+			{ResourceID: "res-fake-ecs-2", Name: "ecs-demo-2", Type: "ecs", Region: "cn-north-4", Status: "running", ProviderRef: "ecs-demo-2"},
+		},
+		fullSummary: &obsapp.CloudSyncSummary{
+			Region: "cn-north-4", ResourceGroupName: "全部资源", CESTotal: 1, Discovered: 1,
+			SuccessfulTypes: []string{"ecs"},
+		},
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	if final.Status == domain.SyncBatchStatusSuccess {
+		t.Fatalf("expected non-success batch when all upserts failed, got %+v", final)
+	}
+	if final.StaleCount != 0 {
+		t.Fatalf("expected stale_count=0 (persist incomplete), got %d", final.StaleCount)
+	}
+	if resources.rows[0].SyncStatus != domain.SyncStatusActive {
+		t.Fatalf("old ecs must remain active when all upserts failed, got %s", resources.rows[0].SyncStatus)
+	}
+}
+
+// TestSyncService_HuaweiCESConversionFailedSkipsStale 验证某类型查询成功但资源转换失败时，
+// 该类型不进 stale scope，旧资产保持 active，见 §13（条件2：资源转换完整）。
+func TestSyncService_HuaweiCESConversionFailedSkipsStale(t *testing.T) {
+	appID := cloudApplicationID("acc-fake")
+	apps := &fakeAppRepo{apps: map[string]domain.Application{
+		"cloud": {ID: appID, Name: "huawei_cloud-cloud", Environment: "cloud"},
+	}}
+	syncedAt := time.Now().UTC().Add(-time.Hour)
+	resources := &fakeResRepo{rows: []domain.Resource{
+		{
+			ID: "old-ecs", ApplicationID: appID, Name: "old-ecs",
+			Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+			CloudResourceType: "ecs", CloudResourceID: "gone-ecs", Region: "cn-north-4",
+			SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+		},
+	}}
+	batches := &fakeSyncBatchRepo{}
+	discovery := &fakeDiscoveryPort{
+		// 转换失败的资源已被 provider 丢弃，不进入 Resources。
+		fullSummary: &obsapp.CloudSyncSummary{
+			Region: "cn-north-4", ResourceGroupName: "全部资源", CESTotal: 1, Discovered: 0,
+			SuccessfulTypes: []string{"ecs"}, ConversionFailedTypes: []string{"ecs"},
+			InvalidResourceCount: 1,
+		},
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	if final.StaleCount != 0 {
+		t.Fatalf("expected stale_count=0 (conversion incomplete), got %d", final.StaleCount)
+	}
+	if resources.rows[0].SyncStatus != domain.SyncStatusActive {
+		t.Fatalf("old ecs must remain active when conversion failed, got %s", resources.rows[0].SyncStatus)
+	}
+}
+
+// TestSyncService_HuaweiCESPerTypePersistFailure 验证混合场景：ecs 持久化成功、rds 持久化失败时，
+// 只有 ecs 进 stale scope，rds 旧资产保持 active，见 §13（条件3：全部资源成功持久化）。
+func TestSyncService_HuaweiCESPerTypePersistFailure(t *testing.T) {
+	appID := cloudApplicationID("acc-fake")
+	apps := &fakeAppRepo{apps: map[string]domain.Application{
+		"cloud": {ID: appID, Name: "huawei_cloud-cloud", Environment: "cloud"},
+	}}
+	syncedAt := time.Now().UTC().Add(-time.Hour)
+	resources := &fakeResRepo{
+		rows: []domain.Resource{
+			{
+				ID: "old-ecs", ApplicationID: appID, Name: "old-ecs",
+				Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+				CloudResourceType: "ecs", CloudResourceID: "gone-ecs", Region: "cn-north-4",
+				SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+			},
+			{
+				ID: "old-rds", ApplicationID: appID, Name: "old-rds",
+				Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+				CloudResourceType: "rds", CloudResourceID: "keep-rds", Region: "cn-north-4",
+				SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+			},
+		},
+		upsertErrFor: map[string]error{"rds": errors.New("rds write failed")},
+	}
+	batches := &fakeSyncBatchRepo{}
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{
+			{ResourceID: "res-fake-ecs-2", Name: "ecs-demo-2", Type: "ecs", Region: "cn-north-4", Status: "running", ProviderRef: "ecs-demo-2"},
+			{ResourceID: "res-fake-rds-2", Name: "rds-demo-2", Type: "rds", Region: "cn-north-4", Status: "ACTIVE", ProviderRef: "rds-demo-2"},
+		},
+		fullSummary: &obsapp.CloudSyncSummary{
+			Region: "cn-north-4", ResourceGroupName: "全部资源", CESTotal: 2, Discovered: 2,
+			SuccessfulTypes: []string{"ecs", "rds"},
+		},
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	if final.StaleCount != 1 {
+		t.Fatalf("expected stale_count=1 (only ecs scope eligible), got %d", final.StaleCount)
+	}
+	statusByID := map[string]string{}
+	for _, row := range resources.rows {
+		statusByID[row.ID] = row.SyncStatus
+	}
+	if statusByID["old-ecs"] != domain.SyncStatusStale {
+		t.Fatalf("expected old ecs stale, got %s", statusByID["old-ecs"])
+	}
+	if statusByID["old-rds"] != domain.SyncStatusActive {
+		t.Fatalf("expected old rds active (rds persist failed), got %s", statusByID["old-rds"])
+	}
+}
+
+// TestSyncService_NativePathAllUpsertFailSkipsStale 验证通用（非 CES）同步路径同样遵循
+// "全部资源成功持久化才执行 stale"：某类型查询成功但写库全失败时，旧资产保持 active，见 §13。
+func TestSyncService_NativePathAllUpsertFailSkipsStale(t *testing.T) {
+	appID := cloudApplicationID("acc-fake")
+	apps := &fakeAppRepo{apps: map[string]domain.Application{
+		"cloud": {ID: appID, Name: "aliyun_cloud-cloud", Environment: "cloud"},
+	}}
+	syncedAt := time.Now().UTC().Add(-time.Hour)
+	resources := &fakeResRepo{
+		rows: []domain.Resource{
+			{
+				ID: "old-ecs", ApplicationID: appID, Name: "old-ecs",
+				Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+				CloudResourceType: "ecs", CloudResourceID: "gone-ecs", Region: "cn-north-4",
+				SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+			},
+		},
+		upsertErr: errors.New("db unavailable"),
+	}
+	batches := &fakeSyncBatchRepo{}
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{
+			{ResourceID: "res-fake-ecs-2", Name: "ecs-demo-2", Type: "ecs", Region: "cn-north-4", Status: "running", ProviderRef: "ecs-demo-2"},
+		},
+		fullSyncUnsupported: true,
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "aliyun_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	if final.StaleCount != 0 {
+		t.Fatalf("expected stale_count=0 (ecs persist failed), got %d", final.StaleCount)
+	}
+	if resources.rows[0].SyncStatus != domain.SyncStatusActive {
+		t.Fatalf("old ecs must remain active when all upserts failed, got %s", resources.rows[0].SyncStatus)
+	}
+}
+
+// TestSyncService_GenericPathHasMoreSkipsStale 验证通用（非华为）同步路径 provider 返回 HasMore=true 时
+// 跳过该类型 stale 标记，避免未返回资源被误标 stale，见 docs/huawei-ces-asset-sync-plan.md §13.1。
+func TestSyncService_GenericPathHasMoreSkipsStale(t *testing.T) {
+	appID := cloudApplicationID("acc-fake")
+	apps := &fakeAppRepo{apps: map[string]domain.Application{
+		"cloud": {ID: appID, Name: "aliyun_cloud-cloud", Environment: "cloud"},
+	}}
+	syncedAt := time.Now().UTC().Add(-time.Hour)
+	resources := &fakeResRepo{
+		rows: []domain.Resource{
+			{
+				ID: "old-ecs", ApplicationID: appID, Name: "old-ecs",
+				Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+				CloudResourceType: "ecs", CloudResourceID: "gone-ecs", Region: "cn-north-4",
+				SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+			},
+		},
+	}
+	batches := &fakeSyncBatchRepo{}
+	// 通用路径每类 Limit=500：模拟云端资源数超过 limit，provider 标记 HasMore=true。
+	// 返回 1 条新资源（已入库），但 old-ecs 不在返回中；由于 HasMore，old-ecs 不得被标 stale。
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{
+			{ResourceID: "ecs-new", Name: "ecs-new", Type: "ecs", Region: "cn-north-4", Status: "running", ProviderRef: "ecs-new"},
+		},
+		hasMoreTypes:        map[string]bool{"ecs": true},
+		fullSyncUnsupported: true,
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "aliyun_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	if final.StaleCount != 0 {
+		t.Fatalf("expected stale_count=0 (ecs truncated via HasMore), got %d", final.StaleCount)
+	}
+	if resources.rows[0].SyncStatus != domain.SyncStatusActive {
+		t.Fatalf("old ecs must remain active when provider reported HasMore, got %s", resources.rows[0].SyncStatus)
+	}
+}
+
+// TestSyncService_HuaweiCESMaxResourcesSkipsStale 验证达到 max_resources 时：
+// ① 批次状态为 partial；② 禁止该 region 执行 stale 标记，已有资源保持 active；
+// ③ message 包含 max_resources_reached=true。见 docs/huawei-ces-asset-sync-plan.md §13。
+func TestSyncService_HuaweiCESMaxResourcesSkipsStale(t *testing.T) {
+	appID := cloudApplicationID("acc-fake")
+	apps := &fakeAppRepo{apps: map[string]domain.Application{
+		"cloud": {ID: appID, Name: "huawei_cloud-cloud", Environment: "cloud"},
+	}}
+	syncedAt := time.Now().UTC().Add(-time.Hour)
+	resources := &fakeResRepo{rows: []domain.Resource{
+		{
+			ID: "old-ecs", ApplicationID: appID, Name: "old-ecs",
+			Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+			CloudResourceType: "ecs", CloudResourceID: "gone-ecs", Region: "cn-north-4",
+			SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+		},
+	}}
+	batches := &fakeSyncBatchRepo{}
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{
+			{ResourceID: "res-fake-ecs-1", Name: "ecs-demo-1", Type: "ecs", Region: "cn-north-4", Status: "running", ProviderRef: "ecs-demo-1"},
+		},
+		fullSummary: &obsapp.CloudSyncSummary{
+			Region: "cn-north-4", ResourceGroupName: "全部资源", CESTotal: 100, Discovered: 1,
+			MaxResourcesReached: true,
+		},
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	if final.Status != domain.SyncBatchStatusPartial {
+		t.Fatalf("expected partial batch, got %s", final.Status)
+	}
+	if final.StaleCount != 0 {
+		t.Fatalf("expected stale_count=0 (max_resources must skip stale), got %d", final.StaleCount)
+	}
+	if resources.rows[0].SyncStatus != domain.SyncStatusActive {
+		t.Fatalf("expected old ecs to remain active, got %s", resources.rows[0].SyncStatus)
+	}
+	if !strings.Contains(final.Message, "max_resources_reached=true") {
+		t.Fatalf("expected max_resources_reached=true in message, got %q", final.Message)
+	}
+}
+
+func TestSyncService_HuaweiHybridEnrichmentSummary(t *testing.T) {
+	apps := &fakeAppRepo{apps: map[string]domain.Application{}}
+	resources := &fakeResRepo{}
+	batches := &fakeSyncBatchRepo{}
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{
+			{ResourceID: "res-fake-ecs-1", Name: "ecs-demo-1", Type: "ecs", Region: "cn-north-4", Status: "running", ProviderRef: "ecs-demo-1"},
+		},
+		fullSummary: &obsapp.CloudSyncSummary{
+			Region: "cn-north-4", ResourceGroupName: "全部资源", CESTotal: 1, Discovered: 1,
+			SuccessfulTypes:       []string{"ecs"},
+			EnrichedCount:         1,
+			EnrichmentFailedTypes: []string{"rds"},
+		},
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	if !strings.Contains(final.Message, "enriched=1") {
+		t.Fatalf("expected enriched=1 in message, got %q", final.Message)
+	}
+	if !strings.Contains(final.Message, "enrichment_failed=rds") {
+		t.Fatalf("expected enrichment_failed=rds in message, got %q", final.Message)
+	}
+}
+
+// TestSyncService_TriggerSyncPersistsLabels 验证 hybrid 增强写入 CloudResource.Labels 的
+// private_ip/flavor/vpc_id/az 等字段被同步层落库到 Resource.Labels，不再被丢弃。
+func TestSyncService_TriggerSyncPersistsLabels(t *testing.T) {
+	apps := &fakeAppRepo{apps: map[string]domain.Application{}}
+	resources := &fakeResRepo{}
+	batches := &fakeSyncBatchRepo{}
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{
+			{
+				ResourceID: "res-fake-ecs-1", Name: "ecs-demo-1", Type: "ecs",
+				Region: "cn-north-4", Status: "running", ProviderRef: "ecs-demo-1",
+				Labels: map[string]string{
+					"namespace":  "SYS.ECS",
+					"private_ip": "192.168.1.10",
+					"flavor":     "s6.large.2",
+					"vpc_id":     "vpc-xxx",
+					"az":         "cn-north-4a",
+				},
+			},
+		},
+		fullSummary: &obsapp.CloudSyncSummary{
+			Region: "cn-north-4", ResourceGroupName: "全部资源", CESTotal: 1, Discovered: 1,
+			SuccessfulTypes: []string{"ecs"}, EnrichedCount: 1,
+		},
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	if final.Status != domain.SyncBatchStatusSuccess {
+		t.Fatalf("expected success batch, got %+v", final)
+	}
+	if len(resources.rows) != 1 {
+		t.Fatalf("expected 1 synced resource, got %d", len(resources.rows))
+	}
+	row := resources.rows[0]
+	want := map[string]string{
+		"namespace":  "SYS.ECS",
+		"private_ip": "192.168.1.10",
+		"flavor":     "s6.large.2",
+		"vpc_id":     "vpc-xxx",
+		"az":         "cn-north-4a",
+	}
+	for k, v := range want {
+		if got := row.Labels[k]; got != v {
+			t.Fatalf("expected label %s=%q, got %q", k, v, got)
+		}
+	}
+}
+
+func TestSyncService_TriggerSyncAuditIncludesHuaweiSummary(t *testing.T) {
+	apps := &fakeAppRepo{apps: map[string]domain.Application{}}
+	resources := &fakeResRepo{}
+	batches := &fakeSyncBatchRepo{}
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{{ResourceID: "res-1", Name: "ecs-1", Type: "ecs", Region: "cn-north-4", ProviderRef: "ecs-1"}},
+		fullSummary: &obsapp.CloudSyncSummary{
+			Region: "cn-north-4", ProjectID: "pid-north", SyncMode: "ces",
+			ResourceGroupName: "全部资源", ResourceGroupID: "rg-1", ResourceGroupSelection: "max_total",
+			CESTotal: 3, Discovered: 1, SuccessfulTypes: []string{"ecs"}, MaxResourcesReached: true,
+		},
+	}
+	accounts := &fakeIntegrationAccountPort{account: &SyncAccountSnapshot{
+		AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+	}}
+	audit := &capturingAssetAudit{}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, audit)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	if final.Status != domain.SyncBatchStatusPartial {
+		t.Fatalf("expected partial when max reached, got %+v", final)
+	}
+	if !strings.Contains(final.Message, "selected_resource_group=max_total") || !strings.Contains(final.Message, "max_resources_reached=true") {
+		t.Fatalf("message missing summary flags: %q", final.Message)
+	}
+	if len(audit.rows) != 1 {
+		t.Fatalf("expected audit row, got %d", len(audit.rows))
+	}
+	payload := audit.rows[0].Payload
+	if payload["sync_mode"] != "ces" || payload["resource_group"] != "全部资源" || payload["ces_total"] != 3 || payload["discovered_count"] != 1 {
+		t.Fatalf("unexpected audit payload: %+v", payload)
+	}
+}
+
+func TestTruncateMessageKeepsUTF8(t *testing.T) {
+	msg := strings.Repeat("中", syncBatchMessageMaxRunes+10)
+	got := truncateMessage(msg)
+	if len([]rune(got)) != syncBatchMessageMaxRunes {
+		t.Fatalf("rune len = %d, want %d", len([]rune(got)), syncBatchMessageMaxRunes)
+	}
+	if strings.ContainsRune(got, '\ufffd') {
+		t.Fatalf("message contains replacement rune after truncate")
+	}
+}
+
+// TestMapCloudResourceToAssetFields 校验 cloud_resource_type -> resource_type 映射对齐
+// docs/huawei-ces-asset-sync-plan.md §9.3，重点覆盖 SYS.RDS -> database。
+func TestMapCloudResourceToAssetFields(t *testing.T) {
+	cases := []struct {
+		cloudType string
+		want      string
+	}{
+		{"ecs", "host"},
+		{"evs", "storage"},
+		{"obs", "storage"},
+		{"sfs", "storage"},
+		{"vpc", "network"},
+		{"vpcep", "network"},
+		{"nat", "network"},
+		{"rds", "database"},
+		{"elb", "service"},
+		{"cce", "service"},
+		{"apm", "service"},
+		{"dcs", "middleware"},
+		{"dms", "middleware"},
+		{"cbr", "backup"},
+		{"ces", "monitor"},
+		{"RDS", "database"},
+		{"unknown_type", "service"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.cloudType, func(t *testing.T) {
+			got, _ := mapCloudResourceToAssetFields(obsdomain.CloudResource{Type: tc.cloudType, ProviderRef: "ref-" + tc.cloudType})
+			if got != tc.want {
+				t.Fatalf("cloudType=%q: resource_type=%q, want %q", tc.cloudType, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSyncService_TriggerSyncRejectsConcurrentRunning 校验账号级互斥：
+// 同一账号已有 running 批次时，第二次 TriggerSync 返回 ALREADY_EXISTS(409)，
+// 不会创建第二个批次，避免并发批次交错互相标记 stale。见 docs/huawei-ces-asset-sync-plan.md §P1。
+func TestSyncService_TriggerSyncRejectsConcurrentRunning(t *testing.T) {
+	apps := &fakeAppRepo{apps: map[string]domain.Application{}}
+	resources := &fakeResRepo{}
+	batches := &fakeSyncBatchRepo{enforceRunningMutex: true}
+	// 预置一个仍 running 的批次（租约未过期），模拟并发场景。
+	lease := time.Now().UTC().Add(syncBatchLeaseTTL)
+	batches.rows = append(batches.rows, domain.SyncBatch{
+		BatchID: "sync-existing", IntegrationAccountID: "acc-fake", Provider: "huawei_cloud",
+		Status: domain.SyncBatchStatusRunning, StartedAt: time.Now().UTC(), LeaseExpiresAt: &lease,
+	})
+	discovery := &fakeDiscoveryPort{}
+	accounts := &fakeIntegrationAccountPort{account: &SyncAccountSnapshot{
+		AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+	}}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+
+	_, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err == nil {
+		t.Fatalf("expected conflict error, got nil")
+	}
+	if apperr.CodeOf(err) != apperr.CodeAlreadyExists {
+		t.Fatalf("expected ALREADY_EXISTS, got %v", err)
+	}
+	// 仅预置的那一个 running 批次存在，没有新批次被创建。
+	runningCount := 0
+	for _, row := range batches.rows {
+		if row.IntegrationAccountID == "acc-fake" && row.Status == domain.SyncBatchStatusRunning {
+			runningCount++
+		}
+	}
+	if runningCount != 1 {
+		t.Fatalf("expected exactly 1 running batch, got %d", runningCount)
+	}
+}
+
+// TestSyncService_TriggerSyncReapsExpiredLease 校验租约自愈：
+// 同一账号存在租约已过期的 running 批次时，下一次 TriggerSync 先 reap 为 failed，
+// 再正常创建新批次完成同步，不会因崩溃批次永久 409。
+func TestSyncService_TriggerSyncReapsExpiredLease(t *testing.T) {
+	apps := &fakeAppRepo{apps: map[string]domain.Application{}}
+	resources := &fakeResRepo{}
+	batches := &fakeSyncBatchRepo{enforceRunningMutex: true}
+	// 预置一个租约已过期的 running 批次（模拟进程崩溃遗留）。
+	expired := time.Now().UTC().Add(-1 * time.Minute)
+	batches.rows = append(batches.rows, domain.SyncBatch{
+		BatchID: "sync-stale", IntegrationAccountID: "acc-fake", Provider: "huawei_cloud",
+		Status: domain.SyncBatchStatusRunning, StartedAt: time.Now().UTC().Add(-20 * time.Minute), LeaseExpiresAt: &expired,
+	})
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{{ResourceID: "res-1", Name: "ecs-1", Type: "ecs", Region: "cn-north-4", ProviderRef: "ecs-1"}},
+	}
+	accounts := &fakeIntegrationAccountPort{account: &SyncAccountSnapshot{
+		AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+	}}
+	audit := &capturingAssetAudit{}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, audit)
+
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	if final.Status != domain.SyncBatchStatusSuccess {
+		t.Fatalf("expected success after reap, got %+v", final)
+	}
+	// 旧批次应已被 reap 为 failed。
+	var stale *domain.SyncBatch
+	for i := range batches.rows {
+		if batches.rows[i].BatchID == "sync-stale" {
+			stale = &batches.rows[i]
+		}
+	}
+	if stale == nil {
+		t.Fatalf("expected reaped stale batch to remain in repo")
+	}
+	if stale.Status != domain.SyncBatchStatusFailed {
+		t.Fatalf("expected reaped batch status=failed, got %s", stale.Status)
+	}
+	if stale.LeaseExpiresAt != nil {
+		t.Fatalf("expected reaped batch lease cleared, got %v", stale.LeaseExpiresAt)
+	}
+	if len(audit.rows) != 2 {
+		t.Fatalf("expected reap audit and final sync audit, got %d", len(audit.rows))
+	}
+	reapAudit := audit.rows[0]
+	if reapAudit.ResourceType != "asset_sync_batch" || reapAudit.ResourceID != "acc-fake" || reapAudit.Action != AuditAssetSync || reapAudit.UserID != "u1" {
+		t.Fatalf("unexpected reap audit metadata: %+v", reapAudit)
+	}
+	if reapAudit.Payload["event"] != "reap_expired_running" || reapAudit.Payload["account_id"] != "acc-fake" || reapAudit.Payload["reaped_count"] != int64(1) || reapAudit.Payload["result"] != "success" {
+		t.Fatalf("unexpected reap audit payload: %+v", reapAudit.Payload)
+	}
+}
+
+// blockingDiscoveryPort 让 ListAllResources 在 delay 后返回；ctx 取消时立即返回 ctx 错误。
+// 用于异步生命周期测试：制造足够长的同步耗时以观察续租/取消/硬超时行为。
+type blockingDiscoveryPort struct {
+	resources []obsdomain.CloudResource
+	delay     time.Duration
+}
+
+func (p *blockingDiscoveryPort) ListResources(_ context.Context, _ obsapp.Actor, _ obsdomain.AssetDiscoveryQuery) (*obsapp.AssetDiscoveryResult, error) {
+	return &obsapp.AssetDiscoveryResult{Resources: p.resources}, nil
+}
+
+func (p *blockingDiscoveryPort) ListAllResources(ctx context.Context, _ obsapp.Actor, q obsapp.AssetFullSyncQuery) (*obsapp.AssetFullSyncResult, error) {
+	timer := time.NewTimer(p.delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+	}
+	out := make([]obsdomain.CloudResource, 0, len(p.resources))
+	for _, item := range p.resources {
+		if q.Region != "" && item.Region != q.Region {
+			continue
+		}
+		out = append(out, item)
+	}
+	return &obsapp.AssetFullSyncResult{Resources: out, Summary: obsapp.CloudSyncSummary{Region: q.Region, Discovered: len(out)}}, nil
+}
+
+// TestSyncService_AsyncRenewsLeaseDuringSync 验证后台同步期间心跳续租 lease_expires_at，
+// 避免正常同步超过 TTL 被 reap。用短心跳间隔 + 阻塞 discovery 制造续租窗口。
+func TestSyncService_AsyncRenewsLeaseDuringSync(t *testing.T) {
+	origInterval := syncLeaseRenewInterval
+	syncLeaseRenewInterval = 5 * time.Millisecond
+	defer func() { syncLeaseRenewInterval = origInterval }()
+
+	apps := &fakeAppRepo{apps: map[string]domain.Application{}}
+	resources := &fakeResRepo{}
+	batches := &fakeSyncBatchRepo{}
+	discovery := &blockingDiscoveryPort{
+		resources: []obsdomain.CloudResource{{ResourceID: "res-1", Name: "ecs-1", Type: "ecs", Region: "cn-north-4", ProviderRef: "ecs-1"}},
+		delay:     40 * time.Millisecond, // > 2 个心跳周期，保证续租被触发
+	}
+	accounts := &fakeIntegrationAccountPort{account: &SyncAccountSnapshot{
+		AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+	}}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	if out.Status != domain.SyncBatchStatusRunning {
+		t.Fatalf("expected running immediately, got %s", out.Status)
+	}
+	svc.Wait()
+	if batches.renewLeaseCount < 1 {
+		t.Fatalf("expected at least 1 lease renewal during sync, got %d", batches.renewLeaseCount)
+	}
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final: %v", err)
+	}
+	if final.Status != domain.SyncBatchStatusSuccess {
+		t.Fatalf("expected success after async sync, got %s", final.Status)
+	}
+	if final.LeaseExpiresAt != nil {
+		t.Fatalf("terminal batch should clear lease, got %v", final.LeaseExpiresAt)
+	}
+}
+
+// TestSyncService_CancelledReachesTerminal 验证 runCtx 取消（进程关闭）时，
+// finalize 用独立短 context 仍能把批次落为 failed，不卡 running。
+func TestSyncService_CancelledReachesTerminal(t *testing.T) {
+	apps := &fakeAppRepo{apps: map[string]domain.Application{}}
+	resources := &fakeResRepo{}
+	batches := &fakeSyncBatchRepo{}
+	discovery := &blockingDiscoveryPort{delay: 5 * time.Second} // 长阻塞，等取消
+	accounts := &fakeIntegrationAccountPort{account: &SyncAccountSnapshot{
+		AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	svc.SetLifecycle(ctx)
+
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		cancel()
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	// 取消 shutdownCtx，模拟进程关闭：runCtx 随之取消，discovery 返回 ctx 错误，finalize 落 failed。
+	cancel()
+	svc.Wait()
+
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final: %v", err)
+	}
+	if final.Status != domain.SyncBatchStatusFailed {
+		t.Fatalf("expected failed after cancel, got %s", final.Status)
+	}
+	if final.FinishedAt == nil {
+		t.Fatal("expected finished_at set on cancelled batch")
+	}
+	if final.LeaseExpiresAt != nil {
+		t.Fatalf("terminal batch should clear lease, got %v", final.LeaseExpiresAt)
+	}
+}
+
+// TestSyncService_HardTimeoutFails 验证 goroutine 硬超时触发时批次落 failed，
+// 防止失控 goroutine 无限占用账号 running 槽位。
+func TestSyncService_HardTimeoutFails(t *testing.T) {
+	origTimeout := syncHardTimeout
+	syncHardTimeout = 20 * time.Millisecond
+	defer func() { syncHardTimeout = origTimeout }()
+
+	apps := &fakeAppRepo{apps: map[string]domain.Application{}}
+	resources := &fakeResRepo{}
+	batches := &fakeSyncBatchRepo{}
+	discovery := &blockingDiscoveryPort{delay: 5 * time.Second} // 远超硬超时
+	accounts := &fakeIntegrationAccountPort{account: &SyncAccountSnapshot{
+		AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+	}}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final: %v", err)
+	}
+	if final.Status != domain.SyncBatchStatusFailed {
+		t.Fatalf("expected failed after hard timeout, got %s", final.Status)
+	}
+	if final.FinishedAt == nil {
+		t.Fatal("expected finished_at set on timed-out batch")
+	}
+}
+
+// TestSyncService_HuaweiCESDroppedTypeMarkedStale 验证 CES 权威 scope 反向 stale：
+// 资源组从 ECS+EVS 改为仅 ECS 后，EVS 不再出现在本轮 product_names scope，
+// 历史 EVS 资产应被标记 stale，而不是永久保持 active，见 §13.1。
+func TestSyncService_HuaweiCESDroppedTypeMarkedStale(t *testing.T) {
+	appID := cloudApplicationID("acc-fake")
+	apps := &fakeAppRepo{apps: map[string]domain.Application{
+		"cloud": {ID: appID, Name: "huawei_cloud-cloud", Environment: "cloud"},
+	}}
+	syncedAt := time.Now().UTC().Add(-time.Hour)
+	resources := &fakeResRepo{rows: []domain.Resource{
+		{
+			ID: "old-ecs", ApplicationID: appID, Name: "old-ecs",
+			Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+			CloudResourceType: "ecs", CloudResourceID: "gone-ecs", Region: "cn-north-4",
+			SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+		},
+		{
+			ID: "old-evs", ApplicationID: appID, Name: "old-evs",
+			Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+			CloudResourceType: "evs", CloudResourceID: "gone-evs", Region: "cn-north-4",
+			SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+		},
+	}}
+	batches := &fakeSyncBatchRepo{}
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{
+			{ResourceID: "res-fake-ecs-2", Name: "ecs-demo-2", Type: "ecs", Region: "cn-north-4", Status: "running", ProviderRef: "ecs-demo-2"},
+		},
+		fullSummary: &obsapp.CloudSyncSummary{
+			Region: "cn-north-4", SyncMode: "ces", ResourceGroupName: "全部资源",
+			CESTotal: 1, Discovered: 1, SuccessfulTypes: []string{"ecs"},
+		},
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	statusByID := map[string]string{}
+	for _, row := range resources.rows {
+		statusByID[row.ID] = row.SyncStatus
+	}
+	// old-ecs 不在本批（gone-ecs），应 stale；old-evs 已从资源组移除，应 stale。
+	if statusByID["old-ecs"] != domain.SyncStatusStale {
+		t.Fatalf("expected old ecs stale, got %s", statusByID["old-ecs"])
+	}
+	if statusByID["old-evs"] != domain.SyncStatusStale {
+		t.Fatalf("expected dropped evs stale, got %s", statusByID["old-evs"])
+	}
+	if final.StaleCount != 2 {
+		t.Fatalf("expected stale_count=2, got %d", final.StaleCount)
+	}
+	if final.Status != domain.SyncBatchStatusSuccess {
+		t.Fatalf("expected success batch, got %+v", final)
+	}
+}
+
+// TestSyncService_HuaweiCESNegativeMarkingExcludesUncertainTypes 验证 CES 反向 stale 的
+// exceptTypes 门控：查询失败(QueryFailedTypes)、转换失败(ConversionFailedTypes)的类型保持 active，
+// 其余类型（含已移除类型）标记 stale，见 §13.1。
+func TestSyncService_HuaweiCESNegativeMarkingExcludesUncertainTypes(t *testing.T) {
+	appID := cloudApplicationID("acc-fake")
+	apps := &fakeAppRepo{apps: map[string]domain.Application{
+		"cloud": {ID: appID, Name: "huawei_cloud-cloud", Environment: "cloud"},
+	}}
+	syncedAt := time.Now().UTC().Add(-time.Hour)
+	resources := &fakeResRepo{rows: []domain.Resource{
+		{
+			ID: "old-ecs", ApplicationID: appID, Name: "old-ecs",
+			Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+			CloudResourceType: "ecs", CloudResourceID: "gone-ecs", Region: "cn-north-4",
+			SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+		},
+		{
+			ID: "old-evs", ApplicationID: appID, Name: "old-evs",
+			Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+			CloudResourceType: "evs", CloudResourceID: "keep-evs", Region: "cn-north-4",
+			SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+		},
+		{
+			ID: "old-rds", ApplicationID: appID, Name: "old-rds",
+			Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+			CloudResourceType: "rds", CloudResourceID: "keep-rds", Region: "cn-north-4",
+			SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+		},
+		{
+			ID: "old-vpc", ApplicationID: appID, Name: "old-vpc",
+			Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+			CloudResourceType: "vpc", CloudResourceID: "gone-vpc", Region: "cn-north-4",
+			SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+		},
+	}}
+	batches := &fakeSyncBatchRepo{}
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{
+			{ResourceID: "res-fake-ecs-2", Name: "ecs-demo-2", Type: "ecs", Region: "cn-north-4", Status: "running", ProviderRef: "ecs-demo-2"},
+		},
+		fullSummary: &obsapp.CloudSyncSummary{
+			Region: "cn-north-4", SyncMode: "ces", ResourceGroupName: "全部资源",
+			CESTotal: 1, Discovered: 1, SuccessfulTypes: []string{"ecs"},
+			QueryFailedTypes:      []string{"rds"},
+			ConversionFailedTypes: []string{"evs"},
+		},
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	statusByID := map[string]string{}
+	for _, row := range resources.rows {
+		statusByID[row.ID] = row.SyncStatus
+	}
+	// ecs 不在本批 → stale；vpc 已从资源组移除且非不确定 → stale。
+	if statusByID["old-ecs"] != domain.SyncStatusStale {
+		t.Fatalf("expected old ecs stale, got %s", statusByID["old-ecs"])
+	}
+	if statusByID["old-vpc"] != domain.SyncStatusStale {
+		t.Fatalf("expected dropped vpc stale, got %s", statusByID["old-vpc"])
+	}
+	// rds 查询失败、evs 转换失败：不确定，保持 active。
+	if statusByID["old-rds"] != domain.SyncStatusActive {
+		t.Fatalf("query-failed rds must remain active, got %s", statusByID["old-rds"])
+	}
+	if statusByID["old-evs"] != domain.SyncStatusActive {
+		t.Fatalf("conversion-failed evs must remain active, got %s", statusByID["old-evs"])
+	}
+	if final.StaleCount != 2 {
+		t.Fatalf("expected stale_count=2, got %d", final.StaleCount)
+	}
+}
+
+// TestSyncService_HuaweiCESProductNamesEmptyMarksPartial 验证 product_names 为空时使用兜底白名单，
+// 批次至少标记 partial，提示同步可能不完整，见 §8.5。
+func TestSyncService_HuaweiCESProductNamesEmptyMarksPartial(t *testing.T) {
+	apps := &fakeAppRepo{apps: map[string]domain.Application{}}
+	resources := &fakeResRepo{}
+	batches := &fakeSyncBatchRepo{}
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{
+			{ResourceID: "res-fake-ecs-1", Name: "ecs-demo-1", Type: "ecs", Region: "cn-north-4", Status: "running", ProviderRef: "ecs-demo-1"},
+		},
+		fullSummary: &obsapp.CloudSyncSummary{
+			Region: "cn-north-4", SyncMode: "ces", ResourceGroupName: "全部资源",
+			CESTotal: 1, Discovered: 1, SuccessfulTypes: []string{"ecs"},
+			ProductNamesEmpty: true,
+		},
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	if final.Status != domain.SyncBatchStatusPartial {
+		t.Fatalf("expected partial batch when product_names empty, got %+v", final)
+	}
+	if !strings.Contains(final.Message, "product_names_empty=true") {
+		t.Fatalf("expected product_names_empty note in message, got %q", final.Message)
 	}
 }

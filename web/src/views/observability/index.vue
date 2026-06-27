@@ -91,10 +91,18 @@
                 v-model="metricsForm.aggregator"
                 style="width: 120px"
               >
-                <a-option value="avg">avg</a-option>
-                <a-option value="max">max</a-option>
-                <a-option value="min">min</a-option>
-                <a-option value="sum">sum</a-option>
+                <a-option value="avg">
+                  avg
+                </a-option>
+                <a-option value="max">
+                  max
+                </a-option>
+                <a-option value="min">
+                  min
+                </a-option>
+                <a-option value="sum">
+                  sum
+                </a-option>
               </a-select>
             </a-form-item>
             <a-form-item label="采样周期(s)">

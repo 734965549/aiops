@@ -33,5 +33,11 @@ INSERT INTO public.schema_migrations (version, name, applied_at) VALUES
 ('0019', 'init_observability', NOW()),
 ('0020', 'init_inspection', NOW()),
 ('0022', 'init_execution_agent', NOW()),
-('0023', 'asset_cloud_sync', NOW())
+('0023', 'asset_cloud_sync', NOW()),
+('0024', 'integration_account_extra_config', NOW()),
+('0025', 'asset_resource_labels', NOW()),
+('0026', 'asset_cloud_sync_region_key', NOW()),
+('0027', 'asset_sync_batch_message_text', NOW()),
+('0028', 'asset_sync_batch_running_mutex', NOW()),
+('0029', 'huawei_legacy_accounts_native_sync_mode', NOW())
 ON CONFLICT (version) DO NOTHING;

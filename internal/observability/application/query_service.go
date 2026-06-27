@@ -227,7 +227,7 @@ func (s *QueryService) ListResources(ctx context.Context, actor Actor, q domain.
 	if !ok {
 		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider does not support asset discovery")
 	}
-	resources, err := port.ListResources(ctx, pctx, q)
+	resources, hasMore, err := port.ListResources(ctx, pctx, q)
 	if err != nil {
 		return nil, wrapProviderError(err, "list resources failed")
 	}
@@ -247,7 +247,7 @@ func (s *QueryService) ListResources(ctx context.Context, actor Actor, q domain.
 			"resource_count": len(resources), "evidence_id": evidenceID,
 		},
 	})
-	return &AssetDiscoveryResult{Resources: resources, EvidenceID: evidenceID}, nil
+	return &AssetDiscoveryResult{Resources: resources, EvidenceID: evidenceID, HasMore: hasMore}, nil
 }
 
 // ListAllResources 执行云资源全量同步发现，专供 Asset Sync 使用，不受交互查询 limit<=500 限制，

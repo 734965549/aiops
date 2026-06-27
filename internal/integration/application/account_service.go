@@ -176,7 +176,7 @@ func (s *AccountService) Create(ctx context.Context, actor Actor, in CreateAccou
 		OwnerTeam:   strings.TrimSpace(in.OwnerTeam),
 		Description: strings.TrimSpace(in.Description),
 	}
-	extraConfig, err := encodeExtraConfigInput(in.ExtraConfig)
+	extraConfig, err := encodeExtraConfigInput(provider, in.ExtraConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +253,7 @@ func (s *AccountService) Update(ctx context.Context, accountID string, actor Act
 		acc.Description = strings.TrimSpace(*in.Description)
 	}
 	if in.ExtraConfigSet {
-		if acc.ExtraConfig, err = encodeExtraConfigInput(in.ExtraConfig); err != nil {
+		if acc.ExtraConfig, err = encodeExtraConfigInput(acc.Provider, in.ExtraConfig); err != nil {
 			return nil, err
 		}
 	}
@@ -316,8 +316,19 @@ func (s *AccountService) Delete(ctx context.Context, accountID string, actor Act
 	if err != nil {
 		return err
 	}
-	if err := s.accounts.SoftDelete(ctx, acc.AccountID); err != nil {
-		return wrapIntegrationError(err, "delete integration account failed")
+	// 账号软删除保留行用于审计/巡检证据；凭据密文随删除一并硬删除，避免残留。
+	if err := s.runAccountWriteTransaction(ctx, func(ctx context.Context, repos domain.TransactionRepositories) error {
+		if err := repos.Accounts.SoftDelete(ctx, acc.AccountID); err != nil {
+			return wrapIntegrationError(err, "delete integration account failed")
+		}
+		if repos.Credentials != nil {
+			if err := repos.Credentials.DeleteByAccountID(ctx, acc.AccountID); err != nil {
+				return wrapIntegrationError(err, "delete integration credential failed")
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	s.recordAudit(ctx, acc.AccountID, actor.UserID, AuditAccountDelete, map[string]any{"result": "success"})
 	return nil

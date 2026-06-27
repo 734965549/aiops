@@ -19,6 +19,8 @@ import (
 
 const defaultCESResourceTimeout = 60 * time.Second
 
+var cesRetryDelays = []time.Duration{100 * time.Millisecond, 200 * time.Millisecond}
+
 // CESResourceDiscoveryRequest CES 资源全量发现请求，见 docs/huawei-ces-asset-sync-plan.md §7.1。
 type CESResourceDiscoveryRequest struct {
 	ProjectID           string
@@ -31,17 +33,27 @@ type CESResourceDiscoveryRequest struct {
 
 // CESResourceDiscoverySummary 记录单次发现的逐 scope 摘要，用于 batch message 排查，见 §7.1。
 type CESResourceDiscoverySummary struct {
-	ProjectID             string
-	Region                string
-	ResourceGroupID       string
-	ResourceGroupName     string
-	CESTotal              int
-	Discovered            int
-	FailedScopes          []string
-	SuccessfulTypes       []string
+	ProjectID              string
+	Region                 string
+	ResourceGroupID        string
+	ResourceGroupName      string
+	ResourceGroupSelection string
+	CESTotal               int
+	Discovered             int
+	FailedScopes           []string
+	SuccessfulTypes        []string
+	// QueryFailedTypes 记录存在 scope 查询失败的类型，见 docs/huawei-ces-asset-sync-plan.md §13.1。
+	// 同一类型只要有一个 service+dim_name scope 查询失败，该类型不得进入 SuccessfulTypes，
+	// 否则 sync_service 会把未查询到的资产误标为 stale。
+	QueryFailedTypes      []string
 	UnknownNamespaceCount int
 	InvalidResourceCount  int
+	// ConversionFailedTypes 记录存在资源转换失败的类型，sync_service 据此禁止该类型执行 stale（资源转换不完整），见 docs/huawei-ces-asset-sync-plan.md §13。
+	ConversionFailedTypes []string
 	ProductNamesEmpty     bool
+	// MaxResourcesReached 表示因达到 max_resources 上限而提前终止发现，
+	// 此时 SuccessfulTypes 不含被截断的类型，调用方必须禁止该 scope 执行 stale 标记，见 §13。
+	MaxResourcesReached bool
 }
 
 // CESResourceDiscoveryResult CES 资源发现结果。
@@ -108,6 +120,7 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 	}
 	summary.ResourceGroupID = group.GroupID
 	summary.ResourceGroupName = group.GroupName
+	summary.ResourceGroupSelection = group.Selection
 	if group.Total > 0 {
 		summary.CESTotal = group.Total
 	}
@@ -131,6 +144,10 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 		if pageErr != nil {
 			result.Summary.FailedScopes = append(result.Summary.FailedScopes,
 				fmt.Sprintf("%s/%s: %s", req.Region, product.Service, apperr.FromError(pageErr).Message))
+			// 同一类型只要有一个 scope 查询失败，该类型就不得进入 SuccessfulTypes，
+			// 否则 sync_service 会把未查询到的资产误标为 stale，见 §13.1。
+			result.Summary.QueryFailedTypes = appendUniqueString(
+				result.Summary.QueryFailedTypes, resolveNamespaceMapping(product.Service).CloudResourceType)
 			logger.From(ctx).Warn("huawei ces list resources failed",
 				logger.String("region", req.Region),
 				logger.String("namespace", product.Service),
@@ -139,8 +156,7 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 			)
 			continue
 		}
-		resourceType := resolveNamespaceMapping(product.Service).CloudResourceType
-		result.Summary.SuccessfulTypes = appendUniqueString(result.Summary.SuccessfulTypes, resourceType)
+		// 内层循环采集资源，达到 max_resources 即截断。
 		for _, in := range pageResources {
 			if len(resources) >= maxResources {
 				break
@@ -148,6 +164,9 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 			cloud, ok := mapCESResource(req.Region, product.Service, product.DimName, in, group.GroupID, group.GroupName)
 			if !ok {
 				result.Summary.InvalidResourceCount++
+				// 转换失败按类型记录，sync_service 据此禁止该类型执行 stale（资源转换不完整），见 §13。
+				result.Summary.ConversionFailedTypes = appendUniqueString(
+					result.Summary.ConversionFailedTypes, resolveNamespaceMapping(product.Service).CloudResourceType)
 				continue
 			}
 			if isUnknownNamespace(product.Service) {
@@ -155,11 +174,23 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 			}
 			resources = append(resources, cloud)
 		}
+		// 达到 max_resources 时该类型只被部分扫描，不能计入 SuccessfulTypes，
+		// 否则 sync_service 会把未扫描到的资产误标为 stale，见 §13。
+		if len(resources) >= maxResources {
+			result.Summary.MaxResourcesReached = true
+			break
+		}
+		resourceType := resolveNamespaceMapping(product.Service).CloudResourceType
+		result.Summary.SuccessfulTypes = appendUniqueString(result.Summary.SuccessfulTypes, resourceType)
 	}
+	// SuccessfulTypes 只保留所有 scope 都成功的类型：剔除存在 scope 查询失败的类型，见 §13.1。
+	// 例如 SYS.ELB/loadbalancer_id 成功但 SYS.ELB/l7policy_id 失败时，elb 不得计入 SuccessfulTypes。
+	result.Summary.SuccessfulTypes = subtractStringSet(result.Summary.SuccessfulTypes, result.Summary.QueryFailedTypes)
 	result.Resources = resources
 	result.Summary.Discovered = len(resources)
 	result.Summary.ResourceGroupID = group.GroupID
 	result.Summary.ResourceGroupName = group.GroupName
+	result.Summary.ResourceGroupSelection = group.Selection
 	result.Summary.CESTotal = group.Total
 	result.Summary.ProductNamesEmpty = productNamesEmpty
 	return result, nil
@@ -170,9 +201,23 @@ type selectedResourceGroup struct {
 	GroupID   string
 	GroupName string
 	Total     int
+	Selection string
 }
 
-// selectResourceGroup 按 §8.4 选择目标资源组：指定ID > 指定名称匹配 > total 最大。
+// defaultResourceGroupCandidates 默认候选名，需用户在 CES 控制台预先创建同名资源分组，见 §8.4。
+// 注意：这些名称并非 CES 系统内置分组；未命中即失败，不回退到最大资源组。
+var defaultResourceGroupCandidates = []string{
+	"全部资源",
+	"All resources",
+	"All Resources",
+}
+
+// maxResourceGroupOffset ListResourceGroups offset 上限（SDK 区间 [0,10000]），防止异常翻页。
+const maxResourceGroupOffset int32 = 10000
+
+// selectResourceGroup 按 §8.4 选择目标资源组：指定ID > 名称精确匹配(用户指定名 + 默认候选名)。
+// 任何名称未命中均直接失败，不回退到 total 最大的资源组，避免把某个业务组误当作全量。
+// 分页拉全量后客户端匹配（不依赖服务端 GroupName 模糊过滤）。
 func selectResourceGroup(ctx context.Context, api cesResourceGroupAPI, req CESResourceDiscoveryRequest) (selectedResourceGroup, error) {
 	if id := strings.TrimSpace(req.ResourceGroupID); id != "" {
 		// 指定 ID 时仍走 ShowResourceGroup 校验存在并取 total。
@@ -180,48 +225,100 @@ func selectResourceGroup(ctx context.Context, api cesResourceGroupAPI, req CESRe
 		if err != nil {
 			return selectedResourceGroup{}, err
 		}
-		return selectedResourceGroup{GroupID: id, GroupName: group.GroupName, Total: group.Total}, nil
+		return selectedResourceGroup{GroupID: id, GroupName: group.GroupName, Total: group.Total, Selection: "specified_id"}, nil
 	}
 
-	listReq := &cesv2model.ListResourceGroupsRequest{}
-	if ep := strings.TrimSpace(req.EnterpriseProjectID); ep != "" {
-		listReq.EnterpriseProjectId = &ep
-	}
-	wantName := strings.TrimSpace(req.ResourceGroupName)
-	if wantName != "" {
-		listReq.GroupName = &wantName
-	}
-	resp, err := api.ListResourceGroups(listReq)
+	groups, err := listAllResourceGroups(ctx, api, req)
 	if err != nil {
-		return selectedResourceGroup{}, mapCESDiscoveryError(ctx, err, req.Region, "list resource groups")
+		return selectedResourceGroup{}, err
 	}
-	if resp == nil || resp.ResourceGroups == nil || len(*resp.ResourceGroups) == 0 {
+	if len(groups) == 0 {
 		return selectedResourceGroup{}, apperr.New(apperr.CodeNotFound, "no CES resource group found for project/region")
 	}
 
-	groups := *resp.ResourceGroups
-	// 名称精确匹配优先（兼容 "全部资源"/"All Resources" 大小写差异）。
-	if wantName != "" {
+	// 名称匹配：用户指定名优先，再依次尝试默认候选名，见 §8.4 step 2/3。
+	for _, wantName := range resourceGroupNameCandidates(req.ResourceGroupName) {
 		for _, g := range groups {
 			if strings.EqualFold(strings.TrimSpace(g.GroupName), wantName) {
-				return selectedResourceGroup{GroupID: g.GroupId, GroupName: g.GroupName, Total: groupTotal(g.ResourceStatistics)}, nil
+				selection := "default_name"
+				if strings.EqualFold(strings.TrimSpace(req.ResourceGroupName), wantName) {
+					selection = "specified_name"
+				}
+				return selectedResourceGroup{GroupID: g.GroupId, GroupName: g.GroupName, Total: groupTotal(g.ResourceStatistics), Selection: selection}, nil
 			}
 		}
 	}
-	// 否则选 total 最大的资源组，见 §8.4。
-	var best selectedResourceGroup
-	bestIdx := -1
-	for i, g := range groups {
-		total := groupTotal(g.ResourceStatistics)
-		if bestIdx == -1 || total > best.Total {
-			best = selectedResourceGroup{GroupID: g.GroupId, GroupName: g.GroupName, Total: total}
-			bestIdx = i
+	// 名称（用户指定名或默认候选名）均未命中，直接失败，不回退最大资源组，见 §8.4 step 4。
+	// CES 官方 ListResourceGroups 只返回用户创建的资源分组，不存在"总览全量"隐式口径。
+	return selectedResourceGroup{}, apperr.New(apperr.CodeNotFound,
+		"no CES resource group matched (specified id/name or default candidates)")
+}
+
+// resourceGroupNameCandidates 构建名称匹配候选列表：用户指定名在前，叠加默认候选名，去重。
+func resourceGroupNameCandidates(specified string) []string {
+	candidates := make([]string, 0, len(defaultResourceGroupCandidates)+1)
+	seen := make(map[string]struct{}, cap(candidates)+1)
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, name)
+	}
+	add(specified)
+	for _, name := range defaultResourceGroupCandidates {
+		add(name)
+	}
+	return candidates
+}
+
+// listAllResourceGroups 分页拉取全部 CES 资源组，见 §8.6 分页策略。
+// SDK ListResourceGroups 支持 offset[0,10000]/limit[1,100]，每页 100。
+func listAllResourceGroups(ctx context.Context, api cesResourceGroupAPI, req CESResourceDiscoveryRequest) ([]cesv2model.OneResourceGroupResp, error) {
+	pageLimit := int32(defaultCESPageLimit) // SDK limit 上限 100
+	ep := strings.TrimSpace(req.EnterpriseProjectID)
+	out := make([]cesv2model.OneResourceGroupResp, 0, pageLimit)
+	var offset int32 = 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, mapCESError(err)
+		}
+		listReq := &cesv2model.ListResourceGroupsRequest{
+			Offset: &offset,
+			Limit:  &pageLimit,
+		}
+		if ep != "" {
+			listReq.EnterpriseProjectId = &ep
+		}
+		resp, err := callCESWithRetry(ctx, req.Region, "list resource groups", func() (*cesv2model.ListResourceGroupsResponse, error) {
+			return api.ListResourceGroups(listReq)
+		})
+		if err != nil {
+			return nil, err
+		}
+		if resp == nil || resp.ResourceGroups == nil || len(*resp.ResourceGroups) == 0 {
+			break
+		}
+		out = append(out, *resp.ResourceGroups...)
+		// 服务端返回 count，已收集达到总数则停止。
+		if resp.Count != nil && int32(len(out)) >= *resp.Count {
+			break
+		}
+		// 不足一页说明已是末页。
+		if int32(len(*resp.ResourceGroups)) < pageLimit {
+			break
+		}
+		offset += pageLimit
+		if offset >= maxResourceGroupOffset {
+			break
 		}
 	}
-	if bestIdx == -1 {
-		return selectedResourceGroup{}, apperr.New(apperr.CodeNotFound, "no CES resource group found for project/region")
-	}
-	return best, nil
+	return out, nil
 }
 
 // shownResourceGroup ShowResourceGroup 结果摘要。
@@ -232,9 +329,11 @@ type shownResourceGroup struct {
 }
 
 func showGroup(ctx context.Context, api cesResourceGroupAPI, groupID string) (shownResourceGroup, error) {
-	resp, err := api.ShowResourceGroup(&cesv2model.ShowResourceGroupRequest{GroupId: groupID})
+	resp, err := callCESWithRetry(ctx, "", "show resource group", func() (*cesv2model.ShowResourceGroupResponse, error) {
+		return api.ShowResourceGroup(&cesv2model.ShowResourceGroupRequest{GroupId: groupID})
+	})
 	if err != nil {
-		return shownResourceGroup{}, mapCESDiscoveryError(ctx, err, "", "show resource group")
+		return shownResourceGroup{}, err
 	}
 	out := shownResourceGroup{}
 	if resp != nil {
@@ -285,9 +384,11 @@ func listResourcesForProduct(ctx context.Context, api cesResourceGroupAPI, group
 		if dimName := strings.TrimSpace(product.DimName); dimName != "" {
 			req.DimName = &dimName
 		}
-		resp, err := api.ListResourceGroupsServicesResources(req)
+		resp, err := callCESWithRetry(ctx, region, "list resource group services resources", func() (*cesv2model.ListResourceGroupsServicesResourcesResponse, error) {
+			return api.ListResourceGroupsServicesResources(req)
+		})
 		if err != nil {
-			return nil, mapCESDiscoveryError(ctx, err, region, "list resource group services resources")
+			return nil, err
 		}
 		if resp == nil || resp.Resources == nil || len(*resp.Resources) == 0 {
 			break
@@ -349,6 +450,31 @@ func appendUniqueString(values []string, value string) []string {
 	return append(values, value)
 }
 
+// subtractStringSet 从 values 中剔除存在于 subtract 集合的项，返回新切片。
+// 用于从 SuccessfulTypes 移除存在 scope 查询失败的类型，见 §13.1。
+func subtractStringSet(values []string, subtract []string) []string {
+	if len(subtract) == 0 {
+		return values
+	}
+	bad := make(map[string]struct{}, len(subtract))
+	for _, v := range subtract {
+		if v = strings.ToLower(strings.TrimSpace(v)); v != "" {
+			bad[v] = struct{}{}
+		}
+	}
+	if len(bad) == 0 {
+		return values
+	}
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if _, skip := bad[v]; skip {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
 func validateCESDiscoveryRequest(req CESResourceDiscoveryRequest, cred AKSKCredential) error {
 	if strings.TrimSpace(req.ProjectID) == "" {
 		return apperr.New(apperr.CodeInvalidArgument, "project_id is required")
@@ -385,6 +511,52 @@ func mapCESDiscoveryError(ctx context.Context, err error, region, op string) err
 	}
 	logger.From(ctx).Warn("huawei ces resource discovery failed", fields...)
 	return mapped
+}
+
+func callCESWithRetry[T any](ctx context.Context, region, op string, call func() (*T, error)) (*T, error) {
+	var lastErr error
+	for attempt := 0; attempt <= len(cesRetryDelays); attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, mapCESError(err)
+		}
+		resp, err := call()
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if !isRetryableCESError(err) || attempt == len(cesRetryDelays) {
+			break
+		}
+		logger.From(ctx).Warn("huawei ces resource discovery retry",
+			logger.String("region", region),
+			logger.String("op", op),
+			logger.Int("attempt", attempt+1),
+			logger.String("error_code", string(apperr.CodeOf(mapCESError(err)))),
+		)
+		timer := time.NewTimer(cesRetryDelays[attempt])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, mapCESError(ctx.Err())
+		case <-timer.C:
+		}
+	}
+	return nil, mapCESDiscoveryError(ctx, lastErr, region, op)
+}
+
+func isRetryableCESError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var svcErr *sdkerr.ServiceResponseError
+	if errors.As(err, &svcErr) {
+		return svcErr.StatusCode == 429 || svcErr.StatusCode == 502 || svcErr.StatusCode == 503 || svcErr.StatusCode == 504
+	}
+	var netErr interface{ Timeout() bool }
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return false
 }
 
 func newCESv2Client(cred AKSKCredential, projectID, region string) (*cesv2.CesClient, error) {

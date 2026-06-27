@@ -1,6 +1,9 @@
 package domain
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // ResourceMatchQuery 资源匹配查询条件（§9.1：namespace/pod/node/instance/resource_name）。
 type ResourceMatchQuery struct {
@@ -54,6 +57,12 @@ type ResourceRepository interface {
 	FindByCloudKey(ctx context.Context, key CloudResourceKey) (*Resource, error)
 	UpsertCloudSync(ctx context.Context, res *Resource) (created bool, err error)
 	MarkStaleByAccountScopeExceptBatch(ctx context.Context, accountID, region, cloudResourceType, batchID string) (int64, error)
+	// MarkStaleByAccountRegionExceptTypes 将指定账号+region 下所有 active 的 cloud_sync 资源
+	// （排除当前批次）标记为 stale，但跳过 cloud_resource_type 命中 exceptTypes 的类型。
+	// 用于 CES/hybrid 权威 scope 反向标记：不在资源组 scope 内的类型视为已移除，见
+	// docs/huawei-ces-asset-sync-plan.md §13.1。exceptTypes 为不确定类型（查询失败/转换失败/持久化失败），
+	// 这些类型保持 active，避免误标。
+	MarkStaleByAccountRegionExceptTypes(ctx context.Context, accountID, region string, exceptTypes []string, batchID string) (int64, error)
 }
 
 // SyncBatchRepository 同步批次持久化接口。
@@ -62,6 +71,14 @@ type SyncBatchRepository interface {
 	Update(ctx context.Context, batch *SyncBatch) error
 	GetByID(ctx context.Context, batchID string) (*SyncBatch, error)
 	List(ctx context.Context, filter SyncBatchFilter) ([]SyncBatch, int64, error)
+	// ReapExpiredRunning 将指定账号下租约已过期的 running 批次标记为 failed，
+	// 释放账号级 running 槽位，避免崩溃批次导致后续同步永久 409。
+	// now 为判定基准时间（UTC）。返回被 reap 的行数。
+	ReapExpiredRunning(ctx context.Context, accountID string, now time.Time) (int64, error)
+	// RenewLease 续租 running 批次：把 lease_expires_at 置为 now+ttl，updated_at=now。
+	// 仅当 status='running' 时续租；批次已终态（RowsAffected=0）返回 ErrNotFound，
+	// 调用方据此停止心跳。ttl 为续租有效期。
+	RenewLease(ctx context.Context, batchID string, now time.Time, ttl time.Duration) error
 }
 
 // SyncBatchFilter 同步批次列表过滤。

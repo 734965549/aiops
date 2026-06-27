@@ -145,7 +145,7 @@ make migrate-up
 go run ./cmd/migrate -config configs/config.yaml
 ```
 
-当前迁移文件（`0001` → `0023`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
+当前迁移文件（`0001` → `0029`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -167,6 +167,12 @@ go run ./cmd/migrate -config configs/config.yaml
 | `0020` | `0020_init_inspection.up.sql` | Inspection：巡检策略、运行、Finding、Recommendation |
 | `0022` | `0022_init_execution_agent.up.sql` | Execution Agent：执行介体、代理、Command Spec、租约、日志流 |
 | `0023` | `0023_asset_cloud_sync.up.sql` | Asset：云资源同步字段、同步批次、stale 标记 |
+| `0024` | `0024_integration_account_extra_config.up.sql` | Integration：integration_account.extra_config（provider 扩展配置，如 huawei sync_mode） |
+| `0025` | `0025_asset_resource_labels.up.sql` | Asset：asset_resource.labels（CES namespace/dim_name + 原生增强 label） |
+| `0026` | `0026_asset_cloud_sync_region_key.up.sql` | Asset：云资源唯一键加 region，避免多区域同类型同 ID 互相覆盖 |
+| `0027` | `0027_asset_sync_batch_message_text.up.sql` | Asset：`asset_sync_batch.message` 改为 TEXT，修复应用层 2000 rune 截断与 VARCHAR(512) 不一致 |
+| `0028` | `0028_asset_sync_batch_running_mutex.up.sql` | Asset：`asset_sync_batch.lease_expires_at` + running 部分唯一索引（账号级并发互斥） |
+| `0029` | `0029_huawei_legacy_accounts_native_sync_mode.up.sql` | Integration：历史空配置华为账号回填 `sync_mode=native`，修复 0024 空配置被解析为 ces 的灰度策略失效 |
 
 详见 `ops/migration-contract.md`。
 

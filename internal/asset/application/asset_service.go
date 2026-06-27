@@ -96,24 +96,25 @@ type ApplicationDTO struct {
 }
 
 type ResourceDTO struct {
-	ID                   string `json:"id"`
-	ApplicationID        string `json:"application_id"`
-	Name                 string `json:"name,omitempty"`
-	ResourceType         string `json:"resource_type,omitempty"`
-	Namespace            string `json:"namespace,omitempty"`
-	Pod                  string `json:"pod,omitempty"`
-	Node                 string `json:"node,omitempty"`
-	Instance             string `json:"instance,omitempty"`
-	Source               string `json:"source,omitempty"`
-	IntegrationAccountID string `json:"integration_account_id,omitempty"`
-	CloudResourceID      string `json:"cloud_resource_id,omitempty"`
-	CloudResourceType    string `json:"cloud_resource_type,omitempty"`
-	Region               string `json:"region,omitempty"`
-	SyncStatus           string `json:"sync_status,omitempty"`
-	LastSyncedAt         int64  `json:"last_synced_at,omitempty"`
-	SyncBatchID          string `json:"sync_batch_id,omitempty"`
-	CreatedAt            int64  `json:"created_at"`
-	UpdatedAt            int64  `json:"updated_at"`
+	ID                   string            `json:"id"`
+	ApplicationID        string            `json:"application_id"`
+	Name                 string            `json:"name,omitempty"`
+	ResourceType         string            `json:"resource_type,omitempty"`
+	Namespace            string            `json:"namespace,omitempty"`
+	Pod                  string            `json:"pod,omitempty"`
+	Node                 string            `json:"node,omitempty"`
+	Instance             string            `json:"instance,omitempty"`
+	Source               string            `json:"source,omitempty"`
+	IntegrationAccountID string            `json:"integration_account_id,omitempty"`
+	CloudResourceID      string            `json:"cloud_resource_id,omitempty"`
+	CloudResourceType    string            `json:"cloud_resource_type,omitempty"`
+	Region               string            `json:"region,omitempty"`
+	SyncStatus           string            `json:"sync_status,omitempty"`
+	LastSyncedAt         int64             `json:"last_synced_at,omitempty"`
+	SyncBatchID          string            `json:"sync_batch_id,omitempty"`
+	Labels               map[string]string `json:"labels"`
+	CreatedAt            int64             `json:"created_at"`
+	UpdatedAt            int64             `json:"updated_at"`
 }
 
 func (s *AssetService) ListApplications(ctx context.Context, q ListApplicationsQuery) ([]ApplicationDTO, int64, error) {
@@ -420,6 +421,7 @@ func toResourceDTO(r domain.Resource) ResourceDTO {
 		Region:               r.Region,
 		SyncStatus:           r.SyncStatus,
 		SyncBatchID:          r.SyncBatchID,
+		Labels:               ensureResourceLabels(r.Labels),
 		CreatedAt:            r.CreatedAt.Unix(),
 		UpdatedAt:            r.UpdatedAt.Unix(),
 	}
@@ -430,6 +432,13 @@ func toResourceDTO(r domain.Resource) ResourceDTO {
 		dto.Source = domain.ResourceSourceManual
 	}
 	return dto
+}
+
+func ensureResourceLabels(labels map[string]string) map[string]string {
+	if labels == nil {
+		return map[string]string{}
+	}
+	return labels
 }
 
 func labelValue(labels map[string]string, key string) string {

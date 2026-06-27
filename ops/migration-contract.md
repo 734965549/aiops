@@ -37,6 +37,12 @@
 0020_init_inspection.up.sql              → Inspection 上下文：巡检策略、运行、发现、建议
 0022_init_execution_agent.up.sql         → Execution Agent：执行介体、代理、Command Spec、租约、日志流
 0023_asset_cloud_sync.up.sql             → Asset 上下文：云资源同步字段、同步批次、stale 标记
+0024_integration_account_extra_config.up.sql → Integration：integration_account.extra_config（provider 扩展配置，如 huawei sync_mode）
+0025_asset_resource_labels.up.sql          → Asset：asset_resource.labels（云同步 CES namespace/dim_name + 原生增强 label）
+0026_asset_cloud_sync_region_key.up.sql    → Asset：云资源唯一键加 region，避免多区域同类型同 ID 互相覆盖
+0027_asset_sync_batch_message_text.up.sql          → Asset：asset_sync_batch.message 改为 TEXT，修复应用层 2000 rune 截断与 VARCHAR(512) 不一致
+0028_asset_sync_batch_running_mutex.up.sql         → Asset：asset_sync_batch.lease_expires_at + running 部分唯一索引（账号级并发互斥，修复并发批次互相标记 stale）
+0029_huawei_legacy_accounts_native_sync_mode.up.sql → Integration：历史空配置华为账号回填 sync_mode=native，修复 0024 空配置被解析为 ces 的灰度策略失效
 ```
 
 | 职责 | 0001 / 0002 / 0016 迁移 | 启动期 bootstrap（`cmd/api`） |
@@ -68,6 +74,12 @@ psql "$AIOPS_DATABASE_DSN" -f migrations/0002_seed_admin_permissions.up.sql
 # ...按 migrations/README.md 顺序继续执行...
 psql "$AIOPS_DATABASE_DSN" -f migrations/0022_init_execution_agent.up.sql
 psql "$AIOPS_DATABASE_DSN" -f migrations/0023_asset_cloud_sync.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0024_integration_account_extra_config.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0025_asset_resource_labels.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0026_asset_cloud_sync_region_key.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0027_asset_sync_batch_message_text.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0028_asset_sync_batch_running_mutex.up.sql
+psql "$AIOPS_DATABASE_DSN" -f migrations/0029_huawei_legacy_accounts_native_sync_mode.up.sql
 psql "$AIOPS_DATABASE_DSN" -f migrations/manual_schema_migrations.sql
 ```
 
@@ -240,6 +252,12 @@ Integration 上下文第一阶段迁移，建表：
 | `0021` | `0021_init_notification.up.sql` | Notification | `notification_channel`、`notification_template`、`notification_delivery` |
 | `0022` | `0022_init_execution_agent.up.sql` | Execution | `exec_medium`、`exec_agent`、`exec_command_spec`、`exec_lease`、`exec_log_stream` | 已落地（当前仓库未包含 `0021` 文件，手工执行按实际文件顺序） |
 | `0023` | `0023_asset_cloud_sync.up.sql` | Asset | `asset_resource` 云同步字段、`asset_sync_batch` | 已落地（资源同步批次与 stale 标记） |
+| `0024` | `0024_integration_account_extra_config.up.sql` | Integration | `integration_account.extra_config`（provider 扩展配置，如 huawei sync_mode） | 已落地 |
+| `0025` | `0025_asset_resource_labels.up.sql` | Asset | `asset_resource.labels`（CES namespace/dim_name + 原生增强 label） | 已落地 |
+| `0026` | `0026_asset_cloud_sync_region_key.up.sql` | Asset | 云资源唯一键加 region（多区域去重） | 已落地 |
+| `0027` | `0027_asset_sync_batch_message_text.up.sql` | Asset | `asset_sync_batch.message` 改为 TEXT（修复应用层 2000 rune 与 VARCHAR(512) 不一致） | 已落地 |
+| `0028` | `0028_asset_sync_batch_running_mutex.up.sql` | Asset | `asset_sync_batch.lease_expires_at` + 部分唯一索引 `(integration_account_id) WHERE status='running'`（账号级并发互斥，修复并发批次互相标记 stale） | 已落地 |
+| `0029` | `0029_huawei_legacy_accounts_native_sync_mode.up.sql` | Integration | 把仍为空配置 `{}` 的历史华为账号回填 `sync_mode=native`，修复 0024 空配置被解析为 ces 导致升级后立即切 CES 的灰度策略失效；新账号由 `encodeExtraConfigInput` 显式写 ces | 已落地 |
 
 这些迁移必须同步种子化权限和 AI 工具权限，并把 admin 角色绑定到新增权限：
 

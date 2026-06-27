@@ -241,7 +241,8 @@ func (r *assetHTTPTestResRepo) FindByCloudKey(_ context.Context, key assetdomain
 		row := r.rows[i]
 		if row.IntegrationAccountID == key.IntegrationAccountID &&
 			row.CloudResourceType == key.CloudResourceType &&
-			row.CloudResourceID == key.CloudResourceID {
+			row.CloudResourceID == key.CloudResourceID &&
+			row.Region == key.Region {
 			cp := row
 			return &cp, nil
 		}
@@ -254,6 +255,7 @@ func (r *assetHTTPTestResRepo) UpsertCloudSync(_ context.Context, res *assetdoma
 		IntegrationAccountID: res.IntegrationAccountID,
 		CloudResourceType:    res.CloudResourceType,
 		CloudResourceID:      res.CloudResourceID,
+		Region:               res.Region,
 	}
 	if existing, err := r.FindByCloudKey(context.Background(), key); err == nil && existing != nil {
 		res.ID = existing.ID
@@ -272,6 +274,29 @@ func (r *assetHTTPTestResRepo) MarkStaleByAccountScopeExceptBatch(_ context.Cont
 			row.CloudResourceType == cloudResourceType &&
 			row.SyncBatchID != batchID &&
 			row.SyncStatus == assetdomain.SyncStatusActive {
+			row.SyncStatus = assetdomain.SyncStatusStale
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (r *assetHTTPTestResRepo) MarkStaleByAccountRegionExceptTypes(_ context.Context, accountID, region string, exceptTypes []string, batchID string) (int64, error) {
+	except := make(map[string]struct{}, len(exceptTypes))
+	for _, t := range exceptTypes {
+		except[strings.ToLower(strings.TrimSpace(t))] = struct{}{}
+	}
+	var n int64
+	for i := range r.rows {
+		row := &r.rows[i]
+		if row.Source == assetdomain.ResourceSourceCloudSync &&
+			row.IntegrationAccountID == accountID &&
+			row.Region == region &&
+			row.SyncBatchID != batchID &&
+			row.SyncStatus == assetdomain.SyncStatusActive {
+			if _, skip := except[strings.ToLower(strings.TrimSpace(row.CloudResourceType))]; skip {
+				continue
+			}
 			row.SyncStatus = assetdomain.SyncStatusStale
 			n++
 		}
@@ -632,6 +657,68 @@ func TestListResources_Success(t *testing.T) {
 	}
 	if data.Total != 1 || data.Page != 1 || data.PageSize != 10 {
 		t.Fatalf("unexpected pagination: total=%d page=%d page_size=%d", data.Total, data.Page, data.PageSize)
+	}
+}
+
+func TestListResources_LabelsPassthrough(t *testing.T) {
+	authz := &fakeAssetHTTPAuthorizer{allowed: true}
+	engine, token, appRepo, resRepo := newAssetHTTPEngine(t, authz)
+	_ = appRepo.Create(context.Background(), &assetdomain.Application{ID: "app-1", Name: "svc", Environment: "prod"})
+	_ = resRepo.Create(context.Background(), &assetdomain.Resource{
+		ID:            "res-1",
+		ApplicationID: "app-1",
+		Pod:           "p1",
+		Source:        assetdomain.ResourceSourceCloudSync,
+		Labels: map[string]string{
+			"namespace":  "SYS.ECS",
+			"dim_name":   "instance_id",
+			"private_ip": "10.0.0.1",
+			"flavor":     "s6.large.2",
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/assets/applications/app-1/resources?page=1&page_size=10", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := decodeAssetEnvelope(t, w.Body.Bytes())
+	var data struct {
+		Items []struct {
+			ID     string            `json:"id"`
+			Pod    string            `json:"pod"`
+			Labels map[string]string `json:"labels"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(data.Items))
+	}
+	item := data.Items[0]
+	if item.Pod != "p1" {
+		t.Fatalf("unexpected pod: %s", item.Pod)
+	}
+	if item.Labels == nil {
+		t.Fatal("expected labels to be present, got nil")
+	}
+	expected := map[string]string{
+		"namespace":  "SYS.ECS",
+		"dim_name":   "instance_id",
+		"private_ip": "10.0.0.1",
+		"flavor":     "s6.large.2",
+	}
+	if len(item.Labels) != len(expected) {
+		t.Fatalf("expected %d labels, got %d: %+v", len(expected), len(item.Labels), item.Labels)
+	}
+	for k, v := range expected {
+		if got, ok := item.Labels[k]; !ok || got != v {
+			t.Errorf("label %q: expected %q, got %q (present=%v)", k, v, got, ok)
+		}
 	}
 }
 

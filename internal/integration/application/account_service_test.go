@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/734965549/aiops/internal/integration/domain"
@@ -56,7 +57,15 @@ func (r *memAccountRepo) Count(context.Context, domain.AccountFilter) (int64, er
 	return 0, nil
 }
 
-func (r *memAccountRepo) SoftDelete(context.Context, string) error { return nil }
+func (r *memAccountRepo) SoftDelete(_ context.Context, accountID string) error {
+	acc, ok := r.byID[accountID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	acc.Deleted = true
+	acc.Enabled = false
+	return nil
+}
 
 type memCredentialRepo struct {
 	byAccount map[string]*domain.CredentialRef
@@ -90,7 +99,10 @@ func (r *memCredentialRepo) GetByAccountID(_ context.Context, accountID string) 
 	return &cp, nil
 }
 
-func (r *memCredentialRepo) DeleteByAccountID(context.Context, string) error { return nil }
+func (r *memCredentialRepo) DeleteByAccountID(_ context.Context, accountID string) error {
+	delete(r.byAccount, accountID)
+	return nil
+}
 
 type memCapabilityRepo struct {
 	byAccount map[string][]domain.Capability
@@ -148,6 +160,33 @@ func newTestAccountService(t *testing.T) (*AccountService, *memAccountRepo, *mem
 	}}
 	svc := NewAccountService(accounts, creds, caps, checks, vault, nil, nil, uow)
 	return svc, accounts, creds
+}
+
+func TestDeletePurgesCredentials(t *testing.T) {
+	svc, _, creds := newTestAccountService(t)
+	dto, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
+		Name:       "hw-aksk",
+		Provider:   string(domain.ProviderHuaweiCloud),
+		AuthType:   string(domain.AuthAKSK),
+		Regions:    []string{"cn-south-1"},
+		ProjectID:  "proj-1",
+		Credential: map[string]string{"access_key": "AK", "secret_key": "SK"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := creds.GetByAccountID(context.Background(), dto.AccountID); err != nil {
+		t.Fatalf("credential should exist before delete: %v", err)
+	}
+	if err := svc.Delete(context.Background(), dto.AccountID, Actor{UserID: "u1"}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := creds.GetByAccountID(context.Background(), dto.AccountID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("credential should be purged after delete, got err=%v", err)
+	}
+	if _, err := svc.Get(context.Background(), dto.AccountID); err == nil {
+		t.Fatal("account should be soft-deleted and no longer active")
+	}
 }
 
 func TestCreateAuthNoneSkipsCredentialVault(t *testing.T) {
@@ -208,6 +247,41 @@ func TestCreateStoresExtraConfig(t *testing.T) {
 	}
 }
 
+// TestCreateHuaweiEmptyExtraConfigDefaultsToCES 验证华为账号未传 extra_config 时显式落库 ces，
+// 而不是 {}（后者会被解析器解释为 ces，但显式写入避免依赖默认值，符合 §17 灰度策略：新账号默认 ces）。
+func TestCreateHuaweiEmptyExtraConfigDefaultsToCES(t *testing.T) {
+	svc, accounts, _ := newTestAccountService(t)
+	dto, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
+		Name: "hw-default-ces", Provider: string(domain.ProviderHuaweiCloud), AuthType: string(domain.AuthNone),
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	acc := accounts.byID[dto.AccountID]
+	if string(acc.ExtraConfig) != `{"sync_mode":"ces"}` {
+		t.Fatalf("extra_config = %s, want {\"sync_mode\":\"ces\"}", string(acc.ExtraConfig))
+	}
+	if dto.ExtraConfig["sync_mode"] != "ces" {
+		t.Fatalf("dto extra_config = %+v, want sync_mode=ces", dto.ExtraConfig)
+	}
+}
+
+// TestCreateNonHuaweiEmptyExtraConfigStaysEmpty 验证非华为账号未传 extra_config 时仍写 {}，
+// 不受华为默认 ces 逻辑影响。
+func TestCreateNonHuaweiEmptyExtraConfigStaysEmpty(t *testing.T) {
+	svc, accounts, _ := newTestAccountService(t)
+	dto, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
+		Name: "prom-empty", Provider: string(domain.ProviderPrometheus), AuthType: string(domain.AuthNone),
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	acc := accounts.byID[dto.AccountID]
+	if string(acc.ExtraConfig) != `{}` {
+		t.Fatalf("extra_config = %s, want {}", string(acc.ExtraConfig))
+	}
+}
+
 func TestCreateRejectsSecretInExtraConfig(t *testing.T) {
 	svc, _, _ := newTestAccountService(t)
 	_, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
@@ -216,6 +290,30 @@ func TestCreateRejectsSecretInExtraConfig(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected extra_config secret rejection")
+	}
+}
+
+func TestCreateRejectsInvalidHuaweiExtraConfig(t *testing.T) {
+	cases := []struct {
+		name  string
+		extra map[string]any
+	}{
+		{"invalid sync mode", map[string]any{"sync_mode": "bad"}},
+		{"max too large", map[string]any{"max_resources": float64(20001)}},
+		{"max wrong type", map[string]any{"max_resources": "20000"}},
+		{"region projects wrong type", map[string]any{"region_projects": "cn-south-1=pid"}},
+		{"region project missing project", map[string]any{"region_projects": []any{map[string]any{"region": "cn-south-1"}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _ := newTestAccountService(t)
+			_, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
+				Name: "hw-bad", Provider: string(domain.ProviderHuaweiCloud), AuthType: string(domain.AuthNone), ExtraConfig: tc.extra,
+			})
+			if err == nil {
+				t.Fatal("expected invalid extra_config rejection")
+			}
+		})
 	}
 }
 
