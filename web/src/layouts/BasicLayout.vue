@@ -1,10 +1,8 @@
 <template>
   <a-layout class="layout">
-    <div class="shell-glow shell-glow-a" />
-    <div class="shell-glow shell-glow-b" />
-
+    <OceanBackdrop />
     <a-layout-sider
-      :width="232"
+      :width="228"
       theme="dark"
       breakpoint="lg"
       class="sider"
@@ -13,10 +11,14 @@
         <div class="logo-mark">
           AI
         </div>
-        <div>
+        <div class="logo-copy">
           <span class="logo-text">AI 运维平台</span>
-          <span class="logo-sub">AIOps Command</span>
+          <span class="logo-sub">Safe operations</span>
         </div>
+      </div>
+
+      <div class="sider-label">
+        Control plane / 01
       </div>
       <a-menu
         theme="dark"
@@ -34,15 +36,24 @@
           {{ item.title }}
         </a-menu-item>
       </a-menu>
+
+      <div class="sider-foot">
+        <span class="sider-foot-dot" />
+        <div>
+          <strong>Human in the loop</strong>
+          <span>执行始终受权限、确认与审计约束</span>
+        </div>
+      </div>
     </a-layout-sider>
 
     <a-layout class="content-shell">
       <a-layout-header class="header">
         <div class="header-left">
-          <span class="header-kicker">OPS CONTROL</span>
+          <span class="header-index">AIOPS / 02</span>
           <span class="header-title">{{ currentTitle }}</span>
         </div>
         <div class="header-right">
+          <span class="header-principle">SAFE · CONTROLLED · AUDITABLE</span>
           <span class="status-dot" />
           <span class="user-name">{{ auth.user?.display_name || auth.user?.username || '未登录' }}</span>
           <a-button
@@ -81,6 +92,7 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { fetchCurrentUser } from '@/api/system'
 import { getApiError } from '@/api/request'
+import OceanBackdrop from './components/OceanBackdrop.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -149,68 +161,31 @@ onMounted(async () => {
 
 <style scoped lang="scss">
 .layout {
-  min-height: 100vh;
   position: relative;
+  min-height: 100vh;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 16% 12%, rgba(22, 93, 255, 0.28), transparent 28%),
-    radial-gradient(circle at 82% 8%, rgba(0, 255, 226, 0.22), transparent 24%),
-    linear-gradient(135deg, #081224 0%, #0c1730 46%, #0d1c35 100%);
-}
-
-.layout::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    linear-gradient(rgba(125, 211, 252, 0.08) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(125, 211, 252, 0.08) 1px, transparent 1px);
-  background-size: 42px 42px;
-  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.9), transparent 90%);
-}
-
-.shell-glow {
-  position: absolute;
-  width: 360px;
-  height: 360px;
-  border-radius: 999px;
-  filter: blur(28px);
-  opacity: 0.45;
-  pointer-events: none;
-  animation: float-glow 12s ease-in-out infinite;
-}
-
-.shell-glow-a {
-  left: 14%;
-  bottom: 6%;
-  background: rgba(22, 93, 255, 0.2);
-}
-
-.shell-glow-b {
-  right: 8%;
-  top: 16%;
-  background: rgba(0, 255, 204, 0.16);
-  animation-delay: -5s;
+  background: #063b45;
 }
 
 .sider {
   position: relative;
-  z-index: 2;
-  background:
-    linear-gradient(180deg, rgba(7, 18, 38, 0.98), rgba(7, 22, 47, 0.92)) !important;
-  border-right: 1px solid rgba(125, 211, 252, 0.18);
-  box-shadow: 12px 0 34px rgba(0, 0, 0, 0.22);
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  background: rgba(3, 29, 36, 0.84) !important;
+  border-right: 1px solid rgba(193, 239, 230, 0.17);
+  box-shadow: 18px 0 44px rgba(0, 21, 29, 0.18);
+  backdrop-filter: blur(20px) saturate(1.08);
 }
 
 .logo {
-  height: 72px;
+  height: 82px;
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 0 20px;
-  color: #fff;
-  border-bottom: 1px solid rgba(125, 211, 252, 0.16);
+  color: #effbf7;
+  border-bottom: 1px solid rgba(193, 239, 230, 0.14);
 }
 
 .logo-mark {
@@ -218,12 +193,15 @@ onMounted(async () => {
   height: 38px;
   display: grid;
   place-items: center;
-  border-radius: 10px;
-  color: #dffcff;
-  font-weight: 800;
-  letter-spacing: 0;
-  background: linear-gradient(135deg, #165dff, #00dcc5);
-  box-shadow: 0 0 24px rgba(0, 220, 197, 0.42);
+  border: 1px solid rgba(214, 255, 246, 0.5);
+  border-radius: 50%;
+  color: #f6f5ef;
+  font-family: var(--aiops-display);
+  font-size: 13px;
+  font-style: italic;
+  font-weight: 700;
+  background: rgba(14, 78, 86, 0.78);
+  box-shadow: inset 0 0 18px rgba(163, 242, 226, 0.12);
 }
 
 .logo-text,
@@ -232,36 +210,128 @@ onMounted(async () => {
 }
 
 .logo-text {
+  font-size: 15px;
   font-weight: 700;
-  font-size: 16px;
+  letter-spacing: 0.04em;
 }
 
 .logo-sub {
-  margin-top: 2px;
-  color: rgba(191, 219, 254, 0.68);
+  margin-top: 3px;
+  color: rgba(210, 238, 232, 0.62);
+  font-family: var(--aiops-display);
   font-size: 11px;
+  font-style: italic;
+}
+
+.sider-label {
+  padding: 22px 20px 8px;
+  color: rgba(200, 235, 228, 0.48);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
+}
+
+.sider :deep(.arco-menu) {
+  flex: 1;
+  padding-bottom: 154px;
+  background: transparent !important;
+}
+
+.sider :deep(.arco-menu-inner) {
+  background: transparent !important;
+}
+
+.sider :deep(.arco-menu-item) {
+  width: calc(100% - 24px);
+  height: 40px;
+  margin: 3px 12px;
+  border-radius: 0;
+  color: rgba(232, 248, 244, 0.82) !important;
+  background: transparent !important;
+  font-size: 13px;
+  transition: color 180ms ease, background 180ms ease, padding 180ms ease;
+}
+
+.sider :deep(.arco-menu-item:hover) {
+  color: #ffffff !important;
+  background: rgba(113, 194, 187, 0.13) !important;
+}
+
+.sider :deep(.arco-menu-selected) {
+  padding-left: 20px;
+  color: #f4fffc !important;
+  background: rgba(97, 184, 177, 0.24) !important;
+  box-shadow: inset 2px 0 #a4e5da;
+}
+
+.sider :deep(.arco-menu-icon) {
+  color: rgba(190, 234, 226, 0.76) !important;
+}
+
+.sider :deep(.arco-menu-selected .arco-menu-icon) {
+  color: #9af0df !important;
+}
+
+.sider-foot {
+  position: absolute;
+  right: 16px;
+  bottom: 18px;
+  left: 16px;
+  display: flex;
+  gap: 10px;
+  padding: 14px;
+  border-top: 1px solid rgba(193, 239, 230, 0.14);
+  color: rgba(212, 239, 233, 0.56);
+}
+
+.sider-foot-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: #7de0cb;
+  box-shadow: 0 0 0 5px rgba(125, 224, 203, 0.11), 0 0 14px rgba(125, 224, 203, 0.42);
+}
+
+.sider-foot strong,
+.sider-foot span {
+  display: block;
+}
+
+.sider-foot strong {
+  color: rgba(236, 252, 248, 0.82);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.sider-foot span {
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.55;
 }
 
 .content-shell {
   position: relative;
-  z-index: 1;
+  z-index: 2;
+  min-width: 0;
   background: transparent;
 }
 
 .header {
-  height: 64px;
-  margin: 12px 16px 0;
+  height: 66px;
+  margin: 12px 14px 0;
   padding: 0 22px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  color: #e5f7ff;
-  border: 1px solid rgba(125, 211, 252, 0.18);
-  border-radius: 8px;
-  background: rgba(8, 22, 44, 0.68);
-  backdrop-filter: blur(18px);
-  box-shadow: 0 18px 60px rgba(1, 7, 19, 0.3);
+  color: #effbf8;
+  border: 1px solid rgba(190, 239, 231, 0.2);
+  border-radius: 16px 16px 0 0;
+  background: rgba(4, 38, 46, 0.68);
+  box-shadow: 0 18px 50px rgba(0, 25, 33, 0.13);
+  backdrop-filter: blur(20px) saturate(1.1);
 
   .header-left,
   .header-right {
@@ -270,74 +340,101 @@ onMounted(async () => {
   }
 
   .header-left {
-    gap: 12px;
+    gap: 14px;
   }
 
   .header-right {
     gap: 10px;
-    color: rgba(226, 246, 255, 0.78);
+    color: rgba(228, 247, 242, 0.7);
   }
 }
 
-.header-kicker {
-  padding: 4px 8px;
-  border-radius: 999px;
-  color: #8ee7ff;
-  font-size: 11px;
+.header-index {
+  color: rgba(202, 237, 230, 0.55);
+  font-size: 10px;
   font-weight: 700;
-  background: rgba(56, 189, 248, 0.12);
-  border: 1px solid rgba(56, 189, 248, 0.24);
+  letter-spacing: 0.12em;
 }
 
 .header-title {
-  font-size: 18px;
+  font-family: var(--aiops-display);
+  font-size: 19px;
+  font-style: italic;
+  font-weight: 500;
+}
+
+.header-principle {
+  margin-right: 8px;
+  color: rgba(205, 238, 232, 0.52);
+  font-size: 9px;
   font-weight: 700;
+  letter-spacing: 0.1em;
 }
 
 .status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: #22c55e;
-  box-shadow: 0 0 16px rgba(34, 197, 94, 0.8);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #7de0cb;
+  box-shadow: 0 0 0 4px rgba(125, 224, 203, 0.11), 0 0 12px rgba(125, 224, 203, 0.38);
+}
+
+.user-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .main {
-  min-height: calc(100vh - 88px);
-  margin: 16px;
+  position: relative;
+  min-height: calc(100vh - 90px);
+  margin: 0 14px 14px;
   padding: 18px;
-  border: 1px solid rgba(125, 211, 252, 0.14);
-  border-radius: 8px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(236, 248, 255, 0.82)),
-    radial-gradient(circle at top right, rgba(22, 93, 255, 0.12), transparent 34%);
-  box-shadow: 0 18px 60px rgba(0, 8, 24, 0.24);
+  border: 1px solid rgba(190, 239, 231, 0.2);
+  border-top: 0;
+  border-radius: 0 0 16px 16px;
+  background: radial-gradient(
+    ellipse 58% 54% at 50% 42%,
+    rgba(246, 250, 248, 0.94) 0%,
+    rgba(241, 248, 245, 0.86) 58%,
+    rgba(231, 244, 241, 0.68) 100%
+  );
+  box-shadow: 0 26px 70px rgba(0, 23, 31, 0.18);
+  backdrop-filter: blur(18px) saturate(0.9);
   overflow: auto;
 }
 
-@keyframes float-glow {
-  0%,
-  100% {
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-  50% {
-    transform: translate3d(26px, -18px, 0) scale(1.08);
+.header :deep(.arco-btn-text) {
+  color: rgba(236, 252, 248, 0.78);
+}
+
+.header :deep(.arco-btn-text:hover) {
+  color: #ffffff;
+  background: rgba(161, 226, 215, 0.12);
+}
+
+@media (max-width: 1080px) {
+  .header-principle {
+    display: none;
   }
 }
 
 @media (max-width: 900px) {
   .header {
-    margin: 8px 10px 0;
+    height: 60px;
+    margin: 8px 8px 0;
     padding: 0 14px;
   }
 
-  .header-kicker {
+  .header-index,
+  .user-name {
     display: none;
   }
 
   .main {
-    margin: 10px;
-    padding: 12px;
+    margin: 0 8px 8px;
+    padding: 10px;
   }
 }
 </style>

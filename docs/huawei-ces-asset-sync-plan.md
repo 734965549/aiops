@@ -23,28 +23,28 @@
   -> Dashboard / 告警匹配 / 巡检使用统一资产表
 ```
 
-## 2. 当前问题
+## 2. 历史问题与演进背景
 
-当前实现已支持 `huawei_cloud` + `auth_type=ak_sk` 的真实资源同步，但同步范围是：
+早期实现已支持 `huawei_cloud` + `auth_type=ak_sk` 的真实资源同步，但同步范围曾仅覆盖：
 
 ```text
 ECS / CCE / RDS / ELB
 ```
 
-对应代码路径：
+对应历史代码路径：
 
 - `internal/asset/application/sync_service.go`
 - `internal/observability/infrastructure/provider/huawei/resource_client.go`
 - `internal/observability/infrastructure/provider/huawei/adapter.go`
 
-这套实现调用的是各云服务的只读 List API，例如 ECS、RDS、ELB，而不是 CES 的资源分组 API。因此会出现：
+这套早期实现调用的是各云服务的只读 List API，例如 ECS、RDS、ELB，而不是 CES 的资源分组 API。因此曾出现：
 
 - CES 控制台显示 1,614 个监控资源。
 - 平台只同步到几十个资源。
-- 只有 `CES ReadOnlyAccess` 权限的账号能看 CES 总览，但不一定能调用 ECS/RDS/ELB/EVS/VPC/OBS 等服务的 List API。
+- 只有 CES 只读权限的账号能看 CES 总览，但不一定能调用 ECS/RDS/ELB/EVS/VPC/OBS 等服务的 List API。
 - EVS、VPC、OBS、DCS、DMS、CBR、VPN、终端节点、可用性监控等 CES 资源类型没有进入平台资产表。
 
-结论：当前同步口径与产品目标不一致，需要新增 CES 口径的资源发现能力。
+当前实现状态以 `ops/cloud-observability-contract.md` 为准：`huawei_cloud` + `auth_type=ak_sk` 已默认走 `sync_mode=ces`，`native` 仅作为旧 ECS/CCE/RDS/ELB 路径兼容。本节保留为演进背景，避免把历史问题误判为当前实现。
 
 ## 3. 设计原则
 
@@ -98,13 +98,11 @@ huawei_cloud + auth_type=agency:
 
 ### 5.1 最小目标权限
 
-如果目标是“和指定 CES 资源分组资源数一致”，优先授予：
+如果目标是“和指定 CES 资源分组资源数一致”，优先授予 CES 只读类权限。
 
-```text
-CES ReadOnlyAccess
-```
+本文中的 `CES ReadOnlyAccess` 表示平台侧所需的 CES 只读能力口径；实际授权时需按华为云 IAM / 细粒度授权体系选择对应策略。华为云文档中还区分并推荐 `CES ReadOnlyAccessPolicy` / `CESServiceReadOnlyPolicy` 等策略名称，具体以官方说明为准：<https://support.huaweicloud.com/intl/en-us/productdesc-ces/ces_07_0009.html>。
 
-该权限应允许读取 CES 指标、资源分组、资源分组下资源列表等只读数据。
+该类权限应允许读取 CES 指标、资源分组、资源分组下资源列表等只读数据。
 
 ### 5.2 增强权限
 
@@ -500,7 +498,7 @@ cloud_resource_type = mapped type
 region = account region
 sync_status = active / stale
 last_synced_at = now
-sync_batch_id = batch_id
+sync_batch_id = batch_id（最近成功同步批次；只有整个批次成功完成后，才更新到资源上）
 ```
 
 唯一约束仍建议使用：
@@ -611,7 +609,7 @@ region=cn-south-1 group=全部资源 ces_total=1614 discovered=1614 upserted=161
 - CES `namespace/dim_name/resource_group` label 仅在 `sync_mode=ces/hybrid`（默认 ces）路径由 `mapCESResource` 产出；`sync_mode=native` 路径（`mapELBLoadBalancer`/`mapCCECluster`）不产出 CES label，ECS/RDS native 仅产出增强字段。排查“DB labels 为空”时优先确认账号 `sync_mode` 与数据是否 `0025` 之前的旧行。
 - 已落地 RDS `resource_type` 修正：`mapCloudResourceToAssetFields` 将 `rds` 映射为 `database`（原与 `elb/cce/apm` 同归 `service`），对齐 §9.3；`SYS.RDS` 不再被存成 `service`。
 - 已落地云资源唯一键加 region：迁移 `0026` 重建 `idx_asset_resource_cloud_key` 为 `(integration_account_id, cloud_resource_type, cloud_resource_id, region)` 部分唯一索引；`CloudResourceKey` 增加 `Region`。Repository 查找键接入（`FindByCloudKey` 的 WHERE 与 `UpsertCloudSync` 构造 key 带 region）已补齐，避免多区域同类型同 ID 互相覆盖。配套 Postgres 测试 `TestResourceRepository_UpsertCloudSyncRegionKey`/`...LabelsRoundtrip` 在 DB 可用时应能通过。
-- 资源 DTO 已暴露 `labels` 字段，前端资源列表与详情已展示 labels。后续仅需继续优化 CES `namespace/dim_name/resource_group` 与增强字段（ECS `private_ip/flavor/vpc_id/az`、EVS `volume_type/size_gb/attached_to`、VPC `cidr/subnet_count`、DCS `engine/capacity_gb`、DMS `engine/spec_code` 等）的展示组织方式，并保持 `web/src/api/README.md` 同步。
+- 资源 DTO 已暴露 `labels` 字段，前端资源列表与详情已展示 labels。后续仅需继续优化 CES `namespace/dim_name/resource_group` 与已生效增强字段（ECS `private_ip/flavor/vpc_id/az`、RDS `private_ip/vpc_id/subnet_id/flavor`、DCS `engine/capacity_gb`、DMS `engine/spec_code` 等）的展示组织方式，并保持 `web/src/api/README.md` 同步。EVS/VPC 当前仅展示 CES 基础 labels，`volume_type/size_gb/attached_to`、`cidr/subnet_count` 等详情增强因匹配键不成立尚未支持。
 - 已落地 DCS/DMS 原生增强客户端；EVS/VPC 客户端已实现但 hybrid 匹配键不成立（见 §21.4）（`sync_mode=hybrid`）：`supportedCloudResourceTypes` 追加 `evs/vpc/dcs/dms`；`resource_client.go` 新增 `listEVS/listVPC/listDCS/listDMS` 及对应 SDK client（evs/vpc/dcs/kafka/rocketmq）；`resource_mapper.go` 新增 `mapEVSVolume/mapVPC/mapDCSInstance/mapDMSKafkaInstance/mapDMSRocketMQInstance`。其中 DCS/DMS 匹配键成立、hybrid 增强实际生效；EVS/VPC 匹配键不成立、hybrid 增强实际不命中。
   - EVS 增强 label（客户端已实现，但匹配键不成立，hybrid 实际不生效）：`volume_id`、`volume_type`、`size_gb`、`attached_to`、`az`、`created_at`、`charging_mode`（从 `Metadata.orderID` 推断）。`ProviderRef=volume name`（试图对齐 CES `dim_name=disk_name`）。**问题**：CES `SYS.EVS` 的 `disk_name` 实际格式为「服务器ID-盘符」（如 `6f3a...-vda`）或「服务器ID-volume-卷ID」，并非 EVS 卷显示名称 `vol.Name`，两者无法对齐。参考 https://support.huaweicloud.com/usermanual-evs/evs_01_0044.html 。
   - VPC 增强 label（客户端已实现，但匹配键不成立，hybrid 实际不生效）：`vpc_name`、`cidr`、`status`、`enterprise_project_id`、`created_at`、`subnet_count`（调 `ListSubnets` 按 `vpc_id` 统计）。`az` 不在 VPC 模型（省略）。`ProviderRef=vpc id`（试图对齐 `dim_name=vpc_id`）。**问题**：CES `SYS.VPC` 不存在 `vpc_id` 主维度，其主维度为 `publicip_id`/`bandwidth_id`/`subnet_id`/`peering_id`，`ProviderRef=vpc id` 无法对齐任何 CES 维度。参考 https://support.huaweicloud.com/eu/usermanual-ces/en-us_topic_0202622212.html 。
@@ -716,6 +714,14 @@ Payload 增加建议字段：
 - 华为云原始错误只写脱敏 code/status。
 - 每个 region/project/resource_group/namespace 的数量可以记录。
 
+上下文与审计链路要求：
+
+- 异步同步虽然需要与 HTTP 请求取消解耦，但不得直接使用 `context.Background()` 作为业务写入、续租、终态 finalize、前置失败处理的基础 context。
+- 后台任务应从触发请求 context 派生一个“保留 trace/user/logger values、移除请求取消”的 detached context（例如 Go 1.21+ 可用 `context.WithoutCancel(ctx)`），再叠加进程级 shutdown/硬超时控制。
+- `RenewLease`、upsert/stale 写入、前置失败批次落库、终态 finalize 与审计 recorder 都必须使用携带 trace/user logger 的 context，确保日志、审计和批次状态能按同一链路追踪。
+- 短超时 finalize context 只能在 detached context 上派生，禁止从 `context.Background()` 直接派生，避免丢失 `trace_id`、`user_id/username` 和 request logger 字段。
+- 前置校验失败（例如 `ensureCloudApplication` 失败）如果已经创建 running batch，必须同时完成批次终态写入和审计记录；审计失败只能记录 warn/error，不能导致批次继续卡在 running。
+
 ## 15. 前端对接契约
 
 ### 15.1 `/integrations` 接入表单
@@ -757,8 +763,9 @@ Payload 增加建议字段：
 - `status` 使用状态 Tag 展示，至少区分 `running` / `success` / `partial` / `failed`。
 - `created_count`、`updated_count`、`stale_count`、`failed_count` 直接展示为批次数量摘要。
 - `message` 必须保留 tooltip 或可展开展示，用于排查 `ces_total`、`discovered`、`failed_scopes`、`enriched`、`enrichment_failed` 等摘要。
-- `partial` 不等同于失败；页面应提示“部分资源或增强信息失败，基础同步结果以批次 message 为准”。
+- `partial` 不等同于失败；页面应提示“部分资源或增强信息失败，基础同步结果以批次 summary 为准，message 保留为排查说明”。
 - `native` 模式的同步结果不得展示“已对齐 CES 总览”之类承诺。
+- 后续实现应避免让前端继续解析 `message` 作为半结构化协议；`syncCloudFullSync` 不应继续返回多个并列返回值，建议收敛为 `CloudFullSyncResult` 等结果结构体。`SyncBatch` DTO/API 已提供正式 `summary` 对象（如 `ces_total`、`discovered_count`、`failed_scopes`、`enriched_count`、`enrichment_failed_types` 等），`message` 仅保留人类可读的排查说明。
 
 ### 15.4 `/assets` 资源列表与详情
 
@@ -773,18 +780,21 @@ Payload 增加建议字段：
 - `last_synced_at`
 - `sync_batch_id`
 
+当前实现状态：资源 DTO 已暴露上述云同步字段，`/assets` 资源列表 UI 已展示 `integration_account_id`、`cloud_resource_type`、`sync_batch_id`，并通过服务端参数支持 `cloud_resource_type`、`region`、`sync_status` 筛选；前端筛选不得退化为跨页假筛选。
+
 展示要求：
 
 - 未知 namespace 映射出的 `cloud_resource_type` 应原样展示，不要在前端丢弃或强制归为“未知”。
 - 建议增加 `cloud_resource_type`、`region`、`sync_status` 筛选；如果后端暂未提供筛选参数，前端不要做跨页假筛选。
 - `sync_status=stale` 应有明显标识，避免用户误以为是当前云端仍存在的资源。
+- `sync_batch_id` 表示最近成功同步批次；只有整个批次成功完成后，才更新到资源上，因此可以直接解释为该资源最后一次成功同步所属的批次。
 
 ### 15.5 labels 展示契约
 
 后端 `asset_resource.labels` 已落库，资源 DTO 已暴露 `labels` 字段，前端资源列表与详情页按以下规则展示：
 
 - CES 基础字段：`namespace`、`dim_name`、`resource_group_id`、`resource_group_name`、`enterprise_project_id`。
-- ECS/RDS/ELB/EVS/VPC/DCS/DMS 等增强字段按实际返回展示，例如 `private_ip`、`flavor`、`vpc_id`、`az`、`volume_type`、`size_gb`、`cidr`、`subnet_count`、`engine`、`capacity_gb`、`spec_code`。
+- ECS/RDS/DCS/DMS 等已生效增强字段按实际返回展示，例如 `private_ip`、`flavor`、`vpc_id`、`az`、`engine`、`capacity_gb`、`spec_code`；EVS/VPC 当前仅展示 CES 基础 labels，`volume_type`、`size_gb`、`attached_to`、`cidr`、`subnet_count` 等详情增强尚未支持。
 - labels 中的未知 key 应以只读键值形式展示，不能丢弃。
 - 敏感字段即使后端误返回，前端也不得明文展示，需按敏感 key 名称进行兜底掩码。
 
@@ -840,6 +850,8 @@ region = cn-south-1
 ```http
 POST /api/assets/sync
 ```
+
+真实账号验收可使用 `scripts/e2e-asset-sync-real.ps1` 触发同步和打印对账摘要；脚本默认 `SyncTimeoutMs=2100000`（35 分钟），必须大于后端异步同步 30 分钟硬超时，避免脚本先进入清理而后台任务仍在写入。
 
 3. 检查 batch：
 
@@ -929,22 +941,25 @@ cd web && npm run build
 - `product_names` 为空时，全量发现依赖内置 namespace 白名单，可能漏资源；需要在 batch message 中暴露。
 - CES 资源维度可能不是稳定的云资源 ID，映射时必须保留 namespace 和 dim_name，避免跨类型冲突。
 - `asset_resource` 唯一约束已由迁移 `0026` 补齐为含 `region` 的部分唯一索引（见 §9.4），可区分多区域同类型同云 ID 资源。
+- `asset_sync_batch` 已由迁移 `0030` 增加 `fencing_token`；续租必须按 `batch_id + fencing_token` 校验所有权，upsert/stale 写入前也必须确认仍持有 running 且未过期租约，避免旧任务在被 reap 后继续写入。
 - `/api/assets/sync` 已改为异步任务：立即返回 running batch，后台 goroutine 执行同步并续租；后续如需支撑更大账号，可评估 worker/队列化。
 - CES API rate limit 需要退避重试；重试仍失败时标记 partial，不要阻塞其他 namespace。
+- 涉及 `0026`、`0028`、`0030` 等数据库迁移时，执行方式以 `ops/migration-contract.md` 为准：生产 / 预发必须通过自研 runner（`cmd/migrate` 或 `go run ./cmd/migrate -config <path>`）显式执行，禁止手工 `psql`、手工执行 `manual_schema_migrations.sql` 或手工写入 `schema_migrations`。
 
 ### 18.1 P1：同账号并发同步互斥（已解决）
 
 > 问题：`TriggerSync` 创建 running 批次无账号级互斥，同一账号并发批次交错执行 `MarkStaleByAccountScopeExceptBatch` 时，A 会把 B 刚 upsert 的资源（`sync_batch_id=B`）标记为 stale，产生错误资产状态。仅靠前端按钮 loading 不足以保证一致性。
 
-解决方案（迁移 `0028_asset_sync_batch_running_mutex`，不依赖 Redis）：
+解决方案（迁移 `0028_asset_sync_batch_running_mutex` + `0030_asset_sync_batch_fencing_token`，不依赖 Redis）：
 
 - `asset_sync_batch` 新增 `lease_expires_at` 列；建部分唯一索引 `(integration_account_id) WHERE status='running'`，确保每个账号同一时刻只有一个 running 批次。
+- `asset_sync_batch` 新增 `fencing_token` 列；后台任务持有 token，`RenewLease` 必须按 `batch_id + fencing_token + status=running` 续租，upsert/stale 前必须校验 `batch_id + fencing_token + status=running + lease_expires_at 未过期`。临时 DB 续租错误只记录并重试；确认租约丢失（终态、被 reap、token 不匹配）时立即取消旧任务，禁止继续写入。
 - `TriggerSync` 在 `Create` 前先 `ReapExpiredRunning(accountID, now)` 清理本账号租约过期的 running 批次（崩溃批次自愈），再插入带 `lease_expires_at = now + 5min` 的 running 批次，立即返回 running DTO。
 - 已有 running 批次时 `Create` 触发唯一冲突 → 映射为 `ALREADY_EXISTS`（HTTP 409，`message=sync already in progress for this account`）。
-- **异步生命周期**：同步在后台 goroutine 执行（`runCtx` 派生自进程级 `shutdownCtx` + 30 分钟硬超时），与 HTTP 请求生命周期解耦。后台 goroutine 每 60 秒通过 `RenewLease` 续租，把 `lease_expires_at` 推进到 `now+5min`，保证正常同步不会因超时被 reap。终态写入与审计使用独立短 context（10 秒超时），即便 `runCtx` 取消（进程关闭/硬超时）也能落终态，不卡 `running`。
+- **异步生命周期**：同步在后台 goroutine 执行，与 HTTP 请求生命周期解耦，但必须保留触发请求的 trace/user/logger 链路。`runCtx` 先从请求 context 派生 detached context（保留 values、移除请求取消），再受进程级 `shutdownCtx` 与 30 分钟硬超时控制。后台 goroutine 每 60 秒通过 `RenewLease` 续租，把 `lease_expires_at` 推进到 `now+5min`，保证正常同步不会因超时被 reap。续租、前置失败处理、终态写入与审计都必须使用该链路 context 派生的短超时 context，禁止直接使用 `context.Background()`。即便 `runCtx` 取消（进程关闭/硬超时），也要用保留 trace/user/logger 的 detached finalize context 尝试落终态，避免批次卡 `running`。
 - 终态 `Update` / `finishBatchFailedDetached` 把 `lease_expires_at` 清空，释放槽位。
-- 测试：`TestSyncService_TriggerSyncRejectsConcurrentRunning`、`TestSyncService_TriggerSyncReapsExpiredLease`、`TestSyncService_AsyncRenewsLeaseDuringSync`、`TestSyncService_CancelledReachesTerminal`、`TestSyncService_HardTimeoutFails`。
-- 契约：见 `ops/cloud-observability-contract.md` §5.5.1、`ops/migration-contract.md` `0028`。
+- 测试：`TestSyncService_TriggerSyncRejectsConcurrentRunning`、`TestSyncService_TriggerSyncReapsExpiredLease`、`TestSyncService_AsyncRenewsLeaseDuringSync`、`TestSyncService_LeaseRenewDBErrorRetries`、`TestSyncService_LeaseLostCancelsSync`、`TestSyncService_FencingBlocksStaleAfterLeaseReaped`、`TestSyncService_CancelledReachesTerminal`、`TestSyncService_HardTimeoutFails`。
+- 契约：见 `ops/cloud-observability-contract.md` §5.5.1、`ops/migration-contract.md` `0028`/`0030`。
 
 ## 19. 最终完成定义
 
@@ -954,7 +969,7 @@ cd web && npm run build
 - 使用仅 CES 只读权限的账号，可以同步指定 CES 资源分组（默认候选名“全部资源”，需预先创建）下可见的资源。
 - 平台 active 资源数与指定资源分组总数一致，或 batch message 能解释所有差异。
 - EVS/VPC/OBS/DCS/DMS/RDS/ELB/ECS 等截图中出现的类型能进入 `asset_resource`。
-- `sync_mode=hybrid` 可以在指定资源分组发现基础上按权限补充详情，增强失败不影响基础资源入库。
+- `sync_mode=hybrid` 可以在指定资源分组发现基础上按权限补充已支持类型详情（当前为 ECS/RDS/DCS/DMS 等）；EVS/VPC 因 CES 维度与原生资源匹配键不成立，详情增强尚未支持；增强失败不影响基础资源入库。
 - `sync_mode=native` 仅作为旧路径兼容，不作为完整性验收口径。
 - 同步批次有审计、有失败摘要、有 stale 语义。
 - 真实账号不会返回 fake 数据。
@@ -973,10 +988,75 @@ cd web && npm run build
    - `region_projects`（region → project_id 映射数组，表单按 `region=project_id` 每行录入）
    - 上述字段写入 `extra_config` JSON；编辑时回显现有配置；未填写新凭据时不提交 `credential`；保留后端返回的未知 `extra_config` key。
 2. **资源 labels 已暴露与展示**：
-   - 后端 `ResourceDTO` 已返回 `labels` 字段，前端资源列表与详情页已展示 CES `namespace/dim_name/resource_group` 及增强字段（ECS `private_ip/flavor/vpc_id/az`，EVS `volume_type/size_gb/attached_to`，VPC `cidr/subnet_count`，DCS `engine/capacity_gb`，DMS `engine/spec_code` 等）。
+   - 后端 `ResourceDTO` 已返回 `labels` 字段，前端资源列表与详情页已展示 CES `namespace/dim_name/resource_group` 及已生效增强字段（ECS `private_ip/flavor/vpc_id/az`，RDS `private_ip/vpc_id/subnet_id/flavor`，DCS `engine/capacity_gb`，DMS `engine/spec_code` 等）。
+   - EVS/VPC 当前仅展示 CES 基础 labels；`volume_type/size_gb/attached_to`、`cidr/subnet_count` 等详情增强因匹配键不成立尚未支持，不能作为完成定义或 UI 承诺。
    - 后续仅需继续优化 labels 分组、排序和批量排查体验，并保持 `web/src/api/README.md` 同步。
-3. **同步批次摘要展示**：批次列表 `message` tooltip 已保留，批次详情页已结构化展示 `ces_total/discovered/failed_scopes/enriched/enrichment_failed`，同时保留原始 `message`。
+3. **同步批次摘要展示**：批次列表 `message` tooltip 已保留；后端 `SyncBatch` DTO/API 已返回正式 `summary` 对象，批次详情页优先读取 `summary` 展示 `ces_total/discovered_count/failed_scopes/enriched_count/enrichment_failed_types`，仅对旧数据保留 `message` 解析兜底。`message` 不再作为新数据的半结构化协议。
 4. **OBS 原生增强**：后端尚未落地（需另引 OBS SDK），前端无需处理。
+
+## 22. 云同步应用 ID 算法变更与升级说明（0032）
+
+> 适用场景：2026-06 之后使用新 `cloudApplicationID` 算法的版本。开发阶段/未上线环境可直接清空重来；已上线环境若存在旧格式云同步应用，必须按本节评估。
+
+### 22.1 变更内容
+
+`internal/asset/application/sync_service.go` 中 `cloudApplicationID` 从旧格式：
+
+```text
+cloud-<完整账号ID>
+```
+
+改为新格式：
+
+```text
+cloud-<账号前17位>-<sha1(账号)前12位>
+```
+
+例如账号 `1234567890123456789012345678` 生成 `cloud-12345678901234567-a1b2c3d4e5f6`。
+
+变更原因：
+
+- 原格式依赖账号长度，`application_id` 可能超过 `asset_application.application_id VARCHAR(36)` 限制；
+- 多个账号前 28 位相同时会生成冲突的 ID；
+- 新格式固定 ≤ 36 位并带哈希后缀，保证唯一性和可读性。
+
+### 22.2 升级影响
+
+升级后若保留旧格式云同步应用，`ensureCloudApplication` 会按新 ID 创建新应用，旧资源继续挂在旧应用，新资源进入新应用，导致：
+
+- 同一账号资产被拆散到两个应用；
+- 匹配规则、Dashboard、告警匹配、Execution 关联应用 ID 全部失效；
+- P0 资产匹配闭环被破坏。
+
+### 22.3 迁移策略
+
+迁移 `0032_cleanup_legacy_cloud_application_ids` 采用**删除旧格式云同步应用及其关联数据**的策略：
+
+- 删除 `asset_application` 中 `application_id` 以 `cloud-` 开头且不含第二个 `-` 的旧记录；
+- 级联删除这些应用下的 `asset_resource` 和 `asset_match_rule`；
+- `asset_sync_batch` 与接入账号本身保留，便于重新触发同步。
+
+该策略基于当前阶段项目尚未上线、数据可清空重来的前提。升级后需要：
+
+1. 重新录入华为云集成账号；
+2. 重新触发云同步；
+3. 重新配置匹配规则（如规则原本挂在旧应用上）。
+
+### 22.4 生产/预发注意事项
+
+如果未来在已上线环境升级：
+
+- **不要直接运行 0032 删除数据**，会导致生产资产与规则丢失；
+- 应改用“迁移改写 application_id”方案：根据旧 `cloud-<账号>` 反推账号，用新算法生成新 ID，批量更新 `asset_application`、`asset_resource`、`asset_match_rule`；
+- 所有引用 `application_id` 的外部系统（CMDB、告警源、Runbook、Execution 历史）必须同步更新或建立兼容映射；
+- 迁移前必须全量备份相关表，并在维护窗口执行。
+
+### 22.5 验证清单
+
+- 升级后 `asset_application` 不再存在旧格式 `cloud-<账号>`；
+- 重新录入账号并同步后，资源全部写入新的 `cloud-<前缀>-<hash>` 应用；
+- 告警/资产匹配规则指向新应用仍能命中资源；
+- P0 验收脚本 `scripts/e2e-asset-sync.ps1` 通过。
 
 ## 21. P2 增强缺口（非阻塞，按需）
 

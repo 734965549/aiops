@@ -133,14 +133,14 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 
 	result := &CESResourceDiscoveryResult{Summary: summary}
 	resources := make([]domain.CloudResource, 0, min(maxResources, 1024))
-	for _, product := range products {
+	for i, product := range products {
 		if len(resources) >= maxResources {
 			break
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, mapCESError(err)
 		}
-		pageResources, pageErr := listResourcesForProduct(ctx, api, group.GroupID, product, req.Region, maxResources-len(resources))
+		pageResources, productTotal, pageErr := listResourcesForProduct(ctx, api, group.GroupID, product, req.Region, maxResources-len(resources))
 		if pageErr != nil {
 			result.Summary.FailedScopes = append(result.Summary.FailedScopes,
 				fmt.Sprintf("%s/%s: %s", req.Region, product.Service, apperr.FromError(pageErr).Message))
@@ -174,11 +174,14 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 			}
 			resources = append(resources, cloud)
 		}
-		// 达到 max_resources 时该类型只被部分扫描，不能计入 SuccessfulTypes，
-		// 否则 sync_service 会把未扫描到的资产误标为 stale，见 §13。
+		// 达到 max_resources 时，只有当前 product 未拉完或后面还有 product 才视为截断，
+		// 否则恰好等于上限也属于完整扫描，不应误报 MaxResourcesReached，见 §13。
 		if len(resources) >= maxResources {
-			result.Summary.MaxResourcesReached = true
-			break
+			if productTotal > len(pageResources) || i < len(products)-1 {
+				result.Summary.MaxResourcesReached = true
+				break
+			}
+			// 恰好等于上限且当前 product 已拉完、后面无 product：继续走 SuccessfulTypes 逻辑。
 		}
 		resourceType := resolveNamespaceMapping(product.Service).CloudResourceType
 		result.Summary.SuccessfulTypes = appendUniqueString(result.Summary.SuccessfulTypes, resourceType)
@@ -215,7 +218,8 @@ var defaultResourceGroupCandidates = []string{
 // maxResourceGroupOffset ListResourceGroups offset 上限（SDK 区间 [0,10000]），防止异常翻页。
 const maxResourceGroupOffset int32 = 10000
 
-// selectResourceGroup 按 §8.4 选择目标资源组：指定ID > 名称精确匹配(用户指定名 + 默认候选名)。
+// selectResourceGroup 按 §8.4 选择目标资源组：指定ID > 显式名称精确匹配 > 默认候选名。
+// 显式名称未命中时直接失败，不回退默认候选名；未指定名称时才尝试默认候选名。
 // 任何名称未命中均直接失败，不回退到 total 最大的资源组，避免把某个业务组误当作全量。
 // 分页拉全量后客户端匹配（不依赖服务端 GroupName 模糊过滤）。
 func selectResourceGroup(ctx context.Context, api cesResourceGroupAPI, req CESResourceDiscoveryRequest) (selectedResourceGroup, error) {
@@ -236,45 +240,33 @@ func selectResourceGroup(ctx context.Context, api cesResourceGroupAPI, req CESRe
 		return selectedResourceGroup{}, apperr.New(apperr.CodeNotFound, "no CES resource group found for project/region")
 	}
 
-	// 名称匹配：用户指定名优先，再依次尝试默认候选名，见 §8.4 step 2/3。
-	for _, wantName := range resourceGroupNameCandidates(req.ResourceGroupName) {
-		for _, g := range groups {
-			if strings.EqualFold(strings.TrimSpace(g.GroupName), wantName) {
-				selection := "default_name"
-				if strings.EqualFold(strings.TrimSpace(req.ResourceGroupName), wantName) {
-					selection = "specified_name"
-				}
-				return selectedResourceGroup{GroupID: g.GroupId, GroupName: g.GroupName, Total: groupTotal(g.ResourceStatistics), Selection: selection}, nil
-			}
+	if specifiedName := strings.TrimSpace(req.ResourceGroupName); specifiedName != "" {
+		if sel, ok := matchResourceGroupByName(groups, specifiedName, "specified_name"); ok {
+			return sel, nil
+		}
+		return selectedResourceGroup{}, apperr.New(apperr.CodeNotFound,
+			"no CES resource group matched (specified id/name or default candidates)")
+	}
+
+	// 未指定名称时才依次尝试默认候选名，见 §8.4 step 3。
+	for _, wantName := range defaultResourceGroupCandidates {
+		if sel, ok := matchResourceGroupByName(groups, wantName, "default_name"); ok {
+			return sel, nil
 		}
 	}
-	// 名称（用户指定名或默认候选名）均未命中，直接失败，不回退最大资源组，见 §8.4 step 4。
+	// 默认候选名均未命中，直接失败，不回退最大资源组，见 §8.4 step 4。
 	// CES 官方 ListResourceGroups 只返回用户创建的资源分组，不存在"总览全量"隐式口径。
 	return selectedResourceGroup{}, apperr.New(apperr.CodeNotFound,
 		"no CES resource group matched (specified id/name or default candidates)")
 }
 
-// resourceGroupNameCandidates 构建名称匹配候选列表：用户指定名在前，叠加默认候选名，去重。
-func resourceGroupNameCandidates(specified string) []string {
-	candidates := make([]string, 0, len(defaultResourceGroupCandidates)+1)
-	seen := make(map[string]struct{}, cap(candidates)+1)
-	add := func(name string) {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			return
+func matchResourceGroupByName(groups []cesv2model.OneResourceGroupResp, wantName, selection string) (selectedResourceGroup, bool) {
+	for _, g := range groups {
+		if strings.EqualFold(strings.TrimSpace(g.GroupName), strings.TrimSpace(wantName)) {
+			return selectedResourceGroup{GroupID: g.GroupId, GroupName: g.GroupName, Total: groupTotal(g.ResourceStatistics), Selection: selection}, true
 		}
-		key := strings.ToLower(name)
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		candidates = append(candidates, name)
 	}
-	add(specified)
-	for _, name := range defaultResourceGroupCandidates {
-		add(name)
-	}
-	return candidates
+	return selectedResourceGroup{}, false
 }
 
 // listAllResourceGroups 分页拉取全部 CES 资源组，见 §8.6 分页策略。
@@ -364,16 +356,17 @@ func resolveProducts(ctx context.Context, api cesResourceGroupAPI, groupID strin
 }
 
 // listResourcesForProduct 按 service+dim_name 分页拉取资源，见 §8.6。
-func listResourcesForProduct(ctx context.Context, api cesResourceGroupAPI, groupID string, product cesProduct, region string, remaining int) ([]cesResourceInput, error) {
+func listResourcesForProduct(ctx context.Context, api cesResourceGroupAPI, groupID string, product cesProduct, region string, remaining int) ([]cesResourceInput, int, error) {
 	pageLimit := int32(defaultCESPageLimit)
-	if int(pageLimit) > remaining {
+	if remaining > 0 && int(pageLimit) > remaining {
 		pageLimit = int32(remaining)
 	}
 	out := make([]cesResourceInput, 0, min(int(pageLimit), remaining))
 	offset := int32(0)
+	totalCount := 0
 	for len(out) < remaining {
 		if err := ctx.Err(); err != nil {
-			return nil, mapCESError(err)
+			return nil, 0, mapCESError(err)
 		}
 		req := &cesv2model.ListResourceGroupsServicesResourcesRequest{
 			GroupId: groupID,
@@ -388,9 +381,15 @@ func listResourcesForProduct(ctx context.Context, api cesResourceGroupAPI, group
 			return api.ListResourceGroupsServicesResources(req)
 		})
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		if resp == nil || resp.Resources == nil || len(*resp.Resources) == 0 {
+		if resp == nil {
+			break
+		}
+		if resp.Count != nil {
+			totalCount = int(*resp.Count)
+		}
+		if resp.Resources == nil || len(*resp.Resources) == 0 {
 			break
 		}
 		for _, res := range *resp.Resources {
@@ -404,7 +403,10 @@ func listResourcesForProduct(ctx context.Context, api cesResourceGroupAPI, group
 		}
 		offset += pageLimit
 	}
-	return out, nil
+	if totalCount == 0 {
+		totalCount = len(out)
+	}
+	return out, totalCount, nil
 }
 
 // toCESResourceInput 将 SDK GetResourceGroupResources 转为 provider 无关输入。

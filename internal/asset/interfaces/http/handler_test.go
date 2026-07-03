@@ -159,9 +159,19 @@ func (r *assetHTTPTestResRepo) ListByApplicationID(_ context.Context, applicatio
 func (r *assetHTTPTestResRepo) ListByApplicationIDPaged(_ context.Context, applicationID string, filter assetdomain.ResourceFilter) ([]assetdomain.Resource, int64, error) {
 	matched := make([]assetdomain.Resource, 0)
 	for _, row := range r.rows {
-		if row.ApplicationID == applicationID {
-			matched = append(matched, row)
+		if row.ApplicationID != applicationID {
+			continue
 		}
+		if filter.CloudResourceType != "" && row.CloudResourceType != filter.CloudResourceType {
+			continue
+		}
+		if filter.Region != "" && row.Region != filter.Region {
+			continue
+		}
+		if filter.SyncStatus != "" && row.SyncStatus != filter.SyncStatus {
+			continue
+		}
+		matched = append(matched, row)
 	}
 	total := int64(len(matched))
 	limit := filter.Limit
@@ -250,7 +260,7 @@ func (r *assetHTTPTestResRepo) FindByCloudKey(_ context.Context, key assetdomain
 	return nil, assetdomain.ErrNotFound
 }
 
-func (r *assetHTTPTestResRepo) UpsertCloudSync(_ context.Context, res *assetdomain.Resource) (bool, error) {
+func (r *assetHTTPTestResRepo) UpsertCloudSyncWithLease(_ context.Context, res *assetdomain.Resource, _, _ string) (bool, error) {
 	key := assetdomain.CloudResourceKey{
 		IntegrationAccountID: res.IntegrationAccountID,
 		CloudResourceType:    res.CloudResourceType,
@@ -259,12 +269,13 @@ func (r *assetHTTPTestResRepo) UpsertCloudSync(_ context.Context, res *assetdoma
 	}
 	if existing, err := r.FindByCloudKey(context.Background(), key); err == nil && existing != nil {
 		res.ID = existing.ID
+		res.SyncBatchID = existing.SyncBatchID
 		return false, r.Update(context.Background(), res)
 	}
 	return true, r.Create(context.Background(), res)
 }
 
-func (r *assetHTTPTestResRepo) MarkStaleByAccountScopeExceptBatch(_ context.Context, accountID, region, cloudResourceType, batchID string) (int64, error) {
+func (r *assetHTTPTestResRepo) MarkStaleByAccountScopeExceptBatchWithLease(_ context.Context, accountID, region, cloudResourceType, batchID, _ string) (int64, error) {
 	var n int64
 	for i := range r.rows {
 		row := &r.rows[i]
@@ -281,7 +292,7 @@ func (r *assetHTTPTestResRepo) MarkStaleByAccountScopeExceptBatch(_ context.Cont
 	return n, nil
 }
 
-func (r *assetHTTPTestResRepo) MarkStaleByAccountRegionExceptTypes(_ context.Context, accountID, region string, exceptTypes []string, batchID string) (int64, error) {
+func (r *assetHTTPTestResRepo) MarkStaleByAccountRegionExceptTypesWithLease(_ context.Context, accountID, region string, exceptTypes []string, batchID, _ string) (int64, error) {
 	except := make(map[string]struct{}, len(exceptTypes))
 	for _, t := range exceptTypes {
 		except[strings.ToLower(strings.TrimSpace(t))] = struct{}{}
@@ -657,6 +668,53 @@ func TestListResources_Success(t *testing.T) {
 	}
 	if data.Total != 1 || data.Page != 1 || data.PageSize != 10 {
 		t.Fatalf("unexpected pagination: total=%d page=%d page_size=%d", data.Total, data.Page, data.PageSize)
+	}
+}
+
+func TestListResources_FiltersCloudSyncFields(t *testing.T) {
+	authz := &fakeAssetHTTPAuthorizer{allowed: true}
+	engine, token, appRepo, resRepo := newAssetHTTPEngine(t, authz)
+	_ = appRepo.Create(context.Background(), &assetdomain.Application{ID: "app-1", Name: "svc", Environment: "prod"})
+	_ = resRepo.Create(context.Background(), &assetdomain.Resource{
+		ID: "res-ecs-active", ApplicationID: "app-1", Name: "ecs-active",
+		Source: assetdomain.ResourceSourceCloudSync, CloudResourceType: "ecs", Region: "cn-north-4", SyncStatus: assetdomain.SyncStatusActive,
+	})
+	_ = resRepo.Create(context.Background(), &assetdomain.Resource{
+		ID: "res-ecs-stale", ApplicationID: "app-1", Name: "ecs-stale",
+		Source: assetdomain.ResourceSourceCloudSync, CloudResourceType: "ecs", Region: "cn-north-4", SyncStatus: assetdomain.SyncStatusStale,
+	})
+	_ = resRepo.Create(context.Background(), &assetdomain.Resource{
+		ID: "res-rds-active", ApplicationID: "app-1", Name: "rds-active",
+		Source: assetdomain.ResourceSourceCloudSync, CloudResourceType: "rds", Region: "cn-south-1", SyncStatus: assetdomain.SyncStatusActive,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/assets/applications/app-1/resources?page=1&page_size=10&cloud_resource_type=ecs&region=cn-north-4&sync_status=active", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := decodeAssetEnvelope(t, w.Body.Bytes())
+	var data struct {
+		Items []struct {
+			ID                string `json:"id"`
+			CloudResourceType string `json:"cloud_resource_type"`
+			Region            string `json:"region"`
+			SyncStatus        string `json:"sync_status"`
+		} `json:"items"`
+		Total int64 `json:"total"`
+	}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Total != 1 || len(data.Items) != 1 {
+		t.Fatalf("unexpected filtered result: total=%d items=%+v", data.Total, data.Items)
+	}
+	item := data.Items[0]
+	if item.ID != "res-ecs-active" || item.CloudResourceType != "ecs" || item.Region != "cn-north-4" || item.SyncStatus != "active" {
+		t.Fatalf("unexpected item: %+v", item)
 	}
 }
 

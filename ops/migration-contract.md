@@ -8,16 +8,17 @@
 
 | 允许 | 禁止 |
 | --- | --- |
-| 生产 DBA 按顺序手工执行 `migrations/*.up.sql` 并执行 `migrations/manual_schema_migrations.sql` | [golang-migrate](https://github.com/golang-migrate/migrate) CLI 或库 |
-| dev/test 使用 `make migrate` | 任何第三方迁移工具或另一套迁移元数据表 |
-| dev/test 使用 `go run ./cmd/migrate -config <path>` | PostgreSQL `docker-entrypoint-initdb.d` 与应用启动自动迁移混用 |
-| 受控 dev/test 下 `database.auto_migrate=true`（仍走同一版本体系） | 同一环境对同一库交替使用多种迁移版本体系 |
+| 生产 DBA / 发布流水线在部署 API 之前显式执行自研 runner（`cmd/migrate` 二进制或 `go run ./cmd/migrate -config <path>`） | 手工 `psql -f migrations/*.up.sql`、手工执行 `migrations/manual_schema_migrations.sql`、手工写入或修改 `schema_migrations` |
+| dev/test 使用 `make migrate` / `make migrate-up` | [golang-migrate](https://github.com/golang-migrate/migrate) CLI 或库 |
+| dev/test 使用 `go run ./cmd/migrate -config <path>` | 任何第三方迁移工具或另一套迁移元数据表 |
+| 受控 dev/test 下 `database.auto_migrate=true`（仍调用同一 `RunMigrations` 实现） | PostgreSQL `docker-entrypoint-initdb.d` 与应用启动自动迁移混用 |
+| DBA 审批、备份、窗口控制和执行结果确认 | 同一环境对同一库交替使用多种迁移版本体系 |
 
-**禁止混用**：同一数据库实例不得交替使用 golang-migrate（或其它外部工具）与本仓库 `migrations/` 版本体系。`schema_migrations` 表结构、版本号语义与幂等逻辑均以本仓库为准。
+**禁止混用**：同一数据库实例不得交替使用 golang-migrate（或其它外部工具）、手工 `psql` 与本仓库自研 runner。`schema_migrations` 表结构、版本号语义与幂等逻辑均以本仓库 runner 为准，迁移账本只能由 runner 写入。
 
 ## 责任边界
 
-- **生产环境**：数据库初始化和迁移必须由 **DBA** 在部署 API **之前**显式执行。DBA 按 `migrations/README.md` 中的顺序执行 `migrations/*.up.sql`，最后执行 `migrations/manual_schema_migrations.sql` 写入账本，`database.auto_migrate` 保持 `false`。
+- **生产环境**：数据库初始化和迁移必须由 **DBA** 或发布流水线在部署 API **之前**显式执行，执行入口必须是本仓库自研 runner（`cmd/migrate` 二进制或 `go run ./cmd/migrate -config <path>`）。DBA 负责审批、备份、变更窗口、目标库权限和执行结果确认；runner 负责按版本顺序执行 `migrations/*.up.sql` 并写入 `schema_migrations`。
 - **应用启动**：`cmd/api` 默认不执行迁移，只连接数据库并读取迁移状态供 `/readyz` 判读。
 - `database.auto_migrate=true` 仅限本地或测试环境临时便利，仍调用同一 `RunMigrations` 实现，**不得**作为生产默认策略。
 
@@ -43,6 +44,9 @@
 0027_asset_sync_batch_message_text.up.sql          → Asset：asset_sync_batch.message 改为 TEXT，修复应用层 2000 rune 截断与 VARCHAR(512) 不一致
 0028_asset_sync_batch_running_mutex.up.sql         → Asset：asset_sync_batch.lease_expires_at + running 部分唯一索引（账号级并发互斥，修复并发批次互相标记 stale）
 0029_huawei_legacy_accounts_native_sync_mode.up.sql → Integration：历史空配置华为账号回填 sync_mode=native，修复 0024 空配置被解析为 ces 的灰度策略失效
+0030_asset_sync_batch_fencing_token.up.sql         → Asset：asset_sync_batch.fencing_token + running 所有权校验索引（防止租约丢失旧任务继续写入）
+0031_asset_sync_batch_summary.up.sql               → Asset：asset_sync_batch.summary JSONB 结构化摘要；批次详情页不再把 message 当作半结构化协议解析
+0032_cleanup_legacy_cloud_application_ids.up.sql   → Asset：清理旧格式 cloud-<account_id> 云同步应用及其关联 asset_resource/asset_match_rule；升级后需重新录入账号并同步
 ```
 
 | 职责 | 0001 / 0002 / 0016 迁移 | 启动期 bootstrap（`cmd/api`） |
@@ -66,22 +70,17 @@
 
 ## 执行命令
 
-生产 DBA 手工模式：
+生产 / 预发显式迁移：
 
 ```bash
-psql "$AIOPS_DATABASE_DSN" -f migrations/0001_init_identity.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0002_seed_admin_permissions.up.sql
-# ...按 migrations/README.md 顺序继续执行...
-psql "$AIOPS_DATABASE_DSN" -f migrations/0022_init_execution_agent.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0023_asset_cloud_sync.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0024_integration_account_extra_config.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0025_asset_resource_labels.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0026_asset_cloud_sync_region_key.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0027_asset_sync_batch_message_text.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0028_asset_sync_batch_running_mutex.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0029_huawei_legacy_accounts_native_sync_mode.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/manual_schema_migrations.sql
+# 推荐：使用已构建的自研 runner 二进制
+./migrate -config /path/to/config.yaml
+
+# 等价：源码方式执行自研 runner
+go run ./cmd/migrate -config /path/to/config.yaml
 ```
+
+> 禁止在生产或预发环境手工 `psql -f migrations/*.up.sql`、手工执行 `migrations/manual_schema_migrations.sql`，或手工写入 / 修改 `schema_migrations`。迁移账本必须由自研 runner 维护。
 
 本地联调（PostgreSQL 已启动）：
 
@@ -258,6 +257,9 @@ Integration 上下文第一阶段迁移，建表：
 | `0027` | `0027_asset_sync_batch_message_text.up.sql` | Asset | `asset_sync_batch.message` 改为 TEXT（修复应用层 2000 rune 与 VARCHAR(512) 不一致） | 已落地 |
 | `0028` | `0028_asset_sync_batch_running_mutex.up.sql` | Asset | `asset_sync_batch.lease_expires_at` + 部分唯一索引 `(integration_account_id) WHERE status='running'`（账号级并发互斥，修复并发批次互相标记 stale） | 已落地 |
 | `0029` | `0029_huawei_legacy_accounts_native_sync_mode.up.sql` | Integration | 把仍为空配置 `{}` 的历史华为账号回填 `sync_mode=native`，修复 0024 空配置被解析为 ces 导致升级后立即切 CES 的灰度策略失效；新账号由 `encodeExtraConfigInput` 显式写 ces | 已落地 |
+| `0030` | `0030_asset_sync_batch_fencing_token.up.sql` | Asset | `asset_sync_batch.fencing_token` + running 所有权校验索引；续租按 `batch_id + fencing_token` 匹配，写前校验 running 且租约未过期，防止旧任务租约丢失后继续 upsert/stale | 已落地 |
+| `0031` | `0031_asset_sync_batch_summary.up.sql` | Asset | `asset_sync_batch.summary` JSONB 结构化摘要；批次详情页不再把 `message` 当作半结构化协议解析 | 已落地 |
+| `0032` | `0032_cleanup_legacy_cloud_application_ids.up.sql` | Asset | 清理旧格式 `cloud-<account_id>` 云同步应用及其关联 `asset_resource`/`asset_match_rule`；升级后需重新录入账号并同步 | 已落地 |
 
 这些迁移必须同步种子化权限和 AI 工具权限，并把 admin 角色绑定到新增权限：
 

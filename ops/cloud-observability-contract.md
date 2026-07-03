@@ -361,13 +361,13 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 
 ### 5.5 云资源同步（Asset Sync，阶段 2 已落地）
 
-> **实现状态**：`huawei_cloud` + `auth_type=ak_sk` 默认 `sync_mode=ces`，走 CES 资源分组/资源列表发现，同步范围为指定资源分组下资源；`sync_mode=hybrid` 先按指定资源分组入库，再按权限调用 ECS/CCE/RDS/ELB/EVS/VPC/DCS/DMS 原生 API 补充详情；`sync_mode=native` 才走旧 ECS/CCE/RDS/ELB 兼容路径。`auth_type=none` 仍为 fake，供 CI/E2E。同步写 `asset_resource`（`source=cloud_sync`）与 `asset_sync_batch`。完整功能依赖迁移链：`0023`（`asset_resource`/`asset_sync_batch` 基表）、`0024`（`integration_account.extra_config` 存放 `sync_mode`/`max_resources`/`region_projects` 等配置）、`0025`（`asset_resource.labels`）、`0026`（含 `region` 的部分唯一索引，区分多区域同类型同云 ID）、`0028`（`asset_sync_batch` 账号级 running 互斥与租约自愈）。
+> **实现状态**：`huawei_cloud` + `auth_type=ak_sk` 默认 `sync_mode=ces`，走 CES 资源分组/资源列表发现，同步范围为指定资源分组下资源；`sync_mode=hybrid` 先按指定资源分组入库，再按权限调用 ECS/CCE/RDS/ELB/EVS/VPC/DCS/DMS 原生 API 补充详情（EVS/VPC 客户端已实现但匹配键不成立，当前不承诺详情增强命中）；`sync_mode=native` 才走旧 ECS/CCE/RDS/ELB 兼容路径。`auth_type=none` 仍为 fake，供 CI/E2E。同步写 `asset_resource`（`source=cloud_sync`）与 `asset_sync_batch`。完整功能依赖迁移链：`0023`（`asset_resource`/`asset_sync_batch` 基表）、`0024`（`integration_account.extra_config` 存放 `sync_mode`/`max_resources`/`region_projects` 等配置）、`0025`（`asset_resource.labels`）、`0026`（含 `region` 的部分唯一索引，区分多区域同类型同云 ID）、`0028`（`asset_sync_batch` 账号级 running 互斥与租约自愈）、`0031`（`asset_sync_batch.summary` 结构化摘要，替代 `message` 作为协议解析来源）、`0032`（清理旧格式 `cloud-<account_id>` 云同步应用；升级后需重新录入账号并同步）。
 >
 > **目标状态**：华为云真实账号资产同步以 CES 资源分组为主路径，同步范围为**指定资源分组**下资源（默认候选名“全部资源”需用户在 CES 控制台预先创建；不存在“CES 总览全量”隐式口径，未命中指定组即失败，不回退最大资源组），覆盖 EVS/VPC/OBS/DCS/DMS/RDS/ELB/ECS 等 CES 可见资源。完整实现顺序、分页、映射、权限和验收标准见 `docs/huawei-ces-asset-sync-plan.md`。
 >
-> **同步模式**：`ces` 是默认推荐模式，仅依赖 CES 资源分组发现指定分组下资源；`hybrid` 是增强模式，先按指定资源分组入库，再按权限调用 ECS/CCE/RDS/ELB/EVS/VPC/DCS/DMS 等原生 API 补详情；`native` 仅为兼容旧 ECS/CCE/RDS/ELB 路径，不作为资源分组完整性验收口径。
+> **同步模式**：`ces` 是默认推荐模式，仅依赖 CES 资源分组发现指定分组下资源；`hybrid` 是增强模式，先按指定资源分组入库，再按权限调用原生 API 补详情。当前已支持 ECS/RDS/DCS/DMS 的 label 增强；EVS/VPC 原生客户端虽已接入调用链，但因 CES 维度与原生资源匹配键不成立，详情增强尚未支持；`native` 仅为兼容旧 ECS/CCE/RDS/ELB 路径，不作为资源分组完整性验收口径。
 >
-> **当前增强状态**：`sync_mode=hybrid` 已落地指定资源分组发现 + ECS/CCE/RDS/ELB/EVS/VPC/DCS/DMS 原生 API 增强路由；其中 ECS 当前补充 `private_ip`、`flavor`、`vpc_id`、`az`，RDS 当前补充 `private_ip`、`vpc_id`、`subnet_id`、`flavor`，EVS 补充 `volume_id/volume_type/size_gb/attached_to/az/created_at/charging_mode`，VPC 补充 `vpc_name/cidr/status/enterprise_project_id/created_at/subnet_count`，DCS 补充 `instance_name/engine/engine_version/capacity_gb/spec_code/private_ip/az/vpc_id/charging_mode/created_at`，DMS（Kafka+RocketMQ 合并）补充 `instance_name/engine/engine_version/spec_code/capacity_gb/vpc_id/charging_mode/created_at`（Kafka 含 `private_ip`、无 `az`；RocketMQ 含 `az`、无 `private_ip`）。增强按 `ProviderRef` 匹配并只新增缺失 label，不覆盖 CES 已有 label；增强失败不影响 CES 基础资源入库，批次 `message` 追加 `enriched=N enrichment_failed=type1,type2` 摘要。OBS 原生增强仍属于后续扩展（需另引 OBS SDK）。
+> **当前增强状态**：`sync_mode=hybrid` 已落地指定资源分组发现 + 原生 API 增强路由；ECS 当前补充 `private_ip`、`flavor`、`vpc_id`、`az`，RDS 当前补充 `private_ip`、`vpc_id`、`subnet_id`、`flavor`，DCS 补充 `instance_name/engine/engine_version/capacity_gb/spec_code/private_ip/az/vpc_id/charging_mode/created_at`，DMS（Kafka+RocketMQ 合并）补充 `instance_name/engine/engine_version/spec_code/capacity_gb/vpc_id/charging_mode/created_at`（Kafka 含 `private_ip`、无 `az`；RocketMQ 含 `az`、无 `private_ip`）。EVS/VPC 当前仅保证 CES 基础 labels（`namespace/dim_name/resource_group` 等）入库，`volume_type/size_gb/attached_to`、`cidr/subnet_count` 等详情增强尚未支持，原因见 `docs/huawei-ces-asset-sync-plan.md` §21.4。增强按 `ProviderRef` 匹配并只新增缺失 label，不覆盖 CES 已有 label；增强失败不影响 CES 基础资源入库，批次 `message` 追加 `enriched=N enrichment_failed=type1,type2` 摘要。OBS 原生增强仍属于后续扩展（需另引 OBS SDK）。
 
 #### 5.5.1 触发同步
 
@@ -396,6 +396,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
   "stale_count": 0,
   "failed_count": 0,
   "message": "",
+  "summary": {},
   "application_id": "cloud-acc_xxx",
   "started_at": 1710000000,
   "created_at": 1710000000,
@@ -404,6 +405,8 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 ```
 
 `status`：`running` / `success` / `partial` / `failed`。触发同步立即返回 `running`；客户端应轮询 `GET /api/assets/sync/batches/:batch_id` 到终态（`success`/`partial`/`failed`）。云端已删除资源仅标记 `sync_status=stale`，不物理删除。
+
+终态批次返回 `summary` 结构化摘要，`message` 仅保留人类可读排查说明。`summary` 字段包括：`sync_mode`、`resource_group_name`、`resource_group_id`、`projects`、`regions`、`ces_total`、`discovered_count`、`failed_scopes`、`enriched_count`、`enrichment_failed_types`、`unknown_namespace_count`、`invalid_resource_count`、`max_resources_reached`、`product_names_empty`、`query_failed_types`、`conversion_failed_types`。客户端应优先读取 `summary`，仅对历史旧数据允许解析 `message` 兜底。
 
 **stale 标记语义**：`ces`/`hybrid` 模式下资源组 `product_names` 是权威 scope，采用反向 stale 标记——把 account+region 下所有 `active` 的 cloud_sync 资源（排除当前批次）标记为 `stale`，但跳过不确定类型（查询失败/转换失败/持久化失败）。这样从资源组移除的类型其旧资产也会被标记 stale，避免永久保持 `active`。`native`/通用/fake 路径 scope 非权威，仅对查询成功的类型逐类型标记 stale。`product_names` 为空时回落兜底白名单（不完整），批次至少标记 `partial`，message 含 `product_names_empty=true`。
 
@@ -447,7 +450,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 | `sync_status` | `active` / `stale`（仅 cloud_sync） |
 | `last_synced_at` | Unix 秒 |
 | `sync_batch_id` | 最近成功批次 |
-| `labels` | 云同步标签对象，空时返回 `{}`。CES 同步写入 `namespace/dim_name/resource_group`；原生 API 增强按类型写入 ECS `private_ip/flavor/vpc_id/az`、EVS `volume_type/size_gb/attached_to`、VPC `cidr/subnet_count`、DCS `engine/capacity_gb`、DMS `engine/spec_code` 等；manual 资源为 `{}`。每次同步整体覆盖 |
+| `labels` | 云同步标签对象，空时返回 `{}`。CES 同步写入 `namespace/dim_name/resource_group`；原生 API 增强按类型写入 ECS `private_ip/flavor/vpc_id/az`、RDS `private_ip/vpc_id/subnet_id/flavor`、DCS `engine/capacity_gb`、DMS `engine/spec_code` 等；EVS/VPC 当前仅保证 CES 基础 labels，`volume_type/size_gb/attached_to`、`cidr/subnet_count` 等详情增强尚未支持；manual 资源为 `{}`。每次同步整体覆盖 |
 
 审计：`resource_type=asset_sync_batch`，`action=sync`。
 
@@ -455,10 +458,12 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 
 应用、资源、匹配规则三个列表接口统一采用标准分页（与 §5.5.2 同一 `pagination.PageData` 形态）。`page` 从 1 开始，默认 `page_size=20`，最大 `page_size=100`；HTTP 层通过 `pagination.Query.Normalize` 修正，application 层也会兜底归一化，避免非 HTTP 调用绕过分页上限。
 
+资源列表额外支持服务端筛选参数：`cloud_resource_type`、`region`、`sync_status`，均为精确匹配；参数为空时不生效。前端不得对这些字段做跨页本地假筛选。
+
 | 接口 | Method | Path | Auth | 排序 |
 | --- | --- | --- | --- | --- |
 | 应用列表 | `GET` | `/api/assets/applications?page=1&page_size=10` | Bearer + `app:assets:read` | `created_at ASC, id ASC` |
-| 资源列表 | `GET` | `/api/assets/applications/:application_id/resources?page=1&page_size=10` | Bearer + `app:assets:read` | `created_at ASC, id ASC` |
+| 资源列表 | `GET` | `/api/assets/applications/:application_id/resources?page=1&page_size=10&cloud_resource_type=ecs&region=cn-north-4&sync_status=active` | Bearer + `app:assets:read` | `created_at ASC, id ASC` |
 | 匹配规则列表 | `GET` | `/api/assets/match-rules?page=1&page_size=10` | Bearer + `app:assets:read` | `priority DESC, created_at ASC, id ASC` |
 
 响应使用统一 envelope，`data` 为 `pagination.PageData<T>`：

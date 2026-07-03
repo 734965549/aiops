@@ -1,7 +1,5 @@
--- 回滚 0029：把本迁移写入的 native 配置还原为 {}，使历史华为账号回到 0024 后的空配置状态。
--- 注意：回滚后这些账号会再次被解析为 ces（见 sync_mode_config.go），仅在确需回到 0024 状态时执行。
-UPDATE integration_account
-SET extra_config = '{}'::jsonb,
-    updated_at   = NOW()
-WHERE provider = 'huawei_cloud'
-  AND extra_config = '{"sync_mode":"native"}'::jsonb;
+-- 回滚 0029：本迁移为数据回填迁移，无法安全自动回滚。
+-- 原因：0029 up 未记录逐账号命中清单，down 阶段无法区分“由迁移回填的 native”与“迁移后用户主动配置的 native”。
+-- 若在此处按 provider + extra_config={"sync_mode":"native"} 批量清空，会误伤用户主动配置的账号。
+-- 需要回滚时，请 DBA 基于备份或明确账号清单定向恢复目标账号的 extra_config。
+SELECT 1;

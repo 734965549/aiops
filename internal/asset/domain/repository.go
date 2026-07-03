@@ -38,8 +38,11 @@ type ApplicationRepository interface {
 
 // ResourceFilter 资源注册表列表分页过滤（对应 §5.5 标准分页查询）。
 type ResourceFilter struct {
-	Limit  int
-	Offset int
+	CloudResourceType string
+	Region            string
+	SyncStatus        string
+	Limit             int
+	Offset            int
 }
 
 // ResourceRepository 资源注册表持久化接口。
@@ -55,30 +58,36 @@ type ResourceRepository interface {
 	FindBestMatch(ctx context.Context, q ResourceMatchQuery) (*Resource, error)
 	Count(ctx context.Context) (int64, error)
 	FindByCloudKey(ctx context.Context, key CloudResourceKey) (*Resource, error)
-	UpsertCloudSync(ctx context.Context, res *Resource) (created bool, err error)
-	MarkStaleByAccountScopeExceptBatch(ctx context.Context, accountID, region, cloudResourceType, batchID string) (int64, error)
-	// MarkStaleByAccountRegionExceptTypes 将指定账号+region 下所有 active 的 cloud_sync 资源
-	// （排除当前批次）标记为 stale，但跳过 cloud_resource_type 命中 exceptTypes 的类型。
-	// 用于 CES/hybrid 权威 scope 反向标记：不在资源组 scope 内的类型视为已移除，见
-	// docs/huawei-ces-asset-sync-plan.md §13.1。exceptTypes 为不确定类型（查询失败/转换失败/持久化失败），
-	// 这些类型保持 active，避免误标。
-	MarkStaleByAccountRegionExceptTypes(ctx context.Context, accountID, region string, exceptTypes []string, batchID string) (int64, error)
+	// UpsertCloudSyncWithLease 在同一事务内校验 batch_id + fencing_token 的 running 未过期租约后写入云同步资源。
+	UpsertCloudSyncWithLease(ctx context.Context, res *Resource, batchID, fencingToken string) (created bool, err error)
+	// MarkStaleByAccountScopeExceptBatchWithLease 在同一事务内校验租约后执行逐类型 stale 标记。
+	MarkStaleByAccountScopeExceptBatchWithLease(ctx context.Context, accountID, region, cloudResourceType, batchID, fencingToken string) (int64, error)
+	// MarkStaleByAccountRegionExceptTypesWithLease 在同一事务内校验租约后执行反向 stale 标记。
+	MarkStaleByAccountRegionExceptTypesWithLease(ctx context.Context, accountID, region string, exceptTypes []string, batchID, fencingToken string) (int64, error)
 }
 
 // SyncBatchRepository 同步批次持久化接口。
 type SyncBatchRepository interface {
 	Create(ctx context.Context, batch *SyncBatch) error
 	Update(ctx context.Context, batch *SyncBatch) error
+	// FinalizeSuccess 在同一事务内完成：
+	// 1) 按 batch_id + fencing_token 校验未过期 running 租约；
+	// 2) 将批次标记为 success 并清空租约；
+	// 3) 将本轮已写入的 active 资源 sync_batch_id 提升为本批次。
+	// 返回被提升的资源数。若租约丢失返回 ErrLeaseLost。
+	FinalizeSuccess(ctx context.Context, batch *SyncBatch, accountID string, syncedSince time.Time) (int64, error)
 	GetByID(ctx context.Context, batchID string) (*SyncBatch, error)
 	List(ctx context.Context, filter SyncBatchFilter) ([]SyncBatch, int64, error)
 	// ReapExpiredRunning 将指定账号下租约已过期的 running 批次标记为 failed，
 	// 释放账号级 running 槽位，避免崩溃批次导致后续同步永久 409。
 	// now 为判定基准时间（UTC）。返回被 reap 的行数。
 	ReapExpiredRunning(ctx context.Context, accountID string, now time.Time) (int64, error)
-	// RenewLease 续租 running 批次：把 lease_expires_at 置为 now+ttl，updated_at=now。
-	// 仅当 status='running' 时续租；批次已终态（RowsAffected=0）返回 ErrNotFound，
-	// 调用方据此停止心跳。ttl 为续租有效期。
-	RenewLease(ctx context.Context, batchID string, now time.Time, ttl time.Duration) error
+	// RenewLease 续租 running 批次：按 batch_id + fencing_token 校验租约所有权，
+	// 成功时把 lease_expires_at 置为 now+ttl，updated_at=now。
+	// 若批次已终态、被 reap 或 token 不匹配，返回 ErrLeaseLost。ttl 为续租有效期。
+	RenewLease(ctx context.Context, batchID, fencingToken string, now time.Time, ttl time.Duration) error
+	// CheckLeaseOwned 校验当前后台任务仍持有 running 租约；写操作前调用。
+	CheckLeaseOwned(ctx context.Context, batchID, fencingToken string, now time.Time) error
 }
 
 // SyncBatchFilter 同步批次列表过滤。

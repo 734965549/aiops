@@ -38,8 +38,8 @@ function Invoke-Api {
     return $json.data
 }
 
-# 触发同步后立即返回 running 批次，需轮询到终态再断言。
-function Wait-SyncBatch {
+# Trigger sync returns a running batch immediately; poll until terminal status.
+function WaitSyncBatch {
     param(
         [hashtable]$Headers,
         [string]$BatchId,
@@ -115,15 +115,22 @@ if (-not $batch.batch_id) {
 if ($batch.status -ne "running") {
     throw "expected sync status running immediately after trigger, got $($batch.status)"
 }
-# 异步同步：轮询到终态再断言。
-$batch = Wait-SyncBatch -Headers $auth -BatchId $batch.batch_id
+# Async sync: poll until terminal status before assertions.
+$batch = WaitSyncBatch -Headers $auth -BatchId $batch.batch_id
+if (-not $batch.application_id) {
+    throw "sync response missing application_id"
+}
+$appId = $batch.application_id
+if (-not $batch.summary) {
+    throw "sync response missing summary"
+}
 if ($batch.status -ne "success") {
-    throw "expected sync status success, got $($batch.status) message=$($batch.message)"
+    throw "expected sync status success, got $($batch.status) summary=$($batch.summary)"
 }
 if (($batch.created_count + $batch.updated_count) -lt 1) {
     throw "expected at least one synced resource"
 }
-Write-Host ("    batch_id=" + $batch.batch_id + " created=" + $batch.created_count + " updated=" + $batch.updated_count)
+Write-Host ("    batch_id=" + $batch.batch_id + " application_id=" + $appId + " created=" + $batch.created_count + " updated=" + $batch.updated_count)
 
 Write-Host "==> list sync batches"
 $batches = Invoke-Api -Method GET -Path ("/api/assets/sync/batches?account_id=" + $accountId + "&page=1&page_size=10") -Headers $auth
@@ -132,10 +139,6 @@ if (-not $batches.items -or $batches.items.Count -lt 1) {
 }
 
 Write-Host "==> verify synced resources in asset registry"
-$appId = $batch.application_id
-if (-not $appId) {
-    throw "sync response missing application_id"
-}
 $resources = Invoke-Api -Method GET -Path ("/api/assets/applications/" + $appId + "/resources") -Headers $auth
 $cloudItems = @($resources.items | Where-Object { $_.source -eq "cloud_sync" })
 if ($cloudItems.Count -lt 1) {
@@ -154,7 +157,7 @@ $batch2 = Invoke-Api -Method POST -Path "/api/assets/sync" -Headers $auth -Body 
 if ($batch2.status -ne "running") {
     throw "expected second sync status running immediately after trigger, got $($batch2.status)"
 }
-$batch2 = Wait-SyncBatch -Headers $auth -BatchId $batch2.batch_id
+$batch2 = WaitSyncBatch -Headers $auth -BatchId $batch2.batch_id
 if ($batch2.status -ne "success") {
     throw "second sync unexpected status $($batch2.status)"
 }

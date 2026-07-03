@@ -1,0 +1,3 @@
+-- 0032 down: 被删除的旧格式 cloud 应用及其关联数据无法自动恢复。
+-- 若需回滚，请从升级前备份中恢复 asset_application / asset_resource / asset_match_rule 表。
+-- 本迁移对应开发阶段“清空重来”策略，down 脚本仅作为人工回滚参考，不执行自动恢复。

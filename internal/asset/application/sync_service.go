@@ -2,6 +2,9 @@ package application
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -73,25 +76,60 @@ func (s *SyncService) SetLifecycle(ctx context.Context) {
 // 应在 HTTP server 关闭后调用，确保进程退出前不留卡 running 的批次。
 func (s *SyncService) Wait() { s.wg.Wait() }
 
+// WaitContext 等待所有在途同步 goroutine 收尾，ctx 取消时返回 false，避免关闭流程无限阻塞。
+func (s *SyncService) WaitContext(ctx context.Context) bool {
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 type TriggerSyncInput struct {
 	AccountID string
 }
 
+type SyncBatchSummaryDTO struct {
+	SyncMode              string   `json:"sync_mode,omitempty"`
+	ResourceGroupName     string   `json:"resource_group_name,omitempty"`
+	ResourceGroupID       string   `json:"resource_group_id,omitempty"`
+	Projects              []string `json:"projects,omitempty"`
+	Regions               []string `json:"regions,omitempty"`
+	CESTotal              int      `json:"ces_total,omitempty"`
+	DiscoveredCount       int      `json:"discovered_count,omitempty"`
+	FailedScopes          []string `json:"failed_scopes,omitempty"`
+	EnrichedCount         int      `json:"enriched_count,omitempty"`
+	EnrichmentFailedTypes []string `json:"enrichment_failed_types,omitempty"`
+	UnknownNamespaceCount int      `json:"unknown_namespace_count,omitempty"`
+	InvalidResourceCount  int      `json:"invalid_resource_count,omitempty"`
+	MaxResourcesReached   bool     `json:"max_resources_reached,omitempty"`
+	ProductNamesEmpty     bool     `json:"product_names_empty,omitempty"`
+	QueryFailedTypes      []string `json:"query_failed_types,omitempty"`
+	ConversionFailedTypes []string `json:"conversion_failed_types,omitempty"`
+}
+
 type SyncBatchDTO struct {
-	BatchID              string `json:"batch_id"`
-	IntegrationAccountID string `json:"integration_account_id"`
-	Provider             string `json:"provider"`
-	Status               string `json:"status"`
-	CreatedCount         int    `json:"created_count"`
-	UpdatedCount         int    `json:"updated_count"`
-	StaleCount           int    `json:"stale_count"`
-	FailedCount          int    `json:"failed_count"`
-	Message              string `json:"message,omitempty"`
-	ApplicationID        string `json:"application_id,omitempty"`
-	StartedAt            int64  `json:"started_at"`
-	FinishedAt           int64  `json:"finished_at,omitempty"`
-	CreatedAt            int64  `json:"created_at"`
-	UpdatedAt            int64  `json:"updated_at"`
+	BatchID              string               `json:"batch_id"`
+	IntegrationAccountID string               `json:"integration_account_id"`
+	Provider             string               `json:"provider"`
+	Status               string               `json:"status"`
+	CreatedCount         int                  `json:"created_count"`
+	UpdatedCount         int                  `json:"updated_count"`
+	StaleCount           int                  `json:"stale_count"`
+	FailedCount          int                  `json:"failed_count"`
+	Message              string               `json:"message,omitempty"`
+	Summary              *SyncBatchSummaryDTO `json:"summary,omitempty"`
+	ApplicationID        string               `json:"application_id,omitempty"`
+	StartedAt            int64                `json:"started_at"`
+	FinishedAt           int64                `json:"finished_at,omitempty"`
+	CreatedAt            int64                `json:"created_at"`
+	UpdatedAt            int64                `json:"updated_at"`
 }
 
 type ListSyncBatchesQuery struct {
@@ -169,6 +207,7 @@ func (s *SyncService) TriggerSync(ctx context.Context, actor Actor, in TriggerSy
 		Provider:             provider,
 		Status:               domain.SyncBatchStatusRunning,
 		StartedAt:            now,
+		FencingToken:         uuid.NewString(),
 		LeaseExpiresAt:       &leaseExpires,
 	}
 	if err := s.batches.Create(ctx, batch); err != nil {
@@ -181,8 +220,9 @@ func (s *SyncService) TriggerSync(ctx context.Context, actor Actor, in TriggerSy
 
 	appID, err := s.ensureCloudApplication(ctx, accountID, provider)
 	if err != nil {
-		// 前置阶段失败：批次刚创建即失败，用独立短 context 落终态，避免请求 ctx 取消导致卡 running。
-		s.finishBatchFailedDetached(batch, err)
+		// 前置阶段失败：批次刚创建即失败，用保留请求链路的短 context 落终态，避免请求 ctx 取消导致卡 running。
+		detachedCtx := logger.WithContext(context.WithoutCancel(ctx), logger.From(ctx))
+		s.finishBatchFailedDetached(detachedCtx, actor, batch, provider, regions, err)
 		return nil, err
 	}
 
@@ -191,11 +231,12 @@ func (s *SyncService) TriggerSync(ctx context.Context, actor Actor, in TriggerSy
 	runCtx, runCancel := context.WithTimeout(s.shutdownCtx, syncHardTimeout)
 	// 把请求 ctx 的 trace_id/user_id 等 logger 字段带入后台 goroutine，避免请求结束丢链路。
 	runCtx = logger.WithContext(runCtx, logger.From(ctx))
+	// 先构造返回 DTO，再启动后台 goroutine，避免返回路径与后台同步同时读写 batch。
+	dto := toSyncBatchDTO(*batch)
+
 	s.wg.Add(1)
 	go s.runSync(runCtx, runCancel, actor, batch, appID, regions, provider)
 
-	dto := toSyncBatchDTO(*batch)
-	dto.ApplicationID = appID
 	return &dto, nil
 }
 
@@ -213,15 +254,18 @@ func (s *SyncService) runSync(
 	defer s.wg.Done()
 	defer runCancel()
 
-	// 心跳：周期续租，独立短 ctx，finalize 时停止。leaseDone 在心跳退出后关闭，
+	detachedCtx := context.WithoutCancel(runCtx)
+
+	// 心跳：周期续租，受 runCtx 硬超时控制，finalize 时停止。leaseDone 在心跳退出后关闭，
 	// finalize 等待它以确保终态 Update 清空 lease 后不会再被心跳写回（避免竞态）。
-	leaseCtx, leaseCancel := context.WithCancel(context.Background())
+	leaseCtx, leaseCancel := context.WithCancel(runCtx)
 	defer leaseCancel()
 	leaseDone := make(chan struct{})
-	go s.leaseHeartbeat(leaseCtx, batch.BatchID, leaseDone)
+	go s.leaseHeartbeat(leaseCtx, runCancel, batch.BatchID, batch.FencingToken, leaseDone)
 
 	accountID := batch.IntegrationAccountID
 	batchID := batch.BatchID
+	fencingToken := batch.FencingToken
 	now := batch.StartedAt
 	obsActor := obsapp.Actor{UserID: actor.UserID, DisplayName: actor.DisplayName}
 
@@ -234,14 +278,26 @@ func (s *SyncService) runSync(
 	successScopes := make([]discoveredScope, 0, len(regions)*len(defaultCloudResourceTypes))
 	// 优先使用全量同步端口（CloudFullSyncPort）；provider 不支持时回退通用逐类型路径，
 	// 不在 Asset 层硬编码 provider 判断，见 docs/huawei-ces-asset-sync-plan.md §7.2。
-	successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries, fsErr := s.syncCloudFullSync(runCtx, obsActor, provider, regions, appID, accountID, batchID, now, batch)
-	if fsErr != nil {
-		successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries = s.syncGeneric(runCtx, obsActor, provider, regions, appID, accountID, batchID, now, batch)
+	successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries, fsErr := s.syncCloudFullSync(runCtx, obsActor, provider, regions, appID, accountID, batchID, fencingToken, now, batch)
+	if errors.Is(fsErr, errFullSyncUnsupported) {
+		var genericErr error
+		successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries, genericErr = s.syncGeneric(runCtx, obsActor, provider, regions, appID, accountID, batchID, fencingToken, now, batch)
+		fsErr = genericErr
+	}
+	if fsErr != nil && errors.Is(fsErr, domain.ErrLeaseLost) {
+		batch.FailedCount++
+		partialErrs = append(partialErrs, "sync lease lost; task cancelled")
+		runCancel()
 	}
 
 	for _, scope := range successScopes {
-		staleCount, err := s.resources.MarkStaleByAccountScopeExceptBatch(runCtx, accountID, scope.Region, scope.ResourceType, batchID)
+		staleCount, err := s.resources.MarkStaleByAccountScopeExceptBatchWithLease(runCtx, accountID, scope.Region, scope.ResourceType, batchID, fencingToken)
 		if err != nil {
+			if errors.Is(err, domain.ErrLeaseLost) {
+				partialErrs = append(partialErrs, "sync lease lost; task cancelled")
+				runCancel()
+				break
+			}
 			batch.FailedCount++
 			partialErrs = append(partialErrs, fmt.Sprintf("%s/%s: mark stale failed", scope.Region, scope.ResourceType))
 			continue
@@ -251,8 +307,13 @@ func (s *SyncService) runSync(
 	// CES/hybrid 权威 scope 反向 stale：标记 account+region 下所有 active 资源为 stale，
 	// 但跳过不确定类型（ExceptTypes），见 docs/huawei-ces-asset-sync-plan.md §13.1。
 	for _, scope := range negativeScopes {
-		staleCount, err := s.resources.MarkStaleByAccountRegionExceptTypes(runCtx, accountID, scope.Region, scope.ExceptTypes, batchID)
+		staleCount, err := s.resources.MarkStaleByAccountRegionExceptTypesWithLease(runCtx, accountID, scope.Region, scope.ExceptTypes, batchID, fencingToken)
 		if err != nil {
+			if errors.Is(err, domain.ErrLeaseLost) {
+				partialErrs = append(partialErrs, "sync lease lost; task cancelled")
+				runCancel()
+				break
+			}
 			batch.FailedCount++
 			partialErrs = append(partialErrs, fmt.Sprintf("%s: mark stale failed", scope.Region))
 			continue
@@ -269,12 +330,25 @@ func (s *SyncService) runSync(
 	// 用独立短 ctx 写终态 + 审计，不受 runCtx 取消影响。
 	finalize := func() {
 		leaseCancel() // 停止心跳，终态不再续租
-		termCtx, termCancel := context.WithTimeout(context.Background(), syncTerminalCtxTimeout)
+		<-leaseDone
+		termCtx, termCancel := context.WithTimeout(detachedCtx, syncTerminalCtxTimeout)
 		defer termCancel()
 		finished := time.Now().UTC()
 		batch.FinishedAt = &finished
 		allLines := append(append([]string(nil), summaryLines...), partialErrs...)
 		message := strings.Join(allLines, "; ")
+		batch.Summary = marshalSyncBatchSummary(buildSyncBatchSummaryDTO(syncSummaries))
+		recordAudit := func() {
+			if err := s.audit.Record(termCtx, AuditRecord{
+				ResourceType: "asset_sync_batch",
+				ResourceID:   batchID,
+				Action:       AuditAssetSync,
+				UserID:       actor.UserID,
+				Payload:      buildAssetSyncAuditPayload(accountID, provider, regions, batch, syncSummaries),
+			}); err != nil {
+				logger.From(termCtx).Warn("record sync batch audit failed", logger.String("batch_id", batchID), logger.Error(err))
+			}
+		}
 		// hasStaleScope 表示本轮至少有一个可执行 stale 的 scope（逐类型或反向），
 		// 用于判定"零入库且无成功 scope"的 failed 场景，见 §13。
 		hasStaleScope := len(successScopes) > 0 || len(negativeScopes) > 0
@@ -282,37 +356,82 @@ func (s *SyncService) runSync(
 		case runCtx.Err() != nil:
 			batch.Status = domain.SyncBatchStatusFailed
 			batch.Message = truncateMessage("sync cancelled or timed out; " + message)
+			if err := s.batches.Update(termCtx, batch); err != nil {
+				if errors.Is(err, domain.ErrLeaseLost) {
+					logger.From(runCtx).Warn("skip finalizing sync batch after lease lost", logger.String("batch_id", batchID))
+					return
+				}
+				logger.From(runCtx).Error("finalize sync batch failed", logger.String("batch_id", batchID), logger.Error(err))
+				return
+			}
+			recordAudit()
 		case batch.FailedCount > 0 && batch.CreatedCount+batch.UpdatedCount == 0 && !hasStaleScope:
 			batch.Status = domain.SyncBatchStatusFailed
 			batch.Message = truncateMessage(message)
+			if err := s.batches.Update(termCtx, batch); err != nil {
+				if errors.Is(err, domain.ErrLeaseLost) {
+					logger.From(runCtx).Warn("skip finalizing sync batch after lease lost", logger.String("batch_id", batchID))
+					return
+				}
+				logger.From(runCtx).Error("finalize sync batch failed", logger.String("batch_id", batchID), logger.Error(err))
+				return
+			}
+			recordAudit()
 		case batch.FailedCount > 0 || maxResourcesReached || productNamesEmpty:
 			batch.Status = domain.SyncBatchStatusPartial
 			batch.Message = truncateMessage(message)
+			if err := s.batches.Update(termCtx, batch); err != nil {
+				if errors.Is(err, domain.ErrLeaseLost) {
+					logger.From(runCtx).Warn("skip finalizing sync batch after lease lost", logger.String("batch_id", batchID))
+					return
+				}
+				logger.From(runCtx).Error("finalize sync batch failed", logger.String("batch_id", batchID), logger.Error(err))
+				return
+			}
+			recordAudit()
 		default:
 			batch.Status = domain.SyncBatchStatusSuccess
 			if strings.TrimSpace(message) == "" {
 				message = "ok"
 			}
 			batch.Message = truncateMessage(message)
+			promoted, err := s.batches.FinalizeSuccess(termCtx, batch, accountID, batch.StartedAt)
+			if err != nil {
+				if errors.Is(err, domain.ErrLeaseLost) {
+					logger.From(runCtx).Warn("skip finalizing sync batch after lease lost", logger.String("batch_id", batchID))
+					return
+				}
+				logger.From(runCtx).Error("finalize successful sync batch failed", logger.String("batch_id", batchID), logger.Error(err))
+				batch.FailedCount++
+				batch.Status = domain.SyncBatchStatusPartial
+				if strings.TrimSpace(message) == "ok" {
+					message = "finalize successful sync batch failed"
+				} else {
+					message = strings.TrimSpace(message + "; finalize successful sync batch failed")
+				}
+				batch.Message = truncateMessage(message)
+				if err := s.batches.Update(termCtx, batch); err != nil {
+					if errors.Is(err, domain.ErrLeaseLost) {
+						logger.From(runCtx).Warn("skip finalizing sync batch after lease lost", logger.String("batch_id", batchID))
+						return
+					}
+					logger.From(runCtx).Error("finalize sync batch failed", logger.String("batch_id", batchID), logger.Error(err))
+					return
+				}
+				recordAudit()
+			} else {
+				logger.From(runCtx).Info("promoted successful sync batch", logger.String("batch_id", batchID), logger.Int64("promoted", promoted))
+				recordAudit()
+			}
 		}
-		if err := s.batches.Update(termCtx, batch); err != nil {
-			logger.From(runCtx).Error("finalize sync batch failed", logger.String("batch_id", batchID), logger.Error(err))
-		}
-		_ = s.audit.Record(termCtx, AuditRecord{
-			ResourceType: "asset_sync_batch",
-			ResourceID:   batchID,
-			Action:       AuditAssetSync,
-			UserID:       actor.UserID,
-			Payload:      buildAssetSyncAuditPayload(accountID, provider, regions, batch, syncSummaries),
-		})
 	}
 	finalize()
 }
 
-// leaseHeartbeat 周期续租 running 批次的 lease_expires_at，直到 ctx 取消或批次已终态。
-// 续租用独立短 ctx，不依赖 runCtx（runCtx 取消时终态已由 finalize 处理，心跳应先停）。
+// leaseHeartbeat 周期续租 running 批次的 lease_expires_at，直到 ctx 取消或租约所有权丢失。
+// 续租用独立短 ctx，不依赖 runCtx；DB 临时错误持续重试，确认租约丢失才取消主任务。
 // 退出时关闭 done，供 finalize 等待心跳完全停止后再写终态，避免清空 lease 后被写回。
-func (s *SyncService) leaseHeartbeat(ctx context.Context, batchID string, done chan<- struct{}) {
+func (s *SyncService) leaseHeartbeat(ctx context.Context, runCancel context.CancelFunc, batchID, fencingToken string, done chan<- struct{}) {
 	defer close(done)
 	ticker := time.NewTicker(syncLeaseRenewInterval)
 	defer ticker.Stop()
@@ -321,31 +440,57 @@ func (s *SyncService) leaseHeartbeat(ctx context.Context, batchID string, done c
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			renewCtx, cancel := context.WithTimeout(context.Background(), syncLeaseRenewCtxTimeout)
-			err := s.batches.RenewLease(renewCtx, batchID, time.Now().UTC(), syncBatchLeaseTTL)
+			renewCtx, cancel := context.WithTimeout(ctx, syncLeaseRenewCtxTimeout)
+			err := s.batches.RenewLease(renewCtx, batchID, fencingToken, time.Now().UTC(), syncBatchLeaseTTL)
 			cancel()
-			if err != nil {
-				// 批次已终态（ErrNotFound）或 DB 异常：停止续租。
-				// 终态由 finalize 落库；DB 异常时 lease 不再推进，5min 后由下次同步 reap 兜底。
+			if err == nil {
+				continue
+			}
+			if errors.Is(err, domain.ErrLeaseLost) {
+				logger.From(ctx).Warn("asset sync lease lost", logger.String("batch_id", batchID))
+				runCancel()
 				return
 			}
+			logger.From(ctx).Warn("renew asset sync lease failed, will retry", logger.String("batch_id", batchID), logger.Error(err))
 		}
 	}
 }
 
+func (s *SyncService) ensureLeaseOwned(ctx context.Context, batchID, fencingToken string) error {
+	if err := s.batches.CheckLeaseOwned(ctx, batchID, fencingToken, time.Now().UTC()); err != nil {
+		if errors.Is(err, domain.ErrLeaseLost) {
+			return err
+		}
+		return wrapAssetError(err, "check sync lease failed")
+	}
+	return nil
+}
+
 // finishBatchFailedDetached 用于前置阶段失败（如 ensureCloudApplication 失败）：
-// 批次刚创建即需落 failed，用独立短 ctx 避免请求 ctx 取消导致卡 running。
-func (s *SyncService) finishBatchFailedDetached(batch *domain.SyncBatch, cause error) {
+// 批次刚创建即需落 failed，用保留请求链路的短 ctx 避免请求 ctx 取消导致卡 running。
+func (s *SyncService) finishBatchFailedDetached(ctx context.Context, actor Actor, batch *domain.SyncBatch, provider string, regions []string, cause error) {
 	if batch == nil || s.batches == nil {
 		return
 	}
-	termCtx, cancel := context.WithTimeout(context.Background(), syncTerminalCtxTimeout)
+	termCtx, cancel := context.WithTimeout(ctx, syncTerminalCtxTimeout)
 	defer cancel()
 	finished := time.Now().UTC()
 	batch.Status = domain.SyncBatchStatusFailed
 	batch.FinishedAt = &finished
 	batch.Message = truncateMessage(apperr.FromError(cause).Message)
-	_ = s.batches.Update(termCtx, batch)
+	if err := s.batches.Update(termCtx, batch); err != nil {
+		logger.From(termCtx).Error("finish failed sync batch failed", logger.String("batch_id", batch.BatchID), logger.Error(err))
+		return
+	}
+	if err := s.audit.Record(termCtx, AuditRecord{
+		ResourceType: "asset_sync_batch",
+		ResourceID:   batch.BatchID,
+		Action:       AuditAssetSync,
+		UserID:       actor.UserID,
+		Payload:      buildAssetSyncAuditPayload(batch.IntegrationAccountID, provider, regions, batch, nil),
+	}); err != nil {
+		logger.From(termCtx).Warn("record failed sync batch audit failed", logger.String("batch_id", batch.BatchID), logger.Error(err))
+	}
 }
 
 func (s *SyncService) GetBatch(ctx context.Context, batchID string) (*SyncBatchDTO, error) {
@@ -410,17 +555,21 @@ func (s *SyncService) ensureCloudApplication(ctx context.Context, accountID, pro
 // errFullSyncUnsupported 表示 provider 未实现 CloudFullSyncPort，调用方应回退通用逐类型路径。
 var errFullSyncUnsupported = errors.New("provider does not support full sync")
 
+func isFullSyncUnsupported(err error) bool {
+	return errors.Is(err, obsdomain.ErrCapabilityUnsupported)
+}
+
 // syncCloudFullSync 全量同步路径：通过 CloudFullSyncPort 按 region 全量发现，不受交互查询 limit<=500 限制，
 // 见 docs/huawei-ces-asset-sync-plan.md §7.2/§8.1。对每个 region 调用全量同步端口，收集资源与摘要；
 // 返回逐类型成功 scope（native/generic/fake 用）、反向 stale scope（CES/hybrid 权威 scope 用，见 §13.1）、
-// 摘要行与错误行。若 provider 不支持全量同步（首 region 返回 CodeFailedPrecondition），
+// 摘要行与错误行。若 provider 明确返回 ErrCapabilityUnsupported，说明不支持全量同步，
 // 返回 errFullSyncUnsupported 供调用方回退 syncGeneric，此时尚未处理任何资源。
 func (s *SyncService) syncCloudFullSync(
 	ctx context.Context,
 	obsActor obsapp.Actor,
 	provider string,
 	regions []string,
-	appID, accountID, batchID string,
+	appID, accountID, batchID, fencingToken string,
 	now time.Time,
 	batch *domain.SyncBatch,
 ) (successScopes []discoveredScope, negativeScopes []negativeStaleScope, summaryLines, partialErrs []string, maxResourcesReached, productNamesEmpty bool, syncSummaries []obsapp.CloudSyncSummary, fullSyncErr error) {
@@ -429,28 +578,45 @@ func (s *SyncService) syncCloudFullSync(
 			AccountID: accountID, Provider: provider, Region: region,
 		})
 		if err != nil {
-			// 首 region 返回 CodeFailedPrecondition 说明 provider 不支持全量同步，回退通用路径。
-			if i == 0 && apperr.CodeOf(err) == apperr.CodeFailedPrecondition {
+			// 只有明确的能力不支持 sentinel 才回退通用路径；CES 配置错误等 FAILED_PRECONDITION
+			// 必须按当前 region 失败处理，避免误回退 native 查询。
+			if i == 0 && isFullSyncUnsupported(err) {
 				fullSyncErr = errFullSyncUnsupported
 				return
 			}
 			batch.FailedCount++
-			partialErrs = append(partialErrs, fmt.Sprintf("%s: %s", region, apperr.FromError(err).Message))
+			errMsg := apperr.FromError(err).Message
+			partialErrs = append(partialErrs, fmt.Sprintf("%s: %s", region, errMsg))
+			// 失败 region 也必须生成摘要，否则终态 summary 不覆盖该 region，违反契约。
+			syncSummaries = append(syncSummaries, obsapp.CloudSyncSummary{
+				Region:       region,
+				FailedScopes: []string{errMsg},
+			})
 			continue
 		}
 		if result == nil {
 			// provider 返回 nil result 且无错误属于契约违规，不能静默跳过，
 			// 否则该 region 可能被当作成功而遗漏资源，最终得到 success/ok。
 			batch.FailedCount++
-			partialErrs = append(partialErrs, fmt.Sprintf("%s: %s", region, "provider returned nil discovery result without error"))
+			errMsg := "provider returned nil discovery result without error"
+			partialErrs = append(partialErrs, fmt.Sprintf("%s: %s", region, errMsg))
+			// 失败 region 也必须生成摘要，否则终态 summary 不覆盖该 region，违反契约。
+			syncSummaries = append(syncSummaries, obsapp.CloudSyncSummary{
+				Region:       region,
+				FailedScopes: []string{errMsg},
+			})
 			continue
 		}
 		regionTypes := map[string]struct{}{}        // 本轮成功入库的类型（无 summary 时回退用）
 		persistFailedTypes := map[string]struct{}{} // 存在 upsert 失败的类型，见 §13
 		upserted := 0
 		for _, cloud := range result.Resources {
-			created, upsertErr := s.upsertCloudResource(ctx, appID, accountID, batchID, now, cloud)
+			created, upsertErr := s.upsertCloudResource(ctx, appID, accountID, batchID, fencingToken, now, cloud)
 			if upsertErr != nil {
+				if errors.Is(upsertErr, domain.ErrLeaseLost) {
+					fullSyncErr = upsertErr
+					return
+				}
 				batch.FailedCount++
 				// 原始错误仅写日志，对外只保留脱敏摘要，避免表名/约束名等底层细节泄露，见 §13。
 				logger.From(ctx).Warn("upsert cloud resource failed",
@@ -517,8 +683,10 @@ func (s *SyncService) syncCloudFullSync(
 		// CES/hybrid 的资源组 product_names 是权威 scope：不在 scope 内的类型视为已从资源组移除，
 		// 应标记 stale。改用反向 stale 标记（account+region 下除不确定类型外全部 stale），
 		// 避免删除资源类型后旧资产永久保持 active，见 docs/huawei-ces-asset-sync-plan.md §13.1。
+		// product_names 为空时使用的是不完整兜底白名单，不能作为权威 scope 反向 stale；
+		// 此时回落到逐类型标记，只标查询、转换、持久化均完整成功的类型。
 		// native/generic/fake 路径 scope 非权威，仍用逐类型标记（只标查询成功的类型）。
-		if isAuthoritativeScope(summary.SyncMode) {
+		if isAuthoritativeScope(summary.SyncMode) && !summary.ProductNamesEmpty {
 			negativeScopes = append(negativeScopes, negativeStaleScope{
 				Region:      region,
 				ExceptTypes: mergeLowerStrings(summary.QueryFailedTypes, summary.ConversionFailedTypes, mapStringSetKeys(persistFailedTypes)),
@@ -543,10 +711,10 @@ func (s *SyncService) syncGeneric(
 	obsActor obsapp.Actor,
 	provider string,
 	regions []string,
-	appID, accountID, batchID string,
+	appID, accountID, batchID, fencingToken string,
 	now time.Time,
 	batch *domain.SyncBatch,
-) (successScopes []discoveredScope, negativeScopes []negativeStaleScope, summaryLines, partialErrs []string, maxResourcesReached, productNamesEmpty bool, syncSummaries []obsapp.CloudSyncSummary) {
+) (successScopes []discoveredScope, negativeScopes []negativeStaleScope, summaryLines, partialErrs []string, maxResourcesReached, productNamesEmpty bool, syncSummaries []obsapp.CloudSyncSummary, syncErr error) {
 	for _, region := range regions {
 		for _, resType := range defaultCloudResourceTypes {
 			result, err := s.discovery.ListResources(ctx, obsActor, obsdomain.AssetDiscoveryQuery{
@@ -562,8 +730,12 @@ func (s *SyncService) syncGeneric(
 			typePersistFailed := false
 			if result != nil {
 				for _, cloud := range result.Resources {
-					created, upsertErr := s.upsertCloudResource(ctx, appID, accountID, batchID, now, cloud)
+					created, upsertErr := s.upsertCloudResource(ctx, appID, accountID, batchID, fencingToken, now, cloud)
 					if upsertErr != nil {
+						if errors.Is(upsertErr, domain.ErrLeaseLost) {
+							syncErr = upsertErr
+							return
+						}
 						batch.FailedCount++
 						// 原始错误仅写日志，对外只保留脱敏摘要，避免表名/约束名等底层细节泄露，见 §13。
 						logger.From(ctx).Warn("upsert cloud resource failed",
@@ -591,7 +763,7 @@ func (s *SyncService) syncGeneric(
 			successScopes = append(successScopes, discoveredScope{Region: region, ResourceType: resType})
 		}
 	}
-	return successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries
+	return successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries, syncErr
 }
 
 // resolveStaleScope 计算允许执行 stale 标记的类型集合，见 docs/huawei-ces-asset-sync-plan.md §13。
@@ -676,7 +848,7 @@ func mapStringSetKeys(m map[string]struct{}) []string {
 
 func (s *SyncService) upsertCloudResource(
 	ctx context.Context,
-	appID, accountID, batchID string,
+	appID, accountID, batchID, fencingToken string,
 	syncedAt time.Time,
 	cloud obsdomain.CloudResource,
 ) (bool, error) {
@@ -702,18 +874,19 @@ func (s *SyncService) upsertCloudResource(
 		Region:               strings.TrimSpace(cloud.Region),
 		SyncStatus:           domain.SyncStatusActive,
 		LastSyncedAt:         &syncedAt,
-		SyncBatchID:          batchID,
 		Labels:               cloud.Labels,
 	}
-	return s.resources.UpsertCloudSync(ctx, res)
+	return s.resources.UpsertCloudSyncWithLease(ctx, res, batchID, fencingToken)
 }
 
 func cloudApplicationID(accountID string) string {
 	id := strings.TrimSpace(accountID)
-	if len(id) > 28 {
-		id = id[:28]
+	hash := sha1.Sum([]byte(id))
+	suffix := hex.EncodeToString(hash[:])[:12]
+	if len(id) > 17 {
+		id = id[:17]
 	}
-	return "cloud-" + id
+	return "cloud-" + id + "-" + suffix
 }
 
 func mapCloudResourceToAssetFields(cloud obsdomain.CloudResource) (resourceType, instance string) {
@@ -845,6 +1018,71 @@ func anySummaryBool(summaries []obsapp.CloudSyncSummary, pick func(obsapp.CloudS
 	return false
 }
 
+func buildSyncBatchSummaryDTO(summaries []obsapp.CloudSyncSummary) *SyncBatchSummaryDTO {
+	if len(summaries) == 0 {
+		return nil
+	}
+	return &SyncBatchSummaryDTO{
+		SyncMode:              firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.SyncMode }),
+		ResourceGroupName:     firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.ResourceGroupName }),
+		ResourceGroupID:       firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.ResourceGroupID }),
+		Projects:              uniqueSummaryStrings(summaries, func(s obsapp.CloudSyncSummary) string { return s.ProjectID }),
+		Regions:               uniqueSummaryStrings(summaries, func(s obsapp.CloudSyncSummary) string { return s.Region }),
+		CESTotal:              sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.CESTotal }),
+		DiscoveredCount:       sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.Discovered }),
+		FailedScopes:          uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.FailedScopes }),
+		EnrichedCount:         sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.EnrichedCount }),
+		EnrichmentFailedTypes: uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.EnrichmentFailedTypes }),
+		UnknownNamespaceCount: sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.UnknownNamespaceCount }),
+		InvalidResourceCount:  sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.InvalidResourceCount }),
+		MaxResourcesReached:   anySummaryBool(summaries, func(s obsapp.CloudSyncSummary) bool { return s.MaxResourcesReached }),
+		ProductNamesEmpty:     anySummaryBool(summaries, func(s obsapp.CloudSyncSummary) bool { return s.ProductNamesEmpty }),
+		QueryFailedTypes:      uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.QueryFailedTypes }),
+		ConversionFailedTypes: uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.ConversionFailedTypes }),
+	}
+}
+
+func uniqueSummaryStringSlices(summaries []obsapp.CloudSyncSummary, pick func(obsapp.CloudSyncSummary) []string) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, s := range summaries {
+		for _, v := range pick(s) {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				continue
+			}
+			if _, ok := seen[v]; ok {
+				continue
+			}
+			seen[v] = struct{}{}
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func marshalSyncBatchSummary(summary *SyncBatchSummaryDTO) []byte {
+	if summary == nil {
+		return []byte("{}")
+	}
+	data, err := json.Marshal(summary)
+	if err != nil {
+		return []byte("{}")
+	}
+	return data
+}
+
+func unmarshalSyncBatchSummary(data []byte) *SyncBatchSummaryDTO {
+	if len(data) == 0 || string(data) == "{}" {
+		return nil
+	}
+	var summary SyncBatchSummaryDTO
+	if err := json.Unmarshal(data, &summary); err != nil {
+		return nil
+	}
+	return &summary
+}
+
 func isAlreadyExists(err error) bool {
 	return apperr.CodeOf(err) == apperr.CodeAlreadyExists
 }
@@ -860,9 +1098,13 @@ func toSyncBatchDTO(batch domain.SyncBatch) SyncBatchDTO {
 		StaleCount:           batch.StaleCount,
 		FailedCount:          batch.FailedCount,
 		Message:              batch.Message,
+		Summary:              unmarshalSyncBatchSummary(batch.Summary),
 		StartedAt:            batch.StartedAt.Unix(),
 		CreatedAt:            batch.CreatedAt.Unix(),
 		UpdatedAt:            batch.UpdatedAt.Unix(),
+	}
+	if accountID := strings.TrimSpace(batch.IntegrationAccountID); accountID != "" {
+		dto.ApplicationID = cloudApplicationID(accountID)
 	}
 	if batch.FinishedAt != nil {
 		dto.FinishedAt = batch.FinishedAt.Unix()

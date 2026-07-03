@@ -383,6 +383,63 @@ func TestDiscoverCESResources_MaxResourcesCap(t *testing.T) {
 	}
 }
 
+// TestDiscoverCESResources_MaxResourcesExactMatchNotTruncated 验证资源数恰好等于上限时
+// 不应误报截断，否则该类型会被剔除出 SuccessfulTypes 而跳过 stale 标记。
+func TestDiscoverCESResources_MaxResourcesExactMatchNotTruncated(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(2)}}),
+		showResp:       buildShowResp("全部资源", "SYS.ECS,instance_id", 2),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.ECS": buildListResResp(
+				mkRes("ecs-1", "instance_id", "i-1"), mkRes("ecs-2", "instance_id", "i-2"),
+			),
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 2,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(result.Resources) != 2 {
+		t.Fatalf("resource count = %d, want 2", len(result.Resources))
+	}
+	if result.Summary.MaxResourcesReached {
+		t.Fatalf("MaxResourcesReached = true, want false (exact match is not truncation)")
+	}
+	if !reflect.DeepEqual(result.Summary.SuccessfulTypes, []string{"ecs"}) {
+		t.Fatalf("SuccessfulTypes = %v, want [ecs]", result.Summary.SuccessfulTypes)
+	}
+}
+
+// TestDiscoverCESResources_MaxResourcesTruncatedWhenMoreProductsRemain 验证达到上限且后面还有未扫描的
+// product 时，即使当前 product 已拉完，仍应标记 MaxResourcesReached 并禁止 stale。
+func TestDiscoverCESResources_MaxResourcesTruncatedWhenMoreProductsRemain(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(3)}}),
+		showResp:       buildShowResp("全部资源", "SYS.ECS,instance_id;SYS.EVS,disk_name", 3),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
+			"SYS.EVS": buildListResResp(mkRes("disk-1", "disk_name", "d-1")),
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 1,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(result.Resources) != 1 {
+		t.Fatalf("resource count = %d, want 1", len(result.Resources))
+	}
+	if !result.Summary.MaxResourcesReached {
+		t.Fatalf("MaxResourcesReached = false, want true (more products remain un-scanned)")
+	}
+	if len(result.Summary.SuccessfulTypes) != 0 {
+		t.Fatalf("SuccessfulTypes = %v, want empty (truncated)", result.Summary.SuccessfulTypes)
+	}
+}
+
 // pagedResourcesAPI 按 offset/limit 切片返回某 service 的资源列表，模拟服务端分页，
 // 用于验证 listResourcesForProduct 多页拉取（ListResourceGroupsServicesResources 翻页），见 §8.6。
 type pagedResourcesAPI struct {
@@ -674,19 +731,18 @@ func TestSelectResourceGroup_SpecifiedNamePriority(t *testing.T) {
 	if sel.GroupID != "rg-custom" {
 		t.Fatalf("GroupID = %q, want rg-custom (specified name priority)", sel.GroupID)
 	}
+	if sel.Selection != "specified_name" {
+		t.Fatalf("Selection = %q, want specified_name", sel.Selection)
+	}
 }
 
-func TestResourceGroupNameCandidates_Dedup(t *testing.T) {
-	// 默认候选名中 "All resources" 与 "All Resources" 大小写不同但 EqualFold 等价，按小写去重。
-	got := resourceGroupNameCandidates("")
-	want := []string{"全部资源", "All resources"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("candidates = %v, want %v", got, want)
+func TestSelectResourceGroup_SpecifiedNameNoFallbackToDefault(t *testing.T) {
+	groups := []cesv2model.OneResourceGroupResp{
+		{GroupName: "全部资源", GroupId: "rg-default", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(100)}},
 	}
-	// 用户指定名优先，且与默认英文名大小写不同时按小写去重，中文默认名仍保留。
-	got2 := resourceGroupNameCandidates("ALL RESOURCES")
-	want2 := []string{"ALL RESOURCES", "全部资源"}
-	if !reflect.DeepEqual(got2, want2) {
-		t.Fatalf("candidates = %v, want %v", got2, want2)
+	api := &pagedGroupsAPI{groups: groups}
+	_, err := selectResourceGroup(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r", ResourceGroupName: "my-custom"})
+	if apperr.CodeOf(err) != apperr.CodeNotFound {
+		t.Fatalf("err code = %v, want NotFound for unmatched specified name", apperr.CodeOf(err))
 	}
 }

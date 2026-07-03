@@ -145,7 +145,7 @@ make migrate-up
 go run ./cmd/migrate -config configs/config.yaml
 ```
 
-当前迁移文件（`0001` → `0029`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
+当前迁移文件（`0001` → `0032`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -173,6 +173,9 @@ go run ./cmd/migrate -config configs/config.yaml
 | `0027` | `0027_asset_sync_batch_message_text.up.sql` | Asset：`asset_sync_batch.message` 改为 TEXT，修复应用层 2000 rune 截断与 VARCHAR(512) 不一致 |
 | `0028` | `0028_asset_sync_batch_running_mutex.up.sql` | Asset：`asset_sync_batch.lease_expires_at` + running 部分唯一索引（账号级并发互斥） |
 | `0029` | `0029_huawei_legacy_accounts_native_sync_mode.up.sql` | Integration：历史空配置华为账号回填 `sync_mode=native`，修复 0024 空配置被解析为 ces 的灰度策略失效 |
+| `0030` | `0030_asset_sync_batch_fencing_token.up.sql` | Asset：`asset_sync_batch.fencing_token` 与 running 所有权校验索引，防止旧任务租约丢失后继续写入 |
+| `0031` | `0031_asset_sync_batch_summary.up.sql` | Asset：`asset_sync_batch.summary` JSONB 结构化摘要；批次详情页不再把 `message` 当作半结构化协议解析 |
+| `0032` | `0032_cleanup_legacy_cloud_application_ids.up.sql` | Asset：清理旧格式 `cloud-<account_id>` 云同步应用及其关联资源/匹配规则；升级后需重新录入账号并同步 |
 
 详见 `ops/migration-contract.md`。
 

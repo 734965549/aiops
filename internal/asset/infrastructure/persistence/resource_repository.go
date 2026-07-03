@@ -10,6 +10,7 @@ import (
 	"github.com/734965549/aiops/internal/asset/domain"
 	"github.com/734965549/aiops/pkg/database"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type resourceModel struct {
@@ -92,6 +93,15 @@ func (r *ResourceRepository) ListByApplicationIDPaged(ctx context.Context, appli
 		return nil, 0, errors.New("asset resource repository is not configured")
 	}
 	q := r.db.WithContext(ctx).Model(&resourceModel{}).Where("application_id = ?", applicationID)
+	if cloudType := strings.TrimSpace(filter.CloudResourceType); cloudType != "" {
+		q = q.Where("cloud_resource_type = ?", cloudType)
+	}
+	if region := strings.TrimSpace(filter.Region); region != "" {
+		q = q.Where("region = ?", region)
+	}
+	if syncStatus := strings.TrimSpace(filter.SyncStatus); syncStatus != "" {
+		q = q.Where("sync_status = ?", syncStatus)
+	}
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
 		return nil, 0, err
@@ -275,6 +285,10 @@ func (r *ResourceRepository) FindByCloudKey(ctx context.Context, key domain.Clou
 	if r == nil || r.db == nil {
 		return nil, errors.New("asset resource repository is not configured")
 	}
+	return r.findByCloudKey(ctx, r.db, key)
+}
+
+func (r *ResourceRepository) findByCloudKey(ctx context.Context, db *gorm.DB, key domain.CloudResourceKey) (*domain.Resource, error) {
 	accountID := strings.TrimSpace(key.IntegrationAccountID)
 	cloudType := strings.TrimSpace(key.CloudResourceType)
 	cloudID := strings.TrimSpace(key.CloudResourceID)
@@ -283,7 +297,7 @@ func (r *ResourceRepository) FindByCloudKey(ctx context.Context, key domain.Clou
 		return nil, domain.ErrNotFound
 	}
 	var row resourceModel
-	err := r.db.WithContext(ctx).
+	err := db.WithContext(ctx).
 		Where("source = ? AND integration_account_id = ? AND cloud_resource_type = ? AND cloud_resource_id = ? AND region = ?",
 			domain.ResourceSourceCloudSync, accountID, cloudType, cloudID, region).
 		First(&row).Error
@@ -297,10 +311,43 @@ func (r *ResourceRepository) FindByCloudKey(ctx context.Context, key domain.Clou
 	return &out, nil
 }
 
-func (r *ResourceRepository) UpsertCloudSync(ctx context.Context, res *domain.Resource) (bool, error) {
+func (r *ResourceRepository) UpsertCloudSyncWithLease(ctx context.Context, res *domain.Resource, batchID, fencingToken string) (bool, error) {
 	if r == nil || r.db == nil {
 		return false, errors.New("asset resource repository is not configured")
 	}
+	batchID = strings.TrimSpace(batchID)
+	fencingToken = strings.TrimSpace(fencingToken)
+	if batchID == "" || fencingToken == "" {
+		return false, domain.ErrLeaseLost
+	}
+	var created bool
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var batch syncBatchModel
+		if err := checkSyncLeaseOwnedForUpdate(tx, batchID, fencingToken, time.Now().UTC(), &batch); err != nil {
+			return err
+		}
+		if res != nil && res.LastSyncedAt != nil && batch.StartedAt.After(*res.LastSyncedAt) {
+			res.LastSyncedAt = &batch.StartedAt
+		}
+		var err error
+		created, err = r.upsertCloudSync(ctx, tx, res)
+		return err
+	})
+	return created, err
+}
+
+func promoteSuccessfulSyncBatch(ctx context.Context, db *gorm.DB, accountID, batchID string, syncedSince, now time.Time) (int64, error) {
+	result := db.WithContext(ctx).Model(&resourceModel{}).
+		Where("source = ? AND integration_account_id = ? AND sync_status = ? AND last_synced_at >= ?",
+			domain.ResourceSourceCloudSync, accountID, domain.SyncStatusActive, syncedSince).
+		Updates(map[string]any{
+			"sync_batch_id": batchID,
+			"updated_at":    now,
+		})
+	return result.RowsAffected, result.Error
+}
+
+func (r *ResourceRepository) upsertCloudSync(ctx context.Context, db *gorm.DB, res *domain.Resource) (bool, error) {
 	if res == nil {
 		return false, errors.New("resource is nil")
 	}
@@ -310,7 +357,7 @@ func (r *ResourceRepository) UpsertCloudSync(ctx context.Context, res *domain.Re
 		CloudResourceID:      res.CloudResourceID,
 		Region:               res.Region,
 	}
-	existing, err := r.FindByCloudKey(ctx, key)
+	existing, err := r.findByCloudKey(ctx, db, key)
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
 		return false, err
 	}
@@ -318,7 +365,8 @@ func (r *ResourceRepository) UpsertCloudSync(ctx context.Context, res *domain.Re
 		res.ID = existing.ID
 		res.Source = domain.ResourceSourceCloudSync
 		res.CreatedAt = existing.CreatedAt
-		if err := r.updateCloudSync(ctx, res); err != nil {
+		res.SyncBatchID = existing.SyncBatchID
+		if err := r.updateCloudSync(ctx, db, res); err != nil {
 			return false, err
 		}
 		return false, nil
@@ -327,15 +375,15 @@ func (r *ResourceRepository) UpsertCloudSync(ctx context.Context, res *domain.Re
 	if strings.TrimSpace(res.ID) == "" {
 		return false, errors.New("resource id is required for cloud sync create")
 	}
-	if err := r.createCloudSync(ctx, res); err != nil {
+	if err := r.createCloudSync(ctx, db, res); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func (r *ResourceRepository) createCloudSync(ctx context.Context, res *domain.Resource) error {
+func (r *ResourceRepository) createCloudSync(ctx context.Context, db *gorm.DB, res *domain.Resource) error {
 	m := toResourceModel(res)
-	if err := r.db.WithContext(ctx).Create(&m).Error; err != nil {
+	if err := db.WithContext(ctx).Create(&m).Error; err != nil {
 		return database.MapUniqueViolation(err, domain.ErrAlreadyExists)
 	}
 	res.CreatedAt = m.CreatedAt
@@ -343,10 +391,10 @@ func (r *ResourceRepository) createCloudSync(ctx context.Context, res *domain.Re
 	return nil
 }
 
-func (r *ResourceRepository) updateCloudSync(ctx context.Context, res *domain.Resource) error {
+func (r *ResourceRepository) updateCloudSync(ctx context.Context, db *gorm.DB, res *domain.Resource) error {
 	now := time.Now().UTC()
 	labels, _ := marshalResourceLabels(res.Labels)
-	result := r.db.WithContext(ctx).Model(&resourceModel{}).Where("resource_id = ?", res.ID).Updates(map[string]any{
+	result := db.WithContext(ctx).Model(&resourceModel{}).Where("resource_id = ?", res.ID).Updates(map[string]any{
 		"name": res.Name, "resource_type": res.ResourceType, "namespace": res.Namespace,
 		"pod": res.Pod, "node": res.Node, "instance": res.Instance,
 		"integration_account_id": res.IntegrationAccountID,
@@ -355,7 +403,6 @@ func (r *ResourceRepository) updateCloudSync(ctx context.Context, res *domain.Re
 		"region":                 res.Region,
 		"sync_status":            res.SyncStatus,
 		"last_synced_at":         res.LastSyncedAt,
-		"sync_batch_id":          res.SyncBatchID,
 		"labels":                 labels,
 		"updated_at":             now,
 	})
@@ -369,40 +416,75 @@ func (r *ResourceRepository) updateCloudSync(ctx context.Context, res *domain.Re
 	return nil
 }
 
-func (r *ResourceRepository) MarkStaleByAccountScopeExceptBatch(ctx context.Context, accountID, region, cloudResourceType, batchID string) (int64, error) {
+func (r *ResourceRepository) MarkStaleByAccountScopeExceptBatchWithLease(ctx context.Context, accountID, region, cloudResourceType, batchID, fencingToken string) (int64, error) {
 	if r == nil || r.db == nil {
 		return 0, errors.New("asset resource repository is not configured")
 	}
+	batchID = strings.TrimSpace(batchID)
+	fencingToken = strings.TrimSpace(fencingToken)
+	if batchID == "" || fencingToken == "" {
+		return 0, domain.ErrLeaseLost
+	}
+	var staleCount int64
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var batch syncBatchModel
+		if err := checkSyncLeaseOwnedForUpdate(tx, batchID, fencingToken, time.Now().UTC(), &batch); err != nil {
+			return err
+		}
+		var err error
+		staleCount, err = markStaleByAccountScopeExceptBatch(ctx, tx, accountID, region, cloudResourceType, batch.StartedAt)
+		return err
+	})
+	return staleCount, err
+}
+
+func markStaleByAccountScopeExceptBatch(ctx context.Context, db *gorm.DB, accountID, region, cloudResourceType string, syncedSince time.Time) (int64, error) {
 	accountID = strings.TrimSpace(accountID)
 	region = strings.TrimSpace(region)
 	cloudResourceType = strings.TrimSpace(cloudResourceType)
-	batchID = strings.TrimSpace(batchID)
-	if accountID == "" || region == "" || cloudResourceType == "" || batchID == "" {
+	if accountID == "" || region == "" || cloudResourceType == "" {
 		return 0, nil
 	}
 	now := time.Now().UTC()
-	result := r.db.WithContext(ctx).Model(&resourceModel{}).
-		Where("source = ? AND integration_account_id = ? AND region = ? AND cloud_resource_type = ? AND sync_batch_id <> ? AND sync_status = ?",
-			domain.ResourceSourceCloudSync, accountID, region, cloudResourceType, batchID, domain.SyncStatusActive).
-		Updates(map[string]any{
-			"sync_status": domain.SyncStatusStale,
-			"updated_at":  now,
-		})
+	query := db.WithContext(ctx).Model(&resourceModel{}).
+		Where("source = ? AND integration_account_id = ? AND region = ? AND cloud_resource_type = ? AND sync_status = ?",
+			domain.ResourceSourceCloudSync, accountID, region, cloudResourceType, domain.SyncStatusActive)
+	if !syncedSince.IsZero() {
+		query = query.Where("(last_synced_at IS NULL OR last_synced_at < ?)", syncedSince)
+	}
+	result := query.Updates(map[string]any{
+		"sync_status": domain.SyncStatusStale,
+		"updated_at":  now,
+	})
 	return result.RowsAffected, result.Error
 }
 
-// MarkStaleByAccountRegionExceptTypes 将指定账号+region 下所有 active 的 cloud_sync 资源
-// （排除当前批次）标记为 stale，但跳过 cloud_resource_type 命中 exceptTypes 的类型，见 §13.1。
-// 用于 CES/hybrid 权威 scope 反向标记：从资源组移除的类型不在 exceptTypes 中，会被标记 stale；
-// 查询失败/转换失败/持久化失败的类型放入 exceptTypes，保持 active 避免误标。
-func (r *ResourceRepository) MarkStaleByAccountRegionExceptTypes(ctx context.Context, accountID, region string, exceptTypes []string, batchID string) (int64, error) {
+func (r *ResourceRepository) MarkStaleByAccountRegionExceptTypesWithLease(ctx context.Context, accountID, region string, exceptTypes []string, batchID, fencingToken string) (int64, error) {
 	if r == nil || r.db == nil {
 		return 0, errors.New("asset resource repository is not configured")
 	}
+	batchID = strings.TrimSpace(batchID)
+	fencingToken = strings.TrimSpace(fencingToken)
+	if batchID == "" || fencingToken == "" {
+		return 0, domain.ErrLeaseLost
+	}
+	var staleCount int64
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var batch syncBatchModel
+		if err := checkSyncLeaseOwnedForUpdate(tx, batchID, fencingToken, time.Now().UTC(), &batch); err != nil {
+			return err
+		}
+		var err error
+		staleCount, err = markStaleByAccountRegionExceptTypes(ctx, tx, accountID, region, exceptTypes, batch.StartedAt)
+		return err
+	})
+	return staleCount, err
+}
+
+func markStaleByAccountRegionExceptTypes(ctx context.Context, db *gorm.DB, accountID, region string, exceptTypes []string, syncedSince time.Time) (int64, error) {
 	accountID = strings.TrimSpace(accountID)
 	region = strings.TrimSpace(region)
-	batchID = strings.TrimSpace(batchID)
-	if accountID == "" || region == "" || batchID == "" {
+	if accountID == "" || region == "" {
 		return 0, nil
 	}
 	// 归一化 exceptTypes：小写去重去空。
@@ -418,9 +500,12 @@ func (r *ResourceRepository) MarkStaleByAccountRegionExceptTypes(ctx context.Con
 		}
 	}
 	now := time.Now().UTC()
-	query := r.db.WithContext(ctx).Model(&resourceModel{}).
-		Where("source = ? AND integration_account_id = ? AND region = ? AND sync_batch_id <> ? AND sync_status = ?",
-			domain.ResourceSourceCloudSync, accountID, region, batchID, domain.SyncStatusActive)
+	query := db.WithContext(ctx).Model(&resourceModel{}).
+		Where("source = ? AND integration_account_id = ? AND region = ? AND sync_status = ?",
+			domain.ResourceSourceCloudSync, accountID, region, domain.SyncStatusActive)
+	if !syncedSince.IsZero() {
+		query = query.Where("(last_synced_at IS NULL OR last_synced_at < ?)", syncedSince)
+	}
 	if len(except) > 0 {
 		query = query.Where("cloud_resource_type NOT IN ?", except)
 	}
@@ -429,6 +514,24 @@ func (r *ResourceRepository) MarkStaleByAccountRegionExceptTypes(ctx context.Con
 		"updated_at":  now,
 	})
 	return result.RowsAffected, result.Error
+}
+
+func checkSyncLeaseOwnedForUpdate(db *gorm.DB, batchID, fencingToken string, now time.Time, out ...*syncBatchModel) error {
+	var row syncBatchModel
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("batch_id = ? AND fencing_token = ? AND status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at >= ?",
+			batchID, fencingToken, domain.SyncBatchStatusRunning, now).
+		First(&row).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return domain.ErrLeaseLost
+		}
+		return err
+	}
+	if len(out) > 0 && out[0] != nil {
+		*out[0] = row
+	}
+	return nil
 }
 
 func defaultSource(source string) string {

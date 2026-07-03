@@ -1,7 +1,7 @@
 <template>
   <a-row :gutter="16">
     <a-col
-      v-for="card in cards"
+      v-for="(card, index) in cards"
       :key="card.key"
       :xs="12"
       :sm="8"
@@ -13,6 +13,10 @@
         hoverable
         @click="emit('navigate', card.link)"
       >
+        <div class="metric-head">
+          <span>{{ String(index + 1).padStart(2, '0') }}</span>
+          <span>↗</span>
+        </div>
         <div class="metric-title">
           {{ card.title }}
         </div>
@@ -107,30 +111,52 @@ const cards = computed(() => {
 <style scoped>
 .metric-card {
   cursor: pointer;
-  min-height: 138px;
+  min-height: 168px;
   position: relative;
   overflow: hidden;
+  background: rgba(255, 255, 252, 0.68) !important;
 }
 .metric-card::before {
   content: '';
   position: absolute;
-  inset: 0;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 3px;
   pointer-events: none;
-  background:
-    radial-gradient(circle at 84% 20%, rgba(0, 220, 197, 0.18), transparent 28%),
-    linear-gradient(120deg, rgba(22, 93, 255, 0.08), transparent 42%);
+  background: #50643f;
+  transform: scaleX(0.22);
+  transform-origin: left;
+  transition: transform 220ms ease;
+}
+.metric-card:hover::before {
+  transform: scaleX(1);
+}
+.metric-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  color: #858a81;
+  font-family: var(--aiops-display);
+  font-size: 10px;
+  font-style: italic;
 }
 .metric-card .metric-title {
   position: relative;
-  color: var(--color-text-3);
-  font-size: 13px;
+  color: #646960;
+  font-size: 12px;
 }
 .metric-card .metric-value {
   position: relative;
-  font-size: 28px;
-  font-weight: 600;
-  margin: 8px 0;
-  color: var(--color-text-1);
+  margin: 7px 0 8px;
+  color: #20251f;
+  font-family: var(--aiops-display);
+  font-size: 34px;
+  font-style: italic;
+  font-weight: 500;
+  letter-spacing: -0.04em;
 }
 .metric-card .metric-value.value-danger {
   color: rgb(var(--red-6));
@@ -143,7 +169,8 @@ const cards = computed(() => {
 }
 .metric-card .metric-tip {
   position: relative;
-  color: var(--color-text-3);
-  font-size: 12px;
+  color: #858a81;
+  font-size: 11px;
+  line-height: 1.5;
 }
 </style>

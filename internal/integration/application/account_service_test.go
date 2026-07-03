@@ -283,13 +283,27 @@ func TestCreateNonHuaweiEmptyExtraConfigStaysEmpty(t *testing.T) {
 }
 
 func TestCreateRejectsSecretInExtraConfig(t *testing.T) {
-	svc, _, _ := newTestAccountService(t)
-	_, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
-		Name: "hw-bad", Provider: string(domain.ProviderHuaweiCloud), AuthType: string(domain.AuthNone),
-		ExtraConfig: map[string]any{"secret_key": "do-not-store"},
-	})
-	if err == nil {
-		t.Fatal("expected extra_config secret rejection")
+	cases := []struct {
+		name  string
+		extra map[string]any
+	}{
+		{"secret key", map[string]any{"secret_key": "do-not-store"}},
+		{"private key", map[string]any{"private_key": "do-not-store"}},
+		{"encryption key", map[string]any{"encryption_key": "do-not-store"}},
+		{"client key nested", map[string]any{"nested": map[string]any{"client_key": "do-not-store"}}},
+		{"private key in array", map[string]any{"items": []any{map[string]any{"private_key": "do-not-store"}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _ := newTestAccountService(t)
+			_, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
+				Name: "hw-bad", Provider: string(domain.ProviderHuaweiCloud), AuthType: string(domain.AuthNone),
+				ExtraConfig: tc.extra,
+			})
+			if err == nil {
+				t.Fatal("expected extra_config secret rejection")
+			}
+		})
 	}
 }
 

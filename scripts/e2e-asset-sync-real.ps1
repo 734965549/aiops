@@ -1,33 +1,32 @@
 # Cloud asset sync E2E with REAL huawei_cloud AK/SK account (manual reconciliation).
-# 不进 CI：需要真实凭据与 CES 资源分组权限，由人工执行。
+# Not for CI: requires real credentials and CES resource group permissions.
 #
-# 用途：
-#   1. 用真实华为云 AK/SK 触发资产同步。
-#   2. 打印每个 region 的 ces_total/discovered/upserted/failed_scopes/enriched/enrichment_failed 摘要。
-#   3. 按 cloud_resource_type 分组统计平台入库数量，输出对账表。
-#   4. 提示去 CES 控制台比对"全部资源/资源分组"总数。
+# Purpose:
+#   1. Trigger asset sync with real Huawei Cloud AK/SK.
+#   2. Print ces_total/discovered/upserted/failed_scopes/enriched/enrichment_failed summaries by region.
+#   3. Count stored assets by cloud_resource_type and print a reconciliation table.
+#   4. Remind operators to compare totals in the CES console.
 #
-# 前置条件：
-#   - 后端已起（默认 http://127.0.0.1:8080），admin/admin123 可登录。
-#   - 已运行 go run ./cmd/migrate。
-#   - 拥有真实华为云子账号 AK/SK；默认 ces 模式仅需 CES 只读权限；
-#     sync_mode=hybrid 还需 ECS/RDS/ELB/EVS/VPC/DCS/DMS 只读权限以做详情增强。
-#   - 已在 CES 控制台创建或存在目标资源分组（默认候选名"全部资源"需用户预先创建；
-#     CES 官方 API 只返回用户创建的资源分组，不存在"总览全量"隐式口径；
-#     默认候选名未命中将直接失败，不回退到最大资源组，因此生产推荐显式指定 resource_group_id）。
+# Prerequisites:
+#   - Backend is running (default http://127.0.0.1:8080), admin/admin123 can login.
+#   - Migrations have been applied.
+#   - A real Huawei Cloud sub-account AK/SK is available. CES mode needs CES read-only permissions;
+#     sync_mode=hybrid also needs ECS/RDS/ELB/EVS/VPC/DCS/DMS read-only permissions for enrichment.
+#   - The target CES resource group already exists. Specify resource_group_id explicitly for production reconciliation.
 #
-# 用法示例（推荐环境变量，避免 AK/SK 进入 shell 历史与进程参数）：
+# Usage examples (environment variables are recommended to avoid AK/SK in shell history and process args):
 #   $env:HUAWEI_ACCESS_KEY="AKXXX"; $env:HUAWEI_SECRET_KEY="SKXXX"
 #   $env:HUAWEI_PROJECT_ID="0xxx"; $env:HUAWEI_REGIONS="cn-south-1"
 #   .\scripts\e2e-asset-sync-real.ps1
-#   .\scripts\e2e-asset-sync-real.ps1 -ExtraConfig '{"sync_mode":"hybrid"}'   # 覆盖 ExtraConfig
-#   未设置环境变量时，脚本会交互读取 AccessKey/ProjectId/Regions/SecretKey。
+#   .\scripts\e2e-asset-sync-real.ps1 -ExtraConfig '{"sync_mode":"hybrid"}'   # override ExtraConfig
+#   -SyncTimeoutMs defaults to 35 minutes, intentionally greater than the backend 30-minute hard timeout,
+#   so cleanup does not race with a still-running background sync.
+#   If env vars are missing, the script prompts for AccessKey/ProjectId/Regions/SecretKey.
 #
-# 安全：
-#   - AK/SK 优先从环境变量读取，未设置时交互输入（SecretKey 用 SecureString）。
-#   - AK/SK 不写日志；脚本结束默认删除账号。注意：删除账号为软删除（保留账号行用于审计），
-#     后端会在删除时一并硬删除 integration_credential_ref 中的凭据密文。
-#   - 建议使用只读权限子账号，避免使用主账号凭据。
+# Security:
+#   - AK/SK are read from env vars first; SecretKey uses SecureString when prompted.
+#   - AK/SK are not logged. The script deletes the account by default.
+#   - Use a read-only sub-account instead of a root account.
 
 param(
     [string]$AccessKey = $(if ($env:HUAWEI_ACCESS_KEY) { $env:HUAWEI_ACCESS_KEY } else { "" }),
@@ -38,15 +37,16 @@ param(
     [string]$Username = "admin",
     [string]$Password = "admin123",
     [string]$ExtraConfig = "",
+    [int]$SyncTimeoutMs = 2100000,
     [switch]$KeepAccount
 )
 
 $ErrorActionPreference = "Stop"
 
-# 优先从环境变量读取凭据；未提供时交互输入，避免 AK/SK 进入 shell 历史与进程参数。
+# Prefer credentials from environment variables; prompt when missing to avoid AK/SK in shell history and process args.
 if (-not $AccessKey) { $AccessKey = Read-Host "AccessKey" }
 if (-not $ProjectId) { $ProjectId = Read-Host "ProjectId" }
-if (-not $Regions) { $Regions = Read-Host "Regions (逗号分隔，如 cn-south-1,cn-north-4)" }
+if (-not $Regions) { $Regions = Read-Host "Regions (comma-separated, e.g. cn-south-1,cn-north-4)" }
 if (-not $SecretKey) {
     $ss = Read-Host "SecretKey" -AsSecureString
     $SecretKey = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($ss))
@@ -78,12 +78,12 @@ function Invoke-Api {
     return $json.data
 }
 
-function Wait-SyncBatch {
+function WaitSyncBatch {
     param(
         [hashtable]$Headers,
         [string]$BatchId,
         [int]$IntervalMs = 1000,
-        [int]$TimeoutMs = 600000
+        [int]$TimeoutMs = 2100000
     )
     $deadline = [System.Diagnostics.Stopwatch]::StartNew()
     while ($true) {
@@ -123,9 +123,9 @@ function Remove-CloudSyncApplication {
     Invoke-Api -Method DELETE -Path ("/api/assets/applications/" + $ApplicationId) -Headers $Headers | Out-Null
 }
 
-$regionList = $Regions -split '[,，\s]+' | Where-Object { $_ } | ForEach-Object { $_.Trim() }
+$regionList = $Regions -split '[,\s]+' | Where-Object { $_ } | ForEach-Object { $_.Trim() }
 if ($regionList.Count -eq 0) {
-    throw "Regions 解析为空，请用逗号分隔，如 cn-south-1,cn-north-4"
+    throw "Regions is empty; use comma-separated values such as cn-south-1,cn-north-4"
 }
 
 Write-Host "==> login as $Username"
@@ -153,7 +153,7 @@ if ($ExtraConfig -ne "") {
         $parsed = $ExtraConfig | ConvertFrom-Json
         $accountBody.extra_config = $parsed
     } catch {
-        throw "ExtraConfig 不是合法 JSON: $_"
+        throw "ExtraConfig is not valid JSON: $_"
     }
 }
 $account = Invoke-Api -Method POST -Path "/api/integrations/accounts" -Headers $auth -Body $accountBody
@@ -163,7 +163,7 @@ if (-not $accountId) {
 }
 Write-Host ("    account_id=" + $accountId)
 
-# 失败时兜底清理。
+# Best-effort cleanup on failure.
 $appId = ""
 function Cleanup-Account {
     if (-not $KeepAccount -and $accountId) {
@@ -179,7 +179,7 @@ function Cleanup-Account {
             Write-Warning ("cleanup account failed: " + $_)
         }
     } else {
-        Write-Host ("==> KeepAccount=true, account_id=" + $accountId + " 保留，请手动清理")
+        Write-Host ("==> KeepAccount=true, account_id=" + $accountId + " kept; please clean up manually")
     }
 }
 
@@ -192,30 +192,32 @@ try {
         throw "sync response missing batch_id"
     }
     if ($batch.status -eq "running") {
-        $batch = Wait-SyncBatch -Headers $auth -BatchId $batch.batch_id
+        $batch = WaitSyncBatch -Headers $auth -BatchId $batch.batch_id -TimeoutMs $SyncTimeoutMs
+    }
+    if (-not $batch.application_id) {
+        throw "sync response missing application_id"
+    }
+    $script:appId = $batch.application_id
+    if (-not $batch.summary) {
+        throw "sync response missing summary"
     }
     Write-Host ("    batch_id=" + $batch.batch_id)
+    Write-Host ("    application_id=" + $script:appId)
     Write-Host ("    status=" + $batch.status)
-    Write-Host ("    message=" + $batch.message)
+    Write-Host ("    summary=" + ($batch.summary | ConvertTo-Json -Depth 3 -Compress))
     Write-Host ("    created=" + $batch.created_count + " updated=" + $batch.updated_count + " failed=" + $batch.failed_count + " stale=" + $batch.stale_count)
 
     if ($batch.status -ne "success" -and $batch.status -ne "partial") {
-        throw "expected sync status success or partial, got $($batch.status)"
+        throw "expected sync status success or partial, got $($batch.status) summary=$($batch.summary)"
     }
     if ($batch.status -eq "partial") {
-        Write-Warning "sync status=partial; 基础同步结果以批次 message 为准，继续对账"
+        Write-Warning "sync status=partial; continue reconciliation with batch message context"
     }
 
     Write-Host ""
     Write-Host "==> synced resources by cloud_resource_type"
-    $script:appId = $batch.application_id
-    if (-not $script:appId) {
-        throw "sync response missing application_id"
-    }
-    # 后端 page_size 上限 100，翻页拉取全部资源后再按 source 聚合，避免总量被截断。
-    # 统计口径排除 sync_status=stale 的历史资源，只对账当前云端仍存在的资源：
-    # 第二次同步会把云端已消失的资源标记为 stale，若不排除会把历史资源算进平台总数，
-    # 可能错误宣告与 CES 数量一致。同时按 region 分组，便于与 CES 各区域资源数对账。
+    # Backend page_size max is 100. Fetch all resources before grouping.
+    # Exclude sync_status=stale so historical resources do not affect current reconciliation.
     $pageSize = 100
     $page = 1
     $cloudItems = @()
@@ -253,8 +255,8 @@ try {
             $byRegionType[$key] = 1
         }
     }
-    Write-Host ("    application resources total = " + $appTotal + " (含 manual)")
-    Write-Host ("    total active cloud_sync resources = " + $cloudItems.Count + " (已排除 stale=" + $staleCount + ")")
+    Write-Host ("    application resources total = " + $appTotal + " (including manual)")
+    Write-Host ("    total active cloud_sync resources = " + $cloudItems.Count + " (excluded stale=" + $staleCount + ")")
     Write-Host "    ---- region ----      ---- count ----"
     foreach ($r in ($byRegion.Keys | Sort-Object)) {
         Write-Host ("    {0,-20} {1}" -f $r, $byRegion[$r])
@@ -266,15 +268,14 @@ try {
 
     Write-Host ""
     Write-Host "==> reconciliation reminder"
-    Write-Host "    请前往 CES 控制台 -> 云监控 -> 资源分组 -> 全部资源，"
-    Write-Host "    按 region 比对 CES 各区域资源总数与上方 total active cloud_sync resources（已排除 stale）。"
-    Write-Host "    若 sync_mode=hybrid，还需核对 EVS/VPC/DCS/DMS 增强是否命中（检查批次 message 的 enriched 计数）。"
-    Write-Host "    匹配键（ProviderRef）与 CES dim value 不一致会导致 enriched=0，需校正 mapper 字段。"
+    Write-Host "    Compare the active cloud_sync resource count above with the CES console resource group total."
+    Write-Host "    For sync_mode=hybrid, also check summary.enriched_count / summary.enrichment_failed_types."
+    Write-Host "    If ProviderRef and CES dimension values differ, enriched may be zero and mapper fields need adjustment."
 
     Write-Host ""
     Write-Host "PASS: Real account reconciliation data collected"
 } catch {
-    Write-Error ("对账失败: " + $_)
+    Write-Error ("reconciliation failed: " + $_)
     throw
 } finally {
     Cleanup-Account

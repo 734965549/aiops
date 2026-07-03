@@ -81,8 +81,11 @@ type ListApplicationsQuery struct {
 
 // ListResourcesQuery 资源列表分页查询参数（page 从 1 开始，PageSize 默认 20、最大 100）。
 type ListResourcesQuery struct {
-	Page     int
-	PageSize int
+	Page              int
+	PageSize          int
+	CloudResourceType string
+	Region            string
+	SyncStatus        string
 }
 
 type ApplicationDTO struct {
@@ -239,8 +242,11 @@ func (s *AssetService) ListResources(ctx context.Context, applicationID string, 
 	}
 	page, pageSize := normalizeAssetPage(q.Page, q.PageSize)
 	rows, total, err := s.resources.ListByApplicationIDPaged(ctx, applicationID, domain.ResourceFilter{
-		Limit:  pageSize,
-		Offset: (page - 1) * pageSize,
+		CloudResourceType: strings.TrimSpace(q.CloudResourceType),
+		Region:            strings.TrimSpace(q.Region),
+		SyncStatus:        strings.TrimSpace(q.SyncStatus),
+		Limit:             pageSize,
+		Offset:            (page - 1) * pageSize,
 	})
 	if err != nil {
 		return nil, 0, wrapAssetError(err, "list resources failed")

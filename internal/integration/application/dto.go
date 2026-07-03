@@ -244,7 +244,7 @@ func removeSensitiveExtraConfigKeys(value any) {
 
 func isSensitiveExtraConfigKey(key string) bool {
 	k := strings.ToLower(strings.TrimSpace(key))
-	sensitive := []string{"secret", "password", "token", "credential", "access_key", "secret_key", "api_key", "authorization"}
+	sensitive := []string{"secret", "password", "token", "credential", "access_key", "secret_key", "api_key", "authorization", "private_key", "encryption_key", "client_key"}
 	for _, marker := range sensitive {
 		if strings.Contains(k, marker) {
 			return true

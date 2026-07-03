@@ -124,7 +124,15 @@ export function createApplication(input: CreateApplicationInput) {
   })
 }
 
-export function listResources(applicationId: string, params?: { page?: number; page_size?: number }) {
+export interface ListResourcesParams {
+  page?: number
+  page_size?: number
+  cloud_resource_type?: string
+  region?: string
+  sync_status?: string
+}
+
+export function listResources(applicationId: string, params?: ListResourcesParams) {
   return http<PageResult<Resource>>({
     url: `/api/assets/applications/${encodeURIComponent(applicationId)}/resources`,
     method: 'get',
@@ -201,6 +209,25 @@ export function deleteMatchRule(id: string) {
   })
 }
 
+export interface SyncBatchSummary {
+  sync_mode?: string
+  resource_group_name?: string
+  resource_group_id?: string
+  projects?: string[]
+  regions?: string[]
+  ces_total?: number
+  discovered_count?: number
+  failed_scopes?: string[]
+  enriched_count?: number
+  enrichment_failed_types?: string[]
+  unknown_namespace_count?: number
+  invalid_resource_count?: number
+  max_resources_reached?: boolean
+  product_names_empty?: boolean
+  query_failed_types?: string[]
+  conversion_failed_types?: string[]
+}
+
 export interface SyncBatch {
   batch_id: string
   integration_account_id: string
@@ -211,6 +238,7 @@ export interface SyncBatch {
   stale_count: number
   failed_count: number
   message?: string
+  summary?: SyncBatchSummary
   application_id?: string
   started_at: number
   finished_at?: number
@@ -297,12 +325,9 @@ export async function pollSyncBatch(
 ): Promise<SyncBatch> {
   const interval = opts.intervalMs ?? 2000
   const deadline = Date.now() + (opts.timeoutMs ?? 600_000)
-  while (true) {
+  while (Date.now() <= deadline) {
     if (opts.shouldStop?.()) {
       throw new Error('polling cancelled')
-    }
-    if (Date.now() > deadline) {
-      throw new SyncStillRunningError(batchId)
     }
     const batch = await getSyncBatch(batchId)
     if (batch.status !== 'running') {
@@ -310,4 +335,5 @@ export async function pollSyncBatch(
     }
     await new Promise((resolve) => setTimeout(resolve, interval))
   }
+  throw new SyncStillRunningError(batchId)
 }

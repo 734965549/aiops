@@ -400,8 +400,11 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.L().Error("server shutdown error", logger.Error(err))
 	}
-	// 3. 等待后台同步 goroutine 落终态收尾，确保进程退出前不留卡 running 的批次。
-	assetSyncSvc.Wait()
+	// 3. 在同一个 shutdownCtx 预算内等待后台同步 goroutine 收尾；
+	//    若底层 SDK 调用无法响应 context，超时后记录并退出，避免进程关闭无限阻塞。
+	if !assetSyncSvc.WaitContext(shutdownCtx) {
+		logger.L().Warn("asset sync shutdown wait timed out")
+	}
 	logger.L().Info("aiops-api stopped")
 }
 

@@ -1,6 +1,8 @@
-// 资产页面纯函数：label 掩码/排序与同步批次 message 解析。
+import type { SyncBatchSummary } from '@/api/asset'
+
+// 资产页面纯函数：label 掩码/排序与同步批次 message 兼容解析。
 // 抽离自 assets/index.vue 的 <script setup> 便于单测。
-// 见 docs/huawei-ces-asset-sync-plan.md §9.1（labels 展示）与 §8.1（batch message 摘要）。
+// 见 docs/huawei-ces-asset-sync-plan.md §9.1（labels 展示）与 §8.1（batch summary 摘要）。
 
 export type LabelEntry = {
   key: string
@@ -54,6 +56,19 @@ export function labelEntries(labels?: Record<string, string>): LabelEntry[] {
     key,
     displayValue: maskLabelValue(key, String(labels[key]))
   }))
+}
+
+export function formatSyncBatchSummary(summary?: SyncBatchSummary, message = ''): SyncBatchMessageSummary {
+  if (summary) {
+    return {
+      ces_total: summary.ces_total !== undefined ? String(summary.ces_total) : undefined,
+      discovered: summary.discovered_count !== undefined ? String(summary.discovered_count) : undefined,
+      failed_scopes: summary.failed_scopes?.join(', '),
+      enriched: summary.enriched_count !== undefined ? String(summary.enriched_count) : undefined,
+      enrichment_failed: summary.enrichment_failed_types?.join(', ')
+    }
+  }
+  return parseSyncBatchMessage(message)
 }
 
 export function parseSyncBatchMessage(message: string): SyncBatchMessageSummary {

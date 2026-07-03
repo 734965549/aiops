@@ -16,3 +16,6 @@ var ErrHasMatchRules = errors.New("asset has match rules")
 
 // ErrDiscoveryUnavailable 云资源发现端口未配置。
 var ErrDiscoveryUnavailable = errors.New("cloud discovery port is not configured")
+
+// ErrLeaseLost 表示同步批次不再持有 running 租约。
+var ErrLeaseLost = errors.New("sync lease lost")

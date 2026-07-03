@@ -169,11 +169,14 @@ func TestResourceRepository_UpsertCloudSyncRegionKey(t *testing.T) {
 
 	appID := uniqueAssetAppID(t)
 	accountID := "acc-region-key-" + appID[:8]
+	batchID := "batch-region-key"
+	fencingToken := "fence-region-key"
 	t.Cleanup(func() { deleteTestApplications(t, db, appID) })
 
 	if err := appRepo.Create(ctx, &domain.Application{ID: appID, Name: "region-key-app", Environment: "prod"}); err != nil {
 		t.Fatalf("create app: %v", err)
 	}
+	createTestSyncBatch(t, db, accountID, batchID, fencingToken)
 
 	base := domain.Resource{
 		ApplicationID:        appID,
@@ -190,7 +193,7 @@ func TestResourceRepository_UpsertCloudSyncRegionKey(t *testing.T) {
 	resA := base
 	resA.ID = uniqueAssetResourceID(t)
 	resA.Region = "cn-north-4"
-	if created, err := resRepo.UpsertCloudSync(ctx, &resA); err != nil || !created {
+	if created, err := resRepo.UpsertCloudSyncWithLease(ctx, &resA, batchID, fencingToken); err != nil || !created {
 		t.Fatalf("upsert region A: created=%v err=%v", created, err)
 	}
 
@@ -198,7 +201,7 @@ func TestResourceRepository_UpsertCloudSyncRegionKey(t *testing.T) {
 	resB := base
 	resB.ID = uniqueAssetResourceID(t)
 	resB.Region = "cn-south-1"
-	createdB, err := resRepo.UpsertCloudSync(ctx, &resB)
+	createdB, err := resRepo.UpsertCloudSyncWithLease(ctx, &resB, batchID, fencingToken)
 	if err != nil {
 		t.Fatalf("upsert region B: %v", err)
 	}
@@ -229,7 +232,7 @@ func TestResourceRepository_UpsertCloudSyncRegionKey(t *testing.T) {
 	// region A 再次 upsert 应更新既有行（created=false），不新建第三行。
 	resA2 := resA
 	resA2.Name = "ecs-demo-updated"
-	createdA2, err := resRepo.UpsertCloudSync(ctx, &resA2)
+	createdA2, err := resRepo.UpsertCloudSyncWithLease(ctx, &resA2, batchID, fencingToken)
 	if err != nil {
 		t.Fatalf("re-upsert region A: %v", err)
 	}
@@ -249,11 +252,14 @@ func TestResourceRepository_UpsertCloudSyncLabelsRoundtrip(t *testing.T) {
 
 	appID := uniqueAssetAppID(t)
 	accountID := "acc-labels-rt-" + appID[:8]
+	batchID := "batch-labels-rt"
+	fencingToken := "fence-labels-rt"
 	t.Cleanup(func() { deleteTestApplications(t, db, appID) })
 
 	if err := appRepo.Create(ctx, &domain.Application{ID: appID, Name: "labels-rt-app", Environment: "prod"}); err != nil {
 		t.Fatalf("create app: %v", err)
 	}
+	createTestSyncBatch(t, db, accountID, batchID, fencingToken)
 
 	labels := map[string]string{
 		"namespace":           "SYS.ECS",
@@ -276,7 +282,7 @@ func TestResourceRepository_UpsertCloudSyncLabelsRoundtrip(t *testing.T) {
 		Labels:               labels,
 	}
 
-	created, err := resRepo.UpsertCloudSync(ctx, res)
+	created, err := resRepo.UpsertCloudSyncWithLease(ctx, res, batchID, fencingToken)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
@@ -305,7 +311,7 @@ func TestResourceRepository_UpsertCloudSyncLabelsRoundtrip(t *testing.T) {
 		"private_ip":          "10.0.0.5",
 		"flavor":              "s6.large.2",
 	}
-	created2, err := resRepo.UpsertCloudSync(ctx, &updated)
+	created2, err := resRepo.UpsertCloudSyncWithLease(ctx, &updated, batchID, fencingToken)
 	if err != nil {
 		t.Fatalf("re-upsert: %v", err)
 	}
@@ -339,11 +345,15 @@ func TestResourceRepository_MarkStaleByAccountRegionExceptTypes(t *testing.T) {
 
 	appID := uniqueAssetAppID(t)
 	accountID := "acc-neg-stale-" + appID[:8]
+	oldBatchID := "sync-old"
+	newBatchID := "sync-new"
+	fencingToken := "fence-neg-stale"
 	t.Cleanup(func() { deleteTestApplications(t, db, appID) })
 
 	if err := appRepo.Create(ctx, &domain.Application{ID: appID, Name: "neg-stale-app", Environment: "prod"}); err != nil {
 		t.Fatalf("create app: %v", err)
 	}
+	createTestSyncBatch(t, db, accountID, newBatchID, fencingToken)
 
 	region := "cn-north-4"
 	// 旧批次资源：ecs/evs（应被反向 stale），rds（在 exceptTypes，保持 active），
@@ -361,14 +371,14 @@ func TestResourceRepository_MarkStaleByAccountRegionExceptTypes(t *testing.T) {
 			ID: s.id, ApplicationID: appID, IntegrationAccountID: accountID,
 			CloudResourceType: s.ctype, CloudResourceID: s.cid, Region: s.reg,
 			Source: domain.ResourceSourceCloudSync, SyncStatus: domain.SyncStatusActive,
-			SyncBatchID: "sync-old", Name: s.cid, ResourceType: "host",
+			SyncBatchID: oldBatchID, Name: s.cid, ResourceType: "host",
 		}
-		if _, err := resRepo.UpsertCloudSync(ctx, &r); err != nil {
+		if _, err := resRepo.UpsertCloudSyncWithLease(ctx, &r, newBatchID, fencingToken); err != nil {
 			t.Fatalf("seed %s: %v", s.id, err)
 		}
 	}
 
-	n, err := resRepo.MarkStaleByAccountRegionExceptTypes(ctx, accountID, region, []string{"rds"}, "sync-new")
+	n, err := resRepo.MarkStaleByAccountRegionExceptTypesWithLease(ctx, accountID, region, []string{"rds"}, newBatchID, fencingToken)
 	if err != nil {
 		t.Fatalf("mark stale: %v", err)
 	}

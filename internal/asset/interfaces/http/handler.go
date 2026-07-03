@@ -142,7 +142,11 @@ func (h *Handler) ListResources(c *gin.Context) {
 	_ = c.ShouldBindQuery(&q)
 	q.Normalize()
 	items, total, err := h.assets.ListResources(c.Request.Context(), c.Param("application_id"), assetapp.ListResourcesQuery{
-		Page: q.Page, PageSize: q.PageSize,
+		Page:              q.Page,
+		PageSize:          q.PageSize,
+		CloudResourceType: c.Query("cloud_resource_type"),
+		Region:            c.Query("region"),
+		SyncStatus:        c.Query("sync_status"),
 	})
 	if err != nil {
 		httpx.Fail(c, err)

@@ -91,7 +91,51 @@
               class="assets-card assets-card-fixed"
             >
               <template #extra>
-                <a-space>
+                <a-space wrap>
+                  <a-input
+                    v-model="resourceFilters.cloud_resource_type"
+                    :disabled="!selectedAppId"
+                    allow-clear
+                    placeholder="云类型"
+                    size="small"
+                    style="width: 96px"
+                    @press-enter="applyResourceFilters"
+                    @clear="applyResourceFilters"
+                  />
+                  <a-input
+                    v-model="resourceFilters.region"
+                    :disabled="!selectedAppId"
+                    allow-clear
+                    placeholder="Region"
+                    size="small"
+                    style="width: 110px"
+                    @press-enter="applyResourceFilters"
+                    @clear="applyResourceFilters"
+                  />
+                  <a-select
+                    v-model="resourceFilters.sync_status"
+                    :disabled="!selectedAppId"
+                    allow-clear
+                    placeholder="同步状态"
+                    size="small"
+                    style="width: 110px"
+                    @change="applyResourceFilters"
+                    @clear="applyResourceFilters"
+                  >
+                    <a-option value="active">
+                      active
+                    </a-option>
+                    <a-option value="stale">
+                      stale
+                    </a-option>
+                  </a-select>
+                  <a-button
+                    :disabled="!selectedAppId"
+                    size="small"
+                    @click="applyResourceFilters"
+                  >
+                    筛选
+                  </a-button>
                   <a-button
                     :disabled="!selectedAppId"
                     @click="loadResources"
@@ -150,6 +194,18 @@
                   </a-tooltip>
                   <span v-else>—</span>
                 </template>
+                <template #integration_account_id="{ record }">
+                  <a-tooltip
+                    v-if="(record as Resource).integration_account_id"
+                    :content="(record as Resource).integration_account_id"
+                  >
+                    <span class="assets-text-ellipsis">{{ (record as Resource).integration_account_id }}</span>
+                  </a-tooltip>
+                  <span v-else>—</span>
+                </template>
+                <template #cloud_resource_type="{ record }">
+                  {{ (record as Resource).cloud_resource_type || '—' }}
+                </template>
                 <template #region="{ record }">
                   <a-tooltip
                     v-if="(record as Resource).region"
@@ -171,6 +227,15 @@
                 </template>
                 <template #last_synced_at="{ record }">
                   {{ formatTs((record as Resource).last_synced_at) }}
+                </template>
+                <template #sync_batch_id="{ record }">
+                  <a-tooltip
+                    v-if="(record as Resource).sync_batch_id"
+                    :content="(record as Resource).sync_batch_id"
+                  >
+                    <span class="assets-text-ellipsis">{{ (record as Resource).sync_batch_id }}</span>
+                  </a-tooltip>
+                  <span v-else>—</span>
                 </template>
                 <template #labels="{ record }">
                   <a-popover
@@ -526,7 +591,7 @@
             type="warning"
             class="sync-detail-alert"
           >
-            部分资源或增强信息失败，基础同步结果以批次 message 为准。
+            部分资源或增强信息失败，基础同步结果以批次 summary 为准，message 保留为排查说明。
           </a-alert>
           <a-descriptions
             :column="1"
@@ -711,14 +776,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Message from '@arco-design/web-vue/es/message'
 import type { TableInstance } from '@arco-design/web-vue/es/table'
 import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import * as assetApi from '@/api/asset'
 import type { Application, MatchRule, Resource } from '@/api/asset'
-import { labelEntries, parseSyncBatchMessage } from './composables/assetUtils'
+import { formatSyncBatchSummary, labelEntries } from './composables/assetUtils'
 
 const route = useRoute()
 const router = useRouter()
@@ -755,12 +820,18 @@ const syncBatchDetailLoading = ref(false)
 const syncBatchDetail = ref<assetApi.SyncBatch | null>(null)
 
 const tableScroll = { y: 'calc(100vh - 330px)' }
-const resourceTableScroll = { x: 1450, y: 'calc(100vh - 330px)' }
+const resourceTableScroll = { x: 1880, y: 'calc(100vh - 330px)' }
 
 const appPagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
 const resourcePagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
 const syncPagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
 const rulePagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
+
+const resourceFilters = reactive({
+  cloud_resource_type: '',
+  region: '',
+  sync_status: ''
+})
 
 const ruleForm = reactive({
   name: '',
@@ -802,10 +873,13 @@ const resourceColumns: TableInstance['columns'] = [
   { title: '资源名', dataIndex: 'name', ellipsis: true, tooltip: true, width: 140 },
   { title: '来源', slotName: 'source', width: 80 },
   { title: '类型', dataIndex: 'resource_type', width: 80 },
+  { title: '账号', slotName: 'integration_account_id', width: 180 },
+  { title: '云类型', slotName: 'cloud_resource_type', width: 90 },
   { title: '云资源 ID', slotName: 'cloud_resource_id', width: 150, ellipsis: true },
   { title: 'Region', slotName: 'region', width: 100 },
   { title: '同步状态', slotName: 'sync_status', width: 90 },
   { title: '最近同步', slotName: 'last_synced_at', width: 150 },
+  { title: '最近成功批次', slotName: 'sync_batch_id', width: 180 },
   { title: 'Labels', slotName: 'labels', width: 220 },
   { title: 'Namespace', dataIndex: 'namespace', width: 110, ellipsis: true, tooltip: true },
   { title: 'Pod', dataIndex: 'pod', width: 110, ellipsis: true, tooltip: true },
@@ -858,7 +932,7 @@ const editingResource = computed(() => {
 
 const editingResourceLabelEntries = computed(() => labelEntries(editingResource.value?.labels))
 
-const syncBatchMessageSummary = computed(() => parseSyncBatchMessage(syncBatchDetail.value?.message || ''))
+const syncBatchMessageSummary = computed(() => formatSyncBatchSummary(syncBatchDetail.value?.summary, syncBatchDetail.value?.message || ''))
 
 function appRowClass(record: TableData) {
   const app = record as Application
@@ -918,6 +992,11 @@ async function loadSyncBatches() {
   }
 }
 
+let syncPollingStopped = false
+onBeforeUnmount(() => {
+  syncPollingStopped = true
+})
+
 async function runCloudSync() {
   const accountId = syncAccountId.value.trim()
   if (!accountId) {
@@ -926,7 +1005,8 @@ async function runCloudSync() {
   }
   syncLoading.value = true
   try {
-    const batch = await assetApi.triggerAssetSync(accountId)
+    const running = await assetApi.triggerAssetSync(accountId)
+    const batch = await assetApi.pollSyncBatch(running.batch_id, { shouldStop: () => syncPollingStopped })
     const notice = assetApi.getSyncBatchNotice(batch)
     Message[notice.type](notice.content)
     await loadSyncBatches()
@@ -939,6 +1019,13 @@ async function runCloudSync() {
   } catch (e: unknown) {
     if (assetApi.isAssetSyncInProgressError(e)) {
       Message.warning('该账号正在同步，请稍后重试')
+      return
+    }
+    if (e instanceof assetApi.SyncStillRunningError) {
+      Message.info(e.message)
+      return
+    }
+    if (e instanceof Error && e.message === 'polling cancelled') {
       return
     }
     Message.error(e instanceof Error ? e.message : '同步失败')
@@ -1116,7 +1203,10 @@ async function loadResources() {
   try {
     const res = await assetApi.listResources(selectedAppId.value, {
       page: resourcePagination.current,
-      page_size: resourcePagination.pageSize
+      page_size: resourcePagination.pageSize,
+      cloud_resource_type: resourceFilters.cloud_resource_type.trim() || undefined,
+      region: resourceFilters.region.trim() || undefined,
+      sync_status: resourceFilters.sync_status || undefined
     })
     resources.value = res.items ?? []
     resourcePagination.total = res.total ?? 0
@@ -1130,6 +1220,11 @@ async function loadResources() {
   } finally {
     resourcesLoading.value = false
   }
+}
+
+function applyResourceFilters() {
+  resourcePagination.current = 1
+  loadResources()
 }
 
 function onSelectApplication(record: TableData) {

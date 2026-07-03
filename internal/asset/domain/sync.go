@@ -20,8 +20,11 @@ type SyncBatch struct {
 	StaleCount           int
 	FailedCount          int
 	Message              string
+	Summary              []byte
 	StartedAt            time.Time
 	FinishedAt           *time.Time
+	// FencingToken 是后台同步任务持有的租约所有权令牌；续租和写前校验必须匹配。
+	FencingToken string
 	// LeaseExpiresAt 仅 running 批次写入；终态批次为 nil。
 	// 超时后由下一次同步 reap 为 failed，实现崩溃批次的自动释放，
 	// 避免 TriggerSync 因残留 running 批次永久 409。见 docs/huawei-ces-asset-sync-plan.md §P1。

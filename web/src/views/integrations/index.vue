@@ -246,7 +246,7 @@
             type="warning"
             class="sync-config-alert"
           >
-            混合同步会先按 CES 全量发现资源，再按权限补充详情；增强失败不影响基础资源入库。
+            混合同步会先按指定 CES 资源分组发现资源，再按权限补充已支持类型详情；EVS/VPC 详情增强尚未支持，增强失败不影响基础资源入库。
           </a-alert>
           <a-alert
             v-if="huaweiExtra.sync_mode === 'native'"
