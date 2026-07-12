@@ -2,16 +2,16 @@ package domain
 
 // MetricQuery 指标查询条件，见 ops/cloud-observability-contract.md §5.1。
 type MetricQuery struct {
-	AccountID   string
-	Provider    string
-	Region      string
-	Namespace   string
-	Metric      string
-	Dimensions  map[string]string
-	From        int64
-	To          int64
-	Period      int
-	Aggregator  string
+	AccountID  string
+	Provider   string
+	Region     string
+	Namespace  string
+	Metric     string
+	Dimensions map[string]string
+	From       int64
+	To         int64
+	Period     int
+	Aggregator string
 }
 
 // LogQuery 日志搜索条件，见 ops/cloud-observability-contract.md §5.2。
@@ -29,16 +29,16 @@ type LogQuery struct {
 
 // TraceQuery 链路查询条件，见 ops/cloud-observability-contract.md §5.3。
 type TraceQuery struct {
-	AccountID     string
-	Provider      string
-	Service       string
-	Operation     string
-	TraceID       string
-	ErrorOnly     bool
-	MinLatencyMS  int
-	From          int64
-	To            int64
-	Limit         int
+	AccountID    string
+	Provider     string
+	Service      string
+	Operation    string
+	TraceID      string
+	ErrorOnly    bool
+	MinLatencyMS int
+	From         int64
+	To           int64
+	Limit        int
 }
 
 // TopologyQuery 拓扑查询条件，见 ops/cloud-observability-contract.md §5.4。

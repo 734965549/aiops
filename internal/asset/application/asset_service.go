@@ -18,18 +18,20 @@ type Actor struct {
 
 // AssetService 管理应用与资源注册表。
 type AssetService struct {
-	apps      domain.ApplicationRepository
-	resources domain.ResourceRepository
-	rules     domain.MatchRuleRepository
-	audit     AuditRecorder
+	apps       domain.ApplicationRepository
+	resources  domain.ResourceRepository
+	rules      domain.MatchRuleRepository
+	refChecker ApplicationReferenceChecker
+	audit      AuditRecorder
 }
 
 // NewAssetService 构造资产管理服务。
-func NewAssetService(apps domain.ApplicationRepository, resources domain.ResourceRepository, rules domain.MatchRuleRepository, audit AuditRecorder) *AssetService {
+// refChecker 用于 DeleteApplication 跨上下文引用检查，可为 nil（向后兼容）。
+func NewAssetService(apps domain.ApplicationRepository, resources domain.ResourceRepository, rules domain.MatchRuleRepository, refChecker ApplicationReferenceChecker, audit AuditRecorder) *AssetService {
 	if audit == nil {
 		audit = NoopAuditRecorder{}
 	}
-	return &AssetService{apps: apps, resources: resources, rules: rules, audit: audit}
+	return &AssetService{apps: apps, resources: resources, rules: rules, refChecker: refChecker, audit: audit}
 }
 
 type CreateApplicationInput struct {
@@ -223,6 +225,22 @@ func (s *AssetService) DeleteApplication(ctx context.Context, id string, actor A
 		}
 		if rn > 0 {
 			return apperr.Newf(apperr.CodeFailedPrecondition, "application has %d match rule(s), delete rules first", rn)
+		}
+	}
+	if s.refChecker != nil {
+		alertCount, err := s.refChecker.CountAlertsByApplicationID(ctx, id)
+		if err != nil {
+			return wrapAssetError(err, "count application alert references failed")
+		}
+		if alertCount > 0 {
+			return apperr.Newf(apperr.CodeFailedPrecondition, "application has %d alert reference(s), resolve or close those alerts first", alertCount)
+		}
+		policyCount, err := s.refChecker.CountInspectionPoliciesByApplicationID(ctx, id)
+		if err != nil {
+			return wrapAssetError(err, "count application inspection policy references failed")
+		}
+		if policyCount > 0 {
+			return apperr.Newf(apperr.CodeFailedPrecondition, "application has %d inspection policy reference(s), update those policies first", policyCount)
 		}
 	}
 	if err := s.apps.Delete(ctx, id); err != nil {

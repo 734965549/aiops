@@ -1,11 +1,13 @@
-# Cloud asset sync E2E with REAL huawei_cloud AK/SK account (manual reconciliation).
+# Cloud asset sync E2E with REAL huawei_cloud AK/SK account (automated reconciliation).
 # Not for CI: requires real credentials and CES resource group permissions.
 #
 # Purpose:
 #   1. Trigger asset sync with real Huawei Cloud AK/SK.
 #   2. Print ces_total/discovered/upserted/failed_scopes/enriched/enrichment_failed summaries by region.
 #   3. Count stored assets by cloud_resource_type and print a reconciliation table.
-#   4. Remind operators to compare totals in the CES console.
+#   4. Verify §9.5 three count identities; assert active cloud_sync count == summary.persisted_count only on success batches; reconcile gap vs ces_total.
+#   5. Assert application_id uses 0032 new format cloud-<prefix17>-<sha1_12hex>.
+#   6. Assert batch status consistent with failure indicators (all scope failed -> failed).
 #
 # Prerequisites:
 #   - Backend is running (default http://127.0.0.1:8080), admin/admin123 can login.
@@ -198,6 +200,9 @@ try {
         throw "sync response missing application_id"
     }
     $script:appId = $batch.application_id
+    if ($script:appId -notmatch '^cloud-.{1,17}-[a-f0-9]{12}$') {
+        throw "application_id does not match expected new format cloud-<prefix17>-<sha1_12hex>: $script:appId"
+    }
     if (-not $batch.summary) {
         throw "sync response missing summary"
     }
@@ -212,6 +217,56 @@ try {
     }
     if ($batch.status -eq "partial") {
         Write-Warning "sync status=partial; continue reconciliation with batch message context"
+    }
+
+    # Assert batch status is consistent with failure indicators.
+    # Backend finalize contract (internal/asset/application/sync_service.go):
+    #   failed   (non-cancel): failed_count>0 AND created+updated==0 AND no discovered scope
+    #   partial : failed_count>0 OR max_resources_reached OR product_names_empty
+    #   success : otherwise
+    if ($batch.status -eq "success" -and $batch.failed_count -gt 0) {
+        throw "status=success but failed_count=$($batch.failed_count) > 0"
+    }
+    if ($batch.status -eq "failed" -and ($batch.created_count + $batch.updated_count) -gt 0) {
+        throw "status=failed but created+updated=$($batch.created_count + $batch.updated_count) > 0"
+    }
+    if ($batch.status -eq "partial") {
+        # partial 合法原因对齐 sync_service.go finalize (line 455-458)：
+        #   batch.failed_count>0 || max_resources_reached || product_names_empty
+        #   || enrichment_failed_types || enrichment_failed_count>0
+        #   || invalid_resource_count>0 || conversion_failed_types || query_failed_types
+        # batch.failed_count 已含 failed_scopes 与 persist 失败（见 sync_service.go line 917/824/850），
+        # 故不再单独遍历 scopes[].failed_scopes；顶层聚合字段等价于 finalize 的 anySummaryBool。
+        $hasValidPartialReason = ($batch.failed_count -gt 0)
+        if ($batch.summary) {
+            if ($batch.summary.max_resources_reached) { $hasValidPartialReason = $true }
+            if ($batch.summary.product_names_empty) { $hasValidPartialReason = $true }
+            if (([int]$batch.summary.enrichment_failed_count) -gt 0) { $hasValidPartialReason = $true }
+            if ($batch.summary.enrichment_failed_types -and $batch.summary.enrichment_failed_types.Count -gt 0) { $hasValidPartialReason = $true }
+            if (([int]$batch.summary.invalid_resource_count) -gt 0) { $hasValidPartialReason = $true }
+            if ($batch.summary.conversion_failed_types -and $batch.summary.conversion_failed_types.Count -gt 0) { $hasValidPartialReason = $true }
+            if ($batch.summary.query_failed_types -and $batch.summary.query_failed_types.Count -gt 0) { $hasValidPartialReason = $true }
+        }
+        if (-not $hasValidPartialReason) {
+            throw "status=partial but no valid partial reason (failed_count=0 and none of max_resources_reached/product_names_empty/enrichment_failed/invalid_resource/conversion_failed/query_failed)"
+        }
+    }
+    # "全部 scope 失败"判定对齐后端 failed 条件：每个 scope 都有 failed_scopes 且无任何
+    # successful_types/discovered_count（即无发现成功），同时无资源入库时，才期望 failed。
+    # CES 单 region 聚合多个 namespace，某 scope 可能既有 failed_scopes（部分 namespace 失败）
+    # 又有 successful_types（其他 namespace 成功），此时正确状态是 partial 而非 failed。
+    if ($batch.summary -and $batch.summary.scopes -and $batch.summary.scopes.Count -gt 0) {
+        $allScopesEntirelyFailed = $true
+        foreach ($scope in $batch.summary.scopes) {
+            $hasSuccess = ($scope.successful_types -and $scope.successful_types.Count -gt 0) -or ($scope.discovered_count -gt 0)
+            if (-not $scope.failed_scopes -or $scope.failed_scopes.Count -eq 0 -or $hasSuccess) {
+                $allScopesEntirelyFailed = $false
+                break
+            }
+        }
+        if ($allScopesEntirelyFailed -and ($batch.created_count + $batch.updated_count) -eq 0 -and $batch.status -ne "failed") {
+            throw "all scopes entirely failed (failed_scopes present, no successful_types, nothing upserted) but status=$($batch.status); expected failed"
+        }
     }
 
     Write-Host ""
@@ -236,6 +291,50 @@ try {
     if ($cloudItems.Count -lt 1) {
         throw "expected active cloud_sync resources in application registry"
     }
+    $summary = $batch.summary
+    if (-not $summary) {
+        throw "sync response missing summary"
+    }
+    # §9.5 三条对账恒等式，见 ops/huawei-ces-sync-contract.md §9.5：
+    #   raw_fetched_count        = mapped_count + invalid_resource_count
+    #   mapped_count             = unique_discovered_count + duplicate_count
+    #   unique_discovered_count  = persisted_count + persist_failed_count
+    $rawFetchedCount = [int]$summary.raw_fetched_count
+    $mappedCount = [int]$summary.mapped_count
+    $invalidResourceCount = [int]$summary.invalid_resource_count
+    $uniqueDiscoveredCount = [int]$summary.unique_discovered_count
+    $duplicateCount = [int]$summary.duplicate_count
+    $persistedCount = [int]$summary.persisted_count
+    $persistFailedCount = [int]$summary.persist_failed_count
+    if ($rawFetchedCount -ne ($mappedCount + $invalidResourceCount)) {
+        throw "§9.5 identity 1 broken: raw_fetched_count($rawFetchedCount) != mapped_count($mappedCount) + invalid_resource_count($invalidResourceCount)"
+    }
+    if ($mappedCount -ne ($uniqueDiscoveredCount + $duplicateCount)) {
+        throw "§9.5 identity 2 broken: mapped_count($mappedCount) != unique_discovered_count($uniqueDiscoveredCount) + duplicate_count($duplicateCount)"
+    }
+    if ($uniqueDiscoveredCount -ne ($persistedCount + $persistFailedCount)) {
+        throw "§9.5 identity 3 broken: unique_discovered_count($uniqueDiscoveredCount) != persisted_count($persistedCount) + persist_failed_count($persistFailedCount)"
+    }
+    # failed_count 是批次顶层字段(batch.failed_count)，不在 summary 内；
+    # persist 失败同时计入 batch.failed_count 与 summary.persist_failed_count。
+    $cesTotal = $summary.ces_total
+    if ($null -ne $cesTotal -and $cesTotal -gt 0 -and $uniqueDiscoveredCount -gt $cesTotal) {
+        throw "summary.unique_discovered_count $uniqueDiscoveredCount > ces_total $cesTotal"
+    }
+    if ($null -ne $cesTotal -and $cesTotal -gt 0 -and $uniqueDiscoveredCount -lt $cesTotal) {
+        Write-Warning "unique_discovered_count $uniqueDiscoveredCount is less than ces_total $cesTotal; investigate mapper/gap"
+    }
+    # active 数量强一致断言仅在完整 success 批次做：FinalizeSuccess 会 stale 旧 active 资产并
+    # 激活当批资源，故 active cloud_sync count == persisted_count（success 时 persist_failed_count=0）。
+    # partial 批次保留旧 active 资产，不能做全局相等断言。
+    if ($batch.status -eq "success") {
+        if ($cloudItems.Count -ne $persistedCount) {
+            throw "success batch active cloud_sync count($($cloudItems.Count)) != summary.persisted_count($persistedCount); expected strong consistency after FinalizeSuccess"
+        }
+    } else {
+        Write-Warning "status=$($batch.status): skip active-count strong-consistency assertion (old active assets may be retained)"
+    }
+
     $byRegion = @{}
     $byRegionType = @{}
     foreach ($item in $cloudItems) {

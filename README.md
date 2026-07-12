@@ -145,7 +145,7 @@ make migrate-up
 go run ./cmd/migrate -config configs/config.yaml
 ```
 
-当前迁移文件（`0001` → `0032`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
+当前迁移文件（`0001` -> `0042`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -175,7 +175,18 @@ go run ./cmd/migrate -config configs/config.yaml
 | `0029` | `0029_huawei_legacy_accounts_native_sync_mode.up.sql` | Integration：历史空配置华为账号回填 `sync_mode=native`，修复 0024 空配置被解析为 ces 的灰度策略失效 |
 | `0030` | `0030_asset_sync_batch_fencing_token.up.sql` | Asset：`asset_sync_batch.fencing_token` 与 running 所有权校验索引，防止旧任务租约丢失后继续写入 |
 | `0031` | `0031_asset_sync_batch_summary.up.sql` | Asset：`asset_sync_batch.summary` JSONB 结构化摘要；批次详情页不再把 `message` 当作半结构化协议解析 |
-| `0032` | `0032_cleanup_legacy_cloud_application_ids.up.sql` | Asset：清理旧格式 `cloud-<account_id>` 云同步应用及其关联资源/匹配规则；升级后需重新录入账号并同步 |
+| `0032` | `0032_cleanup_legacy_cloud_application_ids.up.sql` | Asset：破坏性 DELETE 脚本，按 `application_id = 'cloud-' \|\| trim(account_id)` 精确关联 `integration_account` 删除旧格式 `cloud-<account_id>` 应用及其关联的 `asset_resource`/`asset_match_rule`（不处理 `alert_alert`/`inspection_policy`，由 `0039` 补全清理）；覆盖 `account_id` 不含 `-` 与含 `-` 两类账号；保留 `integration_account`，升级后需重新触发云同步（无需重新录入账号）；从未在共享环境执行，所有数据库须从零重建 |
+| `0033` | `0033_asset_sync_batch_triggered_by.up.sql` | Asset：`asset_sync_batch.triggered_by`（触发用户 user_id），reap 崩溃批次时审计 actor 取该字段还原原操作者 |
+| `0034` | `0034_huawei_ces_vpc_subtype_split.up.sql` | Asset：按 `labels->>'dim_name'` 把存量 `SYS.VPC` 的 `vpc` 行回填为 `eip`/`bandwidth`/`subnet`/`peering`，避免子资源语义混合与 ID 碰撞 |
+| `0035` | `0035_cloud_application_id_rune_truncation.up.sql` | Asset：按 sha1 后缀关联账号，把旧实现按字节截取的多字节账号 `cloud-` application_id 无损改写为按字符（rune）截取的 rune 版（与 `cloudApplicationID`/`0032` 的 `left(...,17)` 一致）；同步改写 `asset_resource`/`asset_match_rule`/`alert_alert`/`inspection_policy.scope.application_ids`；纯 ASCII 账号无改写；依赖 pgcrypto |
+| `0036` | `0036_cloud_application_name_include_account.up.sql` | Asset：调整云同步应用名称包含账号信息，避免多账号同名混淆；同步更新历史云同步应用展示与运维排查路径 |
+| `0037` | `0037_fix_huawei_ces_application_ids.up.sql` | Asset：修复 Huawei CES legacy/new application_id 并存时的安全合并；先迁移并去重子表引用，再删除旧应用；仅 legacy 存在时安全重命名，only new 时幂等 |
+| `0038` | `0038_cloud_application_name_normalize.up.sql` | Asset：把反向格式云同步应用名 `<provider>-<account_id>-cloud`（`ensureCloudApplication` 代码曾误用）归一化为契约格式 `<provider>-cloud-<account_id>`；account_id 从 description 提取；仅改 `name` 不改 `application_id`；幂等 |
+| `0039` | `0039_cleanup_orphaned_application_refs.up.sql` | Asset：清理 `0032` DELETE 遗留的 `alert_alert`/`inspection_policy` 孤儿引用，按 `integration_account` 计算 old->new 映射改写为新格式；不依赖 `has_old`；幂等；依赖 pgcrypto |
+| `0040` | `0040_application_ref_integrity_view.up.sql` | Asset：创建持久视图 `v_asset_app_ref_integrity`，暴露 `asset_resource`/`asset_match_rule`/`alert_alert`/`inspection_policy` 中指向不存在 `asset_application` 的孤儿引用；不修改数据，不阻断迁移；幂等（`CREATE OR REPLACE VIEW`）；验收方式 `SELECT * FROM v_asset_app_ref_integrity` 期望 0 行 |
+| `0041` | `0041_legacy_app_id_convergence_guard.up.sql` | Asset：legacy 应用收敛硬阻断守卫，若 `asset_application` 中仍存在 `cloud-<account_id>` 格式 legacy 应用则 `CHECK(n=0)` 失败导致迁移终止；不修改业务数据；若 0041 阻断需排查 0032/0037 收敛失败或代码路径仍在创建旧格式应用，修复后由 `0042` 收口补建 |
+
+| `0042` | `0042_backfill_orphaned_app_refs_and_guard.up.sql` | Asset：补建 0039 改写后仍被引用但不存在的新格式 cloud application ID 对应的 `asset_application` 记录（字段与 `ensureCloudApplication` 一致），并将 `v_asset_app_ref_integrity` 作为硬验收（`CHECK(n=0)`），补建后仍有孤儿则迁移失败；幂等（`ON CONFLICT DO NOTHING`）；依赖 pgcrypto |
 
 详见 `ops/migration-contract.md`。
 
@@ -341,7 +352,7 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 ### 已打通的 P0 闭环
 
 1. **告警接入**：Alertmanager Webhook 入库、去重、状态流转（认领/处理/恢复/关闭）。
-2. **资产匹配**：默认 §9.1 标签匹配 + 用户可配置 glob 规则（`asset_match_rule`）。
+2. **资产匹配**：默认 `ops/huawei-ces-sync-contract.md` §9.1 标签匹配 + 用户可配置 glob 规则（`asset_match_rule`）。
 3. **Runbook 推荐**：按告警标签/严重级别匹配预案，支持多步骤 dry-run 执行。
 4. **执行确认**：`pending_confirm` → 人工 CONFIRM → 执行 → 结果回写告警时间线。
 5. **Dashboard 汇总**：活跃告警、待确认执行、资产计数、最近执行与 Runbook 使用。
@@ -407,5 +418,9 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 
 - `docs/cloud-observability-agent-roadmap.md`：DDD 上下文、阶段步骤、数据模型、工作流和验收策略。
 - `docs/AI运维平台整体流程与调用关系.md`：说明 P0、Integration、Observability、Inspection、Execution Agent 如何串联，改代码前建议先读。
-- `ops/cloud-observability-contract.md`：云账号接入、指标/日志/链路查询、巡检策略和建议到执行的 API 契约草案。
+- `ops/cloud-observability-contract.md`：云账号接入、指标/日志/链路查询、巡检策略和建议到执行的 API 契约。
+- `ops/huawei-ces-sync-contract.md`：华为云 CES 资源同步稳定契约。
+- `docs/adr-huawei-ces-sync.md`：华为云 CES 同步架构决策记录。
+- `docs/huawei-ces-sync-runbook.md`：华为云 CES 同步运维步骤。
+- `docs/huawei-ces-sync-backlog.md`：华为云 CES 同步已知缺口与待办。
 - `ops/execution-agent-contract.md`：执行介体、执行代理、Command Spec、租约、日志回传和确认后执行的契约草案。

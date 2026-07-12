@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -211,7 +212,7 @@ func (r *ResourceRepository) Count(ctx context.Context) (int64, error) {
 	return total, nil
 }
 
-// FindBestMatch 按 §9.1 优先级匹配：pod > node > instance > name。
+// FindBestMatch 按 ops/alert-contract.md §9.1 优先级匹配：pod > node > instance > name。
 func (r *ResourceRepository) FindBestMatch(ctx context.Context, q domain.ResourceMatchQuery) (*domain.Resource, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("asset resource repository is not configured")
@@ -334,6 +335,175 @@ func (r *ResourceRepository) UpsertCloudSyncWithLease(ctx context.Context, res *
 		return err
 	})
 	return created, err
+}
+
+// UpsertCloudSyncBatchWithLease 在同一事务内校验一次租约后批量 upsert 云同步资源。
+// 一个 chunk 仅一次 SELECT ... FOR UPDATE 租约校验 + 一次批量
+// INSERT ... ON CONFLICT DO UPDATE，替代逐资源事务以支撑 max_resources=20000 场景。
+// 通过 RETURNING (xmax = 0) 精确区分新增/更新计数，保留 batch.CreatedCount/UpdatedCount 语义。
+// 批量失败时由调用方回退逐条 UpsertCloudSyncWithLease 以隔离坏数据，本方法不做回退。
+func (r *ResourceRepository) UpsertCloudSyncBatchWithLease(ctx context.Context, resources []*domain.Resource, batchID, fencingToken string) (created, updated int, err error) {
+	if r == nil || r.db == nil {
+		return 0, 0, errors.New("asset resource repository is not configured")
+	}
+	batchID = strings.TrimSpace(batchID)
+	fencingToken = strings.TrimSpace(fencingToken)
+	if batchID == "" || fencingToken == "" {
+		return 0, 0, domain.ErrLeaseLost
+	}
+	if len(resources) == 0 {
+		return 0, 0, nil
+	}
+	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var batch syncBatchModel
+		if err := checkSyncLeaseOwnedForUpdate(tx, batchID, fencingToken, time.Now().UTC(), &batch); err != nil {
+			return err
+		}
+		// 用 batch.StartedAt 钳制 LastSyncedAt，与逐条 UpsertCloudSyncWithLease 语义一致。
+		// 同时过滤 nil resource，避免 upsertCloudSyncBatch 直接解引用原始切片时 panic。
+		cleaned := make([]*domain.Resource, 0, len(resources))
+		for _, res := range resources {
+			if res == nil {
+				continue
+			}
+			if res.LastSyncedAt != nil && batch.StartedAt.After(*res.LastSyncedAt) {
+				res.LastSyncedAt = &batch.StartedAt
+			}
+			cleaned = append(cleaned, res)
+		}
+		c, u, err := r.upsertCloudSyncBatch(ctx, tx, cleaned)
+		if err != nil {
+			return err
+		}
+		created, updated = c, u
+		return nil
+	})
+	return created, updated, err
+}
+
+// PatchCloudSyncLabelsBatchWithLease 在同一事务内校验一次租约后，按 cloud key 批量更新已落库云同步资源的 labels。
+// 仅更新 source='cloud_sync' 且本轮已 upsert（last_synced_at >= batch.StartedAt）的 active 资源，
+// 用于 hybrid 第二阶段增强 label 回写。sync_batch_id 在 FinalizeSuccess 才提升为当前批次，故这里用
+// last_synced_at >= StartedAt 识别本轮资源（与 stale 标记的 syncedSince 阈值互补），见 ops/huawei-ces-sync-contract.md §8.2/§13.1。
+// 注意：本方法直写 SQL 绕过 GORM 钩子，故显式维护 updated_at。只 patch labels 列，不触碰其它字段，
+// 保证不影响 created/updated 计数与 stale 门控。
+func (r *ResourceRepository) PatchCloudSyncLabelsBatchWithLease(ctx context.Context, patches []domain.CloudSyncLabelPatch, batchID, fencingToken string) (int, error) {
+	if r == nil || r.db == nil {
+		return 0, errors.New("asset resource repository is not configured")
+	}
+	batchID = strings.TrimSpace(batchID)
+	fencingToken = strings.TrimSpace(fencingToken)
+	if batchID == "" || fencingToken == "" {
+		return 0, domain.ErrLeaseLost
+	}
+	if len(patches) == 0 {
+		return 0, nil
+	}
+	updated := 0
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var batch syncBatchModel
+		if err := checkSyncLeaseOwnedForUpdate(tx, batchID, fencingToken, time.Now().UTC(), &batch); err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		for _, p := range patches {
+			labels, mErr := marshalResourceLabels(p.Labels)
+			if mErr != nil {
+				return mErr
+			}
+			q := tx.WithContext(ctx).Model(&resourceModel{}).
+				Where("source = ? AND integration_account_id = ? AND cloud_resource_type = ? AND cloud_resource_id = ? AND region = ? AND sync_status = ?",
+					domain.ResourceSourceCloudSync,
+					p.IntegrationAccountID, p.CloudResourceType, p.CloudResourceID, p.Region,
+					domain.SyncStatusActive)
+			if !batch.StartedAt.IsZero() {
+				q = q.Where("last_synced_at >= ?", batch.StartedAt)
+			}
+			result := q.Updates(map[string]any{
+				"labels":     labels,
+				"updated_at": now,
+			})
+			if result.Error != nil {
+				return result.Error
+			}
+			updated += int(result.RowsAffected)
+		}
+		return nil
+	})
+	return updated, err
+}
+
+// upsertCloudSyncBatch 用原生 SQL 执行批量 upsert。
+// ON CONFLICT 推断 0026 部分唯一索引 (integration_account_id, cloud_resource_type,
+// cloud_resource_id, region) WHERE source='cloud_sync' AND cloud_resource_id <> ”.
+// DO UPDATE 的字段集合与 updateCloudSync 完全一致（不含 sync_batch_id、created_at、
+// resource_id、source），保证批量与逐条语义一致。RETURNING (xmax = 0) 区分新增/更新。
+// 注意：本方法直写 SQL，绕过 GORM 钩子，故显式维护 created_at/updated_at。
+func (r *ResourceRepository) upsertCloudSyncBatch(ctx context.Context, tx *gorm.DB, resources []*domain.Resource) (created, updated int, err error) {
+	const colsPerRow = 19
+	n := len(resources)
+	placeholders := make([]string, n)
+	args := make([]any, 0, n*colsPerRow)
+	now := time.Now().UTC()
+	for i, res := range resources {
+		labels, lErr := marshalResourceLabels(res.Labels)
+		if lErr != nil {
+			return 0, 0, fmt.Errorf("marshal labels for resource %s: %w", res.CloudResourceID, lErr)
+		}
+		base := i * colsPerRow
+		placeholders[i] = fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+			base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9,
+			base+10, base+11, base+12, base+13, base+14, base+15, base+16, base+17, base+18, base+19)
+		args = append(args,
+			res.ID, res.ApplicationID, res.Name, res.ResourceType, res.Namespace,
+			res.Pod, res.Node, res.Instance, domain.ResourceSourceCloudSync,
+			res.IntegrationAccountID, res.CloudResourceID, res.CloudResourceType, res.Region,
+			res.SyncStatus, res.LastSyncedAt, res.SyncBatchID, labels, now, now,
+		)
+	}
+	query := fmt.Sprintf(`INSERT INTO asset_resource (
+    resource_id, application_id, name, resource_type, namespace, pod, node, instance, source,
+    integration_account_id, cloud_resource_id, cloud_resource_type, region,
+    sync_status, last_synced_at, sync_batch_id, labels, created_at, updated_at
+) VALUES %s
+ON CONFLICT (integration_account_id, cloud_resource_type, cloud_resource_id, region)
+    WHERE source = 'cloud_sync' AND cloud_resource_id <> ''
+DO UPDATE SET
+    name = EXCLUDED.name,
+    resource_type = EXCLUDED.resource_type,
+    namespace = EXCLUDED.namespace,
+    pod = EXCLUDED.pod,
+    node = EXCLUDED.node,
+    instance = EXCLUDED.instance,
+    integration_account_id = EXCLUDED.integration_account_id,
+    cloud_resource_id = EXCLUDED.cloud_resource_id,
+    cloud_resource_type = EXCLUDED.cloud_resource_type,
+    region = EXCLUDED.region,
+    sync_status = EXCLUDED.sync_status,
+    last_synced_at = EXCLUDED.last_synced_at,
+    labels = EXCLUDED.labels,
+    updated_at = EXCLUDED.updated_at
+RETURNING (xmax = 0) AS inserted`, strings.Join(placeholders, ","))
+	rows, err := tx.WithContext(ctx).Raw(query, args...).Rows()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var inserted bool
+		if err := rows.Scan(&inserted); err != nil {
+			return 0, 0, err
+		}
+		if inserted {
+			created++
+		} else {
+			updated++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	return created, updated, nil
 }
 
 func promoteSuccessfulSyncBatch(ctx context.Context, db *gorm.DB, accountID, batchID string, syncedSince, now time.Time) (int64, error) {

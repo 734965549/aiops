@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/734965549/aiops/internal/integration/domain"
@@ -248,7 +249,7 @@ func TestCreateStoresExtraConfig(t *testing.T) {
 }
 
 // TestCreateHuaweiEmptyExtraConfigDefaultsToCES 验证华为账号未传 extra_config 时显式落库 ces，
-// 而不是 {}（后者会被解析器解释为 ces，但显式写入避免依赖默认值，符合 §17 灰度策略：新账号默认 ces）。
+// 而不是 {}（后者会被解析器解释为 ces，但显式写入避免依赖默认值，符合 docs/huawei-ces-sync-runbook.md §2 灰度策略：新账号默认 ces）。
 func TestCreateHuaweiEmptyExtraConfigDefaultsToCES(t *testing.T) {
 	svc, accounts, _ := newTestAccountService(t)
 	dto, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
@@ -517,5 +518,74 @@ func TestSanitizeConnectivityMessageRedactsCredentialValues(t *testing.T) {
 	got = sanitizeConnectivityMessage("provider timeout")
 	if got != "provider timeout" {
 		t.Fatalf("expected benign message preserved, got %q", got)
+	}
+}
+
+func TestNormalizeRegionsDropsDangerousCharacters(t *testing.T) {
+	in := []string{"cn-north-4", "evil.com/", "cn south", "cn@north", "cn?north", "ap-southeast-1", "  ", "cn-north-4"}
+	got := normalizeRegions(in)
+	// 危险字符被丢弃，合法 region 去重后保留并排序
+	if len(got) != 2 {
+		t.Fatalf("expected 2 safe regions, got %v", got)
+	}
+	if got[0] != "ap-southeast-1" || got[1] != "cn-north-4" {
+		t.Fatalf("unexpected regions: %v", got)
+	}
+}
+
+func TestNormalizeRegionsAllDangerousYieldsEmpty(t *testing.T) {
+	got := normalizeRegions([]string{"evil.com/", "cn?north", "a#b", "x@y"})
+	if len(got) != 0 {
+		t.Fatalf("expected empty slice for all-dangerous input, got %v", got)
+	}
+}
+
+func TestValidateRegionsAcceptsValidInput(t *testing.T) {
+	cases := []struct {
+		provider domain.ProviderType
+		regions  []string
+	}{
+		{domain.ProviderHuaweiCloud, []string{"cn-north-4", "ap-southeast-1"}},
+		{domain.ProviderHuaweiCloud, []string{"  cn-north-4  ", ""}},
+		{domain.ProviderPrometheus, []string{"CN-North-4"}},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			if err := validateRegions(tc.provider, tc.regions); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRegionsRejectsHuaweiInvalidRegions(t *testing.T) {
+	cases := []struct {
+		name   string
+		region string
+	}{
+		{"uppercase", "CN-North-4"},
+		{"leading hyphen", "-cn-north-4"},
+		{"trailing hyphen", "cn-north-4-"},
+		{"double hyphen", "cn--north"},
+		{"underscore", "cn_north"},
+		{"slash payload", "evil.com/"},
+		{"too long", strings.Repeat("a", huaweiRegionMaxLen+1)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateRegions(domain.ProviderHuaweiCloud, []string{tc.region}); err == nil {
+				t.Fatalf("expected error for region %q, got nil", tc.region)
+			}
+		})
+	}
+}
+
+func TestValidateRegionsRejectsDangerousCharactersForOtherProviders(t *testing.T) {
+	for _, p := range []domain.ProviderType{domain.ProviderPrometheus, domain.ProviderSigNoz} {
+		t.Run(string(p), func(t *testing.T) {
+			if err := validateRegions(p, []string{"evil.com/"}); err == nil {
+				t.Fatalf("expected error for dangerous region on %s", p)
+			}
+		})
 	}
 }

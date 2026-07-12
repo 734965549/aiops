@@ -108,6 +108,8 @@
 - `migration`
   - 反映迁移是否追平。
   - `details` 用于展示迁移目录、最新版本、已应用版本、待执行数量。
+  - `checksum_drifts`：已应用迁移文件的 checksum 与当前文件内容不一致的列表。非空时 `status` 为 `degraded`，`error` 为 `checksum drift detected`。每项包含 `version`、`name`、`stored`（数据库中记录的 checksum）、`current`（当前文件 hash）。空 checksum（旧版 runner 未记录）也视为 drift。
+  - `up_to_date` 仍可为 `true`（所有文件已应用），但 `checksum_drifts` 非空时 `/readyz` 子项仍为 `degraded`，顶层为 `not_ready`。
 
 - `db`
   - 反映 PostgreSQL 连接与 ping 状态。

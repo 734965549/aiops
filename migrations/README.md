@@ -40,16 +40,29 @@
 0028_asset_sync_batch_running_mutex.up.sql
 0029_huawei_legacy_accounts_native_sync_mode.up.sql
 0030_asset_sync_batch_fencing_token.up.sql
+0031_asset_sync_batch_summary.up.sql
+0032_cleanup_legacy_cloud_application_ids.up.sql
+0033_asset_sync_batch_triggered_by.up.sql
+0034_huawei_ces_vpc_subtype_split.up.sql
+0035_cloud_application_id_rune_truncation.up.sql
+0036_cloud_application_name_include_account.up.sql
+0037_fix_huawei_ces_application_ids.up.sql
+0038_cloud_application_name_normalize.up.sql
+0039_cleanup_orphaned_application_refs.up.sql
+0040_application_ref_integrity_view.up.sql
+0041_legacy_app_id_convergence_guard.up.sql
+0042_backfill_orphaned_app_refs_and_guard.up.sql
 ```
 
 说明：
 
 - `*.up.sql` 是真实建表、建索引、种子数据和权限数据。
 - `schema_migrations` 是 `/readyz` 判断数据库是否追平当前版本的账本，由自研 runner 维护；如果业务 SQL 已执行但账本没写，应用会认为 migration pending。
+- 开发 / 测试阶段可以按版本顺序重复跑同一批迁移脚本，但每条 `*.up.sql` 都必须做到幂等或顺序重跑安全。注意 `0032_cleanup_legacy_cloud_application_ids.up.sql` 是破坏性清理脚本（删除旧格式应用及关联数据），不是数据搬迁；该迁移从未在任何共享环境执行过，当前精确匹配版本为开发期最终版，所有数据库须从零重建，不得基于曾执行过旧版 0032 的数据库升级；后续修复走 `0037_fix_huawei_ces_application_ids.up.sql` 及后续版本。
 - 禁止在生产或预发环境手工 `psql -f migrations/*.up.sql`、手工执行 `manual_schema_migrations.sql`，或手工写入 / 修改 `schema_migrations`。
 - `*.down.sql` 只作为人工回滚参考，不由应用自动执行。
 - `0016_seed_default_admin_user.up.sql` 是 DBA 初始化入口账号兜底：创建/重置 `admin/admin123`，并把 `admin` 角色绑定到当前全部权限、数据范围和 AI 工具权限。只执行 `0001/0002` 不算完整初始化。
-- 当前仓库未包含 `0021` 文件；runner 会按实际文件名顺序执行到 `0030`，唔好自己补一条空账本记录。
+- 当前仓库未包含 `0021` 文件；runner 会按实际文件名顺序执行到 `0042`，唔好自己补一条空账本记录。
 - Integration、Observability、Inspection 同 Execution Agent 点样串到主链路，睇 `docs/AI运维平台整体流程与调用关系.md`。
 
 执行命令：

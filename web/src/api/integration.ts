@@ -8,6 +8,8 @@ export type HuaweiCloudSyncMode = 'ces' | 'hybrid' | 'native'
 export interface HuaweiCloudRegionProject {
   region: string
   project_id: string
+  resource_group_id?: string
+  resource_group_name?: string
 }
 
 export interface HuaweiCloudExtraConfig {

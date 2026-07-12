@@ -1,0 +1,267 @@
+# ============================================================================
+# AI 运维平台 - 生产环境 Docker Compose 配置
+# ============================================================================
+#
+# !! 这是生产配置，不是 dev 配置 !!
+# !! 请勿用于本地开发联调，本地开发请使用 docker-compose.yml + docker-compose.dev.yml !!
+#
+# ----------------------------------------------------------------------------
+# 使用前必须准备 .env 文件
+# ----------------------------------------------------------------------------
+#
+#   1. 复制示例文件：
+#        cp deployments/.env.production.example deployments/.env.production
+#
+#   2. 逐项填写 .env.production 中的所有必填变量（标注 [必填] 的项不可留空）。
+#      所有密钥必须使用 openssl rand -base64 32 或等效方式生成强随机值。
+#
+#   3. 启动服务：
+#        docker compose --env-file deployments/.env.production \
+#          -f deployments/docker-compose.prod.yml up -d
+#
+# ----------------------------------------------------------------------------
+# 必须设置的环境变量（在 .env.production 中）
+# ----------------------------------------------------------------------------
+#
+#   [必填] POSTGRES_PASSWORD          - PostgreSQL 数据库密码（强随机值）
+#   [必填] AIOPS_AUTH__JWT_SECRET      - JWT 签名密钥（>=32 字节高熵随机值）
+#   [必填] AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY
+#                                    - 接入凭据加密密钥（独立强随机值，
+#                                      不能与 JWT_SECRET 相同）
+#   [建议] AIOPS_CORS__ALLOW_ORIGINS   - 前端域名（分域部署时必填，
+#                                      同源反代可留空）
+#   [可选] AIOPS_VERSION              - 镜像版本标签（默认 latest）
+#   [可选] AIOPS_REDIS__PASSWORD      - Redis 密码（生产建议设置）
+#
+# ----------------------------------------------------------------------------
+# 执行顺序：先迁移，再启动 API
+# ----------------------------------------------------------------------------
+#
+#   生产环境 AIOPS_DATABASE__AUTO_MIGRATE=false，API 不会自动建表。
+#   必须在启动 API 之前完成数据库迁移：
+#
+#   步骤 1：启动中间件（PostgreSQL + Redis）
+#     docker compose --env-file deployments/.env.production \
+#       -f deployments/docker-compose.prod.yml up -d postgres redis
+#
+#   步骤 2：执行数据库迁移（使用临时容器或本地 migrate 命令）
+#     # 方式 A：使用镜像内置 migrate 子命令（推荐）
+#     docker compose --env-file deployments/.env.production \
+#       -f deployments/docker-compose.prod.yml run --rm api \
+#       /app/aiops-api -migrate
+#
+#     # 方式 B：本地构建后执行
+#     # go run ./cmd/migrate -config <prod-config>
+#
+#   步骤 3：启动 API
+#     docker compose --env-file deployments/.env.production \
+#       -f deployments/docker-compose.prod.yml up -d api
+#
+#   步骤 4：验证就绪
+#     curl -s http://127.0.0.1:8080/readyz | jq .
+#     # 确认 data.status == "ready"，且 migration/db/redis 均为 ok
+#
+#   步骤 5：验证存活
+#     curl -s http://127.0.0.1:8080/healthz
+#     # 确认 data.status == "ok"
+#
+# ----------------------------------------------------------------------------
+# 安全要点
+# ----------------------------------------------------------------------------
+#
+#   - PostgreSQL / Redis 端口不映射到宿主机，仅在 Docker 内部网络通信。
+#   - 数据库密码、JWT secret、凭据加密密钥均通过 .env.production 注入，不硬编码。
+#   - bootstrap 管理员已关闭（username/password 留空），须由运维流程创建管理员。
+#   - auto_migrate=false，建表由 DBA 或发布流程显式执行。
+#   - Redis required=true，Redis 不可用时拒绝启动。
+#   - CORS 禁止通配符 *，须显式配置前端域名。
+#   - 日志格式 json，级别 info，便于日志采集系统解析。
+#
+# ============================================================================
+
+x-aiops-env: &aiops-env
+  AIOPS_APP__NAME: aiops
+  AIOPS_APP__ENV: prod
+  AIOPS_APP__TIMEZONE: Asia/Shanghai
+
+  AIOPS_SERVER__HOST: 0.0.0.0
+  AIOPS_SERVER__PORT: "8080"
+  AIOPS_SERVER__READ_TIMEOUT_S: "15"
+  AIOPS_SERVER__WRITE_TIMEOUT_S: "30"
+  AIOPS_SERVER__SHUTDOWN_TIMEOUT_S: "10"
+
+  # 生产日志：json 格式 + info 级别，便于 ELK/Loki 等采集系统解析。
+  AIOPS_LOGGER__LEVEL: info
+  AIOPS_LOGGER__FORMAT: json
+  AIOPS_LOGGER__OUTPUT: stdout
+
+  # 数据库配置：密码从 .env.production 注入，不使用默认值。
+  AIOPS_DATABASE__DRIVER: postgres
+  AIOPS_DATABASE__HOST: postgres
+  AIOPS_DATABASE__PORT: "5432"
+  AIOPS_DATABASE__USER: ${POSTGRES_USER:-aiops}
+  AIOPS_DATABASE__PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+  AIOPS_DATABASE__NAME: ${POSTGRES_DB:-aiops}
+  AIOPS_DATABASE__SSL_MODE: ${AIOPS_DATABASE__SSL_MODE:-disable}
+  AIOPS_DATABASE__MAX_IDLE_CONNS: "20"
+  AIOPS_DATABASE__MAX_OPEN_CONNS: "100"
+  AIOPS_DATABASE__CONN_MAX_LIFETIME_S: "60"
+  AIOPS_DATABASE__LOG_LEVEL: warn
+  # 生产关闭自动迁移；建表由 DBA 或发布流水线在 API 启动前显式执行。
+  AIOPS_DATABASE__AUTO_MIGRATE: "false"
+
+  # Redis：生产必须 required=true，不可用时拒绝启动。
+  AIOPS_REDIS__ADDR: redis:6379
+  AIOPS_REDIS__PASSWORD: ${AIOPS_REDIS__PASSWORD:-}
+  AIOPS_REDIS__DB: "0"
+  AIOPS_REDIS__POOL_SIZE: "50"
+  AIOPS_REDIS__REQUIRED: "true"
+
+  # 认证：JWT secret 从 .env.production 注入，不使用 dev 占位值。
+  AIOPS_AUTH__JWT_SECRET: ${AIOPS_AUTH__JWT_SECRET:?AIOPS_AUTH__JWT_SECRET is required}
+  AIOPS_AUTH__JWT_ISSUER: aiops
+  AIOPS_AUTH__ACCESS_TTL_M: "120"
+  AIOPS_AUTH__REFRESH_TTL_H: "168"
+  # 生产关闭 bootstrap 管理员；管理员须由运维流程或发布 SQL 创建。
+  AIOPS_AUTH__BOOTSTRAP_USERNAME: ""
+  AIOPS_AUTH__BOOTSTRAP_PASSWORD: ""
+  AIOPS_AUTH__BOOTSTRAP_DISPLAY_NAME: ""
+
+  # Integration 凭据加密密钥：从 .env.production 注入，非 dev 环境必填。
+  # 用于加密云账号 AK/SK、Token 等接入凭据，必须是独立强随机值。
+  AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY: ${AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY:?AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY is required}
+  AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY_VERSION: "1"
+
+  # CORS：生产禁止使用通配符 *，须显式配置实际前端 origin。
+  # 分域部署（前端 https://app.example.com，API https://api.example.com）时必填。
+  # 同源反代（Nginx 将 /api/* 反代到 API）时可不设，浏览器同源无 CORS。
+  # 多个 origin 用英文逗号分隔，例如：https://app.example.com,https://admin.example.com
+  AIOPS_CORS__ALLOW_ORIGINS: ${AIOPS_CORS__ALLOW_ORIGINS:-}
+  AIOPS_CORS__ALLOW_CREDENTIALS: "true"
+
+  # 执行代理注册令牌：生产建议设置强随机值。
+  AIOPS_EXECUTION__AGENT_REGISTER_TOKEN: ${AIOPS_EXECUTION__AGENT_REGISTER_TOKEN:-}
+  AIOPS_EXECUTION__LEASE_TTL_SECONDS: "300"
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aiops-postgres-prod
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-aiops}
+      POSTGRES_USER: ${POSTGRES_USER:-aiops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      TZ: Asia/Shanghai
+    # 生产不映射端口到宿主机，仅在内部网络通信。
+    # ports: []  -- intentionally omitted
+    volumes:
+      - aiops-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aiops} -d ${POSTGRES_DB:-aiops}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    logging: *default-logging
+    networks:
+      - aiops-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: aiops-redis-prod
+    restart: always
+    # 生产建议设置 Redis 密码（通过 command 传入）。
+    command: >
+      sh -c '
+        if [ -n "$REDIS_PASSWORD" ]; then
+          redis-server --requirepass "$REDIS_PASSWORD" --appendonly yes;
+        else
+          redis-server --appendonly yes;
+        fi
+      '
+    environment:
+      REDIS_PASSWORD: ${AIOPS_REDIS__PASSWORD:-}
+    # 生产不映射端口到宿主机，仅在内部网络通信。
+    # ports: []  -- intentionally omitted
+    volumes:
+      - aiops-redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    logging: *default-logging
+    networks:
+      - aiops-net
+
+  api:
+    image: aiops-api:${AIOPS_VERSION:-latest}
+    container_name: aiops-api-prod
+    restart: always
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+      args:
+        VERSION: ${AIOPS_VERSION:-latest}
+        COMMIT: ${AIOPS_COMMIT:-none}
+        BUILD_AT: ${AIOPS_BUILD_AT:-unknown}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *aiops-env
+    ports:
+      - "8080:8080"
+    # 生产使用镜像内置的 migrations 和配置，不挂载本地目录。
+    # migrations 已在 Dockerfile 构建期 COPY 到 /app/migrations。
+    # 配置全部通过环境变量注入，不需要 config.yaml。
+    # volumes: []  -- intentionally omitted
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz | grep -q '\"status\":\"ready\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 4G
+        reservations:
+          cpus: "1.0"
+          memory: 1G
+    logging: *default-logging
+    networks:
+      - aiops-net
+
+volumes:
+  aiops-pg-data:
+  aiops-redis-data:
+
+networks:
+  aiops-net:
+    driver: bridge

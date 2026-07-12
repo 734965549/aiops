@@ -275,6 +275,27 @@ func (r *assetHTTPTestResRepo) UpsertCloudSyncWithLease(_ context.Context, res *
 	return true, r.Create(context.Background(), res)
 }
 
+// UpsertCloudSyncBatchWithLease mock 批量 upsert：逐条复用 UpsertCloudSyncWithLease，
+// 精确返回 created/updated 计数，供 HTTP 层测试覆盖批量路径。
+func (r *assetHTTPTestResRepo) UpsertCloudSyncBatchWithLease(ctx context.Context, resources []*assetdomain.Resource, batchID, fencingToken string) (int, int, error) {
+	var created, updated int
+	for _, res := range resources {
+		if res == nil {
+			continue
+		}
+		c, err := r.UpsertCloudSyncWithLease(ctx, res, batchID, fencingToken)
+		if err != nil {
+			return created, updated, err
+		}
+		if c {
+			created++
+		} else {
+			updated++
+		}
+	}
+	return created, updated, nil
+}
+
 func (r *assetHTTPTestResRepo) MarkStaleByAccountScopeExceptBatchWithLease(_ context.Context, accountID, region, cloudResourceType, batchID, _ string) (int64, error) {
 	var n int64
 	for i := range r.rows {
@@ -313,6 +334,26 @@ func (r *assetHTTPTestResRepo) MarkStaleByAccountRegionExceptTypesWithLease(_ co
 		}
 	}
 	return n, nil
+}
+
+// PatchCloudSyncLabelsBatchWithLease mock 带 lease 校验的批量 label 回写：按 cloud key 命中 active 资源后整体替换 labels。
+func (r *assetHTTPTestResRepo) PatchCloudSyncLabelsBatchWithLease(_ context.Context, patches []assetdomain.CloudSyncLabelPatch, _, _ string) (int, error) {
+	updated := 0
+	for _, p := range patches {
+		for i := range r.rows {
+			row := &r.rows[i]
+			if row.Source == assetdomain.ResourceSourceCloudSync &&
+				row.IntegrationAccountID == p.IntegrationAccountID &&
+				row.CloudResourceType == p.CloudResourceType &&
+				row.CloudResourceID == p.CloudResourceID &&
+				row.Region == p.Region &&
+				row.SyncStatus == assetdomain.SyncStatusActive {
+				row.Labels = p.Labels
+				updated++
+			}
+		}
+	}
+	return updated, nil
 }
 
 type assetHTTPTestRuleRepo struct {
@@ -426,7 +467,7 @@ func newAssetHTTPEngine(t *testing.T, authz *fakeAssetHTTPAuthorizer) (*gin.Engi
 	appRepo := &assetHTTPTestAppRepo{}
 	resRepo := &assetHTTPTestResRepo{}
 	ruleRepo := &assetHTTPTestRuleRepo{}
-	svc := assetapp.NewAssetService(appRepo, resRepo, ruleRepo, assetapp.NoopAuditRecorder{})
+	svc := assetapp.NewAssetService(appRepo, resRepo, ruleRepo, nil, assetapp.NoopAuditRecorder{})
 	matchRules := assetapp.NewMatchRuleService(ruleRepo, appRepo, resRepo, assetapp.NoopAuditRecorder{})
 	handler := NewHandler(svc, matchRules, nil)
 	registrar := NewRegistrar(handler, authz)

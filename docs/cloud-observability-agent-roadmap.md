@@ -357,7 +357,7 @@ Recommendation
 
 ## 9. API 与前端页面规划
 
-详细 API 草案见 `ops/cloud-observability-contract.md`。
+详细 API 契约见 `ops/cloud-observability-contract.md`。
 
 全项目串联图见 `docs/AI运维平台整体流程与调用关系.md`。该文档将 P0 告警闭环、Integration 账号接入、Observability 查询、Inspection 巡检、Recommendation 转 Execution、Execution Agent 派发关系放在同一张图中，方便评审调用边界。
 
@@ -446,7 +446,7 @@ Recommendation
 - 华为云资产同步的口径为**指定 CES 资源分组**下资源（默认候选名“全部资源”需用户在 CES 控制台预先创建；CES 官方 API 只返回用户创建的资源分组，不存在“总览全量”隐式口径，未命中指定组即失败，不回退最大资源组）。
 - 产品分层采用 `ces` / `hybrid` / `native` 三种同步模式：`ces` 为 P0/P1 默认模式，同步范围为指定资源分组下资源；`hybrid` 为 P2 增强模式，在指定资源分组发现后补充原生云服务详情；`native` 仅兼容旧 ECS/CCE/RDS/ELB 路径。
 - 当前 ECS/CCE/RDS/ELB 原生 API 同步只作为阶段 2 已落地能力、`hybrid` 增强路径或 `native` 兼容路径，不再作为完整性判断口径。
-- CES 资源分组同步的实现顺序、权限、分页、资源映射、stale 语义和验收标准见 `docs/huawei-ces-asset-sync-plan.md`。
+- CES 资源分组同步的实现顺序、权限、分页、资源映射、stale 语义和验收标准见 `ops/huawei-ces-sync-contract.md`。
 
 验收：
 

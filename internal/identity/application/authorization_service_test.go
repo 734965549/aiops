@@ -307,6 +307,96 @@ func TestMatchDataScope_TeamRegionTagAndCustom(t *testing.T) {
 	}
 }
 
+func TestResolveAccessibleOwnerTeams_NoScopesReturnsHasAll(t *testing.T) {
+	repo := &fakeAccessRepo{
+		roles: []domain.Role{{ID: "r1", Code: "admin"}},
+		perms: []domain.Permission{{Code: "app:assets:read"}},
+	}
+	svc := NewAuthorizationService(repo)
+	teams, hasAll, err := svc.ResolveAccessibleOwnerTeams(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasAll {
+		t.Fatal("expected hasAll=true when no data scopes configured")
+	}
+	if len(teams) != 0 {
+		t.Fatalf("expected no teams, got %v", teams)
+	}
+}
+
+func TestResolveAccessibleOwnerTeams_AllScopeReturnsHasAll(t *testing.T) {
+	repo := &fakeAccessRepo{
+		roles:  []domain.Role{{ID: "r1", Code: "admin"}},
+		perms:  []domain.Permission{{Code: "app:assets:read"}},
+		scopes: []domain.DataScope{{Code: "all-data", ScopeType: domain.DataScopeAll}},
+	}
+	svc := NewAuthorizationService(repo)
+	teams, hasAll, err := svc.ResolveAccessibleOwnerTeams(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasAll {
+		t.Fatal("expected hasAll=true for all scope")
+	}
+	if len(teams) != 0 {
+		t.Fatalf("expected no teams for all scope, got %v", teams)
+	}
+}
+
+func TestResolveAccessibleOwnerTeams_TeamScopeReturnsTeams(t *testing.T) {
+	repo := &fakeAccessRepo{
+		roles: []domain.Role{{ID: "r1", Code: "operator"}},
+		perms: []domain.Permission{{Code: "app:assets:read"}},
+		scopes: []domain.DataScope{{
+			Code: "team-sre", ScopeType: domain.DataScopeTeam,
+			ScopeConfig: map[string]any{"team_ids": []any{"sre", "dba"}},
+		}},
+	}
+	svc := NewAuthorizationService(repo)
+	teams, hasAll, err := svc.ResolveAccessibleOwnerTeams(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hasAll {
+		t.Fatal("expected hasAll=false for team scope")
+	}
+	if len(teams) != 2 {
+		t.Fatalf("expected 2 teams [sre dba], got %v", teams)
+	}
+}
+
+func TestResolveAccessibleOwnerTeams_RegionOnlyReturnsEmptyNotAll(t *testing.T) {
+	repo := &fakeAccessRepo{
+		roles: []domain.Role{{ID: "r1", Code: "operator"}},
+		perms: []domain.Permission{{Code: "app:assets:read"}},
+		scopes: []domain.DataScope{{
+			Code: "region-cn", ScopeType: domain.DataScopeRegion,
+			ScopeConfig: map[string]any{"regions": []any{"cn-north-4"}},
+		}},
+	}
+	svc := NewAuthorizationService(repo)
+	teams, hasAll, err := svc.ResolveAccessibleOwnerTeams(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hasAll {
+		t.Fatal("expected hasAll=false for region-only scope")
+	}
+	if len(teams) != 0 {
+		t.Fatalf("expected no teams for region-only scope, got %v", teams)
+	}
+}
+
+func TestResolveAccessibleOwnerTeams_EmptyUserIDDenied(t *testing.T) {
+	repo := &fakeAccessRepo{roles: []domain.Role{{ID: "r1", Code: "admin"}}}
+	svc := NewAuthorizationService(repo)
+	_, _, err := svc.ResolveAccessibleOwnerTeams(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error for empty user ID")
+	}
+}
+
 func matchDataScopeForTest(in AuthorizationInput, scopes []domain.DataScope) bool {
 	return NewAuthorizationService(&fakeAccessRepo{}).matchDataScope(in, scopes)
 }

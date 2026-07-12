@@ -52,7 +52,7 @@ type updateAccountRequest struct {
 	ExtraConfig map[string]any  `json:"extra_config"`
 }
 
-// ListAccounts GET /api/integrations/accounts（§4.2 分页列表）。
+// ListAccounts GET /api/integrations/accounts（ops/cloud-observability-contract.md §4.2 分页列表）。
 func (h *Handler) ListAccounts(c *gin.Context) {
 	if h.accounts == nil {
 		httpx.FailWith(c, apperr.CodeUnavailable, "integration service is not enabled")

@@ -9,6 +9,7 @@ import (
 	ccemodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/cce/v3/model"
 	dcsmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/dcs/v2/model"
 	ecsmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/ecs/v2/model"
+	eipmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/eip/v2/model"
 	elbmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/elb/v3/model"
 	evsmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/evs/v2/model"
 	kafkamodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/kafka/v2/model"
@@ -154,8 +155,10 @@ func mapCCECluster(region string, cluster ccemodel.Cluster) domain.CloudResource
 }
 
 // mapEVSVolume 将 EVS VolumeDetail 映射为 CloudResource，用于 hybrid enrichment。
-// ProviderRef 取 volume name（对齐 CES SYS.EVS 的 dim_name=disk_name）；增强 label 含
-// volume_id/volume_type/size_gb/attached_to/az/created_at/charging_mode。
+// ProviderRef 取 volume name，原意对齐 CES SYS.EVS 的 dim_name=disk_name，但二者格式不一致
+// （CES disk_name 实为「服务器ID-盘符」/「服务器ID-volume-卷ID」，非卷显示名称），属于尝试性
+// 匹配键，hybrid enrichment 暂不保证命中（已知缺口，见 docs/huawei-ces-sync-backlog.md EVS 条目）。
+// 增强 label 含 volume_id/volume_type/size_gb/attached_to/az/created_at/charging_mode。
 // charging_mode 从 Metadata.orderID 推断：有值=包周期(prepaid)，无值=按需(postpaid)。
 func mapEVSVolume(region string, vol evsmodel.VolumeDetail) domain.CloudResource {
 	id := strings.TrimSpace(vol.Id)
@@ -231,6 +234,149 @@ func mapVPC(region string, v vpcmodel.Vpc, subnetCount int) domain.CloudResource
 		Type:        "vpc",
 		Region:      region,
 		Status:      v.Status.Value(),
+		ProviderRef: id,
+		Labels:      labels,
+	}
+}
+
+// mapEIP 将弹性公网 IP 映射为 CloudResource，用于 hybrid enrichment。
+// ProviderRef 取 publicip id（对齐 CES SYS.VPC 的 dim_name=publicip_id），使 enrichment 命中。
+// 增强 label 含 public_ip/private_ip/bandwidth_id/share_type/status/enterprise_project_id/created_at。
+func mapEIP(region string, p eipmodel.PublicipShowResp) domain.CloudResource {
+	id := ptrString(p.Id)
+	name := ptrString(p.Alias)
+	if name == "" {
+		name = ptrString(p.PublicIpAddress)
+	}
+	if name == "" {
+		name = id
+	}
+	status := "DOWN"
+	if p.Status != nil {
+		status = p.Status.Value()
+	}
+	labels := map[string]string{
+		"public_ip": ptrString(p.PublicIpAddress),
+		"status":    status,
+	}
+	setLabel(labels, "private_ip", ptrString(p.PrivateIpAddress))
+	setLabel(labels, "bandwidth_id", ptrString(p.BandwidthId))
+	setLabel(labels, "bandwidth_name", ptrString(p.BandwidthName))
+	if p.BandwidthShareType != nil {
+		setLabel(labels, "share_type", p.BandwidthShareType.Value())
+	}
+	if p.BandwidthSize != nil {
+		setLabel(labels, "bandwidth_size", strconvI32(*p.BandwidthSize))
+	}
+	setLabel(labels, "ip_type", ptrString(p.Type))
+	setLabel(labels, "enterprise_project_id", ptrString(p.EnterpriseProjectId))
+	setLabel(labels, "created_at", ptrString(p.CreateTime))
+	return domain.CloudResource{
+		ResourceID:  "eip-" + id,
+		Name:        name,
+		Type:        "eip",
+		Region:      region,
+		Status:      status,
+		ProviderRef: id,
+		Labels:      labels,
+	}
+}
+
+// mapBandwidth 将带宽映射为 CloudResource，用于 hybrid enrichment。
+// ProviderRef 取 bandwidth id（对齐 CES SYS.VPC 的 dim_name=bandwidth_id），使 enrichment 命中。
+// 增强 label 含 size/share_type/charge_mode/status/enterprise_project_id/created_at。
+func mapBandwidth(region string, b eipmodel.BandwidthResp) domain.CloudResource {
+	id := ptrString(b.Id)
+	name := ptrString(b.Name)
+	if name == "" {
+		name = id
+	}
+	status := "NORMAL"
+	if b.Status != nil {
+		status = b.Status.Value()
+	}
+	labels := map[string]string{}
+	if b.Size != nil {
+		setLabel(labels, "size_mbps", strconvI32(*b.Size))
+	}
+	if b.ShareType != nil {
+		setLabel(labels, "share_type", b.ShareType.Value())
+	}
+	if b.ChargeMode != nil {
+		setLabel(labels, "charge_mode", b.ChargeMode.Value())
+	}
+	setLabel(labels, "bandwidth_type", ptrString(b.BandwidthType))
+	setLabel(labels, "enterprise_project_id", ptrString(b.EnterpriseProjectId))
+	setLabel(labels, "created_at", ptrString(b.CreatedAt))
+	return domain.CloudResource{
+		ResourceID:  "bandwidth-" + id,
+		Name:        name,
+		Type:        "bandwidth",
+		Region:      region,
+		Status:      status,
+		ProviderRef: id,
+		Labels:      labels,
+	}
+}
+
+// mapSubnet 将子网映射为 CloudResource，用于 hybrid enrichment。
+// ProviderRef 取 subnet id（对齐 CES SYS.VPC 的 dim_name=subnet_id），使 enrichment 命中。
+// 增强 label 含 cidr/gateway_ip/vpc_id/az/available_ip_count/status。
+func mapSubnet(region string, s vpcmodel.Subnet) domain.CloudResource {
+	id := strings.TrimSpace(s.Id)
+	name := strings.TrimSpace(s.Name)
+	if name == "" {
+		name = id
+	}
+	labels := map[string]string{
+		"cidr":       strings.TrimSpace(s.Cidr),
+		"gateway_ip": strings.TrimSpace(s.GatewayIp),
+	}
+	setLabel(labels, "vpc_id", strings.TrimSpace(s.VpcId))
+	setLabel(labels, "az", strings.TrimSpace(s.AvailabilityZone))
+	if s.AvailableIpAddressCount > 0 {
+		setLabel(labels, "available_ip_count", strconv.Itoa(int(s.AvailableIpAddressCount)))
+	}
+	setLabel(labels, "ipv6_enable", strconv.FormatBool(s.Ipv6Enable))
+	setLabel(labels, "cidr_v6", strings.TrimSpace(s.CidrV6))
+	return domain.CloudResource{
+		ResourceID:  "subnet-" + id,
+		Name:        name,
+		Type:        "subnet",
+		Region:      region,
+		Status:      s.Status.Value(),
+		ProviderRef: id,
+		Labels:      labels,
+	}
+}
+
+// mapPeering 将 VPC 对等连接映射为 CloudResource，用于 hybrid enrichment。
+// ProviderRef 取 peering id（对齐 CES SYS.VPC 的 dim_name=peering_id），使 enrichment 命中。
+// 增强 label 含 request_vpc_id/accept_vpc_id/status。
+func mapPeering(region string, p vpcmodel.VpcPeering) domain.CloudResource {
+	id := strings.TrimSpace(p.Id)
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		name = id
+	}
+	labels := map[string]string{
+		"status": p.Status.Value(),
+	}
+	if p.RequestVpcInfo != nil {
+		setLabel(labels, "request_vpc_id", strings.TrimSpace(p.RequestVpcInfo.VpcId))
+	}
+	if p.AcceptVpcInfo != nil {
+		setLabel(labels, "accept_vpc_id", strings.TrimSpace(p.AcceptVpcInfo.VpcId))
+	}
+	if p.CreatedAt != nil {
+		setLabel(labels, "created_at", (time.Time)(*p.CreatedAt).Format("2006-01-02T15:04:05"))
+	}
+	return domain.CloudResource{
+		ResourceID:  "peering-" + id,
+		Name:        name,
+		Type:        "peering",
+		Region:      region,
+		Status:      p.Status.Value(),
 		ProviderRef: id,
 		Labels:      labels,
 	}

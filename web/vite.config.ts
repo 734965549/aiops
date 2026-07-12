@@ -50,6 +50,16 @@ export default defineConfig(({ mode }) => {
         '/version': { target: apiTarget, changeOrigin: true }
       }
     },
+    css: {
+      preprocessorOptions: {
+        scss: {
+          api: 'modern-compiler'
+        },
+        sass: {
+          api: 'modern-compiler'
+        }
+      }
+    },
     build: {
       outDir: 'dist',
       rollupOptions: {

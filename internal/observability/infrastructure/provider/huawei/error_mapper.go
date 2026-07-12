@@ -42,9 +42,9 @@ func mapServiceResponseError(svcErr *sdkerr.ServiceResponseError) error {
 	case 400:
 		return mapCESClientError(svcErr)
 	case 401:
-		return fmt.Errorf("%w: huawei cloud authentication failed", domain.ErrProviderUnavailable)
+		return fmt.Errorf("%w: provider authentication failed", domain.ErrProviderUnavailable)
 	case 403:
-		return fmt.Errorf("%w: huawei cloud permission denied", domain.ErrProviderUnavailable)
+		return fmt.Errorf("%w: provider permission denied", domain.ErrProviderUnavailable)
 	case 404:
 		return fmt.Errorf("%w: metric or resource not found", domain.ErrNotFound)
 	case 429:
@@ -67,9 +67,9 @@ func mapCESClientError(svcErr *sdkerr.ServiceResponseError) error {
 	case strings.Contains(code, "NOT_FOUND"), strings.Contains(code, "NOTFOUND"):
 		return fmt.Errorf("%w: metric or resource not found", domain.ErrNotFound)
 	case strings.Contains(code, "AUTH"), strings.Contains(code, "TOKEN"), strings.Contains(code, "CREDENTIAL"):
-		return fmt.Errorf("%w: huawei cloud authentication failed", domain.ErrProviderUnavailable)
+		return fmt.Errorf("%w: provider authentication failed", domain.ErrProviderUnavailable)
 	case strings.Contains(code, "PERMISSION"), strings.Contains(code, "FORBIDDEN"):
-		return fmt.Errorf("%w: huawei cloud permission denied", domain.ErrProviderUnavailable)
+		return fmt.Errorf("%w: provider permission denied", domain.ErrProviderUnavailable)
 	default:
 		return fmt.Errorf("%w: invalid ces query parameters", domain.ErrInvalidArgument)
 	}

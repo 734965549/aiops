@@ -13,15 +13,15 @@ import (
 
 // DispatchService 代理任务领取、日志与结果回传。
 type DispatchService struct {
-	tasks     domain.AgentTaskRepository
-	steps     domain.StepRepository
-	leases    domain.LeaseRepository
-	logs      domain.LogStreamRepository
-	specs     domain.CommandSpecRepository
-	media     domain.MediumRepository
-	audit     AuditRecorder
-	leaseTTL  time.Duration
-	now       func() time.Time
+	tasks    domain.AgentTaskRepository
+	steps    domain.StepRepository
+	leases   domain.LeaseRepository
+	logs     domain.LogStreamRepository
+	specs    domain.CommandSpecRepository
+	media    domain.MediumRepository
+	audit    AuditRecorder
+	leaseTTL time.Duration
+	now      func() time.Time
 }
 
 func NewDispatchService(

@@ -261,10 +261,10 @@ func (r *fakeSyncBatchRepo) GetByID(_ context.Context, batchID string) (*domain.
 }
 
 // ReapExpiredRunning 模拟迁移 0028 的租约自愈：把本账号下租约过期的 running 批次标记 failed。
-func (r *fakeSyncBatchRepo) ReapExpiredRunning(_ context.Context, accountID string, now time.Time) (int64, error) {
+func (r *fakeSyncBatchRepo) ReapExpiredRunning(_ context.Context, accountID string, now time.Time) ([]domain.ReapedSyncBatch, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var reaped int64
+	var reaped []domain.ReapedSyncBatch
 	for i := range r.rows {
 		row := &r.rows[i]
 		if row.IntegrationAccountID != accountID || row.Status != domain.SyncBatchStatusRunning {
@@ -279,9 +279,13 @@ func (r *fakeSyncBatchRepo) ReapExpiredRunning(_ context.Context, accountID stri
 		row.LeaseExpiresAt = nil
 		row.Message = "lease expired; previous sync batch interrupted"
 		row.UpdatedAt = now
-		reaped++
+		reaped = append(reaped, domain.ReapedSyncBatch{BatchID: row.BatchID, IntegrationAccountID: row.IntegrationAccountID, TriggeredBy: row.TriggeredBy})
 	}
 	return reaped, nil
+}
+
+func (r *fakeSyncBatchRepo) ReapAllExpiredRunning(_ context.Context, now time.Time) ([]domain.ReapedSyncBatch, error) {
+	return nil, nil
 }
 
 // RenewLease 续租 running 批次，并按 fencing_token 校验租约所有权。
@@ -1443,7 +1447,7 @@ func TestSyncService_TriggerSyncReapsExpiredLease(t *testing.T) {
 	if reapAudit.ResourceType != "asset_sync_batch" || reapAudit.ResourceID != "acc-fake" || reapAudit.Action != AuditAssetSync || reapAudit.UserID != "u1" {
 		t.Fatalf("unexpected reap audit metadata: %+v", reapAudit)
 	}
-	if reapAudit.Payload["event"] != "reap_expired_running" || reapAudit.Payload["account_id"] != "acc-fake" || reapAudit.Payload["reaped_count"] != int64(1) || reapAudit.Payload["result"] != "success" {
+	if reapAudit.Payload["event"] != "reap_expired_running" || reapAudit.Payload["account_id"] != "acc-fake" || reapAudit.Payload["reaped_count"] != 1 || reapAudit.Payload["result"] != "success" {
 		t.Fatalf("unexpected reap audit payload: %+v", reapAudit.Payload)
 	}
 }
@@ -2055,11 +2059,91 @@ func TestSyncService_FullSyncPartialRegionsFailedSummaryCoversAll(t *testing.T) 
 	}
 }
 
-func sliceContainsString(slice []string, target string) bool {
-	for _, s := range slice {
-		if s == target {
-			return true
-		}
+func TestStaleScopeCollectorDeduplicatesAndMergesTypes(t *testing.T) {
+	collector := newStaleScopeCollector([]string{"ecs", "ecs"}, []string{"rds"}, []string{"evs"}, []string{"rds"}, []string{"ecs", "vpc"})
+	collector.collect(obsapp.CloudSyncSummary{
+		SuccessfulTypes:       []string{"ecs", "elb"},
+		QueryFailedTypes:      []string{"rds"},
+		ConversionFailedTypes: []string{"evs"},
+	})
+	snapshot := collector.scopeSnapshot()
+	eligible := snapshot.eligibleSuccessTypes()
+	if len(eligible) != 2 {
+		t.Fatalf("expected two eligible types after gate intersection, got %v", eligible)
 	}
-	return false
+	if _, ok := eligible["ecs"]; !ok {
+		t.Fatalf("expected ecs to remain eligible, got %v", eligible)
+	}
+	if _, ok := eligible["elb"]; !ok {
+		t.Fatalf("expected elb to remain eligible, got %v", eligible)
+	}
+	exceptTypes := snapshot.authoritativeExceptTypes()
+	if !(sliceContainsString(exceptTypes, "rds") && sliceContainsString(exceptTypes, "evs")) {
+		t.Fatalf("expected authoritative except types to include query/conversion failures, got %v", exceptTypes)
+	}
+}
+
+func TestBuildSyncBatchFinalizationSignals(t *testing.T) {
+	batch := &domain.SyncBatch{FailedCount: 2, CreatedCount: 1, UpdatedCount: 3}
+	summary := &SyncBatchSummaryDTO{FailedScopes: []string{"rds", "evs"}}
+	partialState := syncBatchPartialState{LeaseLost: true}
+	partialState.MarkSignal(syncBatchSignalProductNamesEmpty)
+	signals := buildSyncBatchFinalizationSignals(batch, summary, partialState, true, true, true)
+	if !signals.leaseLost || !signals.partialLeaseLost || !signals.hasStaleScope || !signals.maxResourcesReached {
+		t.Fatalf("expected boolean signals to be propagated, got %+v", signals)
+	}
+	if len(signals.partialSignals) != 1 || signals.partialSignals[0] != "product_names_empty" {
+		t.Fatalf("expected structured partial signals to be propagated, got %+v", signals)
+	}
+	if signals.failedCount != 2 || signals.createdCount != 1 || signals.updatedCount != 3 || signals.failedScopesCount != 2 {
+		t.Fatalf("expected counters to be propagated, got %+v", signals)
+	}
+}
+
+func TestClassifySyncBatchFinalizationSignals(t *testing.T) {
+	cases := []struct {
+		name    string
+		signals syncBatchFinalizationSignals
+		want    string
+	}{
+		{name: "lease lost", signals: syncBatchFinalizationSignals{leaseLost: true}, want: domain.SyncBatchStatusFailed},
+		{name: "partial results", signals: syncBatchFinalizationSignals{failedCount: 1, createdCount: 1, failedScopesCount: 1}, want: domain.SyncBatchStatusPartial},
+		{name: "product names empty", signals: syncBatchFinalizationSignals{createdCount: 1, summaryIsPartial: true}, want: domain.SyncBatchStatusPartial},
+		{name: "max resources reached", signals: syncBatchFinalizationSignals{createdCount: 1, maxResourcesReached: true}, want: domain.SyncBatchStatusPartial},
+		{name: "no results", signals: syncBatchFinalizationSignals{}, want: domain.SyncBatchStatusFailed},
+		{name: "success", signals: syncBatchFinalizationSignals{createdCount: 1}, want: domain.SyncBatchStatusSuccess},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := classifySyncBatchFinalizationSignals(tc.signals)
+			if got != tc.want {
+				t.Fatalf("got %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildSyncBatchFinalizationClassifiesTerminalState(t *testing.T) {
+	batches := &fakeSyncBatchRepo{}
+	batch := &domain.SyncBatch{BatchID: "sync-1", StartedAt: time.Now().UTC(), CreatedCount: 1}
+
+	success := buildSyncBatchFinalization(batches, batch, "acc-1", "", []obsapp.CloudSyncSummary{{SuccessfulTypes: []string{"ecs"}}}, syncBatchPartialState{}, false, true, false)
+	if success.status != domain.SyncBatchStatusSuccess {
+		t.Fatalf("expected success, got %s", success.status)
+	}
+
+	partial := buildSyncBatchFinalization(batches, batch, "acc-1", "", []obsapp.CloudSyncSummary{{SuccessfulTypes: []string{"ecs"}, FailedScopes: []string{"rds failed"}}}, syncBatchPartialState{}, false, true, false)
+	if partial.status != domain.SyncBatchStatusPartial {
+		t.Fatalf("expected partial when failed scopes exist, got %s", partial.status)
+	}
+
+	fallbackPartial := buildSyncBatchFinalization(batches, batch, "acc-1", "", []obsapp.CloudSyncSummary{{ProductNamesEmpty: true, SuccessfulTypes: []string{"ecs"}}}, syncBatchPartialState{}, false, false, false)
+	if fallbackPartial.status != domain.SyncBatchStatusPartial {
+		t.Fatalf("expected product_names_empty to force partial, got %s", fallbackPartial.status)
+	}
+
+	failed := buildSyncBatchFinalization(batches, &domain.SyncBatch{BatchID: "sync-2", StartedAt: time.Now().UTC()}, "acc-1", "", []obsapp.CloudSyncSummary{}, syncBatchPartialState{}, false, false, false)
+	if failed.status != domain.SyncBatchStatusFailed {
+		t.Fatalf("expected failed when no results were produced, got %s", failed.status)
+	}
 }

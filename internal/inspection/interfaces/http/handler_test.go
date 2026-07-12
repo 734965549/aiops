@@ -124,13 +124,13 @@ func setupInspectionHTTPEngine(t *testing.T, allowed bool) (*gin.Engine, string,
 	policyRepo := &memPolicyRepo{items: map[string]*domain.InspectionPolicy{
 		"pol-test": {
 			PolicyID: "pol-test", Name: "test", Enabled: true,
-			Scope: domain.PolicyScope{AccountID: "acc-test", Provider: "huawei_cloud"},
+			Scope:  domain.PolicyScope{AccountID: "acc-test", Provider: "huawei_cloud"},
 			Checks: []string{"metrics.memory"},
 		},
 	}}
 	runRepo := &memRunRepo{items: map[string]*domain.InspectionRun{}}
 	policySvc := inspectionapp.NewPolicyService(policyRepo, nil)
-	runSvc := inspectionapp.NewRunService(policyRepo, runRepo, memFindingRepo{}, memRecRepo{}, stubAnalyzer{}, nil)
+	runSvc := inspectionapp.NewRunService(policyRepo, runRepo, memFindingRepo{}, memRecRepo{}, stubAnalyzer{}, nil, nil)
 	handler := NewHandler(policySvc, runSvc, nil)
 	registrar := NewRegistrar(handler, authz)
 
@@ -197,8 +197,8 @@ func TestTriggerRun_OK(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 	var env struct {
-		Code string                `json:"code"`
-		Data inspectionapp.RunDTO  `json:"data"`
+		Code string               `json:"code"`
+		Data inspectionapp.RunDTO `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
 		t.Fatal(err)

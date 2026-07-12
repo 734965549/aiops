@@ -180,6 +180,17 @@ func readinessMigration(ctx context.Context, db *gorm.DB, migrationDir string) h
 		PendingCount:   status.PendingCount,
 		UpToDate:       status.UpToDate,
 	}
+	for _, d := range status.ChecksumDrifts {
+		details.ChecksumDrifts = append(details.ChecksumDrifts, httpx.HealthChecksumDrift{
+			Version: d.Version,
+			Name:    d.Name,
+			Stored:  d.Stored,
+			Current: d.Current,
+		})
+	}
+	if len(status.ChecksumDrifts) > 0 {
+		return httpx.HealthCheck{Name: "migration", Status: httpx.HealthStatusDegraded, Error: "checksum drift detected", Details: details}
+	}
 	if status.UpToDate {
 		return httpx.HealthCheck{Name: "migration", Status: httpx.HealthStatusOK, Details: details}
 	}

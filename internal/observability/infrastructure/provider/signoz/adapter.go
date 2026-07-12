@@ -41,10 +41,10 @@ func (a *Adapter) ListAlertRules(ctx context.Context, pctx domain.ProviderContex
 }
 
 var (
-	_ obsapp.ProviderEntry    = (*Adapter)(nil)
-	_ obsapp.MetricQueryPort  = (*Adapter)(nil)
-	_ obsapp.LogSearchPort    = (*Adapter)(nil)
-	_ obsapp.TraceQueryPort   = (*Adapter)(nil)
-	_ obsapp.TopologyQueryPort = (*Adapter)(nil)
+	_ obsapp.ProviderEntry      = (*Adapter)(nil)
+	_ obsapp.MetricQueryPort    = (*Adapter)(nil)
+	_ obsapp.LogSearchPort      = (*Adapter)(nil)
+	_ obsapp.TraceQueryPort     = (*Adapter)(nil)
+	_ obsapp.TopologyQueryPort  = (*Adapter)(nil)
 	_ obsapp.AlertRuleQueryPort = (*Adapter)(nil)
 )

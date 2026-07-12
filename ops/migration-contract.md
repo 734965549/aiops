@@ -46,7 +46,18 @@
 0029_huawei_legacy_accounts_native_sync_mode.up.sql → Integration：历史空配置华为账号回填 sync_mode=native，修复 0024 空配置被解析为 ces 的灰度策略失效
 0030_asset_sync_batch_fencing_token.up.sql         → Asset：asset_sync_batch.fencing_token + running 所有权校验索引（防止租约丢失旧任务继续写入）
 0031_asset_sync_batch_summary.up.sql               → Asset：asset_sync_batch.summary JSONB 结构化摘要；批次详情页不再把 message 当作半结构化协议解析
-0032_cleanup_legacy_cloud_application_ids.up.sql   → Asset：清理旧格式 cloud-<account_id> 云同步应用及其关联 asset_resource/asset_match_rule；升级后需重新录入账号并同步
+0032_cleanup_legacy_cloud_application_ids.up.sql   -> Asset：破坏性 DELETE 脚本，按 application_id = 'cloud-' || trim(account_id) 精确关联 integration_account 删除旧格式 cloud-<account_id> 应用及其关联的 asset_resource/asset_match_rule（不处理 alert_alert/inspection_policy）；覆盖 account_id 含/不含连字符的所有情况；从未在共享环境执行，当前为开发期最终版，所有数据库须从零重建
+0033_asset_sync_batch_triggered_by.up.sql           → Asset：asset_sync_batch.triggered_by（触发用户 user_id），reap 崩溃批次时 sync_reaped 审计 actor 取该字段还原原操作者
+0034_huawei_ces_vpc_subtype_split.up.sql           → Asset：按 labels->>'dim_name' 把存量 cloud_sync 'vpc' 资源回填为 eip/bandwidth/subnet/peering（CES SYS.VPC 聚合 namespace 拆子类型），未知 dim 保留 vpc；仅 source='cloud_sync' 且 namespace='SYS.VPC'
+0035_cloud_application_id_rune_truncation.up.sql    → Asset：按 rune 截取与 sha1 后缀修复 cloud application_id，并同步改写相关引用
+0036_cloud_application_name_include_account.up.sql  → Asset：云同步应用名称包含账号信息，避免多账号同名混淆
+0037_fix_huawei_ces_application_ids.up.sql         → Asset：修复 Huawei CES legacy/new application_id 并存时的安全合并；先迁移并去重子表引用，再删除旧应用；仅 legacy 存在时安全重命名，only new 时幂等
+0038_cloud_application_name_normalize.up.sql       -> Asset：把反向格式云同步应用名 <provider>-<account_id>-cloud 归一化为契约格式 <provider>-cloud-<account_id>，收敛 0036 之后由反向格式代码新建的应用；仅改 name 不改 application_id
+0039_cleanup_orphaned_application_refs.up.sql      -> Asset：清理 0032 DELETE 遗留的 alert_alert/inspection_policy 孤儿引用，按 integration_account 计算 old->new 映射改写为新格式；不依赖 has_old（旧应用可能已被 0032 删除）；幂等
+0040_application_ref_integrity_view.up.sql          -> Asset：创建持久视图 v_asset_app_ref_integrity，暴露 asset_resource/asset_match_rule/alert_alert/inspection_policy 中指向不存在 asset_application 的孤儿引用；不修改数据，不阻断迁移；幂等（CREATE OR REPLACE VIEW）
+0041_legacy_app_id_convergence_guard.up.sql         -> Asset：legacy 应用收敛硬阻断守卫，若 asset_application 中仍存在 cloud-<account_id> 格式 legacy 应用则迁移失败终止；使用 CHECK(n=0) 约束实现，兼容自研 SQL splitter；不修改业务数据
+0042_backfill_orphaned_app_refs_and_guard.up.sql     -> Asset：补建 0039 改写后仍被引用但不存在的新格式 cloud application ID 对应的 asset_application 记录（字段与 ensureCloudApplication 一致），并将 v_asset_app_ref_integrity 作为硬验收（CHECK(n=0)），补建后仍有孤儿则迁移失败；幂等（ON CONFLICT DO NOTHING）；依赖 pgcrypto digest()
+0043_fix_orphaned_alert_app_refs.up.sql              -> Asset：修复 DeleteApplication 缺失跨上下文引用检查导致的孤儿告警引用（alert_alert.application_id 指向不存在的应用）；将孤儿引用置空并清理 inspection_policy.scope.application_ids 中的孤儿元素；CHECK(n=0) 硬验收确保修复后视图返回 0 行；幂等
 ```
 
 | 职责 | 0001 / 0002 / 0016 迁移 | 启动期 bootstrap（`cmd/api`） |
@@ -67,6 +78,7 @@
 - 若只执行 `0001` 而未执行 `0002`，bootstrap 绑定 admin 角色时会因角色不存在而失败。
 - 若未执行 `0004`，管理员无法使用域账号导入等 Admin 接口（403）。
 - 各 `*.up.sql` 内部使用 `ON CONFLICT` 保证幂等，但**版本顺序不可打乱**（0002 依赖 0001 表结构，0003/0004 依赖 0001/0002）。
+- 云同步应用 ID/名称收敛链 `0032 -> 0035 -> 0036 -> 0037 -> 0038 -> 0039 -> 0040 -> 0041 -> 0042 -> 0043` 必须按版本号顺序执行，DBA / 发布脚本不得只按前半段截断执行；`0032` 是破坏性 DELETE（删除旧格式应用及关联资源/规则，不处理 alert_alert/inspection_policy），`0039` 补全清理 0032 遗留的孤儿引用；`0038` 只改 `asset_application.name` 不改 `application_id`，处理的是 `0036` 之后由 `ensureCloudApplication` 代码新建的反向格式应用，必须排在 `0036`/`0037` 之后，建议放最后统一收敛名称；与 ID 类迁移 `0032`/`0035`/`0037` 互不冲突，详见 `docs/huawei-ces-sync-runbook.md` §6。`0040` 创建持久视图 `v_asset_app_ref_integrity` 供引用完整性验收（`SELECT * FROM v_asset_app_ref_integrity` 期望 0 行），不修改数据不阻断迁移；`0041` 是 legacy 应用收敛硬阻断守卫（`CHECK(n=0)` 约束），若 `asset_application` 中仍存在 `cloud-<account_id>` 格式 legacy 应用则迁移终止，不修改业务数据；若 0041 阻断需排查 0032/0037 收敛失败或代码路径仍在创建旧格式应用。`0042` 补建 `0039` 改写后仍被引用但不存在的新格式 cloud application ID 对应的 `asset_application` 记录（字段与 `ensureCloudApplication` 一致），并将 `v_asset_app_ref_integrity` 作为发布硬验收（`CHECK(n=0)` 约束）：补建后若视图仍有孤儿行（如非 cloud 格式引用、或 `integration_account` 已删除的 cloud ID），迁移终止，runner 不记录版本号；若 0042 阻断需排查是否存在非 cloud 格式孤儿引用或账号已删除但仍被引用的情况，修复后重试。`0043` 修复 `DeleteApplication` 历史上仅检查同上下文引用（asset_resource/asset_match_rule）而未检查跨上下文引用（alert_alert/inspection_policy）导致的孤儿告警引用：将 `alert_alert` 中指向不存在应用的 `application_id`/`application_name` 置空，并移除 `inspection_policy.scope.application_ids` 中的孤儿元素，修复后 `CHECK(n=0)` 确保视图返回 0 行；修复后 `DeleteApplication` 已增加 `ApplicationReferenceChecker` 跨上下文引用检查，防止新增孤儿。
 
 ## 执行命令
 
@@ -143,9 +155,12 @@ docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.d
 | --- | --- |
 | `version` | 主键，4 位版本号 |
 | `name` | 迁移名称 |
+| `checksum` | 迁移文件内容的 SHA-256，runner 在应用迁移时写入；用于检测已应用迁移是否被改写（checksum 漂移） |
 | `applied_at` | 应用时间 |
 
 **建表规范例外**：平台要求业务表 `created_at` / `updated_at` 由 Go 程序维护、禁止 DB DEFAULT；`schema_migrations.applied_at` 为 runner 内部元数据，表定义保留 `DEFAULT NOW()` 作为兜底，但 runner 在 `INSERT` 时**显式传入** `time.Now()`，与业务表约定区分。
+
+**checksum 漂移检测**：runner 在执行迁移前会比较已应用版本记录的 `checksum` 与当前迁移文件内容的 SHA-256。若不一致，runner 直接报错终止，**任何版本均无白名单绕过**。`checksum` 为空（历史库升级后首次运行）时，runner 自动回填当前文件 hash，不视为漂移。禁止改写已发布迁移文件；确需修复应新增后续迁移版本。
 
 ## 已落地迁移
 
@@ -255,11 +270,22 @@ Integration 上下文第一阶段迁移，建表：
 | `0025` | `0025_asset_resource_labels.up.sql` | Asset | `asset_resource.labels`（CES namespace/dim_name + 原生增强 label） | 已落地 |
 | `0026` | `0026_asset_cloud_sync_region_key.up.sql` | Asset | 云资源唯一键加 region（多区域去重） | 已落地 |
 | `0027` | `0027_asset_sync_batch_message_text.up.sql` | Asset | `asset_sync_batch.message` 改为 TEXT（修复应用层 2000 rune 与 VARCHAR(512) 不一致） | 已落地 |
-| `0028` | `0028_asset_sync_batch_running_mutex.up.sql` | Asset | `asset_sync_batch.lease_expires_at` + 部分唯一索引 `(integration_account_id) WHERE status='running'`（账号级并发互斥，修复并发批次互相标记 stale） | 已落地 |
+| `0028` | `0028_asset_sync_batch_running_mutex.up.sql` | Asset | `asset_sync_batch.lease_expires_at` + 部分唯一索引 `(integration_account_id) WHERE status='running'`（账号级并发互斥，修复并发批次互相标记 stale）；其中清理历史 running 批次用的 `LEFT(...,512)` 为历史兼容截断（沿用 0023 的 `VARCHAR(512)`），当前 message 长度约束以 0027 的 TEXT + 应用层 `sync_service.go` 2000 rune 截断为准 | 已落地 |
 | `0029` | `0029_huawei_legacy_accounts_native_sync_mode.up.sql` | Integration | 把仍为空配置 `{}` 的历史华为账号回填 `sync_mode=native`，修复 0024 空配置被解析为 ces 导致升级后立即切 CES 的灰度策略失效；新账号由 `encodeExtraConfigInput` 显式写 ces | 已落地 |
 | `0030` | `0030_asset_sync_batch_fencing_token.up.sql` | Asset | `asset_sync_batch.fencing_token` + running 所有权校验索引；续租按 `batch_id + fencing_token` 匹配，写前校验 running 且租约未过期，防止旧任务租约丢失后继续 upsert/stale | 已落地 |
 | `0031` | `0031_asset_sync_batch_summary.up.sql` | Asset | `asset_sync_batch.summary` JSONB 结构化摘要；批次详情页不再把 `message` 当作半结构化协议解析 | 已落地 |
-| `0032` | `0032_cleanup_legacy_cloud_application_ids.up.sql` | Asset | 清理旧格式 `cloud-<account_id>` 云同步应用及其关联 `asset_resource`/`asset_match_rule`；升级后需重新录入账号并同步 | 已落地 |
+| `0032` | `0032_cleanup_legacy_cloud_application_ids.up.sql` | Asset | 破坏性 DELETE 脚本：按 `application_id = 'cloud-' \|\| trim(account_id)` 精确关联 `integration_account` 删除旧格式 `cloud-<account_id>` 应用及其关联的 `asset_resource`/`asset_match_rule`；覆盖 `account_id` 含/不含连字符的所有情况（初版启发式 `NOT LIKE 'cloud-%-%'` 漏判含连字符账号，已修订为精确匹配）；**不处理** `alert_alert`/`inspection_policy` 中的旧格式引用（由 `0039` 补全清理）；`down.sql` 为人工回滚参考，被删除数据无法自动恢复 | 已落地 |
+| `0033` | `0033_asset_sync_batch_triggered_by.up.sql` | Asset | `asset_sync_batch.triggered_by`（触发用户 user_id）；`TriggerSync` 创建 running 批次时写入，reap 崩溃批次时 `sync_reaped` 审计 actor 取该字段，避免归因到当次请求用户 | 已落地 |
+| `0034` | `0034_huawei_ces_vpc_subtype_split.up.sql` | Asset | 按 `labels->>'dim_name'` 把存量 `cloud_sync` 的 `'vpc'` 资源回填为 `eip`/`bandwidth`/`subnet`/`peering`（CES `SYS.VPC` 聚合 namespace 拆子类型，避免语义混合与 ID 碰撞），未知 dim 保留 `vpc`；仅处理 `source='cloud_sync'` 且 `labels->>'namespace'='SYS.VPC'`，native VPC 实体不受影响 | 已落地 |
+| `0035` | `0035_cloud_application_id_rune_truncation.up.sql` | Asset | 按 `application_id` 的 sha1 后缀关联 `integration_account`，把旧实现按字节截取（`id[:17]`）的多字节账号 `cloud-` application_id 无损改写为按字符截取的 rune 版（`left(trim(account_id),17)`，与修复后的 `cloudApplicationID` 及 `0032` 一致）；同步改写 `asset_resource`/`asset_match_rule`/`alert_alert`/`inspection_policy.scope.application_ids`（`inspection_policy` 改写时 `DISTINCT` 去重，避免旧字节版与新 rune 版替换后产生重复 ID，与 `0032`/`0037` 一致）；新旧应用并存时按云资源唯一键合并到新应用并删除旧应用；纯 ASCII 账号字节版=rune 版无改写；依赖 pgcrypto `digest()` | 已落地 |
+| `0036` | `0036_cloud_application_name_include_account.up.sql` | Asset | 调整云同步应用名称包含账号信息，避免多账号同名混淆；同步更新历史云同步应用展示与运维排查路径 | 已落地 |
+| `0037` | `0037_fix_huawei_ces_application_ids.up.sql` | Asset | 修复 Huawei CES legacy/new application_id 并存时的安全合并：先迁移并去重子表引用（`asset_resource`/`asset_match_rule`/`alert_alert`/`inspection_policy.scope.application_ids`），再删除旧应用；仅 legacy 存在时安全重命名为新格式，only new 时幂等；依赖 pgcrypto `digest()` | 已落地 |
+| `0038` | `0038_cloud_application_name_normalize.up.sql` | Asset | 把反向格式云同步应用名 `<provider>-<account_id>-cloud`（`ensureCloudApplication` 代码曾误用）归一化为契约格式 `<provider>-cloud-<account_id>`，收敛 0036 之后由反向格式代码新建的应用；`account_id` 从 `description` 提取（沿用 0036 思路），保证 account_id 含连字符也正确；仅改 `asset_application.name`，不改 `application_id`，不影响匹配键与引用关系；匹配策略为精确比对 `name = provider\|\|'-'||account_id||'-cloud'`（`provider` 取 `split_part(name,'-',1)`，`account_id` 取 `description` 去前缀），不使用 LIKE 模糊排除，避免 account_id 含 `-cloud-` 或以 `-cloud` 结尾时被 `NOT LIKE '%-cloud-%'` 错误漏判；幂等：契约格式不等于反向格式（仅 `account_id='cloud'` 时两者相同，重写为同值无副作用），旧格式 `<provider>-cloud` 缺 account_id 段不命中，仅反向格式精确命中 | 已落地 |
+| `0039` | `0039_cleanup_orphaned_application_refs.up.sql` | Asset | 清理 `0032` DELETE 遗留的孤儿引用：按 `integration_account` 计算 `old_app_id -> new_app_id` 映射，把 `alert_alert.application_id` 和 `inspection_policy.scope.application_ids` 中仍残留的旧格式 `cloud-<account_id>` 改写为新格式 `cloud-<prefix>-<hash>`；**不依赖 `has_old`**（旧应用可能已被 `0032` 删除，`0037` 因此跳过这两个表）；幂等：已是新格式或已由 `0037` 处理过的行 WHERE 不匹配；依赖 pgcrypto `digest()`；`down.sql` 为人工回滚参考 | 已落地 |
+| `0040` | `0040_application_ref_integrity_view.up.sql` | Asset | 创建持久视图 `v_asset_app_ref_integrity`，暴露 `asset_resource`/`asset_match_rule`/`alert_alert`/`inspection_policy` 中指向不存在 `asset_application` 的孤儿引用；不修改数据，不阻断迁移；幂等（`CREATE OR REPLACE VIEW`）；`down.sql` 为 `DROP VIEW IF EXISTS` | 已落地 |
+| `0041` | `0041_legacy_app_id_convergence_guard.up.sql` | Asset | legacy 应用收敛硬阻断守卫：若 `asset_application` 中仍存在 `cloud-<account_id>` 格式 legacy 应用，`CHECK(n=0)` 约束失败导致迁移终止；兼容自研 SQL splitter（纯 DML，无 `$$`）；不修改业务数据；`down.sql` 无操作 | 已落地 |
+| `0042` | `0042_backfill_orphaned_app_refs_and_guard.up.sql` | Asset | 补建 `0039` 改写后仍被引用但不存在的新格式 cloud application ID 对应的 `asset_application` 记录（字段与 `ensureCloudApplication` 一致：`name`/`environment`/`description`）；将 `v_asset_app_ref_integrity` 作为发布硬验收（`CHECK(n=0)` 约束），补建后若视图仍有孤儿行则迁移终止；幂等（`ON CONFLICT DO NOTHING`）；依赖 pgcrypto `digest()`；`down.sql` 为人工回滚参考 | 已落地 |
+| `0043` | `0043_fix_orphaned_alert_app_refs.up.sql` | Asset | 修复 `DeleteApplication` 缺失跨上下文引用检查导致的孤儿告警引用：将 `alert_alert` 中指向不存在应用的 `application_id`/`application_name` 置空，移除 `inspection_policy.scope.application_ids` 中的孤儿元素；`CHECK(n=0)` 硬验收确保修复后 `v_asset_app_ref_integrity` 返回 0 行；幂等（仅处理孤儿行）；`down.sql` 为人工回滚参考（需从备份恢复原始值） | 已落地 |
 
 这些迁移必须同步种子化权限和 AI 工具权限，并把 admin 角色绑定到新增权限：
 

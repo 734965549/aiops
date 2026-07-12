@@ -3,7 +3,6 @@ package huawei
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -91,7 +90,10 @@ func newCESClient(cred AKSKCredential, projectID, region string) (*ces.CesClient
 		WithSk(cred.SecretKey).
 		WithProjectId(projectID).
 		Build()
-	endpoint := fmt.Sprintf("https://ces.%s.myhuaweicloud.com", region)
+	endpoint, err := buildEndpoint("ces", region)
+	if err != nil {
+		return nil, err
+	}
 	client := ces.NewCesClient(
 		ces.CesClientBuilder().
 			WithEndpoints([]string{endpoint}).

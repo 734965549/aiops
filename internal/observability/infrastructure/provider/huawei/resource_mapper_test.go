@@ -5,6 +5,7 @@ import (
 
 	dcsmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/dcs/v2/model"
 	ecsmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/ecs/v2/model"
+	eipmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/eip/v2/model"
 	evsmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/evs/v2/model"
 	kafkamodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/kafka/v2/model"
 	rdsmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/rds/v3/model"
@@ -178,6 +179,143 @@ func TestMapVPC(t *testing.T) {
 	// subnet_count 由 listVPC 回填，mapVPC 不直接写入（传 0 时不应出现）。
 	if _, ok := res.Labels["subnet_count"]; ok {
 		t.Fatalf("subnet_count should not be set by mapVPC, got %q", res.Labels["subnet_count"])
+	}
+}
+
+func TestMapEIP(t *testing.T) {
+	active := eipmodel.GetPublicipShowRespStatusEnum().ACTIVE
+	shareType := eipmodel.GetPublicipShowRespBandwidthShareTypeEnum().PER
+	size := int32(5)
+	res := mapEIP("cn-south-1", eipmodel.PublicipShowResp{
+		Id:                  strPtr("eip-1"),
+		Alias:               strPtr("prod-eip"),
+		PublicIpAddress:     strPtr("1.2.3.4"),
+		PrivateIpAddress:    strPtr("10.0.0.4"),
+		BandwidthId:         strPtr("bw-1"),
+		BandwidthShareType:  &shareType,
+		BandwidthSize:       &size,
+		Type:                strPtr("5_bgp"),
+		EnterpriseProjectId: strPtr("eps-1"),
+		Status:              &active,
+	})
+	if res.Type != "eip" || res.ProviderRef != "eip-1" {
+		t.Fatalf("eip base: %+v", res)
+	}
+	if res.Name != "prod-eip" {
+		t.Fatalf("Name = %q, want prod-eip", res.Name)
+	}
+	if res.Status != "ACTIVE" {
+		t.Fatalf("Status = %q, want ACTIVE", res.Status)
+	}
+	if res.Labels["public_ip"] != "1.2.3.4" {
+		t.Fatalf("public_ip = %q", res.Labels["public_ip"])
+	}
+	if res.Labels["private_ip"] != "10.0.0.4" {
+		t.Fatalf("private_ip = %q", res.Labels["private_ip"])
+	}
+	if res.Labels["bandwidth_id"] != "bw-1" {
+		t.Fatalf("bandwidth_id = %q", res.Labels["bandwidth_id"])
+	}
+	if res.Labels["share_type"] != "PER" {
+		t.Fatalf("share_type = %q", res.Labels["share_type"])
+	}
+	// Name 兜底到 public_ip。
+	res2 := mapEIP("r", eipmodel.PublicipShowResp{Id: strPtr("eip-2"), PublicIpAddress: strPtr("9.9.9.9")})
+	if res2.Name != "9.9.9.9" {
+		t.Fatalf("Name fallback = %q, want 9.9.9.9", res2.Name)
+	}
+}
+
+func TestMapBandwidth(t *testing.T) {
+	normal := eipmodel.GetBandwidthRespStatusEnum().NORMAL
+	shareType := eipmodel.GetBandwidthRespShareTypeEnum().WHOLE
+	chargeMode := eipmodel.GetBandwidthRespChargeModeEnum().TRAFFIC
+	size := int32(100)
+	res := mapBandwidth("cn-north-4", eipmodel.BandwidthResp{
+		Id:                  strPtr("bw-1"),
+		Name:                strPtr("shared-bw"),
+		Size:                &size,
+		ShareType:           &shareType,
+		ChargeMode:          &chargeMode,
+		Status:              &normal,
+		EnterpriseProjectId: strPtr("eps-2"),
+	})
+	if res.Type != "bandwidth" || res.ProviderRef != "bw-1" {
+		t.Fatalf("bandwidth base: %+v", res)
+	}
+	if res.Name != "shared-bw" {
+		t.Fatalf("Name = %q, want shared-bw", res.Name)
+	}
+	if res.Status != "NORMAL" {
+		t.Fatalf("Status = %q, want NORMAL", res.Status)
+	}
+	if res.Labels["size_mbps"] != "100" {
+		t.Fatalf("size_mbps = %q", res.Labels["size_mbps"])
+	}
+	if res.Labels["share_type"] != "WHOLE" {
+		t.Fatalf("share_type = %q", res.Labels["share_type"])
+	}
+	if res.Labels["charge_mode"] != "traffic" {
+		t.Fatalf("charge_mode = %q", res.Labels["charge_mode"])
+	}
+}
+
+func TestMapSubnet(t *testing.T) {
+	res := mapSubnet("cn-south-1", vpcmodel.Subnet{
+		Id:                      "sub-1",
+		Name:                    "web-subnet",
+		Cidr:                    "192.168.1.0/24",
+		GatewayIp:               "192.168.1.1",
+		VpcId:                   "vpc-1",
+		AvailabilityZone:        "cn-south-1a",
+		AvailableIpAddressCount: 250,
+		Status:                  vpcmodel.GetSubnetStatusEnum().ACTIVE,
+	})
+	if res.Type != "subnet" || res.ProviderRef != "sub-1" {
+		t.Fatalf("subnet base: %+v", res)
+	}
+	if res.Name != "web-subnet" {
+		t.Fatalf("Name = %q, want web-subnet", res.Name)
+	}
+	if res.Labels["cidr"] != "192.168.1.0/24" {
+		t.Fatalf("cidr = %q", res.Labels["cidr"])
+	}
+	if res.Labels["gateway_ip"] != "192.168.1.1" {
+		t.Fatalf("gateway_ip = %q", res.Labels["gateway_ip"])
+	}
+	if res.Labels["vpc_id"] != "vpc-1" {
+		t.Fatalf("vpc_id = %q", res.Labels["vpc_id"])
+	}
+	if res.Labels["az"] != "cn-south-1a" {
+		t.Fatalf("az = %q", res.Labels["az"])
+	}
+	if res.Labels["available_ip_count"] != "250" {
+		t.Fatalf("available_ip_count = %q", res.Labels["available_ip_count"])
+	}
+}
+
+func TestMapPeering(t *testing.T) {
+	res := mapPeering("cn-north-4", vpcmodel.VpcPeering{
+		Id:             "peer-1",
+		Name:           "vpc-a-to-vpc-b",
+		Status:         vpcmodel.GetVpcPeeringStatusEnum().ACTIVE,
+		RequestVpcInfo: &vpcmodel.VpcInfo{VpcId: "vpc-a"},
+		AcceptVpcInfo:  &vpcmodel.VpcInfo{VpcId: "vpc-b"},
+	})
+	if res.Type != "peering" || res.ProviderRef != "peer-1" {
+		t.Fatalf("peering base: %+v", res)
+	}
+	if res.Name != "vpc-a-to-vpc-b" {
+		t.Fatalf("Name = %q, want vpc-a-to-vpc-b", res.Name)
+	}
+	if res.Status != "ACTIVE" {
+		t.Fatalf("Status = %q, want ACTIVE", res.Status)
+	}
+	if res.Labels["request_vpc_id"] != "vpc-a" {
+		t.Fatalf("request_vpc_id = %q", res.Labels["request_vpc_id"])
+	}
+	if res.Labels["accept_vpc_id"] != "vpc-b" {
+		t.Fatalf("accept_vpc_id = %q", res.Labels["accept_vpc_id"])
 	}
 }
 

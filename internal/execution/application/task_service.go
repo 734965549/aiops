@@ -778,8 +778,8 @@ func (s *TaskService) createAgentTask(
 
 	task := &domain.Task{
 		ID: taskID, Name: name,
-		SourceType: domain.SourceType(strings.ToLower(strings.TrimSpace(in.SourceType))),
-		SourceID: strings.TrimSpace(in.SourceID),
+		SourceType:    domain.SourceType(strings.ToLower(strings.TrimSpace(in.SourceType))),
+		SourceID:      strings.TrimSpace(in.SourceID),
 		OperationType: domain.OpCommand, TargetType: targetType, TargetID: targetID,
 		TargetName: targetName, Environment: environment, RiskLevel: risk, Status: status,
 		ExecutionMode: domain.ModeAgent, MediumID: mediumID, CommandSpecID: commandSpecID,

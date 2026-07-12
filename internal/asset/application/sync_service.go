@@ -95,6 +95,15 @@ type TriggerSyncInput struct {
 	AccountID string
 }
 
+// SyncBatchSummaryDTO 是同步批次的机器可读全量摘要。
+// 字段分组：
+// - 展示：sync_mode、resource_group_name、resource_group_id、projects、regions
+// - 对账：ces_total、discovered_count、enriched_count、unknown_namespace_count、invalid_resource_count
+// - 门控：max_resources_reached、product_names_empty、query_failed_types、conversion_failed_types
+// - 诊断：failed_scopes、enrichment_failed_types、partial_reason
+//
+// 供审计、排障、验收与详情页使用；主列表应读取轻量展示层，不要展开全量字段。
+// 这里保留全量 summary，避免 message 再承担半结构化协议职责。
 type SyncBatchSummaryDTO struct {
 	SyncMode              string   `json:"sync_mode,omitempty"`
 	ResourceGroupName     string   `json:"resource_group_name,omitempty"`
@@ -110,6 +119,7 @@ type SyncBatchSummaryDTO struct {
 	InvalidResourceCount  int      `json:"invalid_resource_count,omitempty"`
 	MaxResourcesReached   bool     `json:"max_resources_reached,omitempty"`
 	ProductNamesEmpty     bool     `json:"product_names_empty,omitempty"`
+	PartialReason         string   `json:"partial_reason,omitempty"`
 	QueryFailedTypes      []string `json:"query_failed_types,omitempty"`
 	ConversionFailedTypes []string `json:"conversion_failed_types,omitempty"`
 }
@@ -152,6 +162,247 @@ type negativeStaleScope struct {
 	ExceptTypes []string
 }
 
+type staleScopeCollector struct {
+	successfulTypes       map[string]struct{}
+	queryFailedTypes      map[string]struct{}
+	conversionFailedTypes map[string]struct{}
+	persistFailedTypes    map[string]struct{}
+	upsertedTypes         map[string]struct{}
+}
+
+func newStaleScopeCollector(successfulTypes, queryFailedTypes, conversionFailedTypes, persistFailedTypes, upsertedTypes []string) staleScopeCollector {
+	return staleScopeCollector{
+		successfulTypes:       lowerStringSet(successfulTypes),
+		queryFailedTypes:      lowerStringSet(queryFailedTypes),
+		conversionFailedTypes: lowerStringSet(conversionFailedTypes),
+		persistFailedTypes:    lowerStringSet(persistFailedTypes),
+		upsertedTypes:         lowerStringSet(upsertedTypes),
+	}
+}
+
+func (c staleScopeCollector) scopeSnapshot() staleScopeSnapshot {
+	return staleScopeSnapshot{
+		SuccessfulTypes:       mapStringSetKeys(c.successfulTypes),
+		QueryFailedTypes:      mapStringSetKeys(c.queryFailedTypes),
+		ConversionFailedTypes: mapStringSetKeys(c.conversionFailedTypes),
+		PersistFailedTypes:    mapStringSetKeys(c.persistFailedTypes),
+		UpsertedTypes:         mapStringSetKeys(c.upsertedTypes),
+	}
+}
+
+type staleScopeSnapshot struct {
+	SuccessfulTypes       []string
+	QueryFailedTypes      []string
+	ConversionFailedTypes []string
+	PersistFailedTypes    []string
+	UpsertedTypes         []string
+}
+
+func (s staleScopeSnapshot) eligibleSuccessTypes() map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, t := range s.SuccessfulTypes {
+		t = strings.ToLower(strings.TrimSpace(t))
+		if t == "" {
+			continue
+		}
+		if sliceContainsString(s.ConversionFailedTypes, t) || sliceContainsString(s.PersistFailedTypes, t) {
+			continue
+		}
+		out[t] = struct{}{}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for _, t := range s.UpsertedTypes {
+		t = strings.ToLower(strings.TrimSpace(t))
+		if t == "" || sliceContainsString(s.PersistFailedTypes, t) {
+			continue
+		}
+		out[t] = struct{}{}
+	}
+	return out
+}
+
+func (s staleScopeSnapshot) authoritativeExceptTypes() []string {
+	return mergeLowerStrings(s.QueryFailedTypes, s.ConversionFailedTypes, s.PersistFailedTypes)
+}
+
+func (c *staleScopeCollector) collect(summary obsapp.CloudSyncSummary) {
+	for _, t := range summary.SuccessfulTypes {
+		if t = strings.ToLower(strings.TrimSpace(t)); t != "" {
+			c.successfulTypes[t] = struct{}{}
+		}
+	}
+	for _, t := range summary.QueryFailedTypes {
+		if t = strings.ToLower(strings.TrimSpace(t)); t != "" {
+			c.queryFailedTypes[t] = struct{}{}
+		}
+	}
+	for _, t := range summary.ConversionFailedTypes {
+		if t = strings.ToLower(strings.TrimSpace(t)); t != "" {
+			c.conversionFailedTypes[t] = struct{}{}
+		}
+	}
+}
+
+func (c staleScopeCollector) structuredLogFields() map[string]any {
+	snap := c.scopeSnapshot()
+	return map[string]any{
+		"successful_types":        snap.SuccessfulTypes,
+		"query_failed_types":      snap.QueryFailedTypes,
+		"conversion_failed_types": snap.ConversionFailedTypes,
+		"persist_failed_types":    snap.PersistFailedTypes,
+		"upserted_types":          snap.UpsertedTypes,
+	}
+}
+
+const (
+	// syncBatchSignalProductNamesEmpty 表示这轮同步的资源组 product_names 为空，属于需要降级到 partial 的结构化信号。
+	syncBatchSignalProductNamesEmpty = "product_names_empty"
+	// syncBatchSignalMaxResourcesReached 表示 provider 因达到上限而截断，属于需要降级到 partial 的结构化信号。
+	syncBatchSignalMaxResourcesReached = "max_resources_reached"
+)
+
+type syncBatchPartialState struct {
+	LeaseLost   bool
+	Signals     []string
+	FailedCount int
+	Errors      []string
+}
+
+func (s *syncBatchPartialState) NoteFailure() { s.FailedCount++ }
+
+func (s *syncBatchPartialState) MarkSignal(signal string) {
+	signal = strings.TrimSpace(signal)
+	if signal == "" {
+		return
+	}
+	for _, existing := range s.Signals {
+		if existing == signal {
+			return
+		}
+	}
+	s.Signals = append(s.Signals, signal)
+}
+
+func (s *syncBatchPartialState) AddError(msg string) {
+	if msg != "" {
+		s.Errors = append(s.Errors, msg)
+	}
+}
+
+type syncBatchFinalizationDecision struct {
+	status  string
+	message string
+	summary *SyncBatchSummaryDTO
+	persist func(context.Context) error
+}
+
+type syncBatchFinalizationSignals struct {
+	leaseLost           bool
+	partialLeaseLost    bool
+	hasStaleScope       bool
+	maxResourcesReached bool
+	failedCount         int
+	createdCount        int
+	updatedCount        int
+	failedScopesCount   int
+	partialSignals      []string
+	summaryIsPartial    bool
+}
+
+func buildSyncBatchFinalizationSignals(batch *domain.SyncBatch, summary *SyncBatchSummaryDTO, partialState syncBatchPartialState, leaseLost, hasStaleScope, maxResourcesReached bool) syncBatchFinalizationSignals {
+	signals := syncBatchFinalizationSignals{
+		leaseLost:           leaseLost,
+		partialLeaseLost:    partialState.LeaseLost,
+		hasStaleScope:       hasStaleScope,
+		maxResourcesReached: maxResourcesReached,
+		failedCount:         batch.FailedCount,
+		createdCount:        batch.CreatedCount,
+		updatedCount:        batch.UpdatedCount,
+		partialSignals:      append([]string(nil), partialState.Signals...),
+	}
+	if summary != nil {
+		signals.failedScopesCount = len(summary.FailedScopes)
+		signals.summaryIsPartial = summary.ProductNamesEmpty || summary.MaxResourcesReached || len(summary.QueryFailedTypes) > 0 || len(summary.ConversionFailedTypes) > 0 || len(summary.EnrichmentFailedTypes) > 0 || len(summary.FailedScopes) > 0
+	}
+	return signals
+}
+
+func sliceContainsString(slice []string, target string) bool {
+	for _, s := range slice {
+		if s == target {
+			return true
+		}
+	}
+	return false
+}
+
+func isPartialFinalization(signals syncBatchFinalizationSignals) bool {
+	return len(signals.partialSignals) > 0 || signals.failedScopesCount > 0 || signals.failedCount > 0 || signals.maxResourcesReached || signals.summaryIsPartial
+}
+
+func classifySyncBatchFinalizationSignals(signals syncBatchFinalizationSignals) (status string, message string) {
+	if signals.leaseLost || signals.partialLeaseLost {
+		return domain.SyncBatchStatusFailed, "sync cancelled or timed out"
+	}
+	if signals.failedCount > 0 && signals.createdCount+signals.updatedCount == 0 && !signals.hasStaleScope {
+		return domain.SyncBatchStatusFailed, "sync failed"
+	}
+	if signals.createdCount == 0 && signals.updatedCount == 0 && !signals.hasStaleScope && signals.failedScopesCount == 0 && len(signals.partialSignals) == 0 && !signals.summaryIsPartial {
+		return domain.SyncBatchStatusFailed, "sync produced no results"
+	}
+	if isPartialFinalization(signals) {
+		return domain.SyncBatchStatusPartial, "sync completed with partial results"
+	}
+	return domain.SyncBatchStatusSuccess, "ok"
+}
+
+func buildSyncBatchFinalizationDecision(
+	batches domain.SyncBatchRepository,
+	batch *domain.SyncBatch,
+	accountID string,
+	summary *SyncBatchSummaryDTO,
+	signals syncBatchFinalizationSignals,
+	message string,
+) syncBatchFinalizationDecision {
+	status, fallbackMessage := classifySyncBatchFinalizationSignals(signals)
+	message = truncateMessage(defaultIfEmpty(message, fallbackMessage))
+	if signals.leaseLost || signals.partialLeaseLost {
+		message = truncateMessage("sync cancelled or timed out")
+	}
+	return syncBatchFinalizationDecision{status: status, message: message, summary: summary, persist: func(termCtx context.Context) error {
+		if status == domain.SyncBatchStatusSuccess {
+			_, err := batches.FinalizeSuccess(termCtx, batch, accountID, batch.StartedAt)
+			return err
+		}
+		return batches.Update(termCtx, batch)
+	}}
+}
+
+func buildSyncBatchFinalization(
+	batches domain.SyncBatchRepository,
+	batch *domain.SyncBatch,
+	accountID string,
+	message string,
+	syncSummaries []obsapp.CloudSyncSummary,
+	partialState syncBatchPartialState,
+	leaseLost bool,
+	hasStaleScope bool,
+	maxResourcesReached bool,
+) syncBatchFinalizationDecision {
+	summary := buildSyncBatchSummaryDTO(syncSummaries)
+	signals := buildSyncBatchFinalizationSignals(batch, summary, partialState, leaseLost, hasStaleScope, maxResourcesReached)
+	return buildSyncBatchFinalizationDecision(batches, batch, accountID, summary, signals, message)
+}
+
+func defaultIfEmpty(s, def string) string {
+	if strings.TrimSpace(s) == "" {
+		return def
+	}
+	return s
+}
+
 func (s *SyncService) TriggerSync(ctx context.Context, actor Actor, in TriggerSyncInput) (*SyncBatchDTO, error) {
 	if s == nil || s.batches == nil || s.resources == nil || s.apps == nil {
 		return nil, apperr.New(apperr.CodeUnavailable, "asset sync service is not enabled")
@@ -186,7 +437,7 @@ func (s *SyncService) TriggerSync(ctx context.Context, actor Actor, in TriggerSy
 	if err != nil {
 		return nil, wrapAssetError(err, "reap expired sync batches failed")
 	}
-	if reaped > 0 {
+	if len(reaped) > 0 {
 		_ = s.audit.Record(ctx, AuditRecord{
 			ResourceType: "asset_sync_batch",
 			ResourceID:   accountID,
@@ -195,7 +446,7 @@ func (s *SyncService) TriggerSync(ctx context.Context, actor Actor, in TriggerSy
 			Payload: map[string]any{
 				"event":        "reap_expired_running",
 				"account_id":   accountID,
-				"reaped_count": reaped,
+				"reaped_count": len(reaped),
 				"result":       "success",
 			},
 		})
@@ -269,37 +520,58 @@ func (s *SyncService) runSync(
 	now := batch.StartedAt
 	obsActor := obsapp.Actor{UserID: actor.UserID, DisplayName: actor.DisplayName}
 
-	var partialErrs []string
-	var summaryLines []string
 	var syncSummaries []obsapp.CloudSyncSummary
-	var maxResourcesReached bool
-	var productNamesEmpty bool
+	var partialState syncBatchPartialState
+	var fatalSyncErr error
+	var leaseLost bool
 	var negativeScopes []negativeStaleScope
 	successScopes := make([]discoveredScope, 0, len(regions)*len(defaultCloudResourceTypes))
+	collector := newStaleScopeCollector(nil, nil, nil, nil, nil)
+	var summaryLines, partialErrs []string
+	var maxResourcesReached, productNamesEmpty bool
+	var fsErr error
 	// 优先使用全量同步端口（CloudFullSyncPort）；provider 不支持时回退通用逐类型路径，
 	// 不在 Asset 层硬编码 provider 判断，见 docs/huawei-ces-asset-sync-plan.md §7.2。
-	successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries, fsErr := s.syncCloudFullSync(runCtx, obsActor, provider, regions, appID, accountID, batchID, fencingToken, now, batch)
+	successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries, fsErr = s.syncCloudFullSync(runCtx, obsActor, provider, regions, appID, accountID, batchID, fencingToken, now, batch, &collector)
+	partialState.Errors = append(partialState.Errors, partialErrs...)
+	if productNamesEmpty {
+		partialState.MarkSignal(syncBatchSignalProductNamesEmpty)
+	}
 	if errors.Is(fsErr, errFullSyncUnsupported) {
 		var genericErr error
-		successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries, genericErr = s.syncGeneric(runCtx, obsActor, provider, regions, appID, accountID, batchID, fencingToken, now, batch)
+		successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries, genericErr = s.syncGeneric(runCtx, obsActor, provider, regions, appID, accountID, batchID, fencingToken, now, batch, &collector)
+		partialState.Errors = append(partialState.Errors, partialErrs...)
+		if maxResourcesReached {
+			partialState.MarkSignal(syncBatchSignalMaxResourcesReached)
+		}
+		if productNamesEmpty {
+			partialState.MarkSignal(syncBatchSignalProductNamesEmpty)
+		}
+		if genericErr != nil {
+			fatalSyncErr = genericErr
+		}
 		fsErr = genericErr
 	}
 	if fsErr != nil && errors.Is(fsErr, domain.ErrLeaseLost) {
-		batch.FailedCount++
-		partialErrs = append(partialErrs, "sync lease lost; task cancelled")
+		leaseLost = true
 		runCancel()
+	} else if fsErr != nil {
+		fatalSyncErr = fsErr
+	}
+	if runCtx.Err() != nil {
+		leaseLost = true
 	}
 
 	for _, scope := range successScopes {
 		staleCount, err := s.resources.MarkStaleByAccountScopeExceptBatchWithLease(runCtx, accountID, scope.Region, scope.ResourceType, batchID, fencingToken)
 		if err != nil {
 			if errors.Is(err, domain.ErrLeaseLost) {
-				partialErrs = append(partialErrs, "sync lease lost; task cancelled")
+				partialState.LeaseLost = true
 				runCancel()
 				break
 			}
-			batch.FailedCount++
-			partialErrs = append(partialErrs, fmt.Sprintf("%s/%s: mark stale failed", scope.Region, scope.ResourceType))
+			partialState.NoteFailure()
+			partialState.AddError(fmt.Sprintf("%s/%s: mark stale failed", scope.Region, scope.ResourceType))
 			continue
 		}
 		batch.StaleCount += int(staleCount)
@@ -310,119 +582,63 @@ func (s *SyncService) runSync(
 		staleCount, err := s.resources.MarkStaleByAccountRegionExceptTypesWithLease(runCtx, accountID, scope.Region, scope.ExceptTypes, batchID, fencingToken)
 		if err != nil {
 			if errors.Is(err, domain.ErrLeaseLost) {
-				partialErrs = append(partialErrs, "sync lease lost; task cancelled")
+				partialState.LeaseLost = true
 				runCancel()
 				break
 			}
-			batch.FailedCount++
-			partialErrs = append(partialErrs, fmt.Sprintf("%s: mark stale failed", scope.Region))
+			partialState.NoteFailure()
+			partialState.AddError(fmt.Sprintf("%s: mark stale failed", scope.Region))
 			continue
 		}
 		batch.StaleCount += int(staleCount)
 	}
-	// product_names 为空时使用兜底白名单（不完整且部分维度可能错误），至少标记 partial
-	// 提示操作人员同步可能不完整，见 docs/huawei-ces-asset-sync-plan.md §8.5。
-	if productNamesEmpty {
-		partialErrs = append(partialErrs, "product_names_empty=true (fallback whitelist used, sync may be incomplete)")
-	}
-
 	// finalize：闭包捕获 successScopes/maxResourcesReached/partialErrs/summaryLines/syncSummaries，
 	// 用独立短 ctx 写终态 + 审计，不受 runCtx 取消影响。
 	finalize := func() {
-		leaseCancel() // 停止心跳，终态不再续租
+		leaseCancel()
 		<-leaseDone
 		termCtx, termCancel := context.WithTimeout(detachedCtx, syncTerminalCtxTimeout)
 		defer termCancel()
 		finished := time.Now().UTC()
 		batch.FinishedAt = &finished
-		allLines := append(append([]string(nil), summaryLines...), partialErrs...)
-		message := strings.Join(allLines, "; ")
-		batch.Summary = marshalSyncBatchSummary(buildSyncBatchSummaryDTO(syncSummaries))
-		recordAudit := func() {
-			if err := s.audit.Record(termCtx, AuditRecord{
-				ResourceType: "asset_sync_batch",
-				ResourceID:   batchID,
-				Action:       AuditAssetSync,
-				UserID:       actor.UserID,
-				Payload:      buildAssetSyncAuditPayload(accountID, provider, regions, batch, syncSummaries),
-			}); err != nil {
-				logger.From(termCtx).Warn("record sync batch audit failed", logger.String("batch_id", batchID), logger.Error(err))
-			}
+		messageParts := make([]string, 0, len(summaryLines)+len(partialState.Errors)+1)
+		messageParts = append(messageParts, summaryLines...)
+		summaryDTO := buildSyncBatchSummaryDTO(syncSummaries)
+		if summaryDTO != nil && strings.TrimSpace(summaryDTO.PartialReason) != "" {
+			messageParts = append(messageParts, summaryDTO.PartialReason)
 		}
-		// hasStaleScope 表示本轮至少有一个可执行 stale 的 scope（逐类型或反向），
-		// 用于判定"零入库且无成功 scope"的 failed 场景，见 §13。
-		hasStaleScope := len(successScopes) > 0 || len(negativeScopes) > 0
-		switch {
-		case runCtx.Err() != nil:
-			batch.Status = domain.SyncBatchStatusFailed
-			batch.Message = truncateMessage("sync cancelled or timed out; " + message)
-			if err := s.batches.Update(termCtx, batch); err != nil {
-				if errors.Is(err, domain.ErrLeaseLost) {
-					logger.From(runCtx).Warn("skip finalizing sync batch after lease lost", logger.String("batch_id", batchID))
-					return
-				}
-				logger.From(runCtx).Error("finalize sync batch failed", logger.String("batch_id", batchID), logger.Error(err))
+		messageParts = append(messageParts, partialState.Errors...)
+		message := strings.Join(messageParts, "; ")
+		if leaseLost {
+			message = "sync cancelled or timed out"
+		} else if fatalSyncErr != nil {
+			message = fatalSyncErr.Error()
+		}
+		decision := buildSyncBatchFinalization(s.batches, batch, accountID, message, syncSummaries, partialState, leaseLost, len(successScopes) > 0 || len(negativeScopes) > 0, maxResourcesReached)
+		logger.From(termCtx).Info("sync stale scope collector final state",
+			logger.String("batch_id", batchID),
+			logger.Any("scope_collector", collector.structuredLogFields()),
+			logger.Any("finalization_signals", buildSyncBatchFinalizationSignals(batch, decision.summary, partialState, leaseLost, len(successScopes) > 0 || len(negativeScopes) > 0, maxResourcesReached)),
+		)
+		batch.Status = decision.status
+		batch.Message = truncateMessage(decision.message)
+		batch.Summary = marshalSyncBatchSummary(decision.summary)
+		if err := decision.persist(termCtx); err != nil {
+			if errors.Is(err, domain.ErrLeaseLost) {
+				logger.From(runCtx).Warn("skip finalizing sync batch after lease lost", logger.String("batch_id", batchID))
 				return
 			}
-			recordAudit()
-		case batch.FailedCount > 0 && batch.CreatedCount+batch.UpdatedCount == 0 && !hasStaleScope:
-			batch.Status = domain.SyncBatchStatusFailed
-			batch.Message = truncateMessage(message)
-			if err := s.batches.Update(termCtx, batch); err != nil {
-				if errors.Is(err, domain.ErrLeaseLost) {
-					logger.From(runCtx).Warn("skip finalizing sync batch after lease lost", logger.String("batch_id", batchID))
-					return
-				}
-				logger.From(runCtx).Error("finalize sync batch failed", logger.String("batch_id", batchID), logger.Error(err))
-				return
-			}
-			recordAudit()
-		case batch.FailedCount > 0 || maxResourcesReached || productNamesEmpty:
-			batch.Status = domain.SyncBatchStatusPartial
-			batch.Message = truncateMessage(message)
-			if err := s.batches.Update(termCtx, batch); err != nil {
-				if errors.Is(err, domain.ErrLeaseLost) {
-					logger.From(runCtx).Warn("skip finalizing sync batch after lease lost", logger.String("batch_id", batchID))
-					return
-				}
-				logger.From(runCtx).Error("finalize sync batch failed", logger.String("batch_id", batchID), logger.Error(err))
-				return
-			}
-			recordAudit()
-		default:
-			batch.Status = domain.SyncBatchStatusSuccess
-			if strings.TrimSpace(message) == "" {
-				message = "ok"
-			}
-			batch.Message = truncateMessage(message)
-			promoted, err := s.batches.FinalizeSuccess(termCtx, batch, accountID, batch.StartedAt)
-			if err != nil {
-				if errors.Is(err, domain.ErrLeaseLost) {
-					logger.From(runCtx).Warn("skip finalizing sync batch after lease lost", logger.String("batch_id", batchID))
-					return
-				}
-				logger.From(runCtx).Error("finalize successful sync batch failed", logger.String("batch_id", batchID), logger.Error(err))
-				batch.FailedCount++
-				batch.Status = domain.SyncBatchStatusPartial
-				if strings.TrimSpace(message) == "ok" {
-					message = "finalize successful sync batch failed"
-				} else {
-					message = strings.TrimSpace(message + "; finalize successful sync batch failed")
-				}
-				batch.Message = truncateMessage(message)
-				if err := s.batches.Update(termCtx, batch); err != nil {
-					if errors.Is(err, domain.ErrLeaseLost) {
-						logger.From(runCtx).Warn("skip finalizing sync batch after lease lost", logger.String("batch_id", batchID))
-						return
-					}
-					logger.From(runCtx).Error("finalize sync batch failed", logger.String("batch_id", batchID), logger.Error(err))
-					return
-				}
-				recordAudit()
-			} else {
-				logger.From(runCtx).Info("promoted successful sync batch", logger.String("batch_id", batchID), logger.Int64("promoted", promoted))
-				recordAudit()
-			}
+			logger.From(runCtx).Error("finalize sync batch failed", logger.String("batch_id", batchID), logger.Error(err))
+			return
+		}
+		if err := s.audit.Record(termCtx, AuditRecord{
+			ResourceType: "asset_sync_batch",
+			ResourceID:   batchID,
+			Action:       AuditAssetSync,
+			UserID:       actor.UserID,
+			Payload:      buildAssetSyncAuditPayload(accountID, provider, regions, batch, syncSummaries),
+		}); err != nil {
+			logger.From(termCtx).Warn("record sync batch audit failed", logger.String("batch_id", batchID), logger.Error(err))
 		}
 	}
 	finalize()
@@ -572,6 +788,7 @@ func (s *SyncService) syncCloudFullSync(
 	appID, accountID, batchID, fencingToken string,
 	now time.Time,
 	batch *domain.SyncBatch,
+	collector *staleScopeCollector,
 ) (successScopes []discoveredScope, negativeScopes []negativeStaleScope, summaryLines, partialErrs []string, maxResourcesReached, productNamesEmpty bool, syncSummaries []obsapp.CloudSyncSummary, fullSyncErr error) {
 	for i, region := range regions {
 		result, err := s.discovery.ListAllResources(ctx, obsActor, obsapp.AssetFullSyncQuery{
@@ -607,8 +824,15 @@ func (s *SyncService) syncCloudFullSync(
 			})
 			continue
 		}
-		regionTypes := map[string]struct{}{}        // 本轮成功入库的类型（无 summary 时回退用）
-		persistFailedTypes := map[string]struct{}{} // 存在 upsert 失败的类型，见 §13
+		if collector == nil {
+			collector = &staleScopeCollector{
+				successfulTypes:       map[string]struct{}{},
+				queryFailedTypes:      map[string]struct{}{},
+				conversionFailedTypes: map[string]struct{}{},
+				persistFailedTypes:    map[string]struct{}{},
+				upsertedTypes:         map[string]struct{}{},
+			}
+		}
 		upserted := 0
 		for _, cloud := range result.Resources {
 			created, upsertErr := s.upsertCloudResource(ctx, appID, accountID, batchID, fencingToken, now, cloud)
@@ -624,7 +848,7 @@ func (s *SyncService) syncCloudFullSync(
 					logger.Error(upsertErr))
 				partialErrs = append(partialErrs, fmt.Sprintf("%s: %s", region, apperr.FromError(upsertErr).Message))
 				if t := strings.ToLower(strings.TrimSpace(cloud.Type)); t != "" {
-					persistFailedTypes[t] = struct{}{}
+					collector.persistFailedTypes[t] = struct{}{}
 				}
 				continue
 			}
@@ -635,7 +859,7 @@ func (s *SyncService) syncCloudFullSync(
 				batch.UpdatedCount++
 			}
 			if t := strings.ToLower(strings.TrimSpace(cloud.Type)); t != "" {
-				regionTypes[t] = struct{}{}
+				collector.upsertedTypes[t] = struct{}{}
 			}
 		}
 		// 摘要行，见 §8.1。
@@ -672,31 +896,24 @@ func (s *SyncService) syncCloudFullSync(
 			productNamesEmpty = true
 		}
 		summaryLines = append(summaryLines, line)
+		collector.collect(summary)
 		if len(summary.FailedScopes) > 0 {
 			batch.FailedCount += len(summary.FailedScopes)
 			partialErrs = append(partialErrs, summary.FailedScopes...)
 		}
-		// 达到 max_resources 时该 region 的类型不完整，禁止执行 stale 标记，见 §13。
 		if summary.MaxResourcesReached {
+			collector.successfulTypes = map[string]struct{}{}
 			continue
 		}
-		// CES/hybrid 的资源组 product_names 是权威 scope：不在 scope 内的类型视为已从资源组移除，
-		// 应标记 stale。改用反向 stale 标记（account+region 下除不确定类型外全部 stale），
-		// 避免删除资源类型后旧资产永久保持 active，见 docs/huawei-ces-asset-sync-plan.md §13.1。
-		// product_names 为空时使用的是不完整兜底白名单，不能作为权威 scope 反向 stale；
-		// 此时回落到逐类型标记，只标查询、转换、持久化均完整成功的类型。
-		// native/generic/fake 路径 scope 非权威，仍用逐类型标记（只标查询成功的类型）。
 		if isAuthoritativeScope(summary.SyncMode) && !summary.ProductNamesEmpty {
+			snapshot := collector.scopeSnapshot()
 			negativeScopes = append(negativeScopes, negativeStaleScope{
 				Region:      region,
-				ExceptTypes: mergeLowerStrings(summary.QueryFailedTypes, summary.ConversionFailedTypes, mapStringSetKeys(persistFailedTypes)),
+				ExceptTypes: snapshot.authoritativeExceptTypes(),
 			})
 			continue
 		}
-		// stale 门控：只有 provider 查询完整、资源转换完整、全部资源成功持久化三者都成立
-		// 的类型才允许执行 stale，见 docs/huawei-ces-asset-sync-plan.md §13。
-		// 旧 adapter 没有 SuccessfulTypes 时回退到本轮成功入库类型（仍排除持久化失败的类型）。
-		eligibleTypes := resolveStaleScope(summary.SuccessfulTypes, summary.ConversionFailedTypes, regionTypes, persistFailedTypes)
+		eligibleTypes := collector.scopeSnapshot().eligibleSuccessTypes()
 		for t := range eligibleTypes {
 			successScopes = append(successScopes, discoveredScope{Region: region, ResourceType: t})
 		}
@@ -714,6 +931,7 @@ func (s *SyncService) syncGeneric(
 	appID, accountID, batchID, fencingToken string,
 	now time.Time,
 	batch *domain.SyncBatch,
+	collector *staleScopeCollector,
 ) (successScopes []discoveredScope, negativeScopes []negativeStaleScope, summaryLines, partialErrs []string, maxResourcesReached, productNamesEmpty bool, syncSummaries []obsapp.CloudSyncSummary, syncErr error) {
 	for _, region := range regions {
 		for _, resType := range defaultCloudResourceTypes {
@@ -743,6 +961,9 @@ func (s *SyncService) syncGeneric(
 							logger.Error(upsertErr))
 						partialErrs = append(partialErrs, fmt.Sprintf("%s/%s: %s", region, resType, apperr.FromError(upsertErr).Message))
 						typePersistFailed = true
+						if t := strings.ToLower(strings.TrimSpace(resType)); t != "" {
+							collector.persistFailedTypes[t] = struct{}{}
+						}
 						continue
 					}
 					if created {
@@ -760,43 +981,11 @@ func (s *SyncService) syncGeneric(
 			if result != nil && result.HasMore {
 				continue
 			}
+			collector.successfulTypes[resType] = struct{}{}
 			successScopes = append(successScopes, discoveredScope{Region: region, ResourceType: resType})
 		}
 	}
 	return successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries, syncErr
-}
-
-// resolveStaleScope 计算允许执行 stale 标记的类型集合，见 docs/huawei-ces-asset-sync-plan.md §13。
-// 只有 provider 查询完整(SuccessfulTypes)、资源转换完整(非 ConversionFailedTypes)、
-// 全部资源成功持久化(非 persistFailedTypes)三者都成立的类型才返回。
-// 当 provider 未提供 SuccessfulTypes（旧 adapter）时回退到本轮成功入库类型，仍排除持久化失败的类型。
-func resolveStaleScope(successfulTypes, conversionFailedTypes []string, upsertedTypes, persistFailedTypes map[string]struct{}) map[string]struct{} {
-	out := map[string]struct{}{}
-	convertFailed := lowerStringSet(conversionFailedTypes)
-	if len(successfulTypes) > 0 {
-		for _, t := range successfulTypes {
-			t = strings.ToLower(strings.TrimSpace(t))
-			if t == "" {
-				continue
-			}
-			if _, bad := convertFailed[t]; bad {
-				continue
-			}
-			if _, bad := persistFailedTypes[t]; bad {
-				continue
-			}
-			out[t] = struct{}{}
-		}
-		return out
-	}
-	// 旧 adapter 无 SuccessfulTypes：回退到本轮成功入库类型，仍排除持久化失败的类型。
-	for t := range upsertedTypes {
-		if _, bad := persistFailedTypes[t]; bad {
-			continue
-		}
-		out[t] = struct{}{}
-	}
-	return out
 }
 
 // lowerStringSet 将字符串切片归一化为小写去重集合。
@@ -1022,7 +1211,7 @@ func buildSyncBatchSummaryDTO(summaries []obsapp.CloudSyncSummary) *SyncBatchSum
 	if len(summaries) == 0 {
 		return nil
 	}
-	return &SyncBatchSummaryDTO{
+	dto := &SyncBatchSummaryDTO{
 		SyncMode:              firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.SyncMode }),
 		ResourceGroupName:     firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.ResourceGroupName }),
 		ResourceGroupID:       firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.ResourceGroupID }),
@@ -1040,6 +1229,30 @@ func buildSyncBatchSummaryDTO(summaries []obsapp.CloudSyncSummary) *SyncBatchSum
 		QueryFailedTypes:      uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.QueryFailedTypes }),
 		ConversionFailedTypes: uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.ConversionFailedTypes }),
 	}
+	if dto.ProductNamesEmpty {
+		dto.PartialReason = appendReason(dto.PartialReason, "product_names_empty=true")
+	}
+	if dto.MaxResourcesReached {
+		dto.PartialReason = appendReason(dto.PartialReason, "max_resources_reached=true")
+	}
+	if len(dto.QueryFailedTypes) > 0 {
+		dto.PartialReason = appendReason(dto.PartialReason, "query_failed_types="+strings.Join(dto.QueryFailedTypes, ","))
+	}
+	if len(dto.ConversionFailedTypes) > 0 {
+		dto.PartialReason = appendReason(dto.PartialReason, "conversion_failed_types="+strings.Join(dto.ConversionFailedTypes, ","))
+	}
+	return dto
+}
+
+func appendReason(existing, reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return existing
+	}
+	if strings.TrimSpace(existing) == "" {
+		return reason
+	}
+	return existing + "; " + reason
 }
 
 func uniqueSummaryStringSlices(summaries []obsapp.CloudSyncSummary, pick func(obsapp.CloudSyncSummary) []string) []string {

@@ -132,7 +132,7 @@ func (u *testArtifactUOW) WithinArtifactsTransaction(ctx context.Context, fn fun
 func TestRunService_TriggerRunReturnsErrorWhenStartUpdateFails(t *testing.T) {
 	policyRepo := &testPolicyRepo{policy: enabledTestPolicy()}
 	runRepo := &testRunRepo{updateErr: errors.New("db unavailable")}
-	svc := NewRunService(policyRepo, runRepo, &testFindingRepo{}, &testRecRepo{}, testAnalyzer{}, nil)
+	svc := NewRunService(policyRepo, runRepo, &testFindingRepo{}, &testRecRepo{}, testAnalyzer{}, nil, nil)
 
 	_, err := svc.TriggerRun(context.Background(), Actor{UserID: "user-1"}, "pol-1", domain.TriggerManual)
 	if err == nil {
@@ -145,11 +145,10 @@ func TestRunService_PersistsArtifactsAndFinalRunInUnitOfWork(t *testing.T) {
 	runRepo := &testRunRepo{}
 	findingRepo := &testFindingRepo{}
 	recRepo := &testRecRepo{}
-	svc := NewRunService(policyRepo, runRepo, &testFindingRepo{}, &testRecRepo{}, testAnalyzer{}, nil)
 	uow := &testArtifactUOW{repos: domain.ArtifactRepositories{
 		Runs: runRepo, Findings: findingRepo, Recommendations: recRepo,
 	}}
-	svc.SetArtifactUnitOfWork(uow)
+	svc := NewRunService(policyRepo, runRepo, findingRepo, recRepo, testAnalyzer{}, nil, uow)
 
 	dto, err := svc.TriggerRun(context.Background(), Actor{UserID: "user-1"}, "pol-1", domain.TriggerManual)
 	if err != nil {

@@ -5,10 +5,10 @@ import "time"
 type RecommendationStatus string
 
 const (
-	RecommendationOpen              RecommendationStatus = "open"
-	RecommendationAccepted          RecommendationStatus = "accepted"
-	RecommendationDismissed         RecommendationStatus = "dismissed"
-	RecommendationExecutionCreated  RecommendationStatus = "execution_created"
+	RecommendationOpen             RecommendationStatus = "open"
+	RecommendationAccepted         RecommendationStatus = "accepted"
+	RecommendationDismissed        RecommendationStatus = "dismissed"
+	RecommendationExecutionCreated RecommendationStatus = "execution_created"
 )
 
 // Recommendation 可追踪建议。

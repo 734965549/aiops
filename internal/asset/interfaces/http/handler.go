@@ -251,7 +251,8 @@ func (h *Handler) ListSyncBatches(c *gin.Context) {
 	_ = c.ShouldBindQuery(&q)
 	q.Normalize()
 	items, total, err := h.sync.ListBatches(c.Request.Context(), assetapp.ListSyncBatchesQuery{
-		Page: q.Page, PageSize: q.PageSize,
+		Page:                 q.Page,
+		PageSize:             q.PageSize,
 		IntegrationAccountID: q.AccountID,
 	})
 	if err != nil {

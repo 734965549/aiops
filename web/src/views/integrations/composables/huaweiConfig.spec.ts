@@ -29,7 +29,7 @@ describe('parseRegions', () => {
 
 describe('parseRegionProjects', () => {
   it('parses valid multi-line mapping', () => {
-    const { items, errors } = parseRegionProjects('cn-north-4=proj-a\ncn-south-1=proj-b')
+    const { items, errors } = parseRegionProjects('region=cn-north-4,project_id=proj-a\nregion=cn-south-1,project_id=proj-b')
     expect(items).toEqual([
       { region: 'cn-north-4', project_id: 'proj-a' },
       { region: 'cn-south-1', project_id: 'proj-b' }
@@ -37,28 +37,36 @@ describe('parseRegionProjects', () => {
     expect(errors).toEqual([])
   })
 
-  it('allows project_id to contain = characters', () => {
-    const { items, errors } = parseRegionProjects('cn-north-4=a=b=c')
-    expect(items).toEqual([{ region: 'cn-north-4', project_id: 'a=b=c' }])
+  it('supports escaped commas and equals inside values', () => {
+    const { items, errors } = parseRegionProjects(
+      'region=cn-north-4,project_id=a\\=b\\=c,resource_group_name=foo\\,bar'
+    )
+    expect(items).toEqual([
+      {
+        region: 'cn-north-4',
+        project_id: 'a=b=c',
+        resource_group_name: 'foo,bar'
+      }
+    ])
     expect(errors).toEqual([])
   })
 
   it('reports format error for missing project_id', () => {
-    const { items, errors } = parseRegionProjects('cn-north-4=')
+    const { items, errors } = parseRegionProjects('region=cn-north-4')
     expect(items).toEqual([])
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('第 1 行格式错误')
   })
 
   it('reports duplicate region error (case-insensitive)', () => {
-    const { items, errors } = parseRegionProjects('cn-north-4=proj-a\nCN-NORTH-4=proj-b')
+    const { items, errors } = parseRegionProjects('region=cn-north-4,project_id=proj-a\nregion=CN-NORTH-4,project_id=proj-b')
     expect(items).toEqual([{ region: 'cn-north-4', project_id: 'proj-a' }])
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain('region 重复')
   })
 
   it('skips blank lines without error', () => {
-    const { items, errors } = parseRegionProjects('\ncn-north-4=proj-a\n\n')
+    const { items, errors } = parseRegionProjects('\nregion=cn-north-4,project_id=proj-a\n\n')
     expect(items).toEqual([{ region: 'cn-north-4', project_id: 'proj-a' }])
     expect(errors).toEqual([])
   })
@@ -71,7 +79,7 @@ describe('formatRegionProjects', () => {
         { region: 'cn-north-4', project_id: 'proj-a' },
         { region: 'cn-south-1', project_id: 'proj-b' }
       ])
-    ).toBe('cn-north-4=proj-a\ncn-south-1=proj-b')
+    ).toBe('region=cn-north-4,project_id=proj-a\nregion=cn-south-1,project_id=proj-b')
   })
 
   it('returns empty string for nil/empty', () => {
@@ -80,8 +88,20 @@ describe('formatRegionProjects', () => {
   })
 
   it('roundtrips with parseRegionProjects', () => {
-    const text = 'cn-north-4=proj-a\ncn-south-1=proj-b'
+    const text = 'region=cn-north-4,project_id=proj-a\nregion=cn-south-1,project_id=proj-b'
     expect(formatRegionProjects(parseRegionProjects(text).items)).toBe(text)
+  })
+
+  it('preserves escaped commas, equals and backslashes through parse-format-parse', () => {
+    const original = 'region=cn-north-4,project_id=a\\=b\\=c,resource_group_name=foo\\,bar\\\\baz'
+    const parsed = parseRegionProjects(original)
+    expect(parsed.errors).toEqual([])
+
+    const formatted = formatRegionProjects(parsed.items)
+    expect(formatted).toBe('region=cn-north-4,project_id=a\\=b\\=c,resource_group_name=foo\\,bar\\\\baz')
+
+    const reparsed = parseRegionProjects(formatted)
+    expect(reparsed).toEqual(parsed)
   })
 })
 
@@ -131,7 +151,7 @@ describe('mergeHuaweiExtraConfig', () => {
     const config = mergeHuaweiExtraConfig({ custom_tag: 'team-foo' }, baseFields)
     expect(config.custom_tag).toBe('team-foo')
     expect(config.sync_mode).toBe('ces')
-    expect(config.resource_group_name).toBe('全部资源')
+    expect(config.resource_group_name).toBeUndefined()
     expect(config.max_resources).toBe(20000)
   })
 
@@ -141,18 +161,24 @@ describe('mergeHuaweiExtraConfig', () => {
       resource_group_name: '  全部资源  ',
       resource_group_id: '  rg001  '
     })
-    expect(config.resource_group_name).toBe('全部资源')
+    expect(config.resource_group_name).toBeUndefined()
     expect(config.resource_group_id).toBe('rg001')
   })
 
-  it('omits empty string fields (does not write blank values)', () => {
-    const config = mergeHuaweiExtraConfig({}, {
+  it('omits empty and placeholder resource_group_name values', () => {
+    const blank = mergeHuaweiExtraConfig({}, {
       ...baseFields,
       resource_group_name: '   ',
       resource_group_id: ''
     })
-    expect(config.resource_group_name).toBeUndefined()
-    expect(config.resource_group_id).toBeUndefined()
+    expect(blank.resource_group_name).toBeUndefined()
+    expect(blank.resource_group_id).toBeUndefined()
+
+    const placeholder = mergeHuaweiExtraConfig({}, {
+      ...baseFields,
+      resource_group_name: '全部资源'
+    })
+    expect(placeholder.resource_group_name).toBeUndefined()
   })
 
   it('skips non-positive max_resources', () => {

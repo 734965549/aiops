@@ -3,6 +3,7 @@ package application
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strings"
 
 	"github.com/734965549/aiops/internal/integration/domain"
@@ -81,8 +82,6 @@ func capabilitiesToStrings(caps []domain.Capability) []string {
 
 func encodeExtraConfigInput(provider domain.ProviderType, extra map[string]any) ([]byte, error) {
 	if len(extra) == 0 {
-		// 华为云新账号默认 CES 同步模式，显式落库避免依赖解析器默认值；
-		// 其它 provider 仍写 {} 由各自逻辑处理。见 docs/huawei-ces-asset-sync-plan.md §17。
 		if provider == domain.ProviderHuaweiCloud {
 			return []byte(`{"sync_mode":"ces"}`), nil
 		}
@@ -94,12 +93,9 @@ func encodeExtraConfigInput(provider domain.ProviderType, extra map[string]any) 
 	if err := validateProviderExtraConfig(provider, extra); err != nil {
 		return nil, err
 	}
-	raw, err := json.Marshal(extra)
+	raw, err := marshalStrictExtraConfig(extra)
 	if err != nil {
-		return nil, apperr.New(apperr.CodeInvalidArgument, "extra_config must be a valid json object")
-	}
-	if len(bytes.TrimSpace(raw)) == 0 {
-		return []byte("{}"), nil
+		return nil, err
 	}
 	return raw, nil
 }
@@ -112,54 +108,96 @@ func validateProviderExtraConfig(provider domain.ProviderType, extra map[string]
 }
 
 func validateHuaweiExtraConfig(extra map[string]any) error {
-	for key, value := range extra {
-		switch key {
-		case "sync_mode":
-			mode, ok := value.(string)
+	allowed := map[string]struct{}{
+		"sync_mode": {}, "resource_group_name": {}, "resource_group_id": {},
+		"enterprise_project_id": {}, "max_resources": {}, "region_projects": {},
+	}
+	for key := range extra {
+		if _, ok := allowed[key]; !ok && isSensitiveExtraConfigKey(key) {
+			return apperr.Newf(apperr.CodeInvalidArgument, "extra_config.%s is not supported", key)
+		}
+	}
+	if mode, ok := extra["sync_mode"]; ok {
+		str, ok := mode.(string)
+		if !ok {
+			return apperr.New(apperr.CodeInvalidArgument, "extra_config.sync_mode must be a string")
+		}
+		switch strings.ToLower(strings.TrimSpace(str)) {
+		case "ces", "hybrid", "native":
+		default:
+			return apperr.New(apperr.CodeInvalidArgument, "extra_config.sync_mode must be one of ces, hybrid, native")
+		}
+	}
+	for _, key := range []string{"resource_group_name", "resource_group_id", "enterprise_project_id"} {
+		if value, ok := extra[key]; ok {
+			str, ok := value.(string)
 			if !ok {
-				return apperr.New(apperr.CodeInvalidArgument, "extra_config.sync_mode must be a string")
-			}
-			switch strings.ToLower(strings.TrimSpace(mode)) {
-			case "ces", "hybrid", "native":
-			default:
-				return apperr.New(apperr.CodeInvalidArgument, "extra_config.sync_mode must be one of ces, hybrid, native")
-			}
-		case "resource_group_name", "resource_group_id", "enterprise_project_id":
-			if _, ok := value.(string); !ok {
 				return apperr.Newf(apperr.CodeInvalidArgument, "extra_config.%s must be a string", key)
 			}
-		case "max_resources":
-			if err := validateHuaweiMaxResources(value); err != nil {
-				return err
-			}
-		case "region_projects":
-			items, ok := value.([]any)
-			if !ok {
-				return apperr.New(apperr.CodeInvalidArgument, "extra_config.region_projects must be an array")
-			}
-			seen := map[string]struct{}{}
-			for _, item := range items {
-				m, ok := item.(map[string]any)
-				if !ok {
-					return apperr.New(apperr.CodeInvalidArgument, "extra_config.region_projects items must be objects")
-				}
-				region, ok := m["region"].(string)
-				if !ok || strings.TrimSpace(region) == "" {
-					return apperr.New(apperr.CodeInvalidArgument, "extra_config.region_projects[].region is required")
-				}
-				projectID, ok := m["project_id"].(string)
-				if !ok || strings.TrimSpace(projectID) == "" {
-					return apperr.New(apperr.CodeInvalidArgument, "extra_config.region_projects[].project_id is required")
-				}
-				key := strings.ToLower(strings.TrimSpace(region))
-				if _, dup := seen[key]; dup {
-					return apperr.New(apperr.CodeInvalidArgument, "extra_config.region_projects contains duplicate region")
-				}
-				seen[key] = struct{}{}
+			if strings.TrimSpace(str) == "" {
+				continue
 			}
 		}
 	}
+	if value, ok := extra["max_resources"]; ok {
+		if err := validateHuaweiMaxResources(value); err != nil {
+			return err
+		}
+	}
+	if value, ok := extra["region_projects"]; ok {
+		items, ok := value.([]any)
+		if !ok {
+			return apperr.New(apperr.CodeInvalidArgument, "extra_config.region_projects must be an array")
+		}
+		seen := map[string]struct{}{}
+		for _, item := range items {
+			m, ok := item.(map[string]any)
+			if !ok {
+				return apperr.New(apperr.CodeInvalidArgument, "extra_config.region_projects items must be objects")
+			}
+			for k := range m {
+				if k != "region" && k != "project_id" && k != "resource_group_id" && k != "resource_group_name" {
+					return apperr.Newf(apperr.CodeInvalidArgument, "extra_config.region_projects[].%s is not supported", k)
+				}
+			}
+			region, ok := m["region"].(string)
+			if !ok || strings.TrimSpace(region) == "" {
+				return apperr.New(apperr.CodeInvalidArgument, "extra_config.region_projects[].region is required")
+			}
+			projectID, ok := m["project_id"].(string)
+			if !ok || strings.TrimSpace(projectID) == "" {
+				return apperr.New(apperr.CodeInvalidArgument, "extra_config.region_projects[].project_id is required")
+			}
+			for _, key := range []string{"resource_group_id", "resource_group_name"} {
+				if raw, ok := m[key]; ok {
+					str, ok := raw.(string)
+					if !ok {
+						return apperr.Newf(apperr.CodeInvalidArgument, "extra_config.region_projects[].%s must be a string", key)
+					}
+					if strings.TrimSpace(str) == "" {
+						delete(m, key)
+					}
+				}
+			}
+			key := strings.ToLower(strings.TrimSpace(region))
+			if _, dup := seen[key]; dup {
+				return apperr.New(apperr.CodeInvalidArgument, "extra_config.region_projects contains duplicate region")
+			}
+			seen[key] = struct{}{}
+		}
+	}
 	return nil
+}
+
+func marshalStrictExtraConfig(extra map[string]any) ([]byte, error) {
+	raw, err := json.Marshal(extra)
+	if err != nil {
+		return nil, apperr.New(apperr.CodeInvalidArgument, "extra_config must be a valid json object")
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return []byte("{}"), nil
+	}
+	return raw, nil
 }
 
 func validateHuaweiMaxResources(value any) error {
@@ -245,10 +283,10 @@ func removeSensitiveExtraConfigKeys(value any) {
 func isSensitiveExtraConfigKey(key string) bool {
 	k := strings.ToLower(strings.TrimSpace(key))
 	sensitive := []string{"secret", "password", "token", "credential", "access_key", "secret_key", "api_key", "authorization", "private_key", "encryption_key", "client_key"}
-	for _, marker := range sensitive {
-		if strings.Contains(k, marker) {
-			return true
-		}
+	if slices.ContainsFunc(sensitive, func(marker string) bool {
+		return strings.Contains(k, marker)
+	}) {
+		return true
 	}
 	return false
 }

@@ -53,7 +53,9 @@
           class="collapsed-login-card"
           @click="isCollapsed = false"
         >
-          <div class="collapsed-login-header">ENTERPRISE ACCESS</div>
+          <div class="collapsed-login-header">
+            ENTERPRISE ACCESS
+          </div>
           <div class="collapsed-login-content">
             <span class="collapsed-login-text">展开登录</span>
             <svg
@@ -110,14 +112,17 @@
         </div>
       </section>
 
-      <section class="login-access" :class="{ 'is-collapsed': isCollapsed }">
+      <section
+        class="login-access"
+        :class="{ 'is-collapsed': isCollapsed }"
+      >
         <div class="access-meta">
           <span>Enterprise access</span>
           <span class="access-state"><i /> Protected</span>
           <button
             class="collapse-toggle"
-            @click="isCollapsed = !isCollapsed"
             title="折叠登录面板"
+            @click="isCollapsed = !isCollapsed"
           >
             <svg
               width="16"

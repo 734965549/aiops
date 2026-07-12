@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -391,5 +392,121 @@ func TestQueryService_TopologyRequiresCapability(t *testing.T) {
 	}
 	if ae := apperr.FromError(err); ae.Code != apperr.CodeFailedPrecondition {
 		t.Fatalf("expected FAILED_PRECONDITION, got %s", ae.Code)
+	}
+}
+
+// countingAccountPort 包装 stubAccountPort 并计数 ResolveAccount 调用，用于断言冻结快照路径是否跳过 DB 重读。
+type countingAccountPort struct {
+	inner stubAccountPort
+	calls int
+}
+
+func (c *countingAccountPort) ResolveAccount(ctx context.Context, accountID string) (*domain.AccountSnapshot, error) {
+	c.calls++
+	return c.inner.ResolveAccount(ctx, accountID)
+}
+
+// fullSyncProvider 实现 CloudFullSyncPort，捕获收到的 ProviderContext.Account 用于断言冻结快照被透传。
+type fullSyncProvider struct {
+	capturedAccount domain.AccountSnapshot
+}
+
+func (fullSyncProvider) ProviderType() string { return string(integdomain.ProviderHuaweiCloud) }
+func (f *fullSyncProvider) ListAllResources(_ context.Context, pctx domain.ProviderContext, _ AssetFullSyncQuery) ([]domain.CloudResource, *CloudSyncSummary, error) {
+	f.capturedAccount = pctx.Account
+	return []domain.CloudResource{{ResourceID: "res-1", Name: "demo", Type: "ecs", Region: "cn-north-4", Status: "running"}},
+		&CloudSyncSummary{Region: "cn-north-4", Discovered: 1}, nil
+}
+
+// TestQueryService_ListAllResourcesUsesFrozenSnapshot 验证 q.Account 非 nil 时跳过 ResolveAccount（DB 重读），
+// 直接用冻结快照构造 ProviderContext 透传给 provider，见 ops/huawei-ces-sync-contract.md §13.2。
+func TestQueryService_ListAllResourcesUsesFrozenSnapshot(t *testing.T) {
+	accounts := &countingAccountPort{inner: stubAccountPort{acc: &domain.AccountSnapshot{
+		AccountID: "acc-1", Provider: string(integdomain.ProviderHuaweiCloud),
+		Capabilities: []string{string(integdomain.CapabilityAssets)},
+	}}}
+	provider := &fullSyncProvider{}
+	svc := NewQueryService(accounts, stubRegistry{p: provider}, nil, nil)
+
+	frozen := &domain.AccountSnapshot{
+		AccountID:       "acc-1",
+		Provider:        string(integdomain.ProviderHuaweiCloud),
+		AuthType:        string(integdomain.AuthAKSK),
+		ProjectID:       "pid-frozen",
+		CredentialRefID: "cref-frozen",
+		Capabilities:    []string{string(integdomain.CapabilityAssets)},
+		ExtraConfig:     []byte(`{"sync_mode":"hybrid"}`),
+	}
+	out, err := svc.ListAllResources(context.Background(), Actor{UserID: "u1"}, AssetFullSyncQuery{
+		AccountID: "acc-1", Provider: string(integdomain.ProviderHuaweiCloud), Region: "cn-north-4",
+		Account: frozen,
+	})
+	if err != nil {
+		t.Fatalf("ListAllResources: %v", err)
+	}
+	if accounts.calls != 0 {
+		t.Fatalf("expected ResolveAccount to be skipped when frozen snapshot provided, got %d calls", accounts.calls)
+	}
+	if provider.capturedAccount.ProjectID != "pid-frozen" {
+		t.Fatalf("expected provider to receive frozen project_id=pid-frozen, got %q", provider.capturedAccount.ProjectID)
+	}
+	if provider.capturedAccount.CredentialRefID != "cref-frozen" {
+		t.Fatalf("expected provider to receive frozen credential_ref_id, got %q", provider.capturedAccount.CredentialRefID)
+	}
+	if string(provider.capturedAccount.ExtraConfig) != `{"sync_mode":"hybrid"}` {
+		t.Fatalf("expected provider to receive frozen extra_config, got %s", provider.capturedAccount.ExtraConfig)
+	}
+	if len(out.Resources) != 1 {
+		t.Fatalf("expected 1 resource, got %d", len(out.Resources))
+	}
+}
+
+// TestQueryService_ListAllResourcesFallsBackToResolveAccount 验证 q.Account 为 nil 时回退 resolveEntry，
+// 保持交互式/旧调用方行为不变。
+func TestQueryService_ListAllResourcesFallsBackToResolveAccount(t *testing.T) {
+	accounts := &countingAccountPort{inner: stubAccountPort{acc: &domain.AccountSnapshot{
+		AccountID: "acc-1", Provider: string(integdomain.ProviderHuaweiCloud),
+		Capabilities: []string{string(integdomain.CapabilityAssets)},
+	}}}
+	provider := &fullSyncProvider{}
+	svc := NewQueryService(accounts, stubRegistry{p: provider}, nil, nil)
+
+	_, err := svc.ListAllResources(context.Background(), Actor{UserID: "u1"}, AssetFullSyncQuery{
+		AccountID: "acc-1", Provider: string(integdomain.ProviderHuaweiCloud), Region: "cn-north-4",
+	})
+	if err != nil {
+		t.Fatalf("ListAllResources: %v", err)
+	}
+	if accounts.calls != 1 {
+		t.Fatalf("expected ResolveAccount to be called once when no frozen snapshot, got %d calls", accounts.calls)
+	}
+}
+
+// TestQueryService_ListAllResourcesUnsupportedProviderReturnsCapabilityError 验证 provider 未实现
+// CloudFullSyncPort 时，ListAllResourcesDiscovery 返回包住 domain.ErrCapabilityUnsupported 的业务错误，
+// 使 asset 层 isFullSyncUnsupported 能识别并回退 syncGeneric，见 ops/huawei-ces-sync-contract.md §13.2。
+// 此用例直接覆盖真实 QueryService 路径：fakeDiscoveryPort 在 port.ListAllResources 内包 sentinel，
+// 绕过了类型断言失败分支，无法覆盖该路径，导致该 bug 此前未被测试发现。
+func TestQueryService_ListAllResourcesUnsupportedProviderReturnsCapabilityError(t *testing.T) {
+	accounts := stubAccountPort{acc: &domain.AccountSnapshot{
+		AccountID:    "acc-1",
+		Provider:     string(integdomain.ProviderHuaweiCloud),
+		Capabilities: []string{string(integdomain.CapabilityAssets)},
+	}}
+	// stubProviderEntry 只实现 AssetDiscoveryPort，不实现 CloudFullSyncPort，
+	// 触发 ListAllResourcesDiscovery 的类型断言失败分支。
+	svc := NewQueryService(accounts, stubRegistry{p: stubProviderEntry{}}, nil, nil)
+
+	_, err := svc.ListAllResources(context.Background(), Actor{UserID: "u1"}, AssetFullSyncQuery{
+		AccountID: "acc-1", Provider: string(integdomain.ProviderHuaweiCloud), Region: "cn-north-4",
+	})
+	if err == nil {
+		t.Fatal("expected error when provider does not implement CloudFullSyncPort, got nil")
+	}
+	if !errors.Is(err, domain.ErrCapabilityUnsupported) {
+		t.Fatalf("expected error to wrap domain.ErrCapabilityUnsupported so asset sync can fall back to generic, got %v", err)
+	}
+	if apperr.CodeOf(err) != apperr.CodeFailedPrecondition {
+		t.Fatalf("expected CodeFailedPrecondition, got %s", apperr.CodeOf(err))
 	}
 }

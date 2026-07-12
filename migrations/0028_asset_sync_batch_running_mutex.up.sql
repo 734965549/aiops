@@ -1,4 +1,4 @@
--- 0028 account-level sync mutex via partial unique index + lease, see docs/huawei-ces-asset-sync-plan.md §P1.
+-- 0028 account-level sync mutex via partial unique index + lease, see ops/huawei-ces-sync-contract.md §13/§18.1.
 -- 问题：TriggerSync 创建 running 批次无账号级互斥，同一账号并发批次交错时，
 -- A 会把 B 刚 upsert 的资源（sync_batch_id=B）标记为 stale，产生错误资产状态。
 -- 解决：每个账号同一时刻只允许一个 running 批次；崩溃批次靠 lease_expires_at 超时自愈。

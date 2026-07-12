@@ -303,6 +303,26 @@ func (r *fakeResRepo) UpsertCloudSyncWithLease(_ context.Context, res *domain.Re
 	return r.upsertCloudSyncWithBatch(res, batchID)
 }
 
+func (r *fakeResRepo) UpsertCloudSyncBatchWithLease(_ context.Context, resources []*domain.Resource, batchID, fencingToken string) (int, int, error) {
+	if r.leaseOwned != nil && !r.leaseOwned(batchID, fencingToken) {
+		return 0, 0, domain.ErrLeaseLost
+	}
+	created, updated := 0, 0
+	for _, res := range resources {
+		if res == nil {
+			continue
+		}
+		if ok, err := r.upsertCloudSyncWithBatch(res, batchID); err != nil {
+			return created, updated, err
+		} else if ok {
+			created++
+		} else {
+			updated++
+		}
+	}
+	return created, updated, nil
+}
+
 func (r *fakeResRepo) PromoteSuccessfulSyncBatch(_ context.Context, accountID, batchID string, syncedSince time.Time) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -403,6 +423,13 @@ func (r *fakeResRepo) MarkStaleByAccountRegionExceptTypesWithLease(_ context.Con
 		return 0, domain.ErrLeaseLost
 	}
 	return r.markStaleByAccountRegionExceptTypes(accountID, region, exceptTypes, batchID)
+}
+
+func (r *fakeResRepo) PatchCloudSyncLabelsBatchWithLease(_ context.Context, patches []domain.CloudSyncLabelPatch, batchID, fencingToken string) (int, error) {
+	if r.leaseOwned != nil && !r.leaseOwned(batchID, fencingToken) {
+		return 0, domain.ErrLeaseLost
+	}
+	return 0, nil
 }
 
 func (r *fakeResRepo) markStaleByAccountRegionExceptTypes(accountID, region string, exceptTypes []string, batchID string) (int64, error) {
@@ -604,7 +631,7 @@ func TestMatcherService_NoMatchReturnsEmpty(t *testing.T) {
 }
 
 func TestAssetService_CreateResourceApplicationNotFound(t *testing.T) {
-	svc := NewAssetService(&fakeAppRepo{apps: map[string]domain.Application{}}, &fakeResRepo{}, nil, NoopAuditRecorder{})
+	svc := NewAssetService(&fakeAppRepo{apps: map[string]domain.Application{}}, &fakeResRepo{}, nil, nil, NoopAuditRecorder{})
 	_, err := svc.CreateResource(context.Background(), Actor{}, CreateResourceInput{
 		ApplicationID: "missing-app-id",
 		Name:          "pod-1",

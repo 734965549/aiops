@@ -25,7 +25,7 @@ func (a *Adapter) CreateAgentTask(ctx context.Context, actor inspectionapp.Actor
 		OperationType: "command", TargetType: req.TargetType, TargetID: req.TargetID,
 		TargetName: req.TargetName, Environment: req.Environment, ExecutionMode: "agent",
 		MediumID: req.MediumID, CommandSpecID: req.CommandSpecID, Arguments: req.Arguments,
-		RiskLevel: req.RiskLevel,
+		RiskLevel:    req.RiskLevel,
 		RollbackPlan: map[string]any{"description": "只读诊断命令，无需回滚"},
 	})
 	if err != nil {

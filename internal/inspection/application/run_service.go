@@ -27,6 +27,7 @@ func NewRunService(
 	recs domain.RecommendationRepository,
 	analyzer Analyzer,
 	audit AuditRecorder,
+	artifacts domain.ArtifactUnitOfWork,
 ) *RunService {
 	if audit == nil {
 		audit = NoopAuditRecorder{}
@@ -36,13 +37,7 @@ func NewRunService(
 	}
 	return &RunService{
 		policies: policies, runs: runs, findings: findings, recs: recs,
-		analyzer: analyzer, audit: audit,
-	}
-}
-
-func (s *RunService) SetArtifactUnitOfWork(uow domain.ArtifactUnitOfWork) {
-	if s != nil {
-		s.artifacts = uow
+		artifacts: artifacts, analyzer: analyzer, audit: audit,
 	}
 }
 

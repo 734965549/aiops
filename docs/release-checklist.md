@@ -19,10 +19,13 @@
 
 | # | 检查项 | 操作 | 通过标准 |
 |---|--------|------|----------|
-| 2.1 | 迁移脚本齐全 | 检查 `migrations/` 至最新版本 | 当前最高 `0032_cleanup_legacy_cloud_application_ids`；当前仓库未包含 `0021` Notification 迁移，按实际文件顺序执行 |
+| 2.1 | 迁移脚本齐全 | 检查 `migrations/` 至最新版本 | 当前最高 `0043_fix_orphaned_alert_app_refs`；当前仓库未包含 `0021` Notification 迁移，按实际文件顺序执行 |
 | 2.2 | **生产**关闭 auto_migrate | `database.auto_migrate=false` | API 启动不自动改表 |
 | 2.3 | 发布前执行迁移 | `go run ./cmd/migrate -config <prod-config>` | 无报错，`schema_migrations` 记录最新版本 |
 | 2.4 | 回滚预案 | 阅读对应 `.down.sql` | 明确回滚步骤与数据影响 |
+| 2.5 | **0032 破坏性迁移备份** | 升级前备份 `asset_application`、`asset_resource`、`asset_match_rule` 表 | 0032 是 DELETE 脚本，会删除旧格式 `cloud-<account_id>` 应用及其关联资源/匹配规则（不可自动恢复）；迁移保留 `integration_account`，升级后需重新触发云同步（无需重新录入账号）。0039 会清理 `alert_alert`/`inspection_policy` 中的孤儿引用，但不恢复已删除数据 |
+| 2.6 | **迁移后引用完整性验证** | `SELECT * FROM v_asset_app_ref_integrity;` | 返回 0 行（0040 创建的视图，检查 `asset_resource`/`asset_match_rule`/`alert_alert`/`inspection_policy` 中的 `application_id` 引用在 `asset_application` 中存在）。0043 会自动修复已有孤儿引用并通过 CHECK n=0 硬验收 |
+| 2.7 | **重新触发云同步**（硬验收步骤） | 对已有接入账号执行 `POST /api/assets/sync` | 同步成功，资源写入新格式 `cloud-<前缀>-<hash>` 应用；同步后再次执行 2.6 验证视图返回 0 行 |
 
 迁移契约：`ops/migration-contract.md`
 
@@ -87,7 +90,7 @@ $env:API_BASE = "https://staging-api.example.com"   # 如需要
 | # | 脚本 | 覆盖范围 | 通过标准 |
 |---|------|----------|----------|
 | 6.1 | `e2e-alert.ps1` | 告警源、ingest、状态流转 | 输出 PASS |
-| 6.2 | `e2e-asset.ps1` | 应用/资源 CRUD、匹配规则、绑定 | 输出 PASS |
+| 6.2 | `e2e-asset.ps1` | 应用/资源 CRUD、匹配规则、绑定、云同步 | 输出 PASS |
 | 6.3 | `e2e-runbook.ps1` | 推荐、多步执行、时间线回写 | 输出 PASS |
 | 6.4 | `e2e-execution.ps1` | 简单任务确认执行 | 输出 PASS |
 | 6.5 | `e2e-identity-access.ps1` | viewer 角色、授权写接口、403 边界、审计 | 输出 PASS |
@@ -110,7 +113,7 @@ $env:API_BASE = "https://staging-api.example.com"   # 如需要
 
 | # | 检查项 | 操作 | 通过标准 |
 |---|--------|------|----------|
-| 8.1 | 审计写入 | 执行一次资产创建 + 告警处理 | `GET /api/audits` 可查到 actor/action/result |
+| 8.1 | 审计写入 | 执行一次资产创建 + 告警处理 + 云同步（含 hybrid 增强） | `GET /api/audits` 可查到 actor/action/result；`hybrid` 任一增强失败时批次应为 `partial`，且 summary 暴露 `enrichment_failed_count` / `enrichment_failed_types` |
 | 8.2 | 审计不影响主流程 | 审计库短暂不可用（测试环境） | 主业务按设计降级或报错，行为符合预期 |
 | 8.3 | 日志级别 | `log.level` | 生产建议 `info`，调试期避免 `debug` 泄露敏感信息 |
 | 8.4 | AI Provider | `ai.providers` 配置 | 密钥来自 secrets，非明文提交仓库 |

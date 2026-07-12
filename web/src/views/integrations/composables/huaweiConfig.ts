@@ -1,6 +1,11 @@
 // 华为云接入配置纯函数：region/region_projects 解析、未知 extra_config 保留与合并。
 // 抽离自 integrations/index.vue 的 <script setup> 便于单测。
-// 见 docs/huawei-ces-asset-sync-plan.md §5.3/§11/§20。
+// 见 ops/huawei-ces-sync-contract.md §5.3/§11。
+//
+// 字段语义：
+// - 展示字段：resource_group_name、resource_group_id、sync_mode、region_projects
+// - 判定字段：region_projects、project_id、max_resources、enterprise_project_id
+// - 审计/保留字段：未知 extra_config，编辑时原样保留，不参与表单判定
 import type {
   HuaweiCloudExtraConfig,
   HuaweiCloudRegionProject,
@@ -21,6 +26,36 @@ export function parseRegions(text: string): string[] {
   return text.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean)
 }
 
+function tokenizeEscaped(text: string, separator: string): string[] {
+  const parts: string[] = []
+  let current = ''
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i]
+    if (char === '\\' && i + 1 < text.length) {
+      const next = text[i + 1]
+      if (next === '\\' || next === separator || next === '=') {
+        current += next
+        i += 1
+        continue
+      }
+      current += char
+      continue
+    }
+    if (char === separator) {
+      parts.push(current)
+      current = ''
+      continue
+    }
+    current += char
+  }
+  parts.push(current)
+  return parts
+}
+
+function escapeRegionProjectValue(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/,/g, '\\,').replace(/=/g, '\\=')
+}
+
 export function parseRegionProjects(text: string): { items: HuaweiCloudRegionProject[]; errors: string[] } {
   const items: HuaweiCloudRegionProject[] = []
   const errors: string[] = []
@@ -30,26 +65,54 @@ export function parseRegionProjects(text: string): { items: HuaweiCloudRegionPro
     .map((line) => line.trim())
     .forEach((line, index) => {
       if (!line) return
-      const [regionPart, ...projectParts] = line.split('=')
-      const region = regionPart.trim()
-      const projectId = projectParts.join('=').trim()
+      const pairs: Record<string, string> = {}
+      const segments = tokenizeEscaped(line, ',')
+
+      segments.forEach((segment) => {
+        const [rawKey, ...rest] = tokenizeEscaped(segment, '=')
+        const key = rawKey.trim()
+        const value = rest.join('=').trim()
+        if (key && value) {
+          pairs[key] = value
+        }
+      })
+
+      const region = pairs.region
+      const projectId = pairs.project_id
       if (!region || !projectId) {
-        errors.push(`第 ${index + 1} 行格式错误，请使用 region=project_id`)
+        errors.push(`第 ${index + 1} 行格式错误，请使用 region=xxx,project_id=xxx[,resource_group_id=xxx]；值中的逗号和等号可分别使用 \\, / \\=`)
         return
       }
+
       const key = region.toLowerCase()
       if (seen.has(key)) {
         errors.push(`第 ${index + 1} 行 region 重复：${region}`)
         return
       }
+
       seen.add(key)
-      items.push({ region, project_id: projectId })
+      items.push({
+        region,
+        project_id: projectId,
+        resource_group_id: pairs.resource_group_id,
+        resource_group_name: pairs.resource_group_name
+      })
     })
   return { items, errors }
 }
 
 export function formatRegionProjects(items?: HuaweiCloudRegionProject[]): string {
-  return (items || []).map((item) => `${item.region}=${item.project_id}`).join('\n')
+  return (items || [])
+    .map((item) => {
+      const parts = [
+        `region=${escapeRegionProjectValue(item.region)}`,
+        `project_id=${escapeRegionProjectValue(item.project_id)}`
+      ]
+      if (item.resource_group_id) parts.push(`resource_group_id=${escapeRegionProjectValue(item.resource_group_id)}`)
+      if (item.resource_group_name) parts.push(`resource_group_name=${escapeRegionProjectValue(item.resource_group_name)}`)
+      return parts.join(',')
+    })
+    .join('\n')
 }
 
 // 提取 extra_config 中的非已知字段，编辑时保留，避免表单覆盖丢失自定义配置。
@@ -76,7 +139,12 @@ export function mergeHuaweiExtraConfig(
 ): HuaweiCloudExtraConfig {
   const config: HuaweiCloudExtraConfig = { ...preserved } as HuaweiCloudExtraConfig
   if (fields.sync_mode) config.sync_mode = fields.sync_mode
-  if (fields.resource_group_name.trim()) config.resource_group_name = fields.resource_group_name.trim()
+  const resourceGroupName = fields.resource_group_name.trim()
+  if (!resourceGroupName || ['全部资源', 'All resources', 'All Resources'].includes(resourceGroupName)) {
+    delete config.resource_group_name
+  } else {
+    config.resource_group_name = resourceGroupName
+  }
   if (fields.resource_group_id.trim()) config.resource_group_id = fields.resource_group_id.trim()
   if (fields.enterprise_project_id.trim()) {
     config.enterprise_project_id = fields.enterprise_project_id.trim()

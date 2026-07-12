@@ -31,17 +31,24 @@ type TopologyQueryPort interface {
 	QueryTopology(ctx context.Context, pctx domain.ProviderContext, q domain.TopologyQuery) (*domain.TopologySnapshot, error)
 }
 
-// AssetDiscoveryPort 云资源只读发现端口（Asset Sync / cloud.resources.list 复用）。
+// AssetDiscoveryPort 云资源只读发现端口（交互查询口，供 Asset Sync / cloud.resources.list 复用）。
 // ListResources 返回 (resources, hasMore, err)：hasMore=true 表示因达到查询上限而截断，
-// 云端仍有更多资源。Asset Sync 通用同步路径据此跳过该类型 stale 标记，见 §13.1。
+// 云端仍有更多资源。它只负责交互式发现，不承担全量同步或增强职责。
 type AssetDiscoveryPort interface {
 	ListResources(ctx context.Context, pctx domain.ProviderContext, q domain.AssetDiscoveryQuery) ([]domain.CloudResource, bool, error)
 }
 
 // CloudFullSyncPort 云资源全量同步端口（专供 Asset Sync 全量分页发现，不受交互查询 limit<=500 限制），
-// 见 docs/huawei-ces-asset-sync-plan.md §7.2。返回资源列表与同步摘要，摘要用于回写 batch message。
+// 见 ops/huawei-ces-sync-contract.md §7.2。返回资源列表与同步摘要，摘要用于回写 batch message；
+// 它是全量发现口，不做增强。
 type CloudFullSyncPort interface {
 	ListAllResources(ctx context.Context, pctx domain.ProviderContext, q AssetFullSyncQuery) ([]domain.CloudResource, *CloudSyncSummary, error)
+}
+
+// CloudEnrichmentPort 云资源增强端口（hybrid 第二阶段独立增强入口），
+// 由 Asset 层在基础资源落库后调用，见 ops/huawei-ces-sync-contract.md §8.2；只负责补详情与回写前增强，不负责发现。
+type CloudEnrichmentPort interface {
+	EnrichAllResources(ctx context.Context, actor Actor, q AssetFullSyncQuery, resources []domain.CloudResource) (*AssetFullSyncEnrichmentResult, error)
 }
 
 // AlertRuleQueryPort 告警规则只读查询端口（cloud.alerts.list 复用）。

@@ -32,12 +32,12 @@ func TestLoadReadsRedisPasswordFromEnv(t *testing.T) {
 
 func TestConfigValidateAIExample(t *testing.T) {
 	c := &Config{
-		App:          AppConfig{Env: "dev"},
-		Server:       ServerConfig{Port: 8080},
-		Database:     DatabaseConfig{Host: "127.0.0.1", Name: "aiops"},
-		Auth:         AuthConfig{JWTSecret: DefaultJWTSecretPlaceholder},
-		Integration:  devIntegrationConfig(),
-		AI:           AIConfig{Providers: []AIProviderConfig{{ID: "demo-http-a", Name: "Demo HTTP Provider A", Type: "a", BaseURL: "http://127.0.0.1:9000", APIKey: "demo-api-key", TimeoutMS: 30000, Enabled: true}}},
+		App:         AppConfig{Env: "dev"},
+		Server:      ServerConfig{Port: 8080},
+		Database:    DatabaseConfig{Host: "127.0.0.1", Name: "aiops"},
+		Auth:        AuthConfig{JWTSecret: DefaultJWTSecretPlaceholder},
+		Integration: devIntegrationConfig(),
+		AI:          AIConfig{Providers: []AIProviderConfig{{ID: "demo-http-a", Name: "Demo HTTP Provider A", Type: "a", BaseURL: "http://127.0.0.1:9000", APIKey: "demo-api-key", TimeoutMS: 30000, Enabled: true}}},
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("expected validate success, got %v", err)

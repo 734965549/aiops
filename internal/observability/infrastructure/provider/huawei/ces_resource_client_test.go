@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
+	obsapp "github.com/734965549/aiops/internal/observability/application"
 	"github.com/734965549/aiops/internal/observability/domain"
 	apperr "github.com/734965549/aiops/pkg/errors"
 	"github.com/huaweicloud/huaweicloud-sdk-go-v3/core/sdkerr"
@@ -59,7 +61,31 @@ func (m *mockCESResourceGroupAPI) ListResourceGroupsServicesResources(req *cesv2
 	if m.listResps == nil {
 		return nil, nil
 	}
-	return m.listResps[req.Service], nil
+	resp := m.listResps[req.Service]
+	if resp == nil {
+		return nil, nil
+	}
+	limit := 0
+	if req.Limit != nil {
+		if parsed, err := strconv.Atoi(*req.Limit); err == nil {
+			limit = parsed
+		}
+	}
+	offset := 0
+	if req.Offset != nil {
+		offset = int(*req.Offset)
+	}
+	if offset >= len(*resp.Resources) {
+		return &cesv2model.ListResourceGroupsServicesResourcesResponse{Count: resp.Count, Resources: &[]cesv2model.GetResourceGroupResources{}}, nil
+	}
+	end := len(*resp.Resources)
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	slice := make([]cesv2model.GetResourceGroupResources, end-offset)
+	copy(slice, (*resp.Resources)[offset:end])
+	count := resp.Count
+	return &cesv2model.ListResourceGroupsServicesResourcesResponse{Count: count, Resources: &slice}, nil
 }
 
 func int32Ptr(v int32) *int32 { return &v }
@@ -75,14 +101,32 @@ func buildListGroupsResp(groups ...cesv2model.OneResourceGroupResp) *cesv2model.
 }
 
 func buildShowResp(name, productNames string, total int) *cesv2model.ShowResourceGroupResponse {
+	return buildShowRespWithLevel(name, productNames, total, "product")
+}
+
+func buildShowRespWithLevel(name, productNames string, total int, level string) *cesv2model.ShowResourceGroupResponse {
 	t := int32(total)
-	return &cesv2model.ShowResourceGroupResponse{
+	resp := &cesv2model.ShowResourceGroupResponse{
 		GroupName:    strPtr(name),
 		ProductNames: strPtr(productNames),
 		ResourceStatistics: &cesv2model.GetResourceGroupRespResourceStatistics{
 			Total: &t,
 		},
 	}
+	if level != "" {
+		lvl := cesv2model.GetShowResourceGroupResponseResourceLevelEnum()
+		switch level {
+		case "product":
+			resp.ResourceLevel = &lvl.PRODUCT
+		case "dimension":
+			resp.ResourceLevel = &lvl.DIMENSION
+		default:
+			// 对于未知层级，构造一个自定义值
+			custom := cesv2model.ShowResourceGroupResponseResourceLevel{}
+			resp.ResourceLevel = &custom
+		}
+	}
+	return resp
 }
 
 func buildListResResp(resources ...cesv2model.GetResourceGroupResources) *cesv2model.ListResourceGroupsServicesResourcesResponse {
@@ -143,10 +187,49 @@ func TestDiscoverCESResources_HappyPath(t *testing.T) {
 	want0 := domain.CloudResource{
 		ResourceID: "ces:cn-south-1:SYS.ECS:i-1", Name: "ecs-1", Type: "ecs",
 		Region: "cn-south-1", Status: "health", ProviderRef: "i-1",
-		Labels: map[string]string{"namespace": "SYS.ECS", "dim_name": "instance_id", "resource_group_id": "rg001", "resource_group_name": "全部资源"},
+		Labels: map[string]string{"namespace": "SYS.ECS", "dim_name": "instance_id", "resource_group_id": "rg001", "resource_group_name": "全部资源", "ces_status": "health"},
 	}
 	if !reflect.DeepEqual(result.Resources[0], want0) {
 		t.Fatalf("resource[0] = %+v, want %+v", result.Resources[0], want0)
+	}
+}
+
+// TestDiscoverCESResources_ZeroResourcesTypeRecordedSuccessful 验证查询成功但本轮返回 0 资源时，
+// 该类型仍应计入 SuccessfulTypes，使旧资产可被标记 stale，见 ops/huawei-ces-sync-contract.md §13.1
+// 与 ops/huawei-ces-sync-contract.md §13.1 "查询成功且本轮 0 资源的类型 → 旧资产 stale"。
+// 修复前 ces_resource_client.go 在 len(pageResources)==0 时直接 continue，导致该类型漏记，
+// sync_service 无法对其执行 stale 标记，与 native 路径 (adapter.go) 行为不一致。
+func TestDiscoverCESResources_ZeroResourcesTypeRecordedSuccessful(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(0)}}),
+		showResp:       buildShowResp("全部资源", "SYS.ECS,instance_id", 0),
+		// 查询成功但返回 0 条资源：Count=0、Resources 为空切片。
+		// listResourcesForProduct 检测到 rawCount==0 && pageCount==0 时置 remoteExhausted=true 并正常返回（无 error、未截断）。
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.ECS": buildListResResp(),
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "cn-south-1", ResourceGroupName: "全部资源", MaxResources: 100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(result.Resources) != 0 {
+		t.Fatalf("resource count = %d, want 0 (query succeeded but cloud has no resources)", len(result.Resources))
+	}
+	if result.Summary.Discovered != 0 {
+		t.Fatalf("Discovered = %d, want 0", result.Summary.Discovered)
+	}
+	if result.Summary.MaxResourcesReached {
+		t.Fatalf("MaxResourcesReached = true, want false (no truncation when remote exhausted with 0 resources)")
+	}
+	if len(result.Summary.QueryFailedTypes) != 0 {
+		t.Fatalf("QueryFailedTypes = %v, want empty (query succeeded)", result.Summary.QueryFailedTypes)
+	}
+	// 核心断言：0 资源但查询成功的类型必须进入 SuccessfulTypes，否则旧资产无法被标记 stale。
+	if !reflect.DeepEqual(result.Summary.SuccessfulTypes, []string{"ecs"}) {
+		t.Fatalf("SuccessfulTypes = %v, want [ecs] (zero-resource successful query must be recorded for stale gating)", result.Summary.SuccessfulTypes)
 	}
 }
 
@@ -191,8 +274,117 @@ func TestDiscoverCESResources_EmptyProductNamesFallsBack(t *testing.T) {
 	if !result.Summary.ProductNamesEmpty {
 		t.Fatalf("ProductNamesEmpty should be true")
 	}
+	if result.Summary.ResourceLevel != "product" {
+		t.Fatalf("ResourceLevel = %q, want product", result.Summary.ResourceLevel)
+	}
 	if len(result.Resources) == 0 {
 		t.Fatalf("expected fallback resources")
+	}
+}
+
+// TestDiscoverCESResources_DimensionLevelFails 验证 resource_level=dimension 的资源组
+// 在 P0 阶段直接返回 FAILED_PRECONDITION，不静默回退。见 §8.5/§13.1。
+func TestDiscoverCESResources_DimensionLevelFails(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(2)}}),
+		showResp:       buildShowRespWithLevel("全部资源", "SYS.ECS,instance_id", 2, "dimension"),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
+		},
+	}
+	_, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 100,
+	})
+	if err == nil {
+		t.Fatalf("expected FAILED_PRECONDITION error for dimension level")
+	}
+	if apperr.CodeOf(err) != apperr.CodeFailedPrecondition {
+		t.Fatalf("err code = %v, want FAILED_PRECONDITION", apperr.CodeOf(err))
+	}
+}
+
+// TestDiscoverCESResources_EmptyLevelFails 验证 resource_level 为空（API 未返回该字段）时
+// 直接返回 FAILED_PRECONDITION，不静默回退。见 §8.5/§13.1。
+func TestDiscoverCESResources_EmptyLevelFails(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(2)}}),
+		showResp:       buildShowRespWithLevel("全部资源", "SYS.ECS,instance_id", 2, ""),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
+		},
+	}
+	_, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 100,
+	})
+	if err == nil {
+		t.Fatalf("expected FAILED_PRECONDITION error for empty resource_level")
+	}
+	if apperr.CodeOf(err) != apperr.CodeFailedPrecondition {
+		t.Fatalf("err code = %v, want FAILED_PRECONDITION", apperr.CodeOf(err))
+	}
+}
+
+// TestDiscoverCESResources_UnknownLevelFails 验证 resource_level 为未知值时
+// 直接返回 FAILED_PRECONDITION，不静默回退。见 §8.5/§13.1。
+func TestDiscoverCESResources_UnknownLevelFails(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(2)}}),
+		showResp:       buildShowRespWithLevel("全部资源", "SYS.ECS,instance_id", 2, "unknown"),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
+		},
+	}
+	_, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 100,
+	})
+	if err == nil {
+		t.Fatalf("expected FAILED_PRECONDITION error for unknown resource_level")
+	}
+	if apperr.CodeOf(err) != apperr.CodeFailedPrecondition {
+		t.Fatalf("err code = %v, want FAILED_PRECONDITION", apperr.CodeOf(err))
+	}
+}
+
+// TestDiscoverCESResources_DimensionWithProductNamesFails 验证不一致响应：
+// resource_level=dimension 但 product_names 非空时仍应返回 FAILED_PRECONDITION。
+// dimension 级资源组的 product_names 语义不同于 product 级，不能复用产品级反向 stale 逻辑。
+func TestDiscoverCESResources_DimensionWithProductNamesFails(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(2)}}),
+		showResp:       buildShowRespWithLevel("全部资源", "SYS.ECS,instance_id;SYS.EVS,disk_name", 2, "dimension"),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
+		},
+	}
+	_, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 100,
+	})
+	if err == nil {
+		t.Fatalf("expected FAILED_PRECONDITION error for dimension level with non-empty product_names")
+	}
+	if apperr.CodeOf(err) != apperr.CodeFailedPrecondition {
+		t.Fatalf("err code = %v, want FAILED_PRECONDITION", apperr.CodeOf(err))
+	}
+}
+
+// TestDiscoverCESResources_ProductLevelPropagated 验证 product 级资源组的
+// ResourceLevel 被正确传递到 CESResourceDiscoverySummary。
+func TestDiscoverCESResources_ProductLevelPropagated(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(2)}}),
+		showResp:       buildShowResp("全部资源", "SYS.ECS,instance_id", 2),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1"), mkRes("ecs-2", "instance_id", "i-2")),
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "cn-south-1", ResourceGroupName: "全部资源", MaxResources: 100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if result.Summary.ResourceLevel != "product" {
+		t.Fatalf("ResourceLevel = %q, want product", result.Summary.ResourceLevel)
 	}
 }
 
@@ -354,6 +546,11 @@ func TestDiscoverCESResources_SameTypePartialScopeFailure(t *testing.T) {
 	}
 }
 
+// TestDiscoverCESResources_MaxResourcesCap 验证单产品资源数超过 max_resources 上限时
+// 必须标记 MaxResourcesReached=true 且被截断类型不计入 SuccessfulTypes，
+// 避免该类型旧资产被误标 stale，见 ops/huawei-ces-sync-contract.md §13.1。
+// 修复前 listResourcesForProduct 的 truncated 恒为 false，最后一个产品自身超限会被
+// 误判为完整扫描（remoteExhausted=true 且无后续产品），导致 MaxResourcesReached 漏标。
 func TestDiscoverCESResources_MaxResourcesCap(t *testing.T) {
 	api := &mockCESResourceGroupAPI{
 		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(10)}}),
@@ -373,13 +570,12 @@ func TestDiscoverCESResources_MaxResourcesCap(t *testing.T) {
 	if len(result.Resources) != 2 {
 		t.Fatalf("resource count = %d, want 2 (capped)", len(result.Resources))
 	}
-	// 达到上限时必须标记 MaxResourcesReached，且被截断的类型不计入 SuccessfulTypes，
-	// 否则 sync_service 会把未扫描到的资产误标为 stale，见 §13。
+	// 单产品自身超过上限：远端仍有第 3 条未取，必须标记截断，禁止 stale。
 	if !result.Summary.MaxResourcesReached {
-		t.Fatalf("MaxResourcesReached = false, want true")
+		t.Fatalf("MaxResourcesReached = false, want true (single product exceeds max_resources, remote has more)")
 	}
 	if len(result.Summary.SuccessfulTypes) != 0 {
-		t.Fatalf("SuccessfulTypes = %v, want empty (truncated type must not be marked successful)", result.Summary.SuccessfulTypes)
+		t.Fatalf("SuccessfulTypes = %v, want empty (truncated ecs must not be marked successful)", result.Summary.SuccessfulTypes)
 	}
 }
 
@@ -440,6 +636,41 @@ func TestDiscoverCESResources_MaxResourcesTruncatedWhenMoreProductsRemain(t *tes
 	}
 }
 
+// TestDiscoverCESResources_SingleProductExceedsMaxResources 验证当“最后一个（且唯一一个）
+// 产品自身资源数超过 max_resources”时必须正确标记截断，见 ops/huawei-ces-sync-contract.md
+// §13.1（例：max_resources=1、云端 2 台 ECS → MaxResourcesReached=true）。
+// 修复前 listResourcesForProduct 的 truncated 恒为 false，且此场景既无后续产品
+// （i<len-1=false）又因翻页翻完 remoteExhausted=true，三条件全 false 导致 MaxResourcesReached
+// 漏标，ecs 被错误计入 SuccessfulTypes，sync_service 进而把未扫到的旧 ECS 误标 stale。
+func TestDiscoverCESResources_SingleProductExceedsMaxResources(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(2)}}),
+		showResp:       buildShowResp("全部资源", "SYS.ECS,instance_id", 2),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.ECS": buildListResResp(
+				mkRes("ecs-1", "instance_id", "i-1"), mkRes("ecs-2", "instance_id", "i-2"),
+			),
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 1,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// 只取 1 台，另一台因上限未取。
+	if len(result.Resources) != 1 {
+		t.Fatalf("resource count = %d, want 1 (capped at max_resources)", len(result.Resources))
+	}
+	if !result.Summary.MaxResourcesReached {
+		t.Fatalf("MaxResourcesReached = false, want true (single product exceeds max_resources, remote has more)")
+	}
+	// 被截断的 ecs 不计入 SuccessfulTypes，避免另一台旧 ECS 被误标 stale。
+	if len(result.Summary.SuccessfulTypes) != 0 {
+		t.Fatalf("SuccessfulTypes = %v, want empty (truncated ecs must not be marked successful)", result.Summary.SuccessfulTypes)
+	}
+}
+
 // pagedResourcesAPI 按 offset/limit 切片返回某 service 的资源列表，模拟服务端分页，
 // 用于验证 listResourcesForProduct 多页拉取（ListResourceGroupsServicesResources 翻页），见 §8.6。
 type pagedResourcesAPI struct {
@@ -466,8 +697,8 @@ func (p *pagedResourcesAPI) ShowResourceGroup(_ *cesv2model.ShowResourceGroupReq
 
 func (p *pagedResourcesAPI) ListResourceGroupsServicesResources(req *cesv2model.ListResourceGroupsServicesResourcesRequest) (*cesv2model.ListResourceGroupsServicesResourcesResponse, error) {
 	p.calls++
-	// 测试场景下 listResourcesForProduct 固定以 defaultCESPageLimit(100) 翻页，无需解析 *string 类型的 Limit。
-	limit := int32(defaultCESPageLimit)
+	// 测试场景下 listResourcesForProduct 固定以 DefaultCESPageLimit(100) 翻页，无需解析 *string 类型的 Limit。
+	limit := int32(obsapp.DefaultCESPageLimit)
 	offset := int32(0)
 	if req != nil && req.Offset != nil {
 		offset = *req.Offset
@@ -487,7 +718,7 @@ func (p *pagedResourcesAPI) ListResourceGroupsServicesResources(req *cesv2model.
 }
 
 // TestDiscoverCESResources_ResourceListMultiPagePagination 验证单个 service 资源数超过单页(100)时，
-// listResourcesForProduct 按 offset 翻页拉取全部资源（offset 0/100/200），见 docs/huawei-ces-asset-sync-plan.md §8.6。
+// listResourcesForProduct 按 offset 翻页拉取全部资源（offset 0/100/200），见 ops/huawei-ces-sync-contract.md §8.6。
 func TestDiscoverCESResources_ResourceListMultiPagePagination(t *testing.T) {
 	const total = 250
 	resources := make([]cesv2model.GetResourceGroupResources, total)
@@ -560,6 +791,192 @@ func TestDiscoverCESResources_InvalidResourceDropped(t *testing.T) {
 	}
 }
 
+// TestDiscoverCESResources_DuplicateDedupByUniqueKey 验证跨 scope 按唯一键
+// (cloud_resource_type, cloud_resource_id, region) 去重，满足契约公式
+// mapped = unique + duplicate、raw = mapped + invalid，
+// 见 ops/huawei-ces-sync-contract.md §9.5、§9.4。
+// 场景：SYS.RDS 与 SYS.RDS_MYSQL_CLUSTER 均以 rds_cluster_id 为主维度，
+// 同一 cluster_id 会映射为相同 type=rds/cloud_resource_id/region，应被去重折损 1 条。
+func TestDiscoverCESResources_DuplicateDedupByUniqueKey(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(2)}}),
+		showResp:       buildShowResp("全部资源", "SYS.RDS,rds_cluster_id;SYS.RDS_MYSQL_CLUSTER,rds_cluster_id", 2),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.RDS":               buildListResResp(mkRes("rds-1", "rds_cluster_id", "rds-cluster-1")),
+			"SYS.RDS_MYSQL_CLUSTER": buildListResResp(mkRes("rds-mysql-1", "rds_cluster_id", "rds-cluster-1")),
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// 去重后只保留 1 条进入待写入集合。
+	if len(result.Resources) != 1 {
+		t.Fatalf("resource count = %d, want 1 (deduped)", len(result.Resources))
+	}
+	if result.Summary.Discovered != 1 {
+		t.Fatalf("Discovered = %d, want 1", result.Summary.Discovered)
+	}
+	// mapped_count 含重复（2 条均映射成功），unique 为去重后（1），duplicate 为折损（1）。
+	if result.Summary.MappedCount != 2 {
+		t.Fatalf("MappedCount = %d, want 2 (includes duplicate)", result.Summary.MappedCount)
+	}
+	if result.Summary.UniqueDiscoveredCount != 1 {
+		t.Fatalf("UniqueDiscoveredCount = %d, want 1", result.Summary.UniqueDiscoveredCount)
+	}
+	if result.Summary.DuplicateCount != 1 {
+		t.Fatalf("DuplicateCount = %d, want 1 (cross-scope dedup loss)", result.Summary.DuplicateCount)
+	}
+	// 非法资源为 0，确保 duplicate 与 invalid 不混淆（修复前会把 invalid 误算进 duplicate）。
+	if result.Summary.InvalidResourceCount != 0 {
+		t.Fatalf("InvalidResourceCount = %d, want 0", result.Summary.InvalidResourceCount)
+	}
+	// 契约公式：raw = mapped + invalid。
+	if result.Summary.RawFetchedCount != result.Summary.MappedCount+result.Summary.InvalidResourceCount {
+		t.Fatalf("raw(%d) != mapped(%d)+invalid(%d)", result.Summary.RawFetchedCount, result.Summary.MappedCount, result.Summary.InvalidResourceCount)
+	}
+	// 契约公式：mapped = unique + duplicate。
+	if result.Summary.MappedCount != result.Summary.UniqueDiscoveredCount+result.Summary.DuplicateCount {
+		t.Fatalf("mapped(%d) != unique(%d)+duplicate(%d)", result.Summary.MappedCount, result.Summary.UniqueDiscoveredCount, result.Summary.DuplicateCount)
+	}
+	// 两个 scope 均查询成功且都映射为 rds，rds 应计入 SuccessfulTypes。
+	if !reflect.DeepEqual(result.Summary.SuccessfulTypes, []string{"rds"}) {
+		t.Fatalf("SuccessfulTypes = %v, want [rds]", result.Summary.SuccessfulTypes)
+	}
+	// 保留的是先到的 SYS.RDS 资源。
+	if result.Resources[0].ProviderRef != "rds-cluster-1" || result.Resources[0].Type != "rds" {
+		t.Fatalf("retained resource = %+v, want type=rds provider_ref=rds-cluster-1", result.Resources[0])
+	}
+}
+
+// TestDiscoverCESResources_InvalidBoundaryPageKeepsScanning 验证含 invalid 资源的页
+// 仍应继续翻页拉取全部有效资源。max_resources 设为 100（远大于云端 3 条）以保留原意图：
+// 确认远端被完整扫描、不触发截断、invalid 边界不中断翻页。
+// 修复前 max_resources=2 与云端 3 条会触发截断语义，与本测试“完全扫描”的初衷冲突。
+func TestDiscoverCESResources_InvalidBoundaryPageKeepsScanning(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(3)}}),
+		showResp:       buildShowResp("全部资源", "SYS.ECS,instance_id", 3),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.ECS": {
+				Count: int32Ptr(3),
+				Resources: &[]cesv2model.GetResourceGroupResources{
+					{Status: cesv2model.GetGetResourceGroupResourcesStatusEnum().HEALTH, Dimensions: nil},
+					mkRes("valid-2", "instance_id", "i-2"),
+					mkRes("valid-3", "instance_id", "i-3"),
+				},
+			},
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(result.Resources) != 2 {
+		t.Fatalf("resource count = %d, want 2 (1 invalid dropped)", len(result.Resources))
+	}
+	if result.Summary.InvalidResourceCount != 1 {
+		t.Fatalf("InvalidResourceCount = %d, want 1", result.Summary.InvalidResourceCount)
+	}
+	if result.Summary.MaxResourcesReached {
+		t.Fatalf("MaxResourcesReached = true, want false when remote count is fully scanned")
+	}
+	if !reflect.DeepEqual(result.Summary.SuccessfulTypes, []string{"ecs"}) {
+		t.Fatalf("SuccessfulTypes = %v, want [ecs]", result.Summary.SuccessfulTypes)
+	}
+}
+
+// TestDiscoverCESResources_AllDuplicatesConsumeRawBudget 验证全重复资源消耗 raw 预算：
+// max_resources=4，3 个产品各返回 2 条相同 dedup key 的资源（1 unique + 1 dup）。
+// 修复前预算按 len(resources) 计算，全重复产品不消耗预算，3 个产品共 fetch 6 条原始行
+// 但 len(resources)=3 < 4，MaxResourcesReached=false，扫描未截断。
+// 修复后预算按 RawFetchedCount 计算，前两个产品 fetch 4 条即达上限，
+// MaxResourcesReached=true，第三个产品不被扫描。见 §7.2/§8.6/§13.1。
+func TestDiscoverCESResources_AllDuplicatesConsumeRawBudget(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(6)}}),
+		showResp:       buildShowResp("全部资源", "SYS.ECS,instance_id;SYS.EVS,disk_name;SYS.RDS,rds_cluster_id", 6),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1"), mkRes("ecs-1-dup", "instance_id", "i-1")),
+			"SYS.EVS": buildListResResp(mkRes("disk-1", "disk_name", "d-1"), mkRes("disk-1-dup", "disk_name", "d-1")),
+			"SYS.RDS": buildListResResp(mkRes("rds-1", "rds_cluster_id", "rds-1"), mkRes("rds-1-dup", "rds_cluster_id", "rds-1")),
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 4,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// 前两个产品各 fetch 2 条，RawFetchedCount=4 即达上限，第三个产品不被扫描。
+	if result.Summary.RawFetchedCount != 4 {
+		t.Fatalf("RawFetchedCount = %d, want 4 (raw budget exhausted after 2 products)", result.Summary.RawFetchedCount)
+	}
+	if !result.Summary.MaxResourcesReached {
+		t.Fatalf("MaxResourcesReached = false, want true (raw fetched reached max_resources with more products remaining)")
+	}
+	// 每个产品 1 unique + 1 dup，2 个产品共 2 unique + 2 dup。
+	if len(result.Resources) != 2 {
+		t.Fatalf("resource count = %d, want 2 (1 unique per product, 2 products scanned)", len(result.Resources))
+	}
+	if result.Summary.DuplicateCount != 2 {
+		t.Fatalf("DuplicateCount = %d, want 2 (1 dup per product, 2 products scanned)", result.Summary.DuplicateCount)
+	}
+	// 第三个产品（rds）未被扫描，不应出现在 SuccessfulTypes 中。
+	for _, st := range result.Summary.SuccessfulTypes {
+		if st == "rds" {
+			t.Fatalf("SuccessfulTypes contains rds, but rds was not scanned (truncated)")
+		}
+	}
+}
+
+// TestDiscoverCESResources_AllInvalidConsumeRawBudget 验证全无效资源消耗 raw 预算：
+// max_resources=2，产品 A 返回 2 条无维度无效资源，产品 B 返回 1 条有效资源。
+// 修复前预算按 len(resources) 计算，全无效资源不消耗预算，
+// A fetch 2 条但 len(resources)=0，B 继续扫描，MaxResourcesReached=false。
+// 修复后预算按 RawFetchedCount 计算，A fetch 2 条即达上限，
+// MaxResourcesReached=true，B 不被扫描。见 §7.2/§8.6/§13.1。
+func TestDiscoverCESResources_AllInvalidConsumeRawBudget(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(3)}}),
+		showResp:       buildShowResp("全部资源", "SYS.ECS,instance_id;SYS.EVS,disk_name", 3),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.ECS": buildListResResp(
+				cesv2model.GetResourceGroupResources{Status: cesv2model.GetGetResourceGroupResourcesStatusEnum().HEALTH, Dimensions: nil},
+				cesv2model.GetResourceGroupResources{Status: cesv2model.GetGetResourceGroupResourcesStatusEnum().HEALTH, Dimensions: nil},
+			),
+			"SYS.EVS": buildListResResp(mkRes("disk-1", "disk_name", "d-1")),
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 2,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// A fetch 2 条无效资源，RawFetchedCount=2 即达上限，B 不被扫描。
+	if result.Summary.RawFetchedCount != 2 {
+		t.Fatalf("RawFetchedCount = %d, want 2 (raw budget exhausted by invalid resources)", result.Summary.RawFetchedCount)
+	}
+	if !result.Summary.MaxResourcesReached {
+		t.Fatalf("MaxResourcesReached = false, want true (raw fetched reached max_resources with more products remaining)")
+	}
+	if result.Summary.InvalidResourceCount != 2 {
+		t.Fatalf("InvalidResourceCount = %d, want 2", result.Summary.InvalidResourceCount)
+	}
+	if len(result.Resources) != 0 {
+		t.Fatalf("resource count = %d, want 0 (all fetched resources are invalid)", len(result.Resources))
+	}
+	// B（evs）未被扫描，SuccessfulTypes 应为空。
+	if len(result.Summary.SuccessfulTypes) != 0 {
+		t.Fatalf("SuccessfulTypes = %v, want empty (truncated before any successful type recorded)", result.Summary.SuccessfulTypes)
+	}
+}
+
 func TestValidateCESDiscoveryRequest(t *testing.T) {
 	validCred := AKSKCredential{AccessKey: "ak", SecretKey: "sk"}
 	cases := []struct {
@@ -601,7 +1018,7 @@ type pagedGroupsAPI struct {
 
 func (p *pagedGroupsAPI) ListResourceGroups(req *cesv2model.ListResourceGroupsRequest) (*cesv2model.ListResourceGroupsResponse, error) {
 	p.calls++
-	limit := int32(defaultCESPageLimit)
+	limit := int32(obsapp.DefaultCESPageLimit)
 	if req != nil && req.Limit != nil && *req.Limit > 0 {
 		limit = *req.Limit
 	}

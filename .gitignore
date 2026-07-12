@@ -27,6 +27,7 @@ go.work.sum
 # IDE
 .idea/
 .vscode/
+.trae/
 *.swp
 
 # Logs

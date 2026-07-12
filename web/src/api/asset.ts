@@ -209,6 +209,43 @@ export function deleteMatchRule(id: string) {
   })
 }
 
+export interface SyncBatchScopeSummary {
+  region: string
+  project_id?: string
+  sync_mode?: string
+  resource_group_id?: string
+  resource_group_name?: string
+  resource_group_selection?: string
+  ces_total?: number
+  raw_fetched_count?: number
+  mapped_count?: number
+  unique_discovered_count?: number
+  persisted_count?: number
+  duplicate_count?: number
+  persist_failed_count?: number
+  discovered_count?: number
+  failed_scopes?: string[]
+  successful_types?: string[]
+  query_failed_types?: string[]
+  conversion_failed_types?: string[]
+  unknown_namespace_count?: number
+  invalid_resource_count?: number
+  enriched_count?: number
+  enrichment_failed_count?: number
+  enrichment_failed_types?: string[]
+  enrichment_warnings?: string[]
+  enrichment_stage_error?: string
+  writeback_failed_count?: number
+  max_resources_reached?: boolean
+  product_names_empty?: boolean
+  partial_reason?: string
+}
+
+/**
+ * 批次 summary 的完整机器可读契约。
+ * 前端列表页应优先使用 `getSyncBatchSummaryDisplay()` 读取少量展示字段，
+ * 详情页再按需读取完整 summary，避免主列表被诊断字段淹没。
+ */
 export interface SyncBatchSummary {
   sync_mode?: string
   resource_group_name?: string
@@ -216,16 +253,60 @@ export interface SyncBatchSummary {
   projects?: string[]
   regions?: string[]
   ces_total?: number
+  raw_fetched_count?: number
+  mapped_count?: number
+  unique_discovered_count?: number
+  persisted_count?: number
+  completed_count?: number
+  duplicate_count?: number
+  persist_failed_count?: number
   discovered_count?: number
   failed_scopes?: string[]
   enriched_count?: number
+  enrichment_failed_count?: number
   enrichment_failed_types?: string[]
+  enrichment_warnings?: string[]
+  enrichment_stage_error?: string
+  writeback_failed_count?: number
   unknown_namespace_count?: number
   invalid_resource_count?: number
   max_resources_reached?: boolean
   product_names_empty?: boolean
+  partial_reason?: string
   query_failed_types?: string[]
   conversion_failed_types?: string[]
+  scopes?: SyncBatchScopeSummary[]
+}
+
+export interface SyncBatchSummaryDisplay {
+  sync_mode?: string
+  resource_group_name?: string
+  resource_group_id?: string
+  projects?: string[]
+  regions?: string[]
+  ces_total?: number
+  discovered_count?: number
+  enriched_count?: number
+  partial_reason?: string
+  max_resources_reached?: boolean
+  product_names_empty?: boolean
+}
+
+export function getSyncBatchSummaryDisplay(summary?: SyncBatchSummary): SyncBatchSummaryDisplay | undefined {
+  if (!summary) return undefined
+  return {
+    sync_mode: summary.sync_mode,
+    resource_group_name: summary.resource_group_name,
+    resource_group_id: summary.resource_group_id,
+    projects: summary.projects,
+    regions: summary.regions,
+    ces_total: summary.ces_total,
+    discovered_count: summary.discovered_count,
+    enriched_count: summary.enriched_count,
+    partial_reason: summary.partial_reason,
+    max_resources_reached: summary.max_resources_reached,
+    product_names_empty: summary.product_names_empty
+  }
 }
 
 export interface SyncBatch {
@@ -235,8 +316,10 @@ export interface SyncBatch {
   status: string
   created_count: number
   updated_count: number
+  completed_count: number
   stale_count: number
   failed_count: number
+  triggered_by?: string
   message?: string
   summary?: SyncBatchSummary
   application_id?: string
@@ -252,7 +335,7 @@ export interface SyncBatchNotice {
 }
 
 export function getSyncBatchNotice(batch: SyncBatch): SyncBatchNotice {
-  const summary = `新建 ${batch.created_count}，更新 ${batch.updated_count}，stale ${batch.stale_count}，失败 ${batch.failed_count}`
+  const summary = `新建 ${batch.created_count}，更新 ${batch.updated_count}，完成 ${batch.completed_count}，stale ${batch.stale_count}，失败 ${batch.failed_count}`
   const detail = batch.message ? `：${batch.message}` : ''
   switch (batch.status) {
     case 'success':

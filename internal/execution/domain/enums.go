@@ -43,10 +43,10 @@ func (m ExecutionMode) IsValid() bool {
 type DispatchStatus string
 
 const (
-	DispatchPending        DispatchStatus = "pending_dispatch"
-	DispatchLeased         DispatchStatus = "leased"
-	DispatchDispatched     DispatchStatus = "dispatched"
-	DispatchFailed         DispatchStatus = "dispatch_failed"
+	DispatchPending    DispatchStatus = "pending_dispatch"
+	DispatchLeased     DispatchStatus = "leased"
+	DispatchDispatched DispatchStatus = "dispatched"
+	DispatchFailed     DispatchStatus = "dispatch_failed"
 )
 
 // OperationType 操作类型。

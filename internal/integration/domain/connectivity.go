@@ -6,8 +6,8 @@ import "time"
 type ConnectivityStatus string
 
 const (
-	ConnectivityOK      ConnectivityStatus = "ok"
-	ConnectivityFailed  ConnectivityStatus = "failed"
+	ConnectivityOK       ConnectivityStatus = "ok"
+	ConnectivityFailed   ConnectivityStatus = "failed"
 	ConnectivityDegraded ConnectivityStatus = "degraded"
 )
 

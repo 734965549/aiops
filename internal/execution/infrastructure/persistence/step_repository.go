@@ -13,17 +13,17 @@ import (
 
 type stepModel struct {
 	database.BaseModel
-	StepID         string     `gorm:"column:step_id;type:varchar(36);uniqueIndex;not null"`
-	TaskID         string     `gorm:"column:task_id;type:varchar(36);not null;index"`
-	StepOrder      int        `gorm:"column:step_order;not null"`
-	Name           string     `gorm:"column:name;type:varchar(255);not null"`
-	ActionType     string     `gorm:"column:action_type;type:varchar(64);not null"`
-	Status         string     `gorm:"column:status;type:varchar(32);not null"`
-	RunbookStepID  string     `gorm:"column:runbook_step_id;type:varchar(36);not null;default:''"`
-	Parameters     []byte     `gorm:"column:parameters;type:jsonb;not null;default:'{}'::jsonb"`
-	RiskLevel      string     `gorm:"column:risk_level;type:varchar(16);not null;default:''"`
-	DryRun         bool       `gorm:"column:dry_run;not null;default:false"`
-	RollbackPlan   []byte     `gorm:"column:rollback_plan;type:jsonb;not null;default:'{}'::jsonb"`
+	StepID          string     `gorm:"column:step_id;type:varchar(36);uniqueIndex;not null"`
+	TaskID          string     `gorm:"column:task_id;type:varchar(36);not null;index"`
+	StepOrder       int        `gorm:"column:step_order;not null"`
+	Name            string     `gorm:"column:name;type:varchar(255);not null"`
+	ActionType      string     `gorm:"column:action_type;type:varchar(64);not null"`
+	Status          string     `gorm:"column:status;type:varchar(32);not null"`
+	RunbookStepID   string     `gorm:"column:runbook_step_id;type:varchar(36);not null;default:''"`
+	Parameters      []byte     `gorm:"column:parameters;type:jsonb;not null;default:'{}'::jsonb"`
+	RiskLevel       string     `gorm:"column:risk_level;type:varchar(16);not null;default:''"`
+	DryRun          bool       `gorm:"column:dry_run;not null;default:false"`
+	RollbackPlan    []byte     `gorm:"column:rollback_plan;type:jsonb;not null;default:'{}'::jsonb"`
 	TimeoutSeconds  int        `gorm:"column:timeout_seconds;not null;default:0"`
 	CommandSpecID   string     `gorm:"column:command_spec_id;type:varchar(64);not null;default:''"`
 	CommandTemplate string     `gorm:"column:command_template;type:text;not null;default:''"`
@@ -32,9 +32,9 @@ type stepModel struct {
 	WorkingDir      string     `gorm:"column:working_dir;type:varchar(256);not null;default:''"`
 	RequiresTTY     bool       `gorm:"column:requires_tty;not null;default:false"`
 	Output          []byte     `gorm:"column:output;type:jsonb;not null;default:'{}'::jsonb"`
-	ErrorMessage   string     `gorm:"column:error_message;type:text;not null;default:''"`
-	StartedAt      *time.Time `gorm:"column:started_at"`
-	FinishedAt     *time.Time `gorm:"column:finished_at"`
+	ErrorMessage    string     `gorm:"column:error_message;type:text;not null;default:''"`
+	StartedAt       *time.Time `gorm:"column:started_at"`
+	FinishedAt      *time.Time `gorm:"column:finished_at"`
 }
 
 func (stepModel) TableName() string { return "exec_step" }
@@ -78,28 +78,28 @@ func (r *StepRepository) Create(ctx context.Context, step *domain.Step) error {
 		return err
 	}
 	m := stepModel{
-		StepID:         step.ID,
-		TaskID:         step.TaskID,
-		StepOrder:      step.StepOrder,
-		Name:           step.Name,
-		ActionType:     step.ActionType,
-		Status:         string(step.Status),
-		RunbookStepID:  step.RunbookStepID,
-		CommandSpecID:  step.CommandSpecID,
+		StepID:          step.ID,
+		TaskID:          step.TaskID,
+		StepOrder:       step.StepOrder,
+		Name:            step.Name,
+		ActionType:      step.ActionType,
+		Status:          string(step.Status),
+		RunbookStepID:   step.RunbookStepID,
+		CommandSpecID:   step.CommandSpecID,
 		CommandTemplate: step.CommandTemplate,
-		Arguments:      args,
+		Arguments:       args,
 		OutputRedaction: redaction,
-		WorkingDir:     step.WorkingDir,
-		RequiresTTY:    step.RequiresTTY,
-		Parameters:     params,
-		RiskLevel:      string(step.RiskLevel),
-		DryRun:         step.DryRun,
-		RollbackPlan:   rollback,
-		TimeoutSeconds: step.TimeoutSeconds,
-		Output:         out,
-		ErrorMessage:   step.ErrorMessage,
-		StartedAt:      step.StartedAt,
-		FinishedAt:     step.FinishedAt,
+		WorkingDir:      step.WorkingDir,
+		RequiresTTY:     step.RequiresTTY,
+		Parameters:      params,
+		RiskLevel:       string(step.RiskLevel),
+		DryRun:          step.DryRun,
+		RollbackPlan:    rollback,
+		TimeoutSeconds:  step.TimeoutSeconds,
+		Output:          out,
+		ErrorMessage:    step.ErrorMessage,
+		StartedAt:       step.StartedAt,
+		FinishedAt:      step.FinishedAt,
 	}
 	if err := r.db.WithContext(ctx).Create(&m).Error; err != nil {
 		return database.MapUniqueViolation(err, domain.ErrAlreadyExists)

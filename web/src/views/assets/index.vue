@@ -8,443 +8,88 @@
         key="registry"
         title="注册表"
       >
-        <a-row
-          :gutter="16"
-          class="registry-layout"
-        >
-          <a-col :span="10">
-            <a-card
-              title="应用"
-              :bordered="false"
-              class="assets-card assets-card-fixed"
-            >
-              <template #extra>
-                <a-space>
-                  <a-button @click="loadApplications">
-                    刷新
-                  </a-button>
-                  <a-button
-                    type="primary"
-                    @click="openCreateApplication"
-                  >
-                    新建应用
-                  </a-button>
-                </a-space>
-              </template>
-
-              <a-table
-                :columns="appColumns"
-                :data="applications"
-                :loading="appsLoading"
-                row-key="id"
-                :pagination="appPagination"
-                :scroll="tableScroll"
-                :bordered="false"
-                :row-class="appRowClass"
-                @page-change="onAppPageChange"
-                @page-size-change="onAppPageSizeChange"
-                @row-click="onSelectApplication"
-              >
-                <template #environment="{ record }">
-                  {{ record.environment || '—' }}
-                </template>
-                <template #namespace="{ record }">
-                  <a-tooltip
-                    v-if="record.namespace"
-                    :content="record.namespace"
-                  >
-                    <span class="assets-text-ellipsis">{{ record.namespace }}</span>
-                  </a-tooltip>
-                  <span v-else>—</span>
-                </template>
-                <template #actions="{ record }">
-                  <a-space @click.stop>
-                    <a-button
-                      type="text"
-                      size="small"
-                      @click="openEditApplication(record as Application)"
-                    >
-                      编辑
-                    </a-button>
-                    <a-popconfirm
-                      content="删除应用前需先清空其下所有资源，确定删除？"
-                      @ok="confirmDeleteApplication(record as Application)"
-                    >
-                      <a-button
-                        type="text"
-                        size="small"
-                        status="danger"
-                      >
-                        删除
-                      </a-button>
-                    </a-popconfirm>
-                  </a-space>
-                </template>
-              </a-table>
-            </a-card>
-          </a-col>
-
-          <a-col :span="14">
-            <a-card
-              :title="resourceCardTitle"
-              :bordered="false"
-              class="assets-card assets-card-fixed"
-            >
-              <template #extra>
-                <a-space wrap>
-                  <a-input
-                    v-model="resourceFilters.cloud_resource_type"
-                    :disabled="!selectedAppId"
-                    allow-clear
-                    placeholder="云类型"
-                    size="small"
-                    style="width: 96px"
-                    @press-enter="applyResourceFilters"
-                    @clear="applyResourceFilters"
-                  />
-                  <a-input
-                    v-model="resourceFilters.region"
-                    :disabled="!selectedAppId"
-                    allow-clear
-                    placeholder="Region"
-                    size="small"
-                    style="width: 110px"
-                    @press-enter="applyResourceFilters"
-                    @clear="applyResourceFilters"
-                  />
-                  <a-select
-                    v-model="resourceFilters.sync_status"
-                    :disabled="!selectedAppId"
-                    allow-clear
-                    placeholder="同步状态"
-                    size="small"
-                    style="width: 110px"
-                    @change="applyResourceFilters"
-                    @clear="applyResourceFilters"
-                  >
-                    <a-option value="active">
-                      active
-                    </a-option>
-                    <a-option value="stale">
-                      stale
-                    </a-option>
-                  </a-select>
-                  <a-button
-                    :disabled="!selectedAppId"
-                    size="small"
-                    @click="applyResourceFilters"
-                  >
-                    筛选
-                  </a-button>
-                  <a-button
-                    :disabled="!selectedAppId"
-                    @click="loadResources"
-                  >
-                    刷新
-                  </a-button>
-                  <a-button
-                    type="primary"
-                    :disabled="!selectedAppId"
-                    @click="openCreateResource"
-                  >
-                    新建资源
-                  </a-button>
-                </a-space>
-              </template>
-
-              <a-empty
-                v-if="!selectedAppId"
-                class="assets-empty"
-                description="请先选择左侧应用"
-              />
-              <a-table
-                v-else
-                :columns="resourceColumns"
-                :data="resources"
-                :loading="resourcesLoading"
-                row-key="id"
-                :pagination="resourcePagination"
-                :scroll="resourceTableScroll"
-                :bordered="false"
-                :row-class="resourceRowClass"
-                @page-change="onResourcePageChange"
-                @page-size-change="onResourcePageSizeChange"
-              >
-                <template #source="{ record }">
-                  <a-tag
-                    v-if="(record as Resource).source === 'cloud_sync'"
-                    color="arcoblue"
-                    size="small"
-                  >
-                    云同步
-                  </a-tag>
-                  <a-tag
-                    v-else
-                    size="small"
-                  >
-                    手工
-                  </a-tag>
-                </template>
-                <template #cloud_resource_id="{ record }">
-                  <a-tooltip
-                    v-if="(record as Resource).cloud_resource_id"
-                    :content="(record as Resource).cloud_resource_id"
-                  >
-                    <span class="assets-text-ellipsis">{{ (record as Resource).cloud_resource_id }}</span>
-                  </a-tooltip>
-                  <span v-else>—</span>
-                </template>
-                <template #integration_account_id="{ record }">
-                  <a-tooltip
-                    v-if="(record as Resource).integration_account_id"
-                    :content="(record as Resource).integration_account_id"
-                  >
-                    <span class="assets-text-ellipsis">{{ (record as Resource).integration_account_id }}</span>
-                  </a-tooltip>
-                  <span v-else>—</span>
-                </template>
-                <template #cloud_resource_type="{ record }">
-                  {{ (record as Resource).cloud_resource_type || '—' }}
-                </template>
-                <template #region="{ record }">
-                  <a-tooltip
-                    v-if="(record as Resource).region"
-                    :content="(record as Resource).region"
-                  >
-                    <span class="assets-text-ellipsis">{{ (record as Resource).region }}</span>
-                  </a-tooltip>
-                  <span v-else>—</span>
-                </template>
-                <template #sync_status="{ record }">
-                  <a-tag
-                    v-if="(record as Resource).sync_status"
-                    :color="(record as Resource).sync_status === 'stale' ? 'orangered' : 'green'"
-                    size="small"
-                  >
-                    {{ (record as Resource).sync_status }}
-                  </a-tag>
-                  <span v-else>—</span>
-                </template>
-                <template #last_synced_at="{ record }">
-                  {{ formatTs((record as Resource).last_synced_at) }}
-                </template>
-                <template #sync_batch_id="{ record }">
-                  <a-tooltip
-                    v-if="(record as Resource).sync_batch_id"
-                    :content="(record as Resource).sync_batch_id"
-                  >
-                    <span class="assets-text-ellipsis">{{ (record as Resource).sync_batch_id }}</span>
-                  </a-tooltip>
-                  <span v-else>—</span>
-                </template>
-                <template #labels="{ record }">
-                  <a-popover
-                    v-if="labelEntries((record as Resource).labels).length"
-                    title="Labels"
-                  >
-                    <template #content>
-                      <div class="asset-label-popover">
-                        <div
-                          v-for="item in labelEntries((record as Resource).labels)"
-                          :key="item.key"
-                          class="asset-label-row"
-                        >
-                          <span class="asset-label-key">{{ item.key }}</span>
-                          <span class="asset-label-value">{{ item.displayValue }}</span>
-                        </div>
-                      </div>
-                    </template>
-                    <div class="asset-label-tags">
-                      <a-tag
-                        v-for="item in labelPreviewEntries(record as Resource)"
-                        :key="item.key"
-                        size="small"
-                      >
-                        {{ item.key }}={{ item.displayValue }}
-                      </a-tag>
-                      <a-tag
-                        v-if="labelEntries((record as Resource).labels).length > 3"
-                        size="small"
-                      >
-                        +{{ labelEntries((record as Resource).labels).length - 3 }}
-                      </a-tag>
-                    </div>
-                  </a-popover>
-                  <span v-else>—</span>
-                </template>
-                <template #actions="{ record }">
-                  <a-space>
-                    <a-button
-                      type="text"
-                      size="small"
-                      @click="openEditResource(record as Resource)"
-                    >
-                      编辑
-                    </a-button>
-                    <a-popconfirm
-                      content="删除后历史告警仍可能引用该资源 ID，确定删除？"
-                      @ok="confirmDeleteResource(record as Resource)"
-                    >
-                      <a-button
-                        type="text"
-                        size="small"
-                        status="danger"
-                      >
-                        删除
-                      </a-button>
-                    </a-popconfirm>
-                  </a-space>
-                </template>
-              </a-table>
-            </a-card>
-          </a-col>
-        </a-row>
+        <AssetRegistryTab
+          :applications="registry.applications"
+          :apps-loading="registry.appsLoading"
+          :app-columns="registry.appColumns"
+          :app-pagination="registry.appPagination"
+          :table-scroll="registry.tableScroll"
+          :app-row-class="registry.appRowClass"
+          :selected-app-id="registry.selectedAppId"
+          :resource-card-title="registry.resourceCardTitle"
+          :resources="registry.resources"
+          :resources-loading="registry.resourcesLoading"
+          :resource-columns="registry.resourceColumns"
+          :resource-pagination="registry.resourcePagination"
+          :resource-table-scroll="registry.resourceTableScroll"
+          :resource-row-class="registry.resourceRowClass"
+          :resource-filters="registry.resourceFilters"
+          @update:resource-filters="(f) => Object.assign(registry.resourceFilters, f)"
+          @refresh-apps="registry.loadApplications"
+          @create-app="registry.openCreateApplication"
+          @edit-app="registry.openEditApplication"
+          @delete-app="registry.confirmDeleteApplication"
+          @refresh-resources="registry.loadResources"
+          @create-resource="registry.openCreateResource"
+          @edit-resource="registry.openEditResource"
+          @delete-resource="registry.confirmDeleteResource"
+          @apply-filters="registry.applyResourceFilters"
+          @select-app="registry.onSelectApplication"
+          @app-page-change="registry.onAppPageChange"
+          @app-page-size-change="registry.onAppPageSizeChange"
+          @resource-page-change="registry.onResourcePageChange"
+          @resource-page-size-change="registry.onResourcePageSizeChange"
+        />
       </a-tab-pane>
 
       <a-tab-pane
         key="cloud-sync"
         title="云同步"
       >
-        <a-card
-          title="同步批次"
-          :bordered="false"
-          class="assets-card assets-card-fixed"
-        >
-          <template #extra>
-            <a-space>
-              <a-input
-                v-model="syncAccountId"
-                placeholder="接入账号 ID"
-                style="width: 280px"
-                allow-clear
-              />
-              <a-button
-                type="primary"
-                :loading="syncLoading"
-                @click="runCloudSync"
-              >
-                立即同步
-              </a-button>
-              <a-button @click="loadSyncBatches">
-                刷新
-              </a-button>
-            </a-space>
-          </template>
-          <a-table
-            :columns="syncBatchColumns"
-            :data="syncBatches"
-            :loading="syncBatchesLoading"
-            row-key="batch_id"
-            :pagination="syncPagination"
-            :scroll="tableScroll"
-            :bordered="false"
-            @page-change="onSyncPageChange"
-            @page-size-change="onSyncPageSizeChange"
-          >
-            <template #status="{ record }">
-              <a-tag :color="syncStatusColor((record as assetApi.SyncBatch).status)">
-                {{ (record as assetApi.SyncBatch).status }}
-              </a-tag>
-            </template>
-            <template #message="{ record }">
-              <a-tooltip
-                v-if="(record as assetApi.SyncBatch).message"
-                :content="(record as assetApi.SyncBatch).message"
-              >
-                <span class="assets-text-ellipsis">{{ (record as assetApi.SyncBatch).message }}</span>
-              </a-tooltip>
-              <span v-else>—</span>
-            </template>
-            <template #actions="{ record }">
-              <a-button
-                type="text"
-                size="small"
-                @click="openSyncBatchDetail(record as assetApi.SyncBatch)"
-              >
-                详情
-              </a-button>
-            </template>
-          </a-table>
-        </a-card>
+        <CloudSyncTab
+          v-model="sync.syncAccountId"
+          :sync-batches="sync.syncBatches"
+          :sync-batches-loading="sync.syncBatchesLoading"
+          :sync-batch-columns="sync.syncBatchColumns"
+          :sync-pagination="sync.syncPagination"
+          :table-scroll="sync.tableScroll"
+          :sync-loading="sync.syncLoading"
+          @trigger-sync="sync.runCloudSync"
+          @refresh="sync.loadSyncBatches"
+          @open-detail="sync.openSyncBatchDetail"
+          @page-change="sync.onSyncPageChange"
+          @page-size-change="sync.onSyncPageSizeChange"
+        />
       </a-tab-pane>
 
       <a-tab-pane
         key="match-rules"
         title="匹配规则"
       >
-        <a-card
-          title="告警匹配规则"
-          :bordered="false"
-          class="assets-card assets-card-fixed"
-        >
-          <template #extra>
-            <a-space>
-              <a-button @click="loadMatchRules">
-                刷新
-              </a-button>
-              <a-button
-                type="primary"
-                @click="openCreateMatchRule"
-              >
-                新建规则
-              </a-button>
-            </a-space>
-          </template>
-          <a-table
-            :columns="ruleColumns"
-            :data="matchRules"
-            :loading="rulesLoading"
-            row-key="id"
-            :pagination="rulePagination"
-            :scroll="tableScroll"
-            :bordered="false"
-            @page-change="onRulePageChange"
-            @page-size-change="onRulePageSizeChange"
-          >
-            <template #enabled="{ record }">
-              <a-tag :color="(record as MatchRule).enabled ? 'green' : 'gray'">
-                {{ (record as MatchRule).enabled ? '启用' : '禁用' }}
-              </a-tag>
-            </template>
-            <template #target_type="{ record }">
-              {{ (record as MatchRule).target_type }}
-            </template>
-            <template #actions="{ record }">
-              <a-space>
-                <a-button
-                  type="text"
-                  size="small"
-                  @click="openEditMatchRule(record as MatchRule)"
-                >
-                  编辑
-                </a-button>
-                <a-popconfirm
-                  content="确定删除该匹配规则？"
-                  @ok="confirmDeleteMatchRule(record as MatchRule)"
-                >
-                  <a-button
-                    type="text"
-                    size="small"
-                    status="danger"
-                  >
-                    删除
-                  </a-button>
-                </a-popconfirm>
-              </a-space>
-            </template>
-          </a-table>
-        </a-card>
+        <MatchRuleTab
+          :match-rules="rules.matchRules"
+          :rules-loading="rules.rulesLoading"
+          :rule-columns="rules.ruleColumns"
+          :rule-pagination="rules.rulePagination"
+          :table-scroll="registry.tableScroll"
+          @refresh="rules.loadMatchRules"
+          @create="rules.openCreateMatchRule"
+          @edit="rules.openEditMatchRule"
+          @delete="rules.confirmDeleteMatchRule"
+          @page-change="rules.onRulePageChange"
+          @page-size-change="rules.onRulePageSizeChange"
+        />
       </a-tab-pane>
     </a-tabs>
 
     <a-modal
-      v-model:visible="appModalVisible"
-      :title="appModalMode === 'edit' ? '编辑应用' : '新建应用'"
-      :ok-loading="appSaving"
-      @ok="submitApplication"
+      v-model:visible="registry.appModalVisible"
+      :title="registry.appModalMode === 'edit' ? '编辑应用' : '新建应用'"
+      :ok-loading="registry.appSaving"
+      @ok="registry.submitApplication"
     >
       <a-form
-        :model="appForm"
+        :model="registry.appForm"
         layout="vertical"
       >
         <a-form-item
@@ -452,13 +97,13 @@
           required
         >
           <a-input
-            v-model="appForm.name"
+            v-model="registry.appForm.name"
             placeholder="如 payment-service"
           />
         </a-form-item>
         <a-form-item label="环境">
           <a-select
-            v-model="appForm.environment"
+            v-model="registry.appForm.environment"
             allow-clear
             placeholder="prod / staging / dev"
           >
@@ -475,13 +120,13 @@
         </a-form-item>
         <a-form-item label="默认 Namespace">
           <a-input
-            v-model="appForm.namespace"
+            v-model="registry.appForm.namespace"
             placeholder="K8s namespace（可选）"
           />
         </a-form-item>
         <a-form-item label="描述">
           <a-textarea
-            v-model="appForm.description"
+            v-model="registry.appForm.description"
             placeholder="业务线、负责人等备注（可选）"
             :auto-size="{ minRows: 2, maxRows: 4 }"
           />
@@ -490,30 +135,30 @@
     </a-modal>
 
     <a-modal
-      v-model:visible="resourceModalVisible"
-      :title="resourceModalMode === 'edit' ? '编辑资源' : '新建资源'"
-      :ok-loading="resourceSaving"
-      @ok="submitResource"
+      v-model:visible="registry.resourceModalVisible"
+      :title="registry.resourceModalMode === 'edit' ? '编辑资源' : '新建资源'"
+      :ok-loading="registry.resourceSaving"
+      @ok="registry.submitResource"
     >
       <a-form
-        :model="resourceForm"
+        :model="registry.resourceForm"
         layout="vertical"
       >
         <a-form-item label="所属应用">
           <a-input
-            :model-value="selectedAppName"
+            :model-value="registry.selectedAppName"
             disabled
           />
         </a-form-item>
         <a-form-item label="资源名">
           <a-input
-            v-model="resourceForm.name"
+            v-model="registry.resourceForm.name"
             placeholder="显示名称（可选）"
           />
         </a-form-item>
         <a-form-item label="类型">
           <a-select
-            v-model="resourceForm.resource_type"
+            v-model="registry.resourceForm.resource_type"
             allow-clear
             placeholder="pod / node / host / service"
           >
@@ -532,26 +177,26 @@
           </a-select>
         </a-form-item>
         <a-form-item label="Namespace">
-          <a-input v-model="resourceForm.namespace" />
+          <a-input v-model="registry.resourceForm.namespace" />
         </a-form-item>
         <a-form-item label="Pod">
-          <a-input v-model="resourceForm.pod" />
+          <a-input v-model="registry.resourceForm.pod" />
         </a-form-item>
         <a-form-item label="Node">
-          <a-input v-model="resourceForm.node" />
+          <a-input v-model="registry.resourceForm.node" />
         </a-form-item>
         <a-form-item label="Instance">
           <a-input
-            v-model="resourceForm.instance"
+            v-model="registry.resourceForm.instance"
             placeholder="Prometheus instance 等"
           />
         </a-form-item>
         <a-form-item
-          v-if="resourceModalMode === 'edit'"
+          v-if="registry.resourceModalMode === 'edit'"
           label="云资源 Labels"
         >
           <a-empty
-            v-if="!editingResourceLabelEntries.length"
+            v-if="!registry.editingResourceLabelEntries.length"
             description="暂无 labels"
           />
           <div
@@ -559,7 +204,7 @@
             class="asset-label-panel"
           >
             <div
-              v-for="item in editingResourceLabelEntries"
+              v-for="item in registry.editingResourceLabelEntries"
               :key="item.key"
               class="asset-label-row"
             >
@@ -571,87 +216,34 @@
       </a-form>
     </a-modal>
 
-    <a-drawer
-      v-model:visible="syncBatchDetailVisible"
-      width="520px"
-      title="同步批次详情"
-      :footer="false"
-    >
-      <a-spin
-        :loading="syncBatchDetailLoading"
-        style="width: 100%"
-      >
-        <a-empty
-          v-if="!syncBatchDetail"
-          description="暂无批次详情"
-        />
-        <template v-else>
-          <a-alert
-            v-if="syncBatchDetail.status === 'partial'"
-            type="warning"
-            class="sync-detail-alert"
-          >
-            部分资源或增强信息失败，基础同步结果以批次 summary 为准，message 保留为排查说明。
-          </a-alert>
-          <a-descriptions
-            :column="1"
-            bordered
-            size="small"
-          >
-            <a-descriptions-item label="批次 ID">
-              {{ syncBatchDetail.batch_id }}
-            </a-descriptions-item>
-            <a-descriptions-item label="账号">
-              {{ syncBatchDetail.integration_account_id }}
-            </a-descriptions-item>
-            <a-descriptions-item label="Provider">
-              {{ syncBatchDetail.provider }}
-            </a-descriptions-item>
-            <a-descriptions-item label="状态">
-              <a-tag :color="syncStatusColor(syncBatchDetail.status)">
-                {{ syncBatchDetail.status }}
-              </a-tag>
-            </a-descriptions-item>
-            <a-descriptions-item label="数量摘要">
-              新建 {{ syncBatchDetail.created_count }}，更新 {{ syncBatchDetail.updated_count }}，stale {{ syncBatchDetail.stale_count }}，失败 {{ syncBatchDetail.failed_count }}
-            </a-descriptions-item>
-            <a-descriptions-item label="CES total">
-              {{ syncBatchMessageSummary.ces_total || '—' }}
-            </a-descriptions-item>
-            <a-descriptions-item label="Discovered">
-              {{ syncBatchMessageSummary.discovered || '—' }}
-            </a-descriptions-item>
-            <a-descriptions-item label="Failed scopes">
-              {{ syncBatchMessageSummary.failed_scopes || '—' }}
-            </a-descriptions-item>
-            <a-descriptions-item label="Enriched">
-              {{ syncBatchMessageSummary.enriched || '—' }}
-            </a-descriptions-item>
-            <a-descriptions-item label="Enrichment failed">
-              {{ syncBatchMessageSummary.enrichment_failed || '—' }}
-            </a-descriptions-item>
-            <a-descriptions-item label="原始 message">
-              <span class="sync-detail-message">{{ syncBatchDetail.message || '—' }}</span>
-            </a-descriptions-item>
-            <a-descriptions-item label="开始时间">
-              {{ formatTs(syncBatchDetail.started_at) }}
-            </a-descriptions-item>
-            <a-descriptions-item label="结束时间">
-              {{ formatTs(syncBatchDetail.finished_at) }}
-            </a-descriptions-item>
-          </a-descriptions>
-        </template>
-      </a-spin>
-    </a-drawer>
+    <SyncBatchDetailDrawer
+      v-model:visible="sync.syncBatchDetailVisible"
+      :batch-detail="sync.syncBatchDetail"
+      :loading="sync.syncBatchDetailLoading"
+      :message-summary="sync.syncBatchMessageSummary"
+      :scope-cards="sync.syncBatchScopeCards"
+      :signal-tags="sync.syncBatchSignalTags"
+      :selected-scope-key="sync.selectedSyncScopeKey"
+      :selected-scope-trace="sync.selectedScopeTrace"
+      :selected-scope-trace-cards="sync.selectedScopeTraceCards"
+      :selected-scope-trace-tags="sync.selectedScopeTraceTags"
+      :selected-scope-trace-snippet="sync.selectedScopeTraceSnippet"
+      :selected-scope-signal-key="sync.selectedScopeSignalKey"
+      :scope-diagnostic-columns="sync.syncBatchScopeDiagnosticColumns"
+      @toggle-scope="sync.toggleScopeByKey"
+      @open-scope="sync.openScopeTrace"
+      @open-signal="sync.openScopeSignal"
+      @copy-snippet="sync.copyScopeSnippet"
+    />
 
     <a-modal
-      v-model:visible="ruleModalVisible"
-      :title="ruleModalMode === 'edit' ? '编辑匹配规则' : '新建匹配规则'"
-      :ok-loading="ruleSaving"
-      @ok="submitMatchRule"
+      v-model:visible="rules.ruleModalVisible"
+      :title="rules.ruleModalMode === 'edit' ? '编辑匹配规则' : '新建匹配规则'"
+      :ok-loading="rules.ruleSaving"
+      @ok="rules.submitMatchRule"
     >
       <a-form
-        :model="ruleForm"
+        :model="rules.ruleForm"
         layout="vertical"
       >
         <a-form-item
@@ -659,7 +251,7 @@
           required
         >
           <a-input
-            v-model="ruleForm.name"
+            v-model="rules.ruleForm.name"
             placeholder="如 payment 服务匹配"
           />
         </a-form-item>
@@ -667,7 +259,7 @@
           <a-col :span="8">
             <a-form-item label="优先级">
               <a-input-number
-                v-model="ruleForm.priority"
+                v-model="rules.ruleForm.priority"
                 :min="0"
                 :max="9999"
                 style="width: 100%"
@@ -676,12 +268,12 @@
           </a-col>
           <a-col :span="8">
             <a-form-item label="启用">
-              <a-switch v-model="ruleForm.enabled" />
+              <a-switch v-model="rules.ruleForm.enabled" />
             </a-form-item>
           </a-col>
           <a-col :span="8">
             <a-form-item label="目标类型">
-              <a-select v-model="ruleForm.target_type">
+              <a-select v-model="rules.ruleForm.target_type">
                 <a-option value="application">
                   application
                 </a-option>
@@ -693,7 +285,7 @@
           </a-col>
         </a-row>
         <a-form-item label="接入源">
-          <a-select v-model="ruleForm.source_type">
+          <a-select v-model="rules.ruleForm.source_type">
             <a-option value="all">
               all
             </a-option>
@@ -715,7 +307,7 @@
               required
             >
               <a-input
-                v-model="ruleForm.label_key"
+                v-model="rules.ruleForm.label_key"
                 placeholder="service"
               />
             </a-form-item>
@@ -726,7 +318,7 @@
               required
             >
               <a-input
-                v-model="ruleForm.label_value_pattern"
+                v-model="rules.ruleForm.label_value_pattern"
                 placeholder="payment-*"
               />
             </a-form-item>
@@ -737,13 +329,13 @@
           required
         >
           <a-select
-            v-model="ruleForm.application_id"
+            v-model="rules.ruleForm.application_id"
             allow-search
             placeholder="选择应用"
-            @change="onRuleAppChange"
+            @change="rules.onRuleAppChange"
           >
             <a-option
-              v-for="app in ruleApplicationOptions"
+              v-for="app in rules.ruleApplicationOptions"
               :key="app.id"
               :value="app.id"
             >
@@ -752,17 +344,17 @@
           </a-select>
         </a-form-item>
         <a-form-item
-          v-if="ruleForm.target_type === 'resource'"
+          v-if="rules.ruleForm.target_type === 'resource'"
           label="绑定资源"
           required
         >
           <a-select
-            v-model="ruleForm.resource_id"
+            v-model="rules.ruleForm.resource_id"
             allow-search
             placeholder="选择资源"
           >
             <a-option
-              v-for="res in ruleResourceOptions"
+              v-for="res in rules.ruleResourceOptions"
               :key="res.id"
               :value="res.id"
             >
@@ -776,677 +368,57 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import Message from '@arco-design/web-vue/es/message'
-import type { TableInstance } from '@arco-design/web-vue/es/table'
-import type { TableData } from '@arco-design/web-vue/es/table/interface'
-import * as assetApi from '@/api/asset'
-import type { Application, MatchRule, Resource } from '@/api/asset'
-import { formatSyncBatchSummary, labelEntries } from './composables/assetUtils'
+import { onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import type { Application, Resource } from '@/api/asset'
+import AssetRegistryTab from './components/AssetRegistryTab.vue'
+import CloudSyncTab from './components/CloudSyncTab.vue'
+import MatchRuleTab from './components/MatchRuleTab.vue'
+import SyncBatchDetailDrawer from './components/SyncBatchDetailDrawer.vue'
+import { useAssetRegistry } from './composables/useAssetRegistry'
+import { useCloudSync } from './composables/useCloudSync'
+import { useMatchRules } from './composables/useMatchRules'
 
 const route = useRoute()
-const router = useRouter()
 
 const activeTab = ref('registry')
-const applications = ref<Application[]>([])
-const resources = ref<Resource[]>([])
-const matchRules = ref<MatchRule[]>([])
+
+const selectedAppId = ref('')
 const ruleApplicationOptions = ref<Application[]>([])
 const ruleResourceOptions = ref<Resource[]>([])
-const selectedAppId = ref('')
-const highlightedResourceId = ref('')
-const appsLoading = ref(false)
-const resourcesLoading = ref(false)
-const appModalVisible = ref(false)
-const resourceModalVisible = ref(false)
-const appModalMode = ref<'create' | 'edit'>('create')
-const resourceModalMode = ref<'create' | 'edit'>('create')
-const editingAppId = ref('')
-const editingResourceId = ref('')
-const appSaving = ref(false)
-const resourceSaving = ref(false)
-const rulesLoading = ref(false)
-const ruleModalVisible = ref(false)
-const ruleModalMode = ref<'create' | 'edit'>('create')
-const editingRuleId = ref('')
-const ruleSaving = ref(false)
-const syncAccountId = ref('')
-const syncLoading = ref(false)
-const syncBatchesLoading = ref(false)
-const syncBatches = ref<assetApi.SyncBatch[]>([])
-const syncBatchDetailVisible = ref(false)
-const syncBatchDetailLoading = ref(false)
-const syncBatchDetail = ref<assetApi.SyncBatch | null>(null)
 
-const tableScroll = { y: 'calc(100vh - 330px)' }
-const resourceTableScroll = { x: 1880, y: 'calc(100vh - 330px)' }
-
-const appPagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
-const resourcePagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
-const syncPagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
-const rulePagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
-
-const resourceFilters = reactive({
-  cloud_resource_type: '',
-  region: '',
-  sync_status: ''
-})
-
-const ruleForm = reactive({
-  name: '',
-  enabled: true,
-  priority: 100,
-  target_type: 'application',
-  source_type: 'all',
-  label_key: 'service',
-  label_value_pattern: '',
-  application_id: '',
-  resource_id: ''
-})
-
-const appForm = reactive({
-  name: '',
-  environment: 'prod',
-  namespace: '',
-  description: ''
-})
-
-const resourceForm = reactive({
-  name: '',
-  resource_type: 'pod',
-  namespace: '',
-  pod: '',
-  node: '',
-  instance: ''
-})
-
-const appColumns: TableInstance['columns'] = [
-  { title: '应用名', dataIndex: 'name', ellipsis: true, tooltip: true, width: 120 },
-  { title: '环境', slotName: 'environment', width: 80 },
-  { title: 'Namespace', slotName: 'namespace', width: 110, ellipsis: true },
-  { title: '描述', dataIndex: 'description', ellipsis: true, tooltip: true },
-  { title: '操作', slotName: 'actions', width: 100 }
-]
-
-const resourceColumns: TableInstance['columns'] = [
-  { title: '资源名', dataIndex: 'name', ellipsis: true, tooltip: true, width: 140 },
-  { title: '来源', slotName: 'source', width: 80 },
-  { title: '类型', dataIndex: 'resource_type', width: 80 },
-  { title: '账号', slotName: 'integration_account_id', width: 180 },
-  { title: '云类型', slotName: 'cloud_resource_type', width: 90 },
-  { title: '云资源 ID', slotName: 'cloud_resource_id', width: 150, ellipsis: true },
-  { title: 'Region', slotName: 'region', width: 100 },
-  { title: '同步状态', slotName: 'sync_status', width: 90 },
-  { title: '最近同步', slotName: 'last_synced_at', width: 150 },
-  { title: '最近成功批次', slotName: 'sync_batch_id', width: 180 },
-  { title: 'Labels', slotName: 'labels', width: 220 },
-  { title: 'Namespace', dataIndex: 'namespace', width: 110, ellipsis: true, tooltip: true },
-  { title: 'Pod', dataIndex: 'pod', width: 110, ellipsis: true, tooltip: true },
-  { title: 'Instance', dataIndex: 'instance', width: 120, ellipsis: true, tooltip: true },
-  { title: '操作', slotName: 'actions', width: 120, fixed: 'right' }
-]
-
-const syncBatchColumns: TableInstance['columns'] = [
-  { title: '批次 ID', dataIndex: 'batch_id', ellipsis: true, tooltip: true },
-  { title: '账号', dataIndex: 'integration_account_id', width: 220, ellipsis: true, tooltip: true },
-  { title: '状态', slotName: 'status', width: 90 },
-  { title: '新建', dataIndex: 'created_count', width: 70 },
-  { title: '更新', dataIndex: 'updated_count', width: 70 },
-  { title: 'Stale', dataIndex: 'stale_count', width: 70 },
-  { title: '失败', dataIndex: 'failed_count', width: 70 },
-  { title: '摘要', slotName: 'message', ellipsis: true, tooltip: true },
-  { title: '操作', slotName: 'actions', width: 80, fixed: 'right' }
-]
-
-const ruleColumns: TableInstance['columns'] = [
-  { title: '规则名', dataIndex: 'name', ellipsis: true, tooltip: true },
-  { title: '优先级', dataIndex: 'priority', width: 80 },
-  { title: '状态', slotName: 'enabled', width: 80 },
-  { title: 'Label', dataIndex: 'label_key', width: 100, ellipsis: true, tooltip: true },
-  { title: '模式', dataIndex: 'label_value_pattern', width: 140, ellipsis: true, tooltip: true },
-  { title: '目标', slotName: 'target_type', width: 100 },
-  { title: '接入源', dataIndex: 'source_type', width: 160, ellipsis: true, tooltip: true },
-  { title: '应用 ID', dataIndex: 'application_id', width: 120, ellipsis: true, tooltip: true },
-  { title: '操作', slotName: 'actions', width: 120 }
-]
-
-const selectedApplication = computed(() => {
-  return applications.value.find((a) => a.id === selectedAppId.value)
-    || ruleApplicationOptions.value.find((a) => a.id === selectedAppId.value)
-})
-
-const selectedAppName = computed(() => {
-  return selectedApplication.value?.name || selectedAppId.value
-})
-
-const resourceCardTitle = computed(() => {
-  if (!selectedAppId.value) return '资源'
-  return `资源 · ${selectedAppName.value}`
-})
-
-const editingResource = computed(() => {
-  if (!editingResourceId.value) return undefined
-  return resources.value.find((r) => r.id === editingResourceId.value)
-})
-
-const editingResourceLabelEntries = computed(() => labelEntries(editingResource.value?.labels))
-
-const syncBatchMessageSummary = computed(() => formatSyncBatchSummary(syncBatchDetail.value?.summary, syncBatchDetail.value?.message || ''))
-
-function appRowClass(record: TableData) {
-  const app = record as Application
-  return app.id === selectedAppId.value ? 'assets-row-selected' : ''
-}
-
-function resourceRowClass(record: TableData) {
-  const res = record as Resource
-  return res.id === highlightedResourceId.value ? 'assets-row-highlight' : ''
-}
-
-function routeResourceId(): string {
-  return typeof route.query.resource_id === 'string' ? route.query.resource_id : ''
-}
-
-async function scrollToHighlightedResource() {
-  if (!highlightedResourceId.value) return
-  await nextTick()
-  const row = document.querySelector('.assets-row-highlight')
-  row?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-}
-
-function formatTs(ts?: number) {
-  if (!ts) return '—'
-  return new Date(ts * 1000).toLocaleString()
-}
-
-function labelPreviewEntries(resource: Resource) {
-  return labelEntries(resource.labels).slice(0, 3)
-}
-
-function syncStatusColor(status: string) {
-  switch (status) {
-    case 'success':
-      return 'green'
-    case 'partial':
-      return 'orange'
-    case 'failed':
-      return 'red'
-    default:
-      return 'blue'
-  }
-}
-
-async function loadSyncBatches() {
-  syncBatchesLoading.value = true
-  try {
-    const res = await assetApi.listSyncBatches({
-      account_id: syncAccountId.value.trim() || undefined,
-      page: syncPagination.current,
-      page_size: syncPagination.pageSize
-    })
-    syncBatches.value = res.items ?? []
-    syncPagination.total = res.total ?? 0
-  } finally {
-    syncBatchesLoading.value = false
-  }
-}
-
-let syncPollingStopped = false
-onBeforeUnmount(() => {
-  syncPollingStopped = true
-})
-
-async function runCloudSync() {
-  const accountId = syncAccountId.value.trim()
-  if (!accountId) {
-    Message.warning('请填写接入账号 ID')
-    return
-  }
-  syncLoading.value = true
-  try {
-    const running = await assetApi.triggerAssetSync(accountId)
-    const batch = await assetApi.pollSyncBatch(running.batch_id, { shouldStop: () => syncPollingStopped })
-    const notice = assetApi.getSyncBatchNotice(batch)
-    Message[notice.type](notice.content)
-    await loadSyncBatches()
-    await loadApplications()
+const registry = reactive(useAssetRegistry({ selectedAppId, ruleApplicationOptions }))
+const rules = reactive(useMatchRules({ selectedAppId, ruleApplicationOptions, ruleResourceOptions }))
+const sync = reactive(useCloudSync({
+  onSyncComplete: async (batch) => {
+    await registry.loadApplications()
     if (batch.application_id) {
       selectedAppId.value = batch.application_id
-      resourcePagination.current = 1
-      await loadResources()
+      registry.resourcePagination.current = 1
+      await registry.loadResources()
     }
-  } catch (e: unknown) {
-    if (assetApi.isAssetSyncInProgressError(e)) {
-      Message.warning('该账号正在同步，请稍后重试')
-      return
-    }
-    if (e instanceof assetApi.SyncStillRunningError) {
-      Message.info(e.message)
-      return
-    }
-    if (e instanceof Error && e.message === 'polling cancelled') {
-      return
-    }
-    Message.error(e instanceof Error ? e.message : '同步失败')
-  } finally {
-    syncLoading.value = false
   }
-}
-
-async function openSyncBatchDetail(batch: assetApi.SyncBatch) {
-  syncBatchDetailVisible.value = true
-  syncBatchDetail.value = batch
-  syncBatchDetailLoading.value = true
-  try {
-    syncBatchDetail.value = await assetApi.getSyncBatch(batch.batch_id)
-  } catch (e: unknown) {
-    Message.error(e instanceof Error ? e.message : '加载批次详情失败')
-  } finally {
-    syncBatchDetailLoading.value = false
-  }
-}
-
-async function loadMatchRules() {
-  rulesLoading.value = true
-  try {
-    const res = await assetApi.listMatchRules({
-      page: rulePagination.current,
-      page_size: rulePagination.pageSize
-    })
-    matchRules.value = res.items ?? []
-    rulePagination.total = res.total ?? 0
-  } finally {
-    rulesLoading.value = false
-  }
-}
-
-async function loadAllPages<T>(loader: (page: number, pageSize: number) => Promise<{ items?: T[]; total?: number }>, pageSize = 100) {
-  const items: T[] = []
-  let page = 1
-  let total = 0
-  do {
-    const res = await loader(page, pageSize)
-    const pageItems = res.items ?? []
-    items.push(...pageItems)
-    total = res.total ?? items.length
-    if (pageItems.length === 0) break
-    page += 1
-  } while (items.length < total)
-  return items
-}
-
-async function loadRuleApplications() {
-  ruleApplicationOptions.value = await loadAllPages<Application>((page, pageSize) => assetApi.listApplications({
-    page,
-    page_size: pageSize
-  }))
-}
-
-async function loadRuleResources(appId: string) {
-  if (!appId) {
-    ruleResourceOptions.value = []
-    return
-  }
-  ruleResourceOptions.value = await loadAllPages<Resource>((page, pageSize) => assetApi.listResources(appId, {
-    page,
-    page_size: pageSize
-  }))
-}
-
-async function openCreateMatchRule() {
-  ruleModalMode.value = 'create'
-  editingRuleId.value = ''
-  ruleForm.name = ''
-  ruleForm.enabled = true
-  ruleForm.priority = 100
-  ruleForm.target_type = 'application'
-  ruleForm.source_type = 'all'
-  ruleForm.label_key = 'service'
-  ruleForm.label_value_pattern = ''
-  ruleForm.application_id = selectedAppId.value || ''
-  ruleForm.resource_id = ''
-  await loadRuleApplications()
-  void loadRuleResources(ruleForm.application_id)
-  ruleModalVisible.value = true
-}
-
-async function openEditMatchRule(rule: MatchRule) {
-  ruleModalMode.value = 'edit'
-  editingRuleId.value = rule.id
-  ruleForm.name = rule.name
-  ruleForm.enabled = rule.enabled
-  ruleForm.priority = rule.priority
-  ruleForm.target_type = rule.target_type
-  ruleForm.source_type = rule.source_type
-  ruleForm.label_key = rule.label_key
-  ruleForm.label_value_pattern = rule.label_value_pattern
-  ruleForm.application_id = rule.application_id
-  ruleForm.resource_id = rule.resource_id || ''
-  await loadRuleApplications()
-  void loadRuleResources(rule.application_id)
-  ruleModalVisible.value = true
-}
-
-async function onRuleAppChange(value: string | number | boolean | Record<string, unknown> | (string | number | boolean | Record<string, unknown>)[]) {
-  if (typeof value !== 'string' || !value) {
-    return
-  }
-  ruleForm.resource_id = ''
-  await loadRuleResources(value)
-}
-
-async function submitMatchRule() {
-  if (!ruleForm.name.trim() || !ruleForm.label_key.trim() || !ruleForm.label_value_pattern.trim() || !ruleForm.application_id) {
-    Message.warning('请填写规则名、Label、匹配模式并选择应用')
-    return
-  }
-  if (ruleForm.target_type === 'resource' && !ruleForm.resource_id) {
-    Message.warning('目标类型为 resource 时必须选择资源')
-    return
-  }
-  ruleSaving.value = true
-  try {
-    const payload = {
-      name: ruleForm.name.trim(),
-      enabled: ruleForm.enabled,
-      priority: ruleForm.priority,
-      target_type: ruleForm.target_type,
-      source_type: ruleForm.source_type,
-      label_key: ruleForm.label_key.trim(),
-      label_value_pattern: ruleForm.label_value_pattern.trim(),
-      application_id: ruleForm.application_id,
-      resource_id: ruleForm.target_type === 'resource' ? ruleForm.resource_id : undefined
-    }
-    if (ruleModalMode.value === 'edit' && editingRuleId.value) {
-      await assetApi.updateMatchRule(editingRuleId.value, payload)
-      Message.success('规则已更新')
-    } else {
-      await assetApi.createMatchRule(payload)
-      Message.success('规则已创建')
-    }
-    ruleModalVisible.value = false
-    rulePagination.current = 1
-    await loadMatchRules()
-  } finally {
-    ruleSaving.value = false
-  }
-}
-
-async function confirmDeleteMatchRule(rule: MatchRule) {
-  try {
-    await assetApi.deleteMatchRule(rule.id)
-    Message.success('规则已删除')
-    await loadMatchRules()
-  } catch (e: unknown) {
-    Message.error(e instanceof Error ? e.message : '删除失败')
-  }
-}
-
-async function loadApplications() {
-  appsLoading.value = true
-  try {
-    const res = await assetApi.listApplications({
-      page: appPagination.current,
-      page_size: appPagination.pageSize
-    })
-    applications.value = res.items ?? []
-    appPagination.total = res.total ?? 0
-  } finally {
-    appsLoading.value = false
-  }
-}
-
-async function loadResources() {
-  if (!selectedAppId.value) return
-  resourcesLoading.value = true
-  try {
-    const res = await assetApi.listResources(selectedAppId.value, {
-      page: resourcePagination.current,
-      page_size: resourcePagination.pageSize,
-      cloud_resource_type: resourceFilters.cloud_resource_type.trim() || undefined,
-      region: resourceFilters.region.trim() || undefined,
-      sync_status: resourceFilters.sync_status || undefined
-    })
-    resources.value = res.items ?? []
-    resourcePagination.total = res.total ?? 0
-    const resourceId = routeResourceId()
-    if (resourceId && resources.value.some((r) => r.id === resourceId)) {
-      highlightedResourceId.value = resourceId
-      await scrollToHighlightedResource()
-    } else {
-      highlightedResourceId.value = ''
-    }
-  } finally {
-    resourcesLoading.value = false
-  }
-}
-
-function applyResourceFilters() {
-  resourcePagination.current = 1
-  loadResources()
-}
-
-function onSelectApplication(record: TableData) {
-  const app = record as Application
-  if (selectedAppId.value === app.id) return
-  selectedAppId.value = app.id
-  resourcePagination.current = 1
-  router.replace({ query: { ...route.query, application_id: app.id } })
-  loadResources()
-}
-
-function openCreateApplication() {
-  appModalMode.value = 'create'
-  editingAppId.value = ''
-  appForm.name = ''
-  appForm.environment = 'prod'
-  appForm.namespace = ''
-  appForm.description = ''
-  appModalVisible.value = true
-}
-
-function openEditApplication(app: Application) {
-  appModalMode.value = 'edit'
-  editingAppId.value = app.id
-  appForm.name = app.name
-  appForm.environment = app.environment || ''
-  appForm.namespace = app.namespace || ''
-  appForm.description = app.description || ''
-  appModalVisible.value = true
-}
-
-function openCreateResource() {
-  resourceModalMode.value = 'create'
-  editingResourceId.value = ''
-  resourceForm.name = ''
-  resourceForm.resource_type = 'pod'
-  resourceForm.namespace = selectedApplication.value?.namespace || ''
-  resourceForm.pod = ''
-  resourceForm.node = ''
-  resourceForm.instance = ''
-  resourceModalVisible.value = true
-}
-
-function openEditResource(res: Resource) {
-  resourceModalMode.value = 'edit'
-  editingResourceId.value = res.id
-  resourceForm.name = res.name || ''
-  resourceForm.resource_type = res.resource_type || 'pod'
-  resourceForm.namespace = res.namespace || ''
-  resourceForm.pod = res.pod || ''
-  resourceForm.node = res.node || ''
-  resourceForm.instance = res.instance || ''
-  resourceModalVisible.value = true
-}
-
-async function submitApplication() {
-  if (!appForm.name.trim()) {
-    Message.warning('请填写应用名')
-    return
-  }
-  appSaving.value = true
-  try {
-    if (appModalMode.value === 'edit' && editingAppId.value) {
-      await assetApi.updateApplication(editingAppId.value, {
-        name: appForm.name.trim(),
-        environment: appForm.environment || undefined,
-        namespace: appForm.namespace.trim() || undefined,
-        description: appForm.description.trim() || undefined
-      })
-      Message.success('应用已更新')
-    } else {
-      const created = await assetApi.createApplication({
-        name: appForm.name.trim(),
-        environment: appForm.environment || undefined,
-        namespace: appForm.namespace.trim() || undefined,
-        description: appForm.description.trim() || undefined
-      })
-      Message.success('应用已创建')
-      selectedAppId.value = created.id
-      resourcePagination.current = 1
-      router.replace({ query: { ...route.query, application_id: created.id } })
-      await loadResources()
-    }
-    appModalVisible.value = false
-    await loadApplications()
-  } finally {
-    appSaving.value = false
-  }
-}
-
-async function confirmDeleteApplication(app: Application) {
-  try {
-    await assetApi.deleteApplication(app.id)
-    Message.success('应用已删除')
-    if (selectedAppId.value === app.id) {
-      selectedAppId.value = ''
-      resources.value = []
-      const query = { ...route.query }
-      delete query.application_id
-      delete query.resource_id
-      router.replace({ query })
-    }
-    await loadApplications()
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : '删除失败'
-    Message.error(msg.includes('resource') ? '请先删除该应用下的所有资源' : msg)
-  }
-}
-
-async function submitResource() {
-  if (!selectedAppId.value) return
-  resourceSaving.value = true
-  try {
-    if (resourceModalMode.value === 'edit' && editingResourceId.value) {
-      await assetApi.updateResource(editingResourceId.value, {
-        name: resourceForm.name.trim() || undefined,
-        resource_type: resourceForm.resource_type || undefined,
-        namespace: resourceForm.namespace.trim() || undefined,
-        pod: resourceForm.pod.trim() || undefined,
-        node: resourceForm.node.trim() || undefined,
-        instance: resourceForm.instance.trim() || undefined
-      })
-      Message.success('资源已更新')
-    } else {
-      await assetApi.createResource({
-        application_id: selectedAppId.value,
-        name: resourceForm.name.trim() || undefined,
-        resource_type: resourceForm.resource_type || undefined,
-        namespace: resourceForm.namespace.trim() || undefined,
-        pod: resourceForm.pod.trim() || undefined,
-        node: resourceForm.node.trim() || undefined,
-        instance: resourceForm.instance.trim() || undefined
-      })
-      Message.success('资源已创建')
-    }
-    resourceModalVisible.value = false
-    resourcePagination.current = resourceModalMode.value === 'create' ? 1 : resourcePagination.current
-    await loadResources()
-  } finally {
-    resourceSaving.value = false
-  }
-}
-
-async function confirmDeleteResource(res: Resource) {
-  try {
-    await assetApi.deleteResource(res.id)
-    Message.success('资源已删除')
-    if (highlightedResourceId.value === res.id) {
-      highlightedResourceId.value = ''
-      const query = { ...route.query }
-      delete query.resource_id
-      router.replace({ query })
-    }
-    await loadResources()
-  } catch (e: unknown) {
-    Message.error(e instanceof Error ? e.message : '删除失败')
-  }
-}
+}))
 
 async function applyRouteSelection() {
   const q = typeof route.query.application_id === 'string' ? route.query.application_id : ''
-  const resourceId = routeResourceId()
+  const resourceId = registry.routeResourceId()
   if (!q && selectedAppId.value) {
     selectedAppId.value = ''
-    highlightedResourceId.value = ''
-    resources.value = []
-    resourcePagination.total = 0
+    registry.highlightedResourceId = ''
+    registry.resources = []
+    registry.resourcePagination.total = 0
     return
   }
   if (q && q !== selectedAppId.value) {
     selectedAppId.value = q
-    resourcePagination.current = 1
-    await loadResources()
+    registry.resourcePagination.current = 1
+    await registry.loadResources()
     return
   }
-  if (resourceId && resourceId !== highlightedResourceId.value && selectedAppId.value) {
-    await loadResources()
+  if (resourceId && resourceId !== registry.highlightedResourceId && selectedAppId.value) {
+    await registry.loadResources()
   }
-}
-
-function onAppPageChange(page: number) {
-  appPagination.current = page
-  loadApplications()
-}
-
-function onAppPageSizeChange(size: number) {
-  appPagination.pageSize = size
-  appPagination.current = 1
-  loadApplications()
-}
-
-function onResourcePageChange(page: number) {
-  resourcePagination.current = page
-  loadResources()
-}
-
-function onResourcePageSizeChange(size: number) {
-  resourcePagination.pageSize = size
-  resourcePagination.current = 1
-  loadResources()
-}
-
-function onSyncPageChange(page: number) {
-  syncPagination.current = page
-  loadSyncBatches()
-}
-
-function onSyncPageSizeChange(size: number) {
-  syncPagination.pageSize = size
-  syncPagination.current = 1
-  loadSyncBatches()
-}
-
-function onRulePageChange(page: number) {
-  rulePagination.current = page
-  loadMatchRules()
-}
-
-function onRulePageSizeChange(size: number) {
-  rulePagination.pageSize = size
-  rulePagination.current = 1
-  loadMatchRules()
 }
 
 watch(
@@ -1457,18 +429,18 @@ watch(
 )
 
 onMounted(async () => {
-  await loadApplications()
-  await loadMatchRules()
-  await loadSyncBatches()
+  await registry.loadApplications()
+  await rules.loadMatchRules()
+  await sync.loadSyncBatches()
   const q = typeof route.query.application_id === 'string' ? route.query.application_id : ''
   if (q) {
     selectedAppId.value = q
-    resourcePagination.current = 1
-    await loadResources()
-  } else if (applications.value.length === 1) {
-    selectedAppId.value = applications.value[0].id
-    resourcePagination.current = 1
-    await loadResources()
+    registry.resourcePagination.current = 1
+    await registry.loadResources()
+  } else if (registry.applications.length === 1) {
+    selectedAppId.value = registry.applications[0].id
+    registry.resourcePagination.current = 1
+    await registry.loadResources()
   }
 })
 </script>
@@ -1491,16 +463,16 @@ onMounted(async () => {
   margin-bottom: 12px;
 }
 
-.registry-layout,
-.registry-layout > .arco-col {
+:deep(.registry-layout),
+:deep(.registry-layout > .arco-col) {
   height: 100%;
 }
 
-.assets-card {
+:deep(.assets-card) {
   overflow: hidden;
 }
 
-.assets-card-fixed {
+:deep(.assets-card-fixed) {
   height: calc(100% - 44px);
 }
 
@@ -1522,7 +494,7 @@ onMounted(async () => {
   margin-top: 10px;
 }
 
-.assets-text-ellipsis {
+:deep(.assets-text-ellipsis) {
   display: inline-block;
   max-width: 100%;
   overflow: hidden;
@@ -1531,7 +503,7 @@ onMounted(async () => {
   vertical-align: bottom;
 }
 
-.assets-empty {
+:deep(.assets-empty) {
   height: 100%;
   display: flex;
   align-items: center;
@@ -1546,7 +518,7 @@ onMounted(async () => {
   background-color: rgb(var(--primary-1));
 }
 
-.asset-label-tags {
+:deep(.asset-label-tags) {
   display: flex;
   gap: 4px;
   max-width: 100%;
@@ -1554,8 +526,7 @@ onMounted(async () => {
   flex-wrap: nowrap;
 }
 
-.asset-label-popover,
-.asset-label-panel {
+:deep(.asset-label-popover) {
   max-width: 440px;
   max-height: 320px;
   overflow: auto;
@@ -1569,14 +540,23 @@ onMounted(async () => {
   background: var(--color-fill-1);
 }
 
-.asset-label-row {
+.asset-label-panel,
+:deep(.asset-label-panel) {
+  max-width: 440px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.asset-label-row,
+:deep(.asset-label-row) {
   display: grid;
   grid-template-columns: minmax(110px, 180px) minmax(0, 1fr);
   gap: 8px;
   line-height: 24px;
 }
 
-.asset-label-key {
+.asset-label-key,
+:deep(.asset-label-key) {
   color: var(--color-text-2);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   overflow: hidden;
@@ -1585,13 +565,9 @@ onMounted(async () => {
 }
 
 .asset-label-value,
-.sync-detail-message {
+:deep(.asset-label-value) {
   color: var(--color-text-1);
   overflow-wrap: anywhere;
   word-break: break-word;
-}
-
-.sync-detail-alert {
-  margin-bottom: 12px;
 }
 </style>

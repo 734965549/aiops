@@ -1,0 +1,5 @@
+-- 0043 down: 人工回滚参考，不由 runner 自动执行。
+-- 被置空的 alert_alert.application_id 无法自动恢复原始值，
+-- 需从升级前备份中对照 alert_id 恢复 application_id / application_name 字段。
+-- inspection_policy.scope.application_ids 中被移除的元素同样需从备份恢复。
+-- 生产回滚应由 DBA 按审批流程显式执行。

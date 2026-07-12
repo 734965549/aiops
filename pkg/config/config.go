@@ -21,13 +21,13 @@ import (
 
 // Config 是平台运行所需的全部配置项的聚合根。
 type Config struct {
-	App      AppConfig      `mapstructure:"app"`
-	Server   ServerConfig   `mapstructure:"server"`
-	Logger   LoggerConfig   `mapstructure:"logger"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	Auth     AuthConfig     `mapstructure:"auth"`
-	Identity IdentityConfig `mapstructure:"identity"`
+	App         AppConfig         `mapstructure:"app"`
+	Server      ServerConfig      `mapstructure:"server"`
+	Logger      LoggerConfig      `mapstructure:"logger"`
+	Database    DatabaseConfig    `mapstructure:"database"`
+	Redis       RedisConfig       `mapstructure:"redis"`
+	Auth        AuthConfig        `mapstructure:"auth"`
+	Identity    IdentityConfig    `mapstructure:"identity"`
 	CORS        CORSConfig        `mapstructure:"cors"`
 	AI          AIConfig          `mapstructure:"ai"`
 	Integration IntegrationConfig `mapstructure:"integration"`

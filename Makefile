@@ -43,8 +43,8 @@ build: ## 构建二进制
 	mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(APP_NAME) ./cmd/api
 
-run: ## 本地运行 API（默认配置 configs/config.yaml）
-	go run ./cmd/api -config $(CONFIG)
+run: ## 本地运行 API（默认配置 configs/config.yaml，注入版本信息）
+	go run -ldflags "$(LDFLAGS)" ./cmd/api -config $(CONFIG)
 
 migrate migrate-up: ## 执行数据库迁移（自研 runner，见 ops/migration-contract.md）
 	go run ./cmd/migrate -config $(CONFIG)

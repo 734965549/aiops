@@ -214,7 +214,8 @@ func main() {
 	assetResRepo := assetpg.NewResourceRepository(app.DB)
 	assetRuleRepo := assetpg.NewMatchRuleRepository(app.DB)
 	assetMatcherSvc := assetapp.NewMatcherService(assetAppRepo, assetResRepo, assetRuleRepo)
-	assetSvc := assetapp.NewAssetService(assetAppRepo, assetResRepo, assetRuleRepo, assetAuditRecorder)
+	assetRefChecker := assetpg.NewApplicationReferenceChecker(app.DB)
+	assetSvc := assetapp.NewAssetService(assetAppRepo, assetResRepo, assetRuleRepo, assetRefChecker, assetAuditRecorder)
 	assetRuleSvc := assetapp.NewMatchRuleService(assetRuleRepo, assetAppRepo, assetResRepo, assetAuditRecorder)
 
 	// ---- 装配 Alert 限界上下文（告警中心 Phase 1：接入/去重/状态流转）----
@@ -226,10 +227,7 @@ func main() {
 	var idemStore alertidem.Store
 	if app.Redis != nil {
 		// 幂等等待窗口应明显大于 HTTP 写超时，避免慢 ingest 时重放请求提前超时。
-		idemMaxWait := time.Duration(app.Cfg.Server.WriteTimeoutS)*time.Second + 60*time.Second
-		if idemMaxWait < 90*time.Second {
-			idemMaxWait = 90 * time.Second
-		}
+		idemMaxWait := max(time.Duration(app.Cfg.Server.WriteTimeoutS)*time.Second+60*time.Second, 90*time.Second)
 		idemStore = alertidem.NewRedisStore(app.Redis, alertidem.Config{
 			DefaultMaxWait: idemMaxWait,
 		})
@@ -316,13 +314,17 @@ func main() {
 	assetSyncBatchRepo := assetpg.NewSyncBatchRepository(app.DB)
 	assetDiscoveryAdapter := assetobs.NewDiscoveryAdapter(obsQuerySvc)
 	assetIntegAdapter := assetinteg.NewAccountAdapter(integAccountRepo, integCapabilityRepo)
-	assetSyncSvc := assetapp.NewSyncService(
-		assetAppRepo, assetResRepo, assetSyncBatchRepo,
-		assetDiscoveryAdapter, assetIntegAdapter, assetAuditRecorder,
-	)
-	// 注入进程级 context：后台同步 goroutine 的 runCtx 派生自它，关闭时取消可让在途同步尽快落终态。
+	// 注入进程级 context 与数据范围授权端口，使用单一强制依赖构造器完成装配。
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
+	assetSyncSvc := assetapp.NewSyncService(
+		assetAppRepo,
+		assetResRepo,
+		assetSyncBatchRepo,
+		assetDiscoveryAdapter,
+		assetIntegAdapter,
+		assetAuditRecorder,
+	)
 	assetSyncSvc.SetLifecycle(rootCtx)
 	assetHandler := assethttp.NewHandler(assetSvc, assetRuleSvc, assetSyncSvc)
 
@@ -338,9 +340,8 @@ func main() {
 	inspectionPolicySvc := inspectionapp.NewPolicyService(inspectionPolicyRepo, inspectionAuditRecorder)
 	inspectionRunSvc := inspectionapp.NewRunService(
 		inspectionPolicyRepo, inspectionRunRepo, inspectionFindingRepo, inspectionRecRepo,
-		inspectionAnalyzer, inspectionAuditRecorder,
+		inspectionAnalyzer, inspectionAuditRecorder, inspectionArtifactUOW,
 	)
-	inspectionRunSvc.SetArtifactUnitOfWork(inspectionArtifactUOW)
 	inspectionExecAdapter := inspectionexec.NewAdapter(execSvc)
 	inspectionRecSvc := inspectionapp.NewRecommendationService(inspectionRecRepo, inspectionExecAdapter, inspectionAuditRecorder)
 	inspectionHandler := inspectionhttp.NewHandler(inspectionPolicySvc, inspectionRunSvc, inspectionRecSvc)
@@ -395,14 +396,15 @@ func main() {
 	if shutdownTimeout <= 0 {
 		shutdownTimeout = 10 * time.Second
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
+	httpShutdownCtx, cancelHTTP := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancelHTTP()
+	if err := srv.Shutdown(httpShutdownCtx); err != nil {
 		logger.L().Error("server shutdown error", logger.Error(err))
 	}
-	// 3. 在同一个 shutdownCtx 预算内等待后台同步 goroutine 收尾；
-	//    若底层 SDK 调用无法响应 context，超时后记录并退出，避免进程关闭无限阻塞。
-	if !assetSyncSvc.WaitContext(shutdownCtx) {
+	// 3. 后台同步等待使用独立预算，避免 HTTP drain 吃掉 finalize 时间。
+	syncShutdownCtx, cancelSync := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancelSync()
+	if !assetSyncSvc.WaitContext(syncShutdownCtx) {
 		logger.L().Warn("asset sync shutdown wait timed out")
 	}
 	logger.L().Info("aiops-api stopped")

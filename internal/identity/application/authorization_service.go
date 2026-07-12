@@ -106,6 +106,41 @@ func (s *AuthorizationService) Authorize(ctx context.Context, in AuthorizationIn
 	return res, nil
 }
 
+// ResolveAccessibleOwnerTeams 解析用户数据范围允许的 owner_team 集合，用于资产同步批次列表按账号归属团队过滤。
+// hasAll=true 表示用户无数据范围或具备 all 范围，调用方应跳过过滤。
+// hasAll=false 且 teams 为空表示用户仅有非 team/all 范围（如 region），调用方应按业务决定是否返回空集。
+func (s *AuthorizationService) ResolveAccessibleOwnerTeams(ctx context.Context, userID string) (teams []string, hasAll bool, err error) {
+	if s == nil || s.ac == nil {
+		return nil, false, apperr.New(apperr.CodeUnavailable, "authorization service is not configured")
+	}
+	if strings.TrimSpace(userID) == "" {
+		return nil, false, apperr.New(apperr.CodeUnauthenticated, "missing user identity")
+	}
+	grant, err := s.ac.LoadUserGrantContext(ctx, userID)
+	if err != nil {
+		return nil, false, apperr.Wrap(err, apperr.CodeInternal, "load user grant context failed")
+	}
+	if grant == nil || len(grant.Roles) == 0 {
+		return nil, false, apperr.New(apperr.CodePermissionDenied, "no roles bound")
+	}
+	dataScopes := dedupeDataScopes(grant.DataScopes)
+	// 无数据范围 → 与 enforceDataScope(len==0 → 跳过) 语义一致，不过滤。
+	if len(dataScopes) == 0 {
+		return nil, true, nil
+	}
+	for _, sc := range dataScopes {
+		if sc.ScopeType == domain.DataScopeAll {
+			return nil, true, nil
+		}
+	}
+	for _, sc := range dataScopes {
+		if sc.ScopeType == domain.DataScopeTeam {
+			teams = append(teams, scopeConfigStrings(sc.ScopeConfig, "team_ids", "teams")...)
+		}
+	}
+	return teams, false, nil
+}
+
 func hasObjectContext(in AuthorizationInput) bool {
 	if strings.TrimSpace(in.ObjectOwner) != "" ||
 		strings.TrimSpace(in.ObjectDept) != "" ||

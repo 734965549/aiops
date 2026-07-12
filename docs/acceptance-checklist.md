@@ -11,7 +11,7 @@
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
 | 0.1 | 依赖启动 | `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d` | Postgres 健康 |
-| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0001–0032，无报错；当前仓库未包含 `0021` Notification 迁移 |
+| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0001–0042，无报错；当前仓库未包含 `0021` Notification 迁移 |
 | 0.3 | API 启动 | `go run ./cmd/api` 或 compose 内 api 服务 | 登录接口可用 |
 | 0.4 | 前端（UI 验收） | `cd web && npm run dev` | 可登录并访问各页面 |
 | 0.5 | 自动化冒烟 | 见 [§7 推荐验收顺序](#7-推荐验收顺序自动化) | 全部输出 `PASS` |
@@ -92,7 +92,7 @@
 | 2.4.6 | P0 不受影响 | 同步失败或禁用账号 | 告警 ingest / 匹配 / 执行闭环仍可跑 |
 | 2.4.7 | CES 资源分组口径 | `huawei_cloud` + `auth_type=ak_sk` + CES 只读权限 | 平台 `cloud_sync` active 资源数与**指定 CES 资源分组**（默认候选名“全部资源”，需预先创建）数量一致，或批次摘要能解释差异 |
 | 2.4.8 | CES 类型覆盖 | CES 中存在 EVS/VPC/OBS/DCS/DMS 等非 ECS 资源 | 对应资源进入 `asset_resource`，`cloud_resource_type` 与 namespace 映射正确 |
-| 2.4.9 | hybrid 增强 | `sync_mode=hybrid` 且授予部分云服务只读权限 | CES 基础资源数不下降；当前已落地 ECS/RDS/EVS/VPC/DCS/DMS 详情补充（OBS 待办）；增强失败仅记录摘要 |
+| 2.4.9 | hybrid 增强 | `sync_mode=hybrid` 且授予部分云服务只读权限 | CES 基础资源数不下降；当前已落地 ECS/RDS/VPC/DCS/DMS 详情补充（EVS/OBS 待办）；任一增强失败时批次应为 `partial`，且摘要必须暴露 `enrichment_failed_count` / `enrichment_failed_types` |
 | 2.4.10 | native 兼容 | `sync_mode=native` | 沿用旧 ECS/CCE/RDS/ELB 同步路径，但页面和批次摘要不承诺与 CES 总览数量一致 |
 | 2.4.11 | 多区域 project_id | `extra_config.region_projects` 配置多 region 映射 | 每个 region 使用对应 project_id 调 CES；未命中回落账号 `project_id` |
 | 2.4.12 | 真实账号对账（可选，不进 CI） | 手工执行 `scripts/e2e-asset-sync-real.ps1` | 打印 region 摘要与 type 分组计数，人工比对 CES 控制台总数 |
@@ -270,6 +270,7 @@ go run ./cmd/migrate
 
 # 3.2 真实 CES 账号对账（可选，不进 CI；需真实 AK/SK 与 CES 只读权限）
 #     用于核对平台同步数量与 CES 控制台"全部资源"总数，验证 hybrid 增强是否命中。
+#     hybrid 只要任一增强失败，批次状态就必须为 partial，且 summary 需要带 enrichment_failed_count。
 #     推荐通过环境变量提供凭据，或运行脚本后按提示交互输入 SecretKey，避免密钥进入命令行历史。
 #     $env:HUAWEI_ACCESS_KEY="AKXXX"; $env:HUAWEI_SECRET_KEY="SKXXX"
 #     $env:HUAWEI_PROJECT_ID="0xxx"; $env:HUAWEI_REGIONS="cn-south-1"

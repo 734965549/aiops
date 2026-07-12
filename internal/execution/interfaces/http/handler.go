@@ -11,9 +11,9 @@ import (
 
 // Handler Execution HTTP 层。
 type Handler struct {
-	tasks  *execapp.TaskService
-	media  *execapp.MediumService
-	specs  *execapp.CommandSpecService
+	tasks    *execapp.TaskService
+	media    *execapp.MediumService
+	specs    *execapp.CommandSpecService
 	dispatch *execapp.DispatchService
 }
 
