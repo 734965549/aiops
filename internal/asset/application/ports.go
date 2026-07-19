@@ -34,12 +34,20 @@ type IntegrationAccountPort interface {
 	ResolveSyncAccount(ctx context.Context, accountID string) (*SyncAccountSnapshot, error)
 }
 
+// ApplicationDeleteExecutor 在单数据库事务内锁定应用、重新校验引用、
+// 解除 closed 告警关联并删除应用，避免分步提交导致部分结果或并发绕过前置计数。
+type ApplicationDeleteExecutor interface {
+	DeleteApplicationAtomic(ctx context.Context, applicationID string) error
+}
+
 // ApplicationReferenceChecker 跨上下文应用引用检查器。
-// DeleteApplication 使用它防止 alert_alert / inspection_policy 产生孤儿引用，
-// 确保 v_asset_app_ref_integrity 视图返回 0 行（release-checklist §2.6）。
+// DeleteApplication 在无 ApplicationDeleteExecutor 时回退使用（单测/兼容）；
+// 生产路径应注入 ApplicationDeleteExecutor 以保证事务与并发完整性。
 type ApplicationReferenceChecker interface {
 	// CountAlertsByApplicationID 统计引用了指定 application_id 的未关闭告警数量。
 	CountAlertsByApplicationID(ctx context.Context, applicationID string) (int64, error)
 	// CountInspectionPoliciesByApplicationID 统计 scope.application_ids 包含指定 application_id 的巡检策略数量。
 	CountInspectionPoliciesByApplicationID(ctx context.Context, applicationID string) (int64, error)
+	// DetachClosedAlertReferences 删除应用前解除已关闭告警的应用关联，避免产生孤儿引用。
+	DetachClosedAlertReferences(ctx context.Context, applicationID string) error
 }

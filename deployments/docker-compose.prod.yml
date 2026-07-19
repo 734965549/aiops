@@ -30,7 +30,7 @@
 #                                      不能与 JWT_SECRET 相同）
 #   [建议] AIOPS_CORS__ALLOW_ORIGINS   - 前端域名（分域部署时必填，
 #                                      同源反代可留空）
-#   [可选] AIOPS_VERSION              - 镜像版本标签（默认 latest）
+#   [必填] AIOPS_IMAGE               - 完整镜像引用（registry/repo@sha256:... 或不可变 tag，禁止 latest）
 #   [可选] AIOPS_REDIS__PASSWORD      - Redis 密码（生产建议设置）
 #
 # ----------------------------------------------------------------------------
@@ -45,12 +45,14 @@
 #       -f deployments/docker-compose.prod.yml up -d postgres redis
 #
 #   步骤 2：执行数据库迁移（使用临时容器或本地 migrate 命令）
-#     # 方式 A：使用镜像内置 migrate 子命令（推荐）
+#     # 方式 A：使用镜像内置 aiops-migrate 二进制（推荐）
 #     docker compose --env-file deployments/.env.production \
-#       -f deployments/docker-compose.prod.yml run --rm api \
-#       /app/aiops-api -migrate
+#       -f deployments/docker-compose.prod.yml run --rm --entrypoint /app/aiops-migrate api
 #
-#     # 方式 B：本地构建后执行
+#     # 方式 B：使用 aiops-api -migrate（等价，需覆盖 entrypoint）
+#     # docker compose ... run --rm --entrypoint /app/aiops-api api -migrate
+#
+#     # 方式 C：本地构建后执行
 #     # go run ./cmd/migrate -config <prod-config>
 #
 #   步骤 3：启动 API
@@ -139,8 +141,8 @@ x-aiops-env: &aiops-env
   AIOPS_CORS__ALLOW_ORIGINS: ${AIOPS_CORS__ALLOW_ORIGINS:-}
   AIOPS_CORS__ALLOW_CREDENTIALS: "true"
 
-  # 执行代理注册令牌：生产建议设置强随机值。
-  AIOPS_EXECUTION__AGENT_REGISTER_TOKEN: ${AIOPS_EXECUTION__AGENT_REGISTER_TOKEN:-}
+  # 执行代理注册令牌：生产必填，须达到与 JWT 相近的熵要求（见 Config.Validate）。
+  AIOPS_EXECUTION__AGENT_REGISTER_TOKEN: ${AIOPS_EXECUTION__AGENT_REGISTER_TOKEN:?AIOPS_EXECUTION__AGENT_REGISTER_TOKEN is required}
   AIOPS_EXECUTION__LEASE_TTL_SECONDS: "300"
 
 x-logging: &default-logging
@@ -185,10 +187,13 @@ services:
     container_name: aiops-redis-prod
     restart: always
     # 生产建议设置 Redis 密码（通过 command 传入）。
+    # 注意：command 内必须用 $$REDIS_PASSWORD 转义，避免 Docker Compose 在渲染阶段
+    # 把 $REDIS_PASSWORD 当作宿主变量替换为空。$$ 会被 Compose 还原为字面 $，
+    # 交由容器内 sh 从 REDIS_PASSWORD 环境变量解析。
     command: >
       sh -c '
-        if [ -n "$REDIS_PASSWORD" ]; then
-          redis-server --requirepass "$REDIS_PASSWORD" --appendonly yes;
+        if [ -n "$$REDIS_PASSWORD" ]; then
+          redis-server --requirepass "$$REDIS_PASSWORD" --appendonly yes;
         else
           redis-server --appendonly yes;
         fi
@@ -200,7 +205,11 @@ services:
     volumes:
       - aiops-redis-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      # 健康检查必须与 Redis 认证模式一致：有密码时用 -a 带认证，否则退回无认证 ping。
+      # $$REDIS_PASSWORD 同样是为了避免 Compose 渲染期变量替换。
+      test:
+        - CMD-SHELL
+        - 'if [ -n "$$REDIS_PASSWORD" ]; then redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG; else redis-cli ping | grep -q PONG; fi'
       interval: 10s
       timeout: 3s
       retries: 5
@@ -217,16 +226,12 @@ services:
       - aiops-net
 
   api:
-    image: aiops-api:${AIOPS_VERSION:-latest}
+    # 生产必须使用完整镜像引用：优先 digest（registry/repo@sha256:...），其次不可变 tag（registry/repo:v1.2.0）。
+    # 禁止 latest，避免拉到漂移/不可追溯的镜像。AIOPS_IMAGE 未设置时直接报错；上线前必须先运行 scripts/verify-prod-version.ps1。
+    # 生产仅拉取预构建镜像，不在 compose 中保留 build 段，避免 up 时隐式本地构建导致版本漂移。
+    image: ${AIOPS_IMAGE:?AIOPS_IMAGE is required; use registry/repo@sha256:... or an immutable tag, never latest}
     container_name: aiops-api-prod
     restart: always
-    build:
-      context: ..
-      dockerfile: deployments/Dockerfile
-      args:
-        VERSION: ${AIOPS_VERSION:-latest}
-        COMMIT: ${AIOPS_COMMIT:-none}
-        BUILD_AT: ${AIOPS_BUILD_AT:-unknown}
     depends_on:
       postgres:
         condition: service_healthy

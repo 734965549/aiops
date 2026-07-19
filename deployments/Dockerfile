@@ -1,6 +1,6 @@
 # 多阶段构建：第一阶段编译 Go 二进制，第二阶段运行轻量镜像。
 
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26-alpine AS builder
 WORKDIR /workspace
 ENV GOPROXY=https://goproxy.cn,direct
 # 优先复制 go.mod / go.sum 以充分利用 layer 缓存。
@@ -20,9 +20,15 @@ RUN go build -trimpath \
       -X 'github.com/734965549/aiops/internal/version.Version=${VERSION}' \
       -X 'github.com/734965549/aiops/internal/version.Commit=${COMMIT}' \
       -X 'github.com/734965549/aiops/internal/version.BuildAt=${BUILD_AT}'" \
-    -o /out/aiops-api ./cmd/api
+    -o /out/aiops-api ./cmd/api && \
+    go build -trimpath \
+    -ldflags "-s -w \
+      -X 'github.com/734965549/aiops/internal/version.Version=${VERSION}' \
+      -X 'github.com/734965549/aiops/internal/version.Commit=${COMMIT}' \
+      -X 'github.com/734965549/aiops/internal/version.BuildAt=${BUILD_AT}'" \
+    -o /out/aiops-migrate ./cmd/migrate
 
-FROM alpine:3.20
+FROM alpine:3.21
 # wget 用于 HEALTHCHECK；tini 用于正确转发 SIGTERM 给 Go 进程触发优雅退出。
 RUN sed -i 's#https\?://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#g' /etc/apk/repositories && \
     apk --no-cache add ca-certificates tzdata wget tini && \
@@ -32,6 +38,7 @@ RUN sed -i 's#https\?://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#g' /et
 
 WORKDIR /app
 COPY --from=builder /out/aiops-api /app/aiops-api
+COPY --from=builder /out/aiops-migrate /app/aiops-migrate
 COPY migrations /app/migrations
 
 USER aiops

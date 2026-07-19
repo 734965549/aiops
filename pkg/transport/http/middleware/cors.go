@@ -18,7 +18,8 @@ func CORS(cfg config.CORSConfig) gin.HandlerFunc {
 	if cfg.AllowCredentials {
 		origins = filterWildcardOrigins(origins)
 		if len(origins) == 0 {
-			origins = []string{config.DefaultDevCORSOrigin()}
+			// 同源反代部署无需 CORS 头；gin-contrib/cors 在 credentials=true 且 origins 为空时会 panic。
+			return func(c *gin.Context) { c.Next() }
 		}
 	} else if len(origins) == 0 {
 		origins = []string{"*"}

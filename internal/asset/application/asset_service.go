@@ -18,20 +18,24 @@ type Actor struct {
 
 // AssetService 管理应用与资源注册表。
 type AssetService struct {
-	apps       domain.ApplicationRepository
-	resources  domain.ResourceRepository
-	rules      domain.MatchRuleRepository
-	refChecker ApplicationReferenceChecker
-	audit      AuditRecorder
+	apps            domain.ApplicationRepository
+	resources       domain.ResourceRepository
+	rules           domain.MatchRuleRepository
+	refChecker      ApplicationReferenceChecker
+	deleteExecutor  ApplicationDeleteExecutor
+	audit           AuditRecorder
 }
 
 // NewAssetService 构造资产管理服务。
-// refChecker 用于 DeleteApplication 跨上下文引用检查，可为 nil（向后兼容）。
-func NewAssetService(apps domain.ApplicationRepository, resources domain.ResourceRepository, rules domain.MatchRuleRepository, refChecker ApplicationReferenceChecker, audit AuditRecorder) *AssetService {
+// deleteExecutor 用于 DeleteApplication 单事务删除；refChecker 在无 executor 时回退使用。
+func NewAssetService(apps domain.ApplicationRepository, resources domain.ResourceRepository, rules domain.MatchRuleRepository, refChecker ApplicationReferenceChecker, deleteExecutor ApplicationDeleteExecutor, audit AuditRecorder) *AssetService {
 	if audit == nil {
 		audit = NoopAuditRecorder{}
 	}
-	return &AssetService{apps: apps, resources: resources, rules: rules, refChecker: refChecker, audit: audit}
+	return &AssetService{
+		apps: apps, resources: resources, rules: rules,
+		refChecker: refChecker, deleteExecutor: deleteExecutor, audit: audit,
+	}
 }
 
 type CreateApplicationInput struct {
@@ -208,6 +212,17 @@ func (s *AssetService) DeleteApplication(ctx context.Context, id string, actor A
 	if id == "" {
 		return apperr.New(apperr.CodeInvalidArgument, "id is required")
 	}
+	if s.deleteExecutor != nil {
+		if err := s.deleteExecutor.DeleteApplicationAtomic(ctx, id); err != nil {
+			return wrapAssetError(err, "delete application failed")
+		}
+		s.recordAudit(ctx, "application", id, actor.UserID, AuditDeleteApplication, map[string]any{"result": "success"})
+		return nil
+	}
+	return s.deleteApplicationLegacy(ctx, id, actor)
+}
+
+func (s *AssetService) deleteApplicationLegacy(ctx context.Context, id string, actor Actor) error {
 	if _, err := s.apps.GetByID(ctx, id); err != nil {
 		return wrapAssetError(err, "load application failed")
 	}
@@ -241,6 +256,9 @@ func (s *AssetService) DeleteApplication(ctx context.Context, id string, actor A
 		}
 		if policyCount > 0 {
 			return apperr.Newf(apperr.CodeFailedPrecondition, "application has %d inspection policy reference(s), update those policies first", policyCount)
+		}
+		if err := s.refChecker.DetachClosedAlertReferences(ctx, id); err != nil {
+			return wrapAssetError(err, "detach closed alert references failed")
 		}
 	}
 	if err := s.apps.Delete(ctx, id); err != nil {
@@ -409,6 +427,8 @@ func wrapAssetError(err error, op string) error {
 		apperr.Sentinel{Err: domain.ErrAlreadyExists, Code: apperr.CodeAlreadyExists},
 		apperr.Sentinel{Err: domain.ErrHasResources, Code: apperr.CodeFailedPrecondition},
 		apperr.Sentinel{Err: domain.ErrHasMatchRules, Code: apperr.CodeFailedPrecondition},
+		apperr.Sentinel{Err: domain.ErrHasAlertReferences, Code: apperr.CodeFailedPrecondition},
+		apperr.Sentinel{Err: domain.ErrHasInspectionPolicyReferences, Code: apperr.CodeFailedPrecondition},
 	)
 	if apperr.FromError(mapped).Code != apperr.CodeInternal {
 		return mapped

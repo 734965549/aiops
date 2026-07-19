@@ -14,7 +14,7 @@ LDFLAGS        := -s -w \
 
 CONFIG         ?= configs/config.yaml
 
-.PHONY: help tidy fmt fmt-check vet lint web-lint test build run migrate docker clean
+.PHONY: help tidy fmt fmt-check vet lint web-lint test build run migrate docker docker-prod clean
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -52,6 +52,22 @@ migrate migrate-up: ## 执行数据库迁移（自研 runner，见 ops/migration
 docker: ## 构建 docker 镜像（标签 aiops-api:$(VERSION)，与 compose 中 AIOPS_VERSION 对齐）
 	docker build -f deployments/Dockerfile -t $(APP_NAME):$(VERSION) \
 		--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg BUILD_AT=$(BUILD_AT) .
+
+docker-prod: ## 生产构建 docker 镜像：拒绝 latest/dev/空/dirty/unknown/none 等不可追溯标签
+	@if [ "$(VERSION)" = "latest" ] || [ "$(VERSION)" = "dev" ] || [ -z "$(VERSION)" ]; then \
+		echo "ERROR: VERSION='$(VERSION)' 不允许用于生产构建；请使用不可变版本号（如 v1.2.0）或 digest（repo@sha256:...）。"; \
+		exit 1; \
+	fi
+	@case "$(VERSION)" in *-dirty) \
+		echo "ERROR: VERSION='$(VERSION)' 含 -dirty，工作区未提交变更；请先 commit/tag 后再构建。"; \
+		exit 1;; esac
+	@if [ "$(VERSION)" = "unknown" ] || [ "$(COMMIT)" = "none" ] || [ "$(BUILD_AT)" = "unknown" ]; then \
+		echo "ERROR: 构建元数据不完整（VERSION/COMMIT/BUILD_AT）；请通过 CI 或显式传入 VERSION/COMMIT/BUILD_AT。"; \
+		exit 1; \
+	fi
+	docker build -f deployments/Dockerfile -t $(APP_NAME):$(VERSION) \
+		--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg BUILD_AT=$(BUILD_AT) .
+	@echo "提示: push 后以 digest 填入 AIOPS_IMAGE，并运行 scripts/verify-prod-version.ps1 校验。"
 
 clean: ## 清理构建产物
 	rm -rf $(BUILD_DIR)

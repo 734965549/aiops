@@ -1,59 +1,13 @@
-<#
-.SYNOPSIS
-    在 0032 破坏性迁移应用后，对数据库完整性进行验证的 PowerShell 脚本。
-
-.DESCRIPTION
-    本脚本用于在应用 0032（及相关后续）迁移之后，验证数据完整性是否满足预期。
-    所有检查项通过 psql 命令行执行 SQL，结果以 PASS/FAIL 形式输出。
-
-    检查项：
-      a. schema_migrations 最新版本是否为 0043。
-      b. SELECT count(*) FROM v_asset_app_ref_integrity 应返回 0
-         （该视图汇总资产应用引用完整性异常，0 表示无异常）。
-      c. 检查 asset_application 中是否还存在旧格式 cloud-<account_id>
-         （以 cloud- 开头但不包含第二个 '-' 的 ID，说明未被 0032 改写）。
-      d. 检查 alert_alert 中是否有 application_id 不为空但不存在于
-         asset_application 的记录（悬空引用）。
-      e. 检查 inspection_policy.scope->'application_ids' 中是否有不存在于
-         asset_application 的元素（JSON 数组悬空引用）。
-
-    全部通过输出 "ALL CHECKS PASSED" 并返回 0；
-    任意失败输出 "MIGRATION VERIFICATION FAILED" 并返回 1。
-
-.PARAMETER Host
-    PostgreSQL 主机地址，默认 127.0.0.1。
-
-.PARAMETER Port
-    PostgreSQL 端口，默认 5432。
-
-.PARAMETER DbName
-    目标数据库名，默认 aiops。
-
-.PARAMETER User
-    数据库用户名，默认 aiops。
-
-.PARAMETER Password
-    数据库密码，默认 aiops。
-
-.EXAMPLE
-    .\scripts\verify-post-migration.ps1
-    使用默认参数执行验证。
-
-.EXAMPLE
-    .\scripts\verify-post-migration.ps1 -Host 127.0.0.1 -Port 5432 -DbName aiops -User aiops -Password aiops
-    指定连接参数执行验证。
-
-.NOTES
-    依赖：psql（PostgreSQL 客户端工具）。
-    兼容：Windows PowerShell 5.1。
-#>
+﻿# 迁移后完整性验证（PowerShell 5.1+，依赖 psql）。默认期望最新迁移 0045。
+# 用法示例：./scripts/verify-post-migration.ps1 -ExpectedMigrationVersion 0045
 
 param(
-    [string]$Host = "127.0.0.1",
-    [int]$Port = 5432,
-    [string]$DbName = "aiops",
-    [string]$User = "aiops",
-    [string]$Password = "aiops"
+    [string]$PgHost = "127.0.0.1",
+    [int]$PgPort = 5432,
+    [string]$PgDbName = "aiops",
+    [string]$PgUser = "aiops",
+    [string]$PgPassword = "aiops",
+    [string]$ExpectedMigrationVersion = "0045"
 )
 
 $ErrorActionPreference = "Stop"
@@ -86,19 +40,19 @@ function Test-Command {
 # 调用 psql 执行单条 SQL，返回标量结果（tuples only, 无对齐，无字段头）。
 function Invoke-SqlScalar {
     param([string]$Sql)
-    $env:PGPASSWORD = $Password
-    $args = @(
-        "--host", $Host,
-        "--port", $Port,
-        "--username", $User,
-        "--dbname", $DbName,
+    $env:PGPASSWORD = $PgPassword
+    $psqlArgs = @(
+        "--host", $PgHost,
+        "--port", $PgPort,
+        "--username", $PgUser,
+        "--dbname", $PgDbName,
         "--no-align",
         "--tuples-only",
         "--no-psqlrc",
         "--quiet",
         "--command", $Sql
     )
-    $result = & psql @args
+    $result = & psql @psqlArgs
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         $env:PGPASSWORD = $null
@@ -127,10 +81,10 @@ Write-Host ("    psql available: " + $psqlVersion)
 $failureCount = 0
 
 # -----------------------------------------------------------------------------
-# 检查 a: schema_migrations 最新版本是否为 0043
+# 检查 a: schema_migrations 最新版本
 # -----------------------------------------------------------------------------
 
-Write-Step "check (a): schema_migrations latest version == 0043"
+Write-Step ("check (a): schema_migrations latest version == " + $ExpectedMigrationVersion)
 
 $sqlA = "SELECT version FROM schema_migrations ORDER BY applied_at DESC LIMIT 1;"
 try {
@@ -142,10 +96,10 @@ try {
 }
 
 if ($null -ne $latestVersion) {
-    if ($latestVersion -eq "0043") {
-        Write-Pass ("latest migration version is 0043 (got: " + $latestVersion + ")")
+    if ($latestVersion -eq $ExpectedMigrationVersion) {
+        Write-Pass ("latest migration version is " + $ExpectedMigrationVersion + " (got: " + $latestVersion + ")")
     } else {
-        Write-Fail ("expected 0043 but got: " + $latestVersion)
+        Write-Fail ("expected " + $ExpectedMigrationVersion + " but got: " + $latestVersion)
         $failureCount++
     }
 }

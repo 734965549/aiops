@@ -78,6 +78,13 @@ export default defineConfig(({ mode }) => {
             ) {
               return 'vue-vendor'
             }
+            if (
+              id.includes('@arco-design') ||
+              id.includes('arco-design') ||
+              id.includes('b-validate')
+            ) {
+              return 'arco-vendor'
+            }
             if (id.includes('axios')) {
               return 'axios'
             }

@@ -68,6 +68,7 @@ func TestConfigValidateRequiresRedisInProd(t *testing.T) {
 		Auth:        AuthConfig{JWTSecret: "this-is-a-strong-enough-secret-for-prod-test-32b"},
 		Integration: IntegrationConfig{CredentialEncryptionKey: strongCredentialEncryptionKey, CredentialEncryptionKeyVersion: 1},
 		CORS:        CORSConfig{AllowOrigins: []string{"https://app.example.com"}},
+		Execution:   ExecutionConfig{AgentRegisterToken: strongJWTSecret},
 	}
 	if err := c.Validate(); err == nil {
 		t.Fatalf("expected validate error when redis.required is false in prod")
@@ -125,5 +126,72 @@ func TestConfigValidateRejectsInvalidLoginIPAllowlist(t *testing.T) {
 	}
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected invalid login ip allowlist error")
+	}
+}
+
+func TestLoadReadsCORSOriginsFromEnv(t *testing.T) {
+	t.Setenv("AIOPS_APP__ENV", "prod")
+	t.Setenv("AIOPS_CORS__ALLOW_ORIGINS", "https://app.example.com,https://admin.example.com")
+	t.Setenv("AIOPS_CORS__ALLOW_CREDENTIALS", "true")
+	t.Setenv("AIOPS_AUTH__JWT_SECRET", "this-is-a-strong-enough-secret-for-prod-test-32b")
+	t.Setenv("AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY", strongCredentialEncryptionKey)
+	t.Setenv("AIOPS_EXECUTION__AGENT_REGISTER_TOKEN", strongJWTSecret)
+	t.Setenv("AIOPS_REDIS__REQUIRED", "true")
+
+	c, err := Load("")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(c.CORS.AllowOrigins) != 2 {
+		t.Fatalf("unexpected cors origins: %+v", c.CORS.AllowOrigins)
+	}
+	if c.CORS.AllowOrigins[0] != "https://app.example.com" || c.CORS.AllowOrigins[1] != "https://admin.example.com" {
+		t.Fatalf("unexpected cors origin values: %+v", c.CORS.AllowOrigins)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("expected prod validate success with env cors, got %v", err)
+	}
+}
+
+func TestLoadReadsExecutionRegisterTokenFromEnv(t *testing.T) {
+	t.Setenv("AIOPS_EXECUTION__AGENT_REGISTER_TOKEN", strongJWTSecret)
+
+	c, err := Load("")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if c.Execution.AgentRegisterToken != strongJWTSecret {
+		t.Fatalf("unexpected register token: %q", c.Execution.AgentRegisterToken)
+	}
+}
+
+func TestConfigValidateRequiresAgentRegisterTokenInProd(t *testing.T) {
+	c := prodConfigFixture()
+	c.Execution.AgentRegisterToken = ""
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected prod validate error for missing agent register token")
+	}
+
+	c.Execution.AgentRegisterToken = "dev-agent-register-token"
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected prod validate error for weak agent register token")
+	}
+
+	c.Execution.AgentRegisterToken = strongJWTSecret
+	if err := c.Validate(); err != nil {
+		t.Fatalf("expected prod validate success, got %v", err)
+	}
+}
+
+func prodConfigFixture() *Config {
+	return &Config{
+		App:         AppConfig{Env: "prod"},
+		Server:      ServerConfig{Port: 8080},
+		Database:    DatabaseConfig{Host: "127.0.0.1", Name: "aiops"},
+		Redis:       RedisConfig{Required: true},
+		Auth:        AuthConfig{JWTSecret: "this-is-a-strong-enough-secret-for-prod-test-32b"},
+		Integration: IntegrationConfig{CredentialEncryptionKey: strongCredentialEncryptionKey, CredentialEncryptionKeyVersion: 1},
+		CORS:        CORSConfig{AllowOrigins: []string{"https://app.example.com"}, AllowCredentials: true},
+		Execution:   ExecutionConfig{AgentRegisterToken: strongJWTSecret},
 	}
 }

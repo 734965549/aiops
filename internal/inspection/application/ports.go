@@ -8,6 +8,11 @@ import (
 	obsdomain "github.com/734965549/aiops/internal/observability/domain"
 )
 
+// ApplicationCatalogPort 校验巡检策略 scope.application_ids 是否存在于资产注册表。
+type ApplicationCatalogPort interface {
+	ExistsByID(ctx context.Context, applicationID string) (bool, error)
+}
+
 // ObservabilityQueryPort 巡检证据采集所需的 Observability 查询端口。
 type ObservabilityQueryPort interface {
 	QueryMetrics(ctx context.Context, actor obsapp.Actor, q obsdomain.MetricQuery) (*obsapp.MetricQueryResult, error)

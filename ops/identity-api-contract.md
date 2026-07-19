@@ -37,7 +37,7 @@ Authorization: Bearer <access_token>
 
 授权失败返回 `PERMISSION_DENIED`（HTTP 403）。未登录或 token 无效返回 `UNAUTHENTICATED`（HTTP 401）。
 
-系统管理员角色 `admin` 的默认权限由迁移 `migrations/0002_seed_admin_permissions.up.sql`、`0004_user_provisioning_permissions.up.sql` 和 `0006_auth_audit.up.sql` 种子；默认管理员用户由 `migrations/0016_seed_default_admin_user.up.sql` 直接种子为 `admin/admin123` 并绑定 `admin` 角色。启动期 `EnsureBootstrapUser` 仍保留作 dev/test 兼容链路。
+系统管理员角色 `admin` 的默认权限由迁移 `migrations/0002_seed_admin_permissions.up.sql`、`0004_user_provisioning_permissions.up.sql` 和 `0006_auth_audit.up.sql` 种子；默认管理员用户由 `migrations/0016_seed_default_admin_user.up.sql` 直接种子为 `admin/admin123` 并绑定 `admin` 角色。`0044_lock_default_admin_account` 会把该默认账号锁定（status=locked、清空 password_hash），生产 bootstrap 关闭时不可登录；dev/test 在 bootstrap 启用时由 `EnsureBootstrapUser` 重新激活为配置密码。生产环境 API 对外开放前须由受控 DBA/发布步骤创建安全管理员，不得依赖默认账号。
 
 ## 3. 统一响应格式
 

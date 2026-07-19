@@ -54,6 +54,7 @@ import (
 	identityhttp "github.com/734965549/aiops/internal/identity/interfaces/http"
 	inspectionapp "github.com/734965549/aiops/internal/inspection/application"
 	inspectionaudit "github.com/734965549/aiops/internal/inspection/infrastructure/audit"
+	inspectionasset "github.com/734965549/aiops/internal/inspection/infrastructure/asset"
 	inspectionexec "github.com/734965549/aiops/internal/inspection/infrastructure/execution"
 	inspectionobs "github.com/734965549/aiops/internal/inspection/infrastructure/observability"
 	inspectionpg "github.com/734965549/aiops/internal/inspection/infrastructure/persistence"
@@ -86,7 +87,30 @@ import (
 
 func main() {
 	configPath := flag.String("config", "", "path to config file (default: ./configs/config.yaml)")
+	migrate := flag.Bool("migrate", false, "run database migrations and exit")
 	flag.Parse()
+
+	// -migrate 模式：仅执行数据库迁移后退出，供生产部署流水线在 API 启动前显式调用。
+	// docker-compose.prod.yml 推荐方式 A 即使用此模式。
+	if *migrate {
+		// 先加载配置以获取迁移超时时间，避免创建无超时 context。
+		cfg, cfgErr := config.Load(*configPath)
+		if cfgErr != nil {
+			logger.ReportError("migrate failed", cfgErr)
+			os.Exit(1)
+		}
+		timeout := time.Duration(cfg.Database.MigrateTimeoutS) * time.Second
+		if timeout <= 0 {
+			timeout = 5 * time.Minute
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if err := bootstrap.Migrate(ctx, *configPath); err != nil {
+			logger.ReportError("migrate failed", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	bootTimeout := 30 * time.Second
 	if cfg, err := config.Load(*configPath); err == nil && cfg.App.BootstrapTimeoutS > 0 {
@@ -215,7 +239,8 @@ func main() {
 	assetRuleRepo := assetpg.NewMatchRuleRepository(app.DB)
 	assetMatcherSvc := assetapp.NewMatcherService(assetAppRepo, assetResRepo, assetRuleRepo)
 	assetRefChecker := assetpg.NewApplicationReferenceChecker(app.DB)
-	assetSvc := assetapp.NewAssetService(assetAppRepo, assetResRepo, assetRuleRepo, assetRefChecker, assetAuditRecorder)
+	assetDeleteExecutor := assetpg.NewApplicationDeleteExecutor(app.DB)
+	assetSvc := assetapp.NewAssetService(assetAppRepo, assetResRepo, assetRuleRepo, assetRefChecker, assetDeleteExecutor, assetAuditRecorder)
 	assetRuleSvc := assetapp.NewMatchRuleService(assetRuleRepo, assetAppRepo, assetResRepo, assetAuditRecorder)
 
 	// ---- 装配 Alert 限界上下文（告警中心 Phase 1：接入/去重/状态流转）----
@@ -337,7 +362,8 @@ func main() {
 	inspectionAuditRecorder := inspectionaudit.NewRecorder(auditSvc)
 	inspectionObsAdapter := inspectionobs.NewQueryAdapter(obsQuerySvc)
 	inspectionAnalyzer := inspectionapp.NewEvidenceAnalyzer(inspectionObsAdapter)
-	inspectionPolicySvc := inspectionapp.NewPolicyService(inspectionPolicyRepo, inspectionAuditRecorder)
+	inspectionAppCatalog := inspectionasset.NewApplicationCatalogAdapter(assetAppRepo)
+	inspectionPolicySvc := inspectionapp.NewPolicyService(inspectionPolicyRepo, inspectionAppCatalog, inspectionAuditRecorder)
 	inspectionRunSvc := inspectionapp.NewRunService(
 		inspectionPolicyRepo, inspectionRunRepo, inspectionFindingRepo, inspectionRecRepo,
 		inspectionAnalyzer, inspectionAuditRecorder, inspectionArtifactUOW,

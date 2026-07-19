@@ -58,13 +58,15 @@
 0041_legacy_app_id_convergence_guard.up.sql         -> Asset：legacy 应用收敛硬阻断守卫，若 asset_application 中仍存在 cloud-<account_id> 格式 legacy 应用则迁移失败终止；使用 CHECK(n=0) 约束实现，兼容自研 SQL splitter；不修改业务数据
 0042_backfill_orphaned_app_refs_and_guard.up.sql     -> Asset：补建 0039 改写后仍被引用但不存在的新格式 cloud application ID 对应的 asset_application 记录（字段与 ensureCloudApplication 一致），并将 v_asset_app_ref_integrity 作为硬验收（CHECK(n=0)），补建后仍有孤儿则迁移失败；幂等（ON CONFLICT DO NOTHING）；依赖 pgcrypto digest()
 0043_fix_orphaned_alert_app_refs.up.sql              -> Asset：修复 DeleteApplication 缺失跨上下文引用检查导致的孤儿告警引用（alert_alert.application_id 指向不存在的应用）；将孤儿引用置空并清理 inspection_policy.scope.application_ids 中的孤儿元素；CHECK(n=0) 硬验收确保修复后视图返回 0 行；幂等
+0044_lock_default_admin_account.up.sql               -> Identity：锁定 username=admin 且 password_hash 仍为已知 admin123 哈希的默认管理员（status=locked、清空 password_hash），按用户名匹配而非固定种子 user_id，避免 0017 重置密码后旧库非种子 user_id 仍可登录；不覆盖 DBA 已设置的强密码；账号行保留不删除以维持引用完整性；dev/test 由 EnsureBootstrapUser 重新激活，生产 bootstrap 关闭则保持锁定、不可登录，须由 DBA 创建安全管理员；幂等；down 为不可逆 no-op
+0045_inspection_policy_deleted_scope_cleanup.up.sql  -> Asset：回填清空已软删除 inspection_policy.scope.application_ids；重建 v_asset_app_ref_integrity 仅检查 deleted=false 策略；与 ApplicationReferenceChecker 及运行时 SoftDelete 契约一致；幂等
 ```
 
 | 职责 | 0001 / 0002 / 0016 迁移 | 启动期 bootstrap（`cmd/api`） |
 | --- | --- | --- |
 | 表结构 | ✅ 0001 | — |
 | admin 角色及权限集合 | ✅ 0002 | — |
-| 默认管理员用户账号 | ✅ 0016（`admin/admin123`） | ✅ `EnsureBootstrapUser`（读 `auth.bootstrap_*` 配置，兼容旧 dev 启动链路） |
+| 默认管理员用户账号 | ✅ 0016（`admin/admin123`），0044 锁定为不可登录 | ✅ `EnsureBootstrapUser`（读 `auth.bootstrap_*` 配置；若账号被 0044 锁定，bootstrap 启用时重新激活并设为配置密码） |
 | 用户与 admin 角色绑定 | ✅ 0016 | ✅ `ensureBootstrapAdminRole`（幂等写入 `iam_user_role`） |
 | admin 超集授权 | ✅ 0016（绑定所有已存在权限、数据范围、AI 工具权限） | — |
 
@@ -74,7 +76,7 @@
 - `0016` 直接 upsert 默认本地管理员 `admin/admin123` 并绑定 `admin` 角色；如果库中已存在 `admin` 用户，会将其密码重置为 `admin123` 并启用该账号。
 - `0016` 会把 `admin` 角色绑定到执行到当前版本时所有已存在的 `iam_permission`、`iam_data_scope`、`iam_ai_tool_permission`，作为 DBA 初始化后的入口超集账号。
 - `0017` 是兼容修复迁移：如果某个环境已经应用过早期 `0016`，runner 不会重跑 `0016`，因此必须通过 `0017` 再次补齐默认 admin 和权限全集。
-- 启动期 bootstrap 仍保留，用于 dev/test 或旧数据库兼容；生产环境 bootstrap 配置必须留空，且上线后必须改密或禁用默认账号。
+- 启动期 bootstrap 仍保留，用于 dev/test 或旧数据库兼容；生产环境 bootstrap 配置必须留空。`0044` 已把 0016/0017 种入的默认 `admin/admin123` 锁定（status=locked、清空 password_hash），生产环境默认不可登录；API 对外开放前必须由受控 DBA/发布步骤创建安全管理员（参见 `docs/release-checklist.md`）。dev/test 在 bootstrap 启用时由 `EnsureBootstrapUser` 重新激活该账号为配置密码。
 - 若只执行 `0001` 而未执行 `0002`，bootstrap 绑定 admin 角色时会因角色不存在而失败。
 - 若未执行 `0004`，管理员无法使用域账号导入等 Admin 接口（403）。
 - 各 `*.up.sql` 内部使用 `ON CONFLICT` 保证幂等，但**版本顺序不可打乱**（0002 依赖 0001 表结构，0003/0004 依赖 0001/0002）。
@@ -85,7 +87,13 @@
 生产 / 预发显式迁移：
 
 ```bash
-# 推荐：使用已构建的自研 runner 二进制
+# 推荐：使用镜像内置 aiops-migrate 二进制
+/app/aiops-migrate
+
+# 等价：aiops-api -migrate（需覆盖容器 entrypoint）
+/app/aiops-api -migrate
+
+# 本地 / CI：使用已构建的自研 runner 二进制
 ./migrate -config /path/to/config.yaml
 
 # 等价：源码方式执行自研 runner
@@ -286,6 +294,8 @@ Integration 上下文第一阶段迁移，建表：
 | `0041` | `0041_legacy_app_id_convergence_guard.up.sql` | Asset | legacy 应用收敛硬阻断守卫：若 `asset_application` 中仍存在 `cloud-<account_id>` 格式 legacy 应用，`CHECK(n=0)` 约束失败导致迁移终止；兼容自研 SQL splitter（纯 DML，无 `$$`）；不修改业务数据；`down.sql` 无操作 | 已落地 |
 | `0042` | `0042_backfill_orphaned_app_refs_and_guard.up.sql` | Asset | 补建 `0039` 改写后仍被引用但不存在的新格式 cloud application ID 对应的 `asset_application` 记录（字段与 `ensureCloudApplication` 一致：`name`/`environment`/`description`）；将 `v_asset_app_ref_integrity` 作为发布硬验收（`CHECK(n=0)` 约束），补建后若视图仍有孤儿行则迁移终止；幂等（`ON CONFLICT DO NOTHING`）；依赖 pgcrypto `digest()`；`down.sql` 为人工回滚参考 | 已落地 |
 | `0043` | `0043_fix_orphaned_alert_app_refs.up.sql` | Asset | 修复 `DeleteApplication` 缺失跨上下文引用检查导致的孤儿告警引用：将 `alert_alert` 中指向不存在应用的 `application_id`/`application_name` 置空，移除 `inspection_policy.scope.application_ids` 中的孤儿元素；`CHECK(n=0)` 硬验收确保修复后 `v_asset_app_ref_integrity` 返回 0 行；幂等（仅处理孤儿行）；`down.sql` 为人工回滚参考（需从备份恢复原始值） | 已落地 |
+| `0044` | `0044_lock_default_admin_account.up.sql` | Identity | 锁定 `username='admin'` 且 `password_hash` 仍为已知 admin123 哈希的默认管理员：`status='locked'`、`password_hash=''`（按用户名匹配，非仅固定种子 `user_id`，避免 0017 重置密码后旧库非种子 user_id 仍可登录）；不覆盖 DBA 已设置的强密码；账号行保留以维持审计/告警/执行记录引用完整性；dev/test 由 `EnsureBootstrapUser` 在 bootstrap 启用时重新激活为配置密码，生产 bootstrap 关闭则保持锁定不可登录，须由 DBA 创建安全管理员；幂等；`down.sql` 为不可逆 no-op（禁止恢复 admin/admin123） | 已落地 |
+| `0045` | `0045_inspection_policy_deleted_scope_cleanup.up.sql` | Asset | 与 `ApplicationReferenceChecker` 对齐：回填清空已软删除 `inspection_policy.scope.application_ids`；重建 `v_asset_app_ref_integrity` 仅检查 `deleted=false` 策略；运行时 `SoftDelete` 同步清空 `application_ids`；幂等；`down.sql` 恢复 0040 视图定义（已清空的 scope 需从备份还原） | 已落地 |
 
 这些迁移必须同步种子化权限和 AI 工具权限，并把 admin 角色绑定到新增权限：
 

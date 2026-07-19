@@ -13,7 +13,7 @@ func TestAssetService_UpdateApplication(t *testing.T) {
 	apps := &fakeAppRepo{apps: map[string]domain.Application{
 		"payment-service": {ID: "app-1", Name: "payment-service", Environment: "prod"},
 	}}
-	svc := NewAssetService(apps, &fakeResRepo{}, nil, nil, audit)
+	svc := NewAssetService(apps, &fakeResRepo{}, nil, nil, nil, audit)
 	out, err := svc.UpdateApplication(context.Background(), "app-1", Actor{UserID: "u1"}, UpdateApplicationInput{
 		Name: "payment-v2", Environment: "staging", Namespace: "pay", Description: "updated",
 	})
@@ -35,7 +35,7 @@ func TestAssetService_DeleteApplicationBlockedWhenHasResources(t *testing.T) {
 	resources := &fakeResRepo{rows: []domain.Resource{
 		{ID: "res-1", ApplicationID: "app-1", Pod: "p1"},
 	}}
-	svc := NewAssetService(apps, resources, nil, nil, NoopAuditRecorder{})
+	svc := NewAssetService(apps, resources, nil, nil, nil, NoopAuditRecorder{})
 	err := svc.DeleteApplication(context.Background(), "app-1", Actor{UserID: "u1"})
 	if err == nil || apperr.FromError(err).Code != apperr.CodeFailedPrecondition {
 		t.Fatalf("expected failed precondition, got %v", err)
@@ -47,7 +47,7 @@ func TestAssetService_DeleteApplicationAfterResourcesRemoved(t *testing.T) {
 	apps := &fakeAppRepo{apps: map[string]domain.Application{
 		"payment-service": {ID: "app-1", Name: "payment-service"},
 	}}
-	svc := NewAssetService(apps, &fakeResRepo{}, nil, nil, audit)
+	svc := NewAssetService(apps, &fakeResRepo{}, nil, nil, nil, audit)
 	if err := svc.DeleteApplication(context.Background(), "app-1", Actor{UserID: "u1"}); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestAssetService_UpdateAndDeleteResource(t *testing.T) {
 	resources := &fakeResRepo{rows: []domain.Resource{
 		{ID: "res-1", ApplicationID: "app-1", Name: "old", Pod: "p1"},
 	}}
-	svc := NewAssetService(&fakeAppRepo{apps: map[string]domain.Application{}}, resources, nil, nil, audit)
+	svc := NewAssetService(&fakeAppRepo{apps: map[string]domain.Application{}}, resources, nil, nil, nil, audit)
 	out, err := svc.UpdateResource(context.Background(), "res-1", Actor{UserID: "u1"}, UpdateResourceInput{
 		Name: "new-name", Pod: "p2", ResourceType: "pod",
 	})
@@ -92,7 +92,7 @@ func TestAssetService_DeleteApplicationBlockedWhenHasMatchRules(t *testing.T) {
 	rules := &fakeRuleRepo{rules: []domain.MatchRule{
 		{ID: "rule-1", ApplicationID: "app-1", LabelKey: "service", LabelValuePattern: "payment-*"},
 	}}
-	svc := NewAssetService(apps, &fakeResRepo{}, rules, nil, NoopAuditRecorder{})
+	svc := NewAssetService(apps, &fakeResRepo{}, rules, nil, nil, NoopAuditRecorder{})
 	err := svc.DeleteApplication(context.Background(), "app-1", Actor{UserID: "u1"})
 	if err == nil || apperr.FromError(err).Code != apperr.CodeFailedPrecondition {
 		t.Fatalf("expected failed precondition, got %v", err)
@@ -106,7 +106,7 @@ func TestAssetService_DeleteResourceBlockedWhenHasMatchRules(t *testing.T) {
 	rules := &fakeRuleRepo{rules: []domain.MatchRule{
 		{ID: "rule-1", ApplicationID: "app-1", ResourceID: "res-1", LabelKey: "service", LabelValuePattern: "payment-*"},
 	}}
-	svc := NewAssetService(&fakeAppRepo{apps: map[string]domain.Application{}}, resources, rules, nil, NoopAuditRecorder{})
+	svc := NewAssetService(&fakeAppRepo{apps: map[string]domain.Application{}}, resources, rules, nil, nil, NoopAuditRecorder{})
 	err := svc.DeleteResource(context.Background(), "res-1", Actor{UserID: "u1"})
 	if err == nil || apperr.FromError(err).Code != apperr.CodeFailedPrecondition {
 		t.Fatalf("expected failed precondition, got %v", err)
@@ -119,6 +119,7 @@ type fakeRefChecker struct {
 	policyCount int64
 	alertErr    error
 	policyErr   error
+	detachErr   error
 }
 
 func (f *fakeRefChecker) CountAlertsByApplicationID(_ context.Context, _ string) (int64, error) {
@@ -129,12 +130,16 @@ func (f *fakeRefChecker) CountInspectionPoliciesByApplicationID(_ context.Contex
 	return f.policyCount, f.policyErr
 }
 
+func (f *fakeRefChecker) DetachClosedAlertReferences(_ context.Context, _ string) error {
+	return f.detachErr
+}
+
 func TestAssetService_DeleteApplicationBlockedWhenHasAlertReferences(t *testing.T) {
 	apps := &fakeAppRepo{apps: map[string]domain.Application{
 		"payment-service": {ID: "app-1", Name: "payment-service"},
 	}}
 	refChecker := &fakeRefChecker{alertCount: 2}
-	svc := NewAssetService(apps, &fakeResRepo{}, nil, refChecker, NoopAuditRecorder{})
+	svc := NewAssetService(apps, &fakeResRepo{}, nil, refChecker, nil, NoopAuditRecorder{})
 	err := svc.DeleteApplication(context.Background(), "app-1", Actor{UserID: "u1"})
 	if err == nil || apperr.FromError(err).Code != apperr.CodeFailedPrecondition {
 		t.Fatalf("expected failed precondition, got %v", err)
@@ -150,7 +155,7 @@ func TestAssetService_DeleteApplicationBlockedWhenHasInspectionPolicyReferences(
 		"payment-service": {ID: "app-1", Name: "payment-service"},
 	}}
 	refChecker := &fakeRefChecker{policyCount: 1}
-	svc := NewAssetService(apps, &fakeResRepo{}, nil, refChecker, NoopAuditRecorder{})
+	svc := NewAssetService(apps, &fakeResRepo{}, nil, refChecker, nil, NoopAuditRecorder{})
 	err := svc.DeleteApplication(context.Background(), "app-1", Actor{UserID: "u1"})
 	if err == nil || apperr.FromError(err).Code != apperr.CodeFailedPrecondition {
 		t.Fatalf("expected failed precondition, got %v", err)
@@ -166,7 +171,7 @@ func TestAssetService_DeleteApplicationSucceedsWithRefCheckerNil(t *testing.T) {
 		"payment-service": {ID: "app-1", Name: "payment-service"},
 	}}
 	// refChecker 为 nil 时应向后兼容，不检查跨上下文引用
-	svc := NewAssetService(apps, &fakeResRepo{}, nil, nil, audit)
+	svc := NewAssetService(apps, &fakeResRepo{}, nil, nil, nil, audit)
 	if err := svc.DeleteApplication(context.Background(), "app-1", Actor{UserID: "u1"}); err != nil {
 		t.Fatalf("delete should succeed with nil refChecker: %v", err)
 	}
@@ -185,7 +190,7 @@ func TestAssetService_DeleteApplicationSucceedsWhenNoCrossContextReferences(t *t
 	}}
 	// refChecker 报告 0 条引用时，删除应成功
 	refChecker := &fakeRefChecker{alertCount: 0, policyCount: 0}
-	svc := NewAssetService(apps, &fakeResRepo{}, nil, refChecker, audit)
+	svc := NewAssetService(apps, &fakeResRepo{}, nil, refChecker, nil, audit)
 	if err := svc.DeleteApplication(context.Background(), "app-1", Actor{UserID: "u1"}); err != nil {
 		t.Fatalf("delete should succeed with no references: %v", err)
 	}

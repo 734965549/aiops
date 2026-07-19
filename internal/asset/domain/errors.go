@@ -14,6 +14,12 @@ var ErrHasResources = errors.New("application has resources")
 // ErrHasMatchRules 应用或资源仍被匹配规则引用，不允许删除。
 var ErrHasMatchRules = errors.New("asset has match rules")
 
+// ErrHasAlertReferences 应用仍被未关闭告警引用，不允许删除。
+var ErrHasAlertReferences = errors.New("application has alert references")
+
+// ErrHasInspectionPolicyReferences 应用仍被巡检策略 scope 引用，不允许删除。
+var ErrHasInspectionPolicyReferences = errors.New("application has inspection policy references")
+
 // ErrDiscoveryUnavailable 云资源发现端口未配置。
 var ErrDiscoveryUnavailable = errors.New("cloud discovery port is not configured")
 

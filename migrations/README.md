@@ -52,6 +52,9 @@
 0040_application_ref_integrity_view.up.sql
 0041_legacy_app_id_convergence_guard.up.sql
 0042_backfill_orphaned_app_refs_and_guard.up.sql
+0043_fix_orphaned_alert_app_refs.up.sql
+0044_lock_default_admin_account.up.sql
+0045_inspection_policy_deleted_scope_cleanup.up.sql
 ```
 
 说明：
@@ -62,7 +65,7 @@
 - 禁止在生产或预发环境手工 `psql -f migrations/*.up.sql`、手工执行 `manual_schema_migrations.sql`，或手工写入 / 修改 `schema_migrations`。
 - `*.down.sql` 只作为人工回滚参考，不由应用自动执行。
 - `0016_seed_default_admin_user.up.sql` 是 DBA 初始化入口账号兜底：创建/重置 `admin/admin123`，并把 `admin` 角色绑定到当前全部权限、数据范围和 AI 工具权限。只执行 `0001/0002` 不算完整初始化。
-- 当前仓库未包含 `0021` 文件；runner 会按实际文件名顺序执行到 `0042`，唔好自己补一条空账本记录。
+- 当前仓库未包含 `0021` 文件；runner 会按实际文件名顺序执行到 `0045`，唔好自己补一条空账本记录。
 - Integration、Observability、Inspection 同 Execution Agent 点样串到主链路，睇 `docs/AI运维平台整体流程与调用关系.md`。
 
 执行命令：

@@ -467,7 +467,7 @@ func newAssetHTTPEngine(t *testing.T, authz *fakeAssetHTTPAuthorizer) (*gin.Engi
 	appRepo := &assetHTTPTestAppRepo{}
 	resRepo := &assetHTTPTestResRepo{}
 	ruleRepo := &assetHTTPTestRuleRepo{}
-	svc := assetapp.NewAssetService(appRepo, resRepo, ruleRepo, nil, assetapp.NoopAuditRecorder{})
+	svc := assetapp.NewAssetService(appRepo, resRepo, ruleRepo, nil, nil, assetapp.NoopAuditRecorder{})
 	matchRules := assetapp.NewMatchRuleService(ruleRepo, appRepo, resRepo, assetapp.NoopAuditRecorder{})
 	handler := NewHandler(svc, matchRules, nil)
 	registrar := NewRegistrar(handler, authz)

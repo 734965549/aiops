@@ -1,63 +1,13 @@
-<#
-.SYNOPSIS
-    在执行 0032 破坏性迁移前备份关键表的 PowerShell 脚本。
-
-.DESCRIPTION
-    本脚本用于在应用 0032 破坏性数据库迁移之前，对涉及的关键业务表进行
-    数据级备份（--data-only），同时再做一次完整数据库的 custom 格式备份，
-    以便在迁移失败或数据异常时可以快速回滚。
-
-    涉及的关键表：
-      - asset_application   资产应用表（0032 主要改写对象）
-      - asset_resource      资产资源表
-      - asset_match_rule    资产匹配规则表
-      - alert_alert         告警表（application_id 引用资产应用）
-      - inspection_policy   巡检策略表（scope 中引用 application_ids）
-
-    备份策略：
-      1. 对上述每张表执行 pg_dump --data-only --table=<table>，输出纯文本 SQL。
-      2. 对整个数据库执行 pg_dump --format=custom，输出自定义压缩格式文件。
-      3. 备份文件名包含时间戳，避免覆盖。
-      4. 任何步骤失败立即退出（非零退出码）。
-
-.PARAMETER Host
-    PostgreSQL 主机地址，默认 127.0.0.1。
-
-.PARAMETER Port
-    PostgreSQL 端口，默认 5432。
-
-.PARAMETER DbName
-    目标数据库名，默认 aiops。
-
-.PARAMETER User
-    数据库用户名，默认 aiops。
-
-.PARAMETER Password
-    数据库密码，默认 aiops。
-
-.PARAMETER BackupDir
-    备份文件输出目录，默认当前目录下的 backups 子目录。
-
-.EXAMPLE
-    .\scripts\backup-pre-migration.ps1
-    使用默认参数执行备份。
-
-.EXAMPLE
-    .\scripts\backup-pre-migration.ps1 -Host 127.0.0.1 -Port 5432 -DbName aiops -User aiops -Password aiops -BackupDir D:\backups\aiops
-    指定全部参数执行备份。
-
-.NOTES
-    依赖：pg_dump（PostgreSQL 客户端工具）。
-    兼容：Windows PowerShell 5.1。
-#>
+﻿# 0032 破坏性迁移前备份关键表（PowerShell 5.1+，依赖 pg_dump）。
+# 用法示例：./scripts/backup-pre-migration.ps1 -PgHost 127.0.0.1 -PgPort 5432
 
 param(
-    [string]$Host = "127.0.0.1",
-    [int]$Port = 5432,
-    [string]$DbName = "aiops",
-    [string]$User = "aiops",
-    [string]$Password = "aiops",
-    [string]$BackupDir = ".\backups"
+    [string]$PgHost = "127.0.0.1",
+    [int]$PgPort = 5432,
+    [string]$PgDbName = "aiops",
+    [string]$PgUser = "aiops",
+    [string]$PgPassword = "aiops",
+    [string]$BackupDir = "./backups"
 )
 
 $ErrorActionPreference = "Stop"
@@ -127,14 +77,14 @@ if (-not (Test-Path $BackupDir)) {
 }
 
 # 设置密码环境变量
-$env:PGPASSWORD = $Password
+$env:PGPASSWORD = $PgPassword
 
 # 构建公共连接参数
 $connParams = @(
-    "--host", $Host,
-    "--port", $Port,
-    "--username", $User,
-    "--dbname", $DbName
+    "--host", $PgHost,
+    "--port", $PgPort,
+    "--username", $PgUser,
+    "--dbname", $PgDbName
 )
 
 # 生成时间戳

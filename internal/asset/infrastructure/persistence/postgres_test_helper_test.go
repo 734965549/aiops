@@ -36,7 +36,7 @@ func openAssetTestPostgres(t *testing.T) *gorm.DB {
 
 	db, err := database.NewPostgres(ctx, cfg, "Asia/Shanghai")
 	if err != nil {
-		t.Skipf("postgres unavailable: %v", err)
+		t.Fatalf("postgres unavailable (required for integration tests): %v", err)
 	}
 	t.Cleanup(func() { database.ClosePostgres(db) })
 

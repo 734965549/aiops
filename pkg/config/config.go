@@ -13,6 +13,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -312,6 +313,9 @@ func Load(configPath string) (*Config, error) {
 			return nil, fmt.Errorf("read config: %w", err)
 		}
 	}
+	// viper.AutomaticEnv 仅对 Get* 生效，Unmarshal 不会读取环境变量。
+	// 生产 Compose 仅注入 env 时须在此将 env 写回 viper，否则 slice/string 字段会丢失。
+	materializeEnv(v, "AIOPS_")
 
 	var c Config
 	if err := v.Unmarshal(&c); err != nil {
@@ -324,6 +328,9 @@ func Load(configPath string) (*Config, error) {
 // normalize 修正环境变量与 viper 合并后的边界情况（如 slice 逗号分隔、CORS 安全回退）。
 func (c *Config) normalize() {
 	c.CORS = normalizeCORSConfig(c.CORS)
+	if c.App.Env != "prod" && len(c.CORS.AllowOrigins) == 0 {
+		c.CORS.AllowOrigins = []string{defaultDevCORSOrigin}
+	}
 	c.Auth.LoginIPAllowlist = normalizeStringList(c.Auth.LoginIPAllowlist)
 }
 
@@ -403,7 +410,26 @@ func (c *Config) Validate() error {
 	if err := validateIntegrationConfig(c.Integration, c.App.Env, c.Auth.JWTSecret); err != nil {
 		return err
 	}
+	if err := validateExecutionConfig(c.Execution, c.App.Env); err != nil {
+		return err
+	}
 	return nil
+}
+
+// materializeEnv 将 AIOPS_ 前缀环境变量写入 viper，使后续 Unmarshal 能读到纯 env 配置。
+func materializeEnv(v *viper.Viper, envPrefix string) {
+	keyReplacer := strings.NewReplacer("__", ".")
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, envPrefix) {
+			continue
+		}
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		key := strings.ToLower(keyReplacer.Replace(strings.TrimPrefix(name, envPrefix)))
+		v.Set(key, value)
+	}
 }
 
 func validateLoggerConfig(cfg LoggerConfig) error {
@@ -439,9 +465,6 @@ func validateCORS(env string, cfg CORSConfig) error {
 		}
 	}
 	if env == "prod" {
-		if len(cfg.AllowOrigins) == 0 {
-			return fmt.Errorf("cors.allow_origins must be explicitly configured in prod")
-		}
 		for _, origin := range cfg.AllowOrigins {
 			if origin == "*" {
 				return fmt.Errorf("cors.allow_origins must not contain * in prod")
@@ -531,6 +554,5 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.login_rate_limit.username_failures_before_lockout", 5)
 	v.SetDefault("auth.login_rate_limit.lockout_s", 900)
 
-	v.SetDefault("cors.allow_origins", []string{"http://localhost:5173"})
 	v.SetDefault("cors.allow_credentials", true)
 }

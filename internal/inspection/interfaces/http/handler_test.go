@@ -129,7 +129,7 @@ func setupInspectionHTTPEngine(t *testing.T, allowed bool) (*gin.Engine, string,
 		},
 	}}
 	runRepo := &memRunRepo{items: map[string]*domain.InspectionRun{}}
-	policySvc := inspectionapp.NewPolicyService(policyRepo, nil)
+	policySvc := inspectionapp.NewPolicyService(policyRepo, nil, nil)
 	runSvc := inspectionapp.NewRunService(policyRepo, runRepo, memFindingRepo{}, memRecRepo{}, stubAnalyzer{}, nil, nil)
 	handler := NewHandler(policySvc, runSvc, nil)
 	registrar := NewRegistrar(handler, authz)

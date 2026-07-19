@@ -25,7 +25,7 @@ func (c *capturingAssetAudit) Record(_ context.Context, rec AuditRecord) error {
 func TestAssetService_CreateApplicationWritesAudit(t *testing.T) {
 	audit := &capturingAssetAudit{}
 	apps := &fakeAppRepo{apps: map[string]domain.Application{}}
-	svc := NewAssetService(apps, &fakeResRepo{}, nil, nil, audit)
+	svc := NewAssetService(apps, &fakeResRepo{}, nil, nil, nil, audit)
 	out, err := svc.CreateApplication(context.Background(), Actor{UserID: "user-1"}, CreateApplicationInput{
 		Name: "payment-service", Environment: "prod",
 	})
@@ -46,7 +46,7 @@ func TestAssetService_CreateApplicationWritesAudit(t *testing.T) {
 
 func TestAssetService_CreateApplicationAuditFailureDoesNotBlock(t *testing.T) {
 	audit := &capturingAssetAudit{err: errors.New("audit down")}
-	svc := NewAssetService(&fakeAppRepo{apps: map[string]domain.Application{}}, &fakeResRepo{}, nil, nil, audit)
+	svc := NewAssetService(&fakeAppRepo{apps: map[string]domain.Application{}}, &fakeResRepo{}, nil, nil, nil, audit)
 	out, err := svc.CreateApplication(context.Background(), Actor{UserID: "user-1"}, CreateApplicationInput{Name: "svc"})
 	if err != nil {
 		t.Fatalf("create should succeed despite audit failure: %v", err)
@@ -62,7 +62,7 @@ func TestAssetService_CreateResourceWritesAudit(t *testing.T) {
 		"payment-service": {ID: "app-1", Name: "payment-service", CreatedAt: time.Now(), UpdatedAt: time.Now()},
 	}}
 	resources := &fakeResRepo{}
-	svc := NewAssetService(apps, resources, nil, nil, audit)
+	svc := NewAssetService(apps, resources, nil, nil, nil, audit)
 	out, err := svc.CreateResource(context.Background(), Actor{UserID: "user-2"}, CreateResourceInput{
 		ApplicationID: "app-1", Name: "pod-1", ResourceType: "pod",
 	})

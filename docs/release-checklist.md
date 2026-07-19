@@ -19,13 +19,14 @@
 
 | # | 检查项 | 操作 | 通过标准 |
 |---|--------|------|----------|
-| 2.1 | 迁移脚本齐全 | 检查 `migrations/` 至最新版本 | 当前最高 `0043_fix_orphaned_alert_app_refs`；当前仓库未包含 `0021` Notification 迁移，按实际文件顺序执行 |
+| 2.1 | 迁移脚本齐全 | 检查 `migrations/` 至最新版本 | 当前最高 `0045_inspection_policy_deleted_scope_cleanup`；当前仓库未包含 `0021` Notification 迁移，按实际文件顺序执行 |
 | 2.2 | **生产**关闭 auto_migrate | `database.auto_migrate=false` | API 启动不自动改表 |
 | 2.3 | 发布前执行迁移 | `go run ./cmd/migrate -config <prod-config>` | 无报错，`schema_migrations` 记录最新版本 |
 | 2.4 | 回滚预案 | 阅读对应 `.down.sql` | 明确回滚步骤与数据影响 |
 | 2.5 | **0032 破坏性迁移备份** | 升级前备份 `asset_application`、`asset_resource`、`asset_match_rule` 表 | 0032 是 DELETE 脚本，会删除旧格式 `cloud-<account_id>` 应用及其关联资源/匹配规则（不可自动恢复）；迁移保留 `integration_account`，升级后需重新触发云同步（无需重新录入账号）。0039 会清理 `alert_alert`/`inspection_policy` 中的孤儿引用，但不恢复已删除数据 |
 | 2.6 | **迁移后引用完整性验证** | `SELECT * FROM v_asset_app_ref_integrity;` | 返回 0 行（0040 创建的视图，检查 `asset_resource`/`asset_match_rule`/`alert_alert`/`inspection_policy` 中的 `application_id` 引用在 `asset_application` 中存在）。0043 会自动修复已有孤儿引用并通过 CHECK n=0 硬验收 |
 | 2.7 | **重新触发云同步**（硬验收步骤） | 对已有接入账号执行 `POST /api/assets/sync` | 同步成功，资源写入新格式 `cloud-<前缀>-<hash>` 应用；同步后再次执行 2.6 验证视图返回 0 行 |
+| 2.8 | **默认管理员账号已锁定** | 确认迁移 `0044` 已应用 | `0044` 把 0016/0017 种入的 `admin/admin123` 锁定（status=locked、清空 password_hash），生产默认不可登录。迁移完成后、API 对外开放前，运行 `.\scripts\provision-prod-admin.ps1 -PgPassword '<db-password>'`（或 `-GeneratePassword`）重新激活 `admin` 或创建新管理员并绑定 admin 角色；**staging 须演练一遍** |
 
 迁移契约：`ops/migration-contract.md`
 
@@ -43,6 +44,8 @@
 | 3.6 | 前端 API 地址 | `web/.env.production` → `VITE_API_BASE` | 与部署架构一致（同源反代或分域） |
 | 3.7 | 网络暴露 | Compose / K8s Service | **不**将 PostgreSQL、Redis 端口发布到公网 |
 | 3.8 | Webhook 密钥 | 各告警源 `webhook_secret` | 生产使用强随机值，定期轮换 |
+| 3.9 | **镜像引用不可变** | `AIOPS_IMAGE`（完整引用，如 `registry/repo@sha256:...`） | 运行 `.\scripts\verify-prod-version.ps1`（或 `.\scripts\deploy-prod.ps1`）：digest PASS / 不可变 tag WARN / latest 与空 FAIL。禁止 latest，优先 digest；compose 不再拼接仓库名，勿传纯 tag 或纯 digest |
+| 3.10 | **执行代理注册令牌** | `AIOPS_EXECUTION__AGENT_REGISTER_TOKEN` | 生产必填；`openssl rand -base64 32` 生成（勿用 hex-only）；通过 `Config.Validate()`；compose 未设置时直接报错 |
 
 配置说明：`deployments/README.md`、`configs/config.example.yaml`
 
@@ -65,7 +68,7 @@
 
 | # | 检查项 | 操作 | 通过标准 |
 |---|--------|------|----------|
-| 5.1 | 管理员账号 | 运维 SQL 或预置流程 | 存在且绑定 admin 角色 |
+| 5.1 | 管理员账号 | `.\scripts\provision-prod-admin.ps1`（0044 后、API 对外前） | 目标用户 `status=active`、含 bcrypt cost 12 密码哈希，且 `iam_user_role` 已绑定 `admin` 角色；可用 `POST /api/identity/login` 验证 |
 | 5.2 | 种子权限 | migration `0002` + 后续权限迁移 | admin 具备各模块读写权限 |
 | 5.3 | 负向测试 | 无 token / 无权限用户访问 API | 返回 401 / 403 |
 | 5.4 | 域账号策略 | 外部登录 | 仅预置绑定用户可登录（不自动开户） |
@@ -125,11 +128,13 @@ $env:API_BASE = "https://staging-api.example.com"   # 如需要
 ```text
 1. 备份数据库
 2. 执行 make migrate（或 go run ./cmd/migrate）
-3. 部署 API 镜像（滚动更新，先新版本后切流量）
-4. 验证 /readyz
-5. 部署前端静态资源
-6. 执行 E2E 脚本或手工抽检（demo-flow.md）
-7. 观察日志与告警 15–30 分钟
+3. 运行 verify-post-migration.ps1
+4. 运行 provision-prod-admin.ps1（0044 后创建首个安全管理员）
+5. 部署 API 镜像（滚动更新，先新版本后切流量）
+6. 验证 /readyz
+7. 部署前端静态资源
+8. 执行 E2E 脚本或手工抽检（demo-flow.md）
+9. 观察日志与告警 15–30 分钟
 ```
 
 ---

@@ -229,6 +229,9 @@ if (-not $deleteResBlocked) {
 Write-Host "    blocked as expected"
 
 Write-Host "==> delete match rule then resource and application"
+Invoke-Api -Method POST -Path ("/api/alerts/" + $alertId + "/close") -Headers $auth -Body @{
+    resolution = "E2E asset cleanup"
+} | Out-Null
 Invoke-Api -Method DELETE -Path ("/api/assets/match-rules/" + $rule.id) -Headers $auth | Out-Null
 Invoke-Api -Method DELETE -Path ("/api/assets/resources/" + $resId) -Headers $auth | Out-Null
 Invoke-Api -Method DELETE -Path ("/api/assets/applications/" + $appId) -Headers $auth | Out-Null

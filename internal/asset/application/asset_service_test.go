@@ -631,7 +631,7 @@ func TestMatcherService_NoMatchReturnsEmpty(t *testing.T) {
 }
 
 func TestAssetService_CreateResourceApplicationNotFound(t *testing.T) {
-	svc := NewAssetService(&fakeAppRepo{apps: map[string]domain.Application{}}, &fakeResRepo{}, nil, nil, NoopAuditRecorder{})
+	svc := NewAssetService(&fakeAppRepo{apps: map[string]domain.Application{}}, &fakeResRepo{}, nil, nil, nil, NoopAuditRecorder{})
 	_, err := svc.CreateResource(context.Background(), Actor{}, CreateResourceInput{
 		ApplicationID: "missing-app-id",
 		Name:          "pod-1",

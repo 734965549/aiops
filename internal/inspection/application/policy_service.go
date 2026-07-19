@@ -13,14 +13,15 @@ import (
 // PolicyService 巡检策略 CRUD。
 type PolicyService struct {
 	policies domain.PolicyRepository
+	appCatalog ApplicationCatalogPort
 	audit    AuditRecorder
 }
 
-func NewPolicyService(policies domain.PolicyRepository, audit AuditRecorder) *PolicyService {
+func NewPolicyService(policies domain.PolicyRepository, appCatalog ApplicationCatalogPort, audit AuditRecorder) *PolicyService {
 	if audit == nil {
 		audit = NoopAuditRecorder{}
 	}
-	return &PolicyService{policies: policies, audit: audit}
+	return &PolicyService{policies: policies, appCatalog: appCatalog, audit: audit}
 }
 
 type CreatePolicyInput struct {
@@ -76,6 +77,9 @@ func (s *PolicyService) Create(ctx context.Context, actor Actor, in CreatePolicy
 	if err := p.Validate(); err != nil {
 		return nil, mapDomainErr(err)
 	}
+	if err := s.validateScopeApplicationIDs(ctx, p.Scope.ApplicationIDs); err != nil {
+		return nil, err
+	}
 	if err := s.policies.Create(ctx, p); err != nil {
 		return nil, mapDomainErr(err)
 	}
@@ -118,6 +122,9 @@ func (s *PolicyService) Update(ctx context.Context, actor Actor, policyID string
 	}
 	if err := p.Validate(); err != nil {
 		return nil, mapDomainErr(err)
+	}
+	if err := s.validateScopeApplicationIDs(ctx, p.Scope.ApplicationIDs); err != nil {
+		return nil, err
 	}
 	if err := s.policies.Update(ctx, p); err != nil {
 		return nil, mapDomainErr(err)
@@ -189,8 +196,44 @@ func (s *PolicyService) Delete(ctx context.Context, actor Actor, policyID string
 func scopeFromDTO(d PolicyScopeDTO) domain.PolicyScope {
 	return domain.PolicyScope{
 		Environment: d.Environment, AccountID: strings.TrimSpace(d.AccountID),
-		Provider: strings.TrimSpace(d.Provider), ApplicationIDs: d.ApplicationIDs, ResourceTypes: d.ResourceTypes,
+		Provider: strings.TrimSpace(d.Provider), ApplicationIDs: normalizeApplicationIDs(d.ApplicationIDs), ResourceTypes: d.ResourceTypes,
 	}
+}
+
+func normalizeApplicationIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func (s *PolicyService) validateScopeApplicationIDs(ctx context.Context, ids []string) error {
+	if s == nil || s.appCatalog == nil || len(ids) == 0 {
+		return nil
+	}
+	for _, id := range ids {
+		exists, err := s.appCatalog.ExistsByID(ctx, id)
+		if err != nil {
+			return apperr.Wrap(err, apperr.CodeInternal, "validate application_id failed")
+		}
+		if !exists {
+			return apperr.Newf(apperr.CodeInvalidArgument, "application_id %q not found", id)
+		}
+	}
+	return nil
 }
 
 func mapDomainErr(err error) error {

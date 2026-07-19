@@ -1077,6 +1077,111 @@ func seedHuaweiCesMergeData(t *testing.T, db *gorm.DB, legacyAccount, newOnlyAcc
 		"policy-legacy-only", "policy-legacy-only", `{"application_ids":["`+legacyID+`"]}`, now, now)
 }
 
+// TestMigrateUpgrade_0044LocksAdminByUsernameRegardlessOfUserID 验证 0044 按 username + 已知
+// admin123 哈希锁定默认管理员，而非仅锁定 0016 种子 user_id。旧库若 admin 行 user_id 与种子
+// 不一致但密码仍被 0017 重置为 admin123，0044 也必须锁定，消除已知凭据绕过。
+func TestMigrateUpgrade_0044LocksAdminByUsernameRegardlessOfUserID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping PG upgrade integration test in short mode")
+	}
+	migrationsDir := filepath.Join(findRepoRoot(t), "migrations")
+
+	cfg := testDatabaseConfig()
+	mdb := requirePostgres(t, cfg)
+
+	dbName := fmt.Sprintf("aiops_migtest_0044_%d", time.Now().UnixNano())
+	_ = mdb.Exec(fmt.Sprintf(`DROP DATABASE IF EXISTS "%s" WITH (FORCE)`, dbName)).Error
+	if err := mdb.Exec(fmt.Sprintf(`CREATE DATABASE "%s"`, dbName)).Error; err != nil {
+		t.Fatalf("create ephemeral db %s: %v", dbName, err)
+	}
+	t.Cleanup(func() {
+		_ = mdb.Exec(fmt.Sprintf(`DROP DATABASE IF EXISTS "%s" WITH (FORCE)`, dbName)).Error
+		_ = ClosePostgres(mdb)
+	})
+
+	ephCfg := cfg
+	ephCfg.Name = dbName
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	edb, err := NewPostgres(ctx, ephCfg, "Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("open ephemeral db: %v", err)
+	}
+	defer func() { _ = ClosePostgres(edb) }()
+
+	if err := RunMigrations(ctx, edb, MigrateOptions{Dir: migrationsDir, TargetVersion: "0043"}); err != nil {
+		t.Fatalf("run migrations up to 0043: %v", err)
+	}
+
+	legacyUserID := "aaaaaaaa-bbbb-4ccc-dddd-eeeeeeeeeeee"
+	seedUserID := "00000000-0000-0000-0004-000000000001"
+	if got := countWhere(t, edb, "iam_user", "username = 'admin' AND user_id = ?", seedUserID); got != 1 {
+		t.Fatalf("expected seeded admin user before 0044, got %d rows", got)
+	}
+	if err := edb.Exec(`UPDATE iam_user_role SET user_id = ? WHERE user_id = ?`, legacyUserID, seedUserID).Error; err != nil {
+		t.Fatalf("repoint user_role to legacy user_id: %v", err)
+	}
+	if err := edb.Exec(`UPDATE iam_user SET user_id = ? WHERE username = 'admin'`, legacyUserID).Error; err != nil {
+		t.Fatalf("repoint admin user_id: %v", err)
+	}
+
+	if err := RunMigrations(ctx, edb, MigrateOptions{Dir: migrationsDir, TargetVersion: "0044"}); err != nil {
+		t.Fatalf("run migration 0044: %v", err)
+	}
+
+	if got := countWhere(t, edb, "iam_user", "username = 'admin' AND user_id = ? AND status = 'locked' AND password_hash = ''", legacyUserID); got != 1 {
+		t.Fatalf("expected legacy user_id admin locked with empty password_hash, got %d rows", got)
+	}
+}
+
+// TestMigrateUpgrade_0044DoesNotLockAdminWithCustomPassword 验证 0044 不会锁定 DBA 已设置强密码的 admin。
+func TestMigrateUpgrade_0044DoesNotLockAdminWithCustomPassword(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping PG upgrade integration test in short mode")
+	}
+	migrationsDir := filepath.Join(findRepoRoot(t), "migrations")
+
+	cfg := testDatabaseConfig()
+	mdb := requirePostgres(t, cfg)
+
+	dbName := fmt.Sprintf("aiops_migtest_0044_custom_%d", time.Now().UnixNano())
+	_ = mdb.Exec(fmt.Sprintf(`DROP DATABASE IF EXISTS "%s" WITH (FORCE)`, dbName)).Error
+	if err := mdb.Exec(fmt.Sprintf(`CREATE DATABASE "%s"`, dbName)).Error; err != nil {
+		t.Fatalf("create ephemeral db %s: %v", dbName, err)
+	}
+	t.Cleanup(func() {
+		_ = mdb.Exec(fmt.Sprintf(`DROP DATABASE IF EXISTS "%s" WITH (FORCE)`, dbName)).Error
+		_ = ClosePostgres(mdb)
+	})
+
+	ephCfg := cfg
+	ephCfg.Name = dbName
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	edb, err := NewPostgres(ctx, ephCfg, "Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("open ephemeral db: %v", err)
+	}
+	defer func() { _ = ClosePostgres(edb) }()
+
+	if err := RunMigrations(ctx, edb, MigrateOptions{Dir: migrationsDir, TargetVersion: "0043"}); err != nil {
+		t.Fatalf("run migrations up to 0043: %v", err)
+	}
+
+	customHash := "$2a$12$customhashnotadmin123xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+	if err := edb.Exec(`UPDATE iam_user SET password_hash = ?, status = 'active' WHERE username = 'admin'`, customHash).Error; err != nil {
+		t.Fatalf("set custom admin password: %v", err)
+	}
+
+	if err := RunMigrations(ctx, edb, MigrateOptions{Dir: migrationsDir, TargetVersion: "0044"}); err != nil {
+		t.Fatalf("run migration 0044: %v", err)
+	}
+
+	if got := countWhere(t, edb, "iam_user", "username = 'admin' AND status = 'active' AND password_hash = ?", customHash); got != 1 {
+		t.Fatalf("expected admin with custom password unchanged, got %d rows", got)
+	}
+}
+
 func findRepoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
