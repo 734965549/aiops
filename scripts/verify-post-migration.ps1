@@ -130,16 +130,17 @@ if ($null -ne $countB) {
 
 # -----------------------------------------------------------------------------
 # 检查 c: asset_application 中是否还有旧格式 cloud-<account_id>
-#        旧格式定义：以 'cloud-' 开头，但去掉 'cloud-' 前缀后不含 '-'。
-#        即 application_id ~ '^cloud-' 且 application_id !~ '^cloud-.*-.*'
+#        与 0032/0041 一致：按 application_id = 'cloud-' || trim(account_id)
+#        精确关联 integration_account（覆盖 account_id 含连字符的情况）。
 # -----------------------------------------------------------------------------
 
 Write-Step "check (c): no legacy cloud-<account_id> application ids in asset_application"
 
 $sqlC = @"
-SELECT count(*) FROM asset_application
-WHERE application_id LIKE 'cloud-%'
-  AND application_id NOT LIKE 'cloud-%-%';
+SELECT count(*)
+FROM asset_application aa
+JOIN integration_account ia
+  ON aa.application_id = 'cloud-' || trim(ia.account_id);
 "@
 try {
     $countC = Invoke-SqlScalar -Sql $sqlC
@@ -215,6 +216,51 @@ if ($null -ne $countE) {
         Write-Pass ("no dangling application_ids in inspection_policy.scope (count=" + $countE + ")")
     } else {
         Write-Fail ("found " + $countE + " dangling application_ids in inspection_policy.scope, expected 0")
+        $failureCount++
+    }
+}
+
+# -----------------------------------------------------------------------------
+# 检查 f: 管理员安全态（支持发布链路重复执行）
+#   - 首发 / provision 前：0044 锁定的默认 admin（locked + 空 password_hash）
+#   - 二次发布 / 已 provision：至少一个 active 且绑定 admin 角色、密码非空的管理员
+# -----------------------------------------------------------------------------
+
+Write-Step "check (f): admin security state (locked pre-provision OR active provisioned admin)"
+
+$sqlF = @"
+SELECT CASE
+  WHEN EXISTS (
+    SELECT 1 FROM iam_user
+    WHERE username = 'admin'
+      AND status = 'locked'
+      AND COALESCE(password_hash, '') = ''
+  ) THEN 1
+  WHEN EXISTS (
+    SELECT 1
+    FROM iam_user u
+    JOIN iam_user_role ur ON ur.user_id = u.user_id
+    JOIN iam_role r ON r.role_id = ur.role_id
+    WHERE r.code = 'admin'
+      AND u.status = 'active'
+      AND COALESCE(u.password_hash, '') <> ''
+  ) THEN 1
+  ELSE 0
+END;
+"@
+try {
+    $countF = Invoke-SqlScalar -Sql $sqlF
+} catch {
+    Write-Fail ("query failed: " + $_.Exception.Message)
+    $failureCount++
+    $countF = $null
+}
+
+if ($null -ne $countF) {
+    if ($countF -eq "1") {
+        Write-Pass ("admin security state ok (locked pre-provision or active provisioned admin; result=" + $countF + ")")
+    } else {
+        Write-Fail ("admin security state invalid (got=" + $countF + "); expect 0044 locked admin OR an active admin-role user with password; run migrations through 0044 / provision-prod-admin.ps1")
         $failureCount++
     }
 }

@@ -143,12 +143,14 @@ Authorization: Bearer <access_token>
 | `typ` | `access` 或 `refresh` |
 | `iss` | 签发方，默认配置为 `aiops` |
 
-### 4.4 默认 TTL（可配置）
+### 4.4 TTL（可配置）
 
-| 配置项 | 默认值 | 说明 |
-| --- | --- | --- |
-| `auth.access_ttl_m` | `120` | access token 有效期（分钟） |
-| `auth.refresh_ttl_h` | `168` | refresh token 有效期（小时，7 天） |
+| 配置项 | dev 默认 | 生产 compose 推荐 | 说明 |
+| --- | --- | --- | --- |
+| `auth.access_ttl_m` | `120` | `60`（可调 **30–60**） | access token 有效期（分钟） |
+| `auth.refresh_ttl_h` | `168` | `72`（可调 **24–72**） | refresh token 有效期（小时） |
+
+生产环境可通过 `AIOPS_AUTH__ACCESS_TTL_M` / `AIOPS_AUTH__REFRESH_TTL_H` 覆盖；`deployments/docker-compose.prod.yml` 已采用较短默认值以降低 token 泄露窗口。
 
 ## 5. 配置与密钥约束
 
@@ -156,12 +158,12 @@ Authorization: Bearer <access_token>
 | --- | --- |
 | `auth.jwt_secret` | HS256 对称密钥；非 `dev` 环境拒绝占位值与弱密钥 |
 | `auth.jwt_issuer` | JWT `iss` 声明 |
-| `auth.bootstrap_username` / `bootstrap_password` | 可选；dev/test 兼容链路。默认管理员也由迁移 `0016` 种子；生产须留空 |
+| `auth.bootstrap_username` / `bootstrap_password` | 可选；dev/test 兼容链路。默认管理员也由迁移 `0016` 种子；**生产须留空** |
 | `auth.login_ip_allowlist` | 可选；登录安全 IP 白名单，支持单 IP 和 CIDR，空数组表示不限制 |
 
 - `dev` 环境允许 `please-change-me-in-production` 等占位值。
 - 非 `dev` 环境要求密钥长度 ≥ 32、具备足够熵与字符多样性。
-- 默认账号 `admin/admin123` 由迁移 `0016` 种子，仅用于本地联调或受控初始化；生产必须关闭 bootstrap、显式配置强密钥，并在发布后立即改密或禁用默认账号。
+- 迁移 `0016`/`0017` 会种子 `admin/admin123`；迁移 `0044` 将其锁定（`status=locked`、清空 `password_hash`），**生产默认不可登录**。生产须关闭 bootstrap，API 对外开放前由 `scripts/provision-prod-admin.ps1` 创建安全管理员；**不得**依赖 `admin/admin123`。
 - 配置 `auth.login_ip_allowlist` 后，本地登录、LDAP/AD 登录、OAuth authorize/callback、refresh 同 logout 都会先校验客户端 IP；未命中就返回 `PERMISSION_DENIED`。
 
 ## 6. 路由划分（认证视角）

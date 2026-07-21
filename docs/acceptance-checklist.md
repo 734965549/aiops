@@ -2,7 +2,7 @@
 
 **范围**：告警接入 → 资产匹配 → Runbook 推荐 → 执行记录 → Dashboard 摘要 → 权限校验
 **环境**：PostgreSQL + API（8080）+ 前端（UI 验收时）
-**默认账号**：`admin` / `admin123`（admin 角色已绑定全部种子权限）
+**默认账号**（仅限 dev/演示）：`admin` / `admin123`（须叠加 `docker-compose.dev.yml` 或 bootstrap 启用）。迁移 `0044` 后生产默认锁定该账号，须 `scripts/provision-prod-admin.ps1` 创建安全管理员后再验收。
 
 ---
 
@@ -380,7 +380,7 @@ go run ./cmd/migrate
 
 | 步骤 | 页面 | 操作 | 通过标准 |
 |------|------|------|----------|
-| A1 | 登录页 | 输入 `admin` / `admin123` 登录 | 进入系统，侧栏可见各模块 |
+| A1 | 登录页 | 输入 `admin` / `admin123` 登录（**dev/演示**；生产须先用 `provision-prod-admin.ps1` 创建管理员） | 进入系统，侧栏可见各模块 |
 | A2 | 侧栏 | 依次点击首页、告警、资产、Runbook、执行 | 各页面正常加载，无白屏 |
 
 ### Dashboard 首页

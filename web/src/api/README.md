@@ -1,6 +1,6 @@
 # Web API 调用说明
 
-前端 API 封装位于 `web/src/api/`，所有请求必须统一经过 `request.ts`。后端成功响应使用 `code === "OK"`，前端不要再判断数字 `0`。
+前端 API 封装位于 `web/src/api/`，需鉴权的请求必须统一经过 `request.ts` 导出的 `http`。`identity.ts` 中登录、刷新、OAuth 等**公开接口**使用独立 `publicClient`（独立 axios 实例 + `unwrapPublic`），避免与鉴权拦截器的循环依赖；其余模块不得自行创建 axios 实例。后端成功响应使用 `code === "OK"`，前端不要再判断数字 `0`。
 
 全项目调用关系见 `docs/AI运维平台整体流程与调用关系.md`。前端只负责传业务 ID、展示脱敏结果、发起确认动作；权限、风险、审计、凭据保存和真实执行全部由后端 application / Execution 状态机约束。
 
@@ -21,6 +21,8 @@
 | `fetchLoginProviders` | `GET /api/identity/login/providers` | 公开；已启用身份源 |
 | `refresh` | `POST /api/identity/refresh` | 公开；凭 refresh_token 换发 |
 | `logout` | `POST /api/identity/logout` | 公开；吊销 refresh token |
+| `fetchOAuthAuthorizeURL` | `GET /api/identity/oauth/:provider_id/authorize` | 公开；获取 OAuth/OIDC 授权跳转 URL 与 state |
+| `completeOAuthCallback` | `POST /api/identity/oauth/:provider_id/callback` | 公开；OAuth 回调换发 TokenPair |
 | `authorize` | `POST /api/identity/authorize` | 需 Bearer + RBAC |
 
 契约：`ops/auth-contract.md`、`ops/identity-api-contract.md`。
@@ -95,6 +97,8 @@
 | `triggerAssetSync` | `POST /api/assets/sync` | 触发云资源同步，立即返回 `running` 批次 |
 | `pollSyncBatch` | 轮询 `GET /api/assets/sync/batches/:batch_id` | 触发后轮询到终态（`success`/`partial`/`failed`）或超时（默认 10 分钟）抛 `SyncStillRunningError`；`hybrid` 下只要任一增强失败就应落 `partial`；支持 `shouldStop` 取消（组件卸载） |
 | `listSyncBatches` / `getSyncBatch` | `/api/assets/sync/batches` | 查询同步批次，`listSyncBatches` 返回 `PageResult<SyncBatch>` |
+| `getSyncBatchSummaryDisplay` | 纯前端辅助 | 从 `SyncBatchSummary` 提取列表页展示字段（sync_mode、resource_group、计数等），避免主列表被诊断字段淹没 |
+| `getSyncBatchNotice` | 纯前端辅助 | 按批次 `status` 生成 `SyncBatchNotice`（`success`/`warning`/`error` 类型 + 中文摘要文案） |
 
 页面：`views/assets/index.vue`。契约：`ops/cloud-observability-contract.md` §5.5、`ops/huawei-ces-sync-contract.md` §15。
 
@@ -147,8 +151,9 @@
 | `upsertProvider` | `POST /api/ai/providers` | 新增或更新 |
 | `deleteProvider` | `DELETE /api/ai/providers/:id` | 删除 |
 | `invokeTool` | `POST /api/ai/tools/invoke` | 工具调用；成功响应内须检查 `allowed` |
+| `analyzeAlert` | `POST /api/ai/analyze-alert` | 告警上下文 AI 分析；返回 summary、risk_level、recommendations 等 |
 
-页面：`views/ai-assistant/index.vue`。契约：`ops/ai-contract.md`。
+页面：`views/ai-assistant/index.vue`、`views/alerts/index.vue`（告警详情先 `requestAlertAIAnalysis` 写时间线，再 `analyzeAlert` 取结果展示）。契约：`ops/ai-contract.md`。
 
 ## Audit（`audit.ts`）
 

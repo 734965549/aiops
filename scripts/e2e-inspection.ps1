@@ -3,6 +3,8 @@
 #   docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d
 #   go run ./cmd/migrate
 #   .\scripts\e2e-inspection.ps1
+#
+# 前置数据：脚本自行创建 Asset 应用（真实 application_id），不再硬编码不存在的 payment-service。
 
 param(
     [string]$ApiBase = $(if ($env:API_BASE) { $env:API_BASE } else { "http://127.0.0.1:8080" }),
@@ -11,6 +13,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+$RunId = [guid]::NewGuid().ToString("N").Substring(0, 8)
+$AppName = "insp-e2e-$RunId"
 
 function Invoke-Api {
     param(
@@ -45,9 +50,22 @@ $login = Invoke-Api -Method POST -Path "/api/identity/login" -Body @{
 }
 $auth = @{ Authorization = "Bearer $($login.access_token)" }
 
+Write-Host "==> create application $AppName (scope.application_ids requires registered asset)"
+$app = Invoke-Api -Method POST -Path "/api/assets/applications" -Headers $auth -Body @{
+    name = $AppName
+    environment = "prod"
+    namespace = "inspection-e2e"
+    description = "E2E inspection scope application"
+}
+$appId = $app.id
+if (-not $appId) {
+    throw "create application response missing id"
+}
+Write-Host ("    application_id=" + $appId)
+
 Write-Host "==> create fake huawei_cloud account for inspection scope"
 $account = Invoke-Api -Method POST -Path "/api/integrations/accounts" -Headers $auth -Body @{
-    name = "E2E Inspection Fake"
+    name = "E2E Inspection Fake $RunId"
     provider = "huawei_cloud"
     auth_type = "none"
     regions = @("cn-north-4")
@@ -58,14 +76,14 @@ Write-Host ("    account_id=" + $accountId)
 
 Write-Host "==> create inspection policy"
 $policy = Invoke-Api -Method POST -Path "/api/inspections/policies" -Headers $auth -Body @{
-    name = "E2E Core App Inspection"
+    name = "E2E Core App Inspection $RunId"
     enabled = $true
     schedule = "*/15 * * * *"
     scope = @{
         environment = "prod"
         account_id = $accountId
         provider = "huawei_cloud"
-        application_ids = @("payment-service")
+        application_ids = @($appId)
         resource_types = @("service", "host")
     }
     checks = @(
@@ -114,8 +132,9 @@ if (-not $f0.recommendations -or $f0.recommendations.Count -lt 1) {
 }
 Write-Host ("    findings=" + $findings.items.Count + " first_risk=" + $f0.risk_level + " evidence=" + $f0.evidence_refs[0])
 
-Write-Host "==> cleanup policy and account"
+Write-Host "==> cleanup policy, application, and account"
 Invoke-Api -Method DELETE -Path ("/api/inspections/policies/" + $policyId) -Headers $auth | Out-Null
+Invoke-Api -Method DELETE -Path ("/api/assets/applications/" + $appId) -Headers $auth | Out-Null
 Invoke-Api -Method DELETE -Path ("/api/integrations/accounts/" + $accountId) -Headers $auth | Out-Null
 
 Write-Host ""

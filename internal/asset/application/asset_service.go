@@ -18,12 +18,12 @@ type Actor struct {
 
 // AssetService 管理应用与资源注册表。
 type AssetService struct {
-	apps            domain.ApplicationRepository
-	resources       domain.ResourceRepository
-	rules           domain.MatchRuleRepository
-	refChecker      ApplicationReferenceChecker
-	deleteExecutor  ApplicationDeleteExecutor
-	audit           AuditRecorder
+	apps           domain.ApplicationRepository
+	resources      domain.ResourceRepository
+	rules          domain.MatchRuleRepository
+	refChecker     ApplicationReferenceChecker
+	deleteExecutor ApplicationDeleteExecutor
+	audit          AuditRecorder
 }
 
 // NewAssetService 构造资产管理服务。

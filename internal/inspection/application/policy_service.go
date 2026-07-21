@@ -12,9 +12,9 @@ import (
 
 // PolicyService 巡检策略 CRUD。
 type PolicyService struct {
-	policies domain.PolicyRepository
+	policies   domain.PolicyRepository
 	appCatalog ApplicationCatalogPort
-	audit    AuditRecorder
+	audit      AuditRecorder
 }
 
 func NewPolicyService(policies domain.PolicyRepository, appCatalog ApplicationCatalogPort, audit AuditRecorder) *PolicyService {

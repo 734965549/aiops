@@ -2,7 +2,6 @@ package application
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -295,7 +294,7 @@ func wrapRBError(err error, op string) error {
 func validateOperationType(raw string) (rbdomain.OperationType, error) {
 	op := rbdomain.OperationType(strings.ToLower(strings.TrimSpace(raw)))
 	if !op.IsValid() {
-		return "", fmt.Errorf("invalid operation_type")
+		return "", apperr.New(apperr.CodeInvalidArgument, "invalid operation_type")
 	}
 	return op, nil
 }
@@ -303,7 +302,7 @@ func validateOperationType(raw string) (rbdomain.OperationType, error) {
 func validateRiskLevel(raw string) (rbdomain.RiskLevel, error) {
 	r := rbdomain.RiskLevel(strings.ToLower(strings.TrimSpace(raw)))
 	if !r.IsValid() {
-		return "", fmt.Errorf("invalid risk_level")
+		return "", apperr.New(apperr.CodeInvalidArgument, "invalid risk_level")
 	}
 	return r, nil
 }

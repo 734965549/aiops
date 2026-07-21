@@ -17,11 +17,11 @@ func (s *TemplateService) Create(ctx context.Context, actor Actor, in CreateTemp
 	}
 	op, err := validateOperationType(in.OperationType)
 	if err != nil {
-		return nil, apperr.New(apperr.CodeInvalidArgument, err.Error())
+		return nil, err
 	}
 	risk, err := validateRiskLevel(in.RiskLevel)
 	if err != nil {
-		return nil, apperr.New(apperr.CodeInvalidArgument, err.Error())
+		return nil, err
 	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
@@ -77,11 +77,11 @@ func (s *TemplateService) Update(ctx context.Context, templateID string, actor A
 	}
 	op, err := validateOperationType(in.OperationType)
 	if err != nil {
-		return nil, apperr.New(apperr.CodeInvalidArgument, err.Error())
+		return nil, err
 	}
 	risk, err := validateRiskLevel(in.RiskLevel)
 	if err != nil {
-		return nil, apperr.New(apperr.CodeInvalidArgument, err.Error())
+		return nil, err
 	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
@@ -167,7 +167,7 @@ func (s *TemplateService) buildSteps(templateID string, inputs []CreateStepInput
 		}
 		stepRisk, err := validateRiskLevel(in.RiskLevel)
 		if err != nil {
-			return nil, apperr.New(apperr.CodeInvalidArgument, err.Error())
+			return nil, err
 		}
 		name := strings.TrimSpace(in.Name)
 		if name == "" {

@@ -78,6 +78,8 @@
 #   - Redis required=true，Redis 不可用时拒绝启动。
 #   - CORS 禁止通配符 *，须显式配置前端域名。
 #   - 日志格式 json，级别 info，便于日志采集系统解析。
+#   - API 容器：非 root 运行 + read_only + cap_drop ALL + no-new-privileges。
+#   - JWT access/refresh TTL 默认 60min / 72h（可按 30–60min / 24–72h 调整）。
 #
 # ============================================================================
 
@@ -122,8 +124,9 @@ x-aiops-env: &aiops-env
   # 认证：JWT secret 从 .env.production 注入，不使用 dev 占位值。
   AIOPS_AUTH__JWT_SECRET: ${AIOPS_AUTH__JWT_SECRET:?AIOPS_AUTH__JWT_SECRET is required}
   AIOPS_AUTH__JWT_ISSUER: aiops
-  AIOPS_AUTH__ACCESS_TTL_M: "120"
-  AIOPS_AUTH__REFRESH_TTL_H: "168"
+  # Token TTL：生产建议 access 30–60min、refresh 24–72h（默认 60m / 72h）。
+  AIOPS_AUTH__ACCESS_TTL_M: "60"
+  AIOPS_AUTH__REFRESH_TTL_H: "72"
   # 生产关闭 bootstrap 管理员；管理员须由运维流程或发布 SQL 创建。
   AIOPS_AUTH__BOOTSTRAP_USERNAME: ""
   AIOPS_AUTH__BOOTSTRAP_PASSWORD: ""
@@ -251,6 +254,13 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     deploy:
       resources:
         limits:

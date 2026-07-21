@@ -1,4 +1,13 @@
--- 只供 DBA 手工执行模式使用。
+-- =============================================================================
+-- !! 已废弃（DEPRECATED）— 禁止手工执行 !!
+--
+-- 本文件为历史遗留兜底脚本，schema 已与 runner 不一致（缺 checksum 列、版本仅至 0029）。
+-- 生产 / 预发 / dev / test 一律使用自研 runner（cmd/migrate 或 make migrate），
+-- 禁止手工 psql -f 本文件或手工写入 schema_migrations。
+-- 详见 ops/migration-contract.md 与 migrations/README.md。
+-- =============================================================================
+--
+-- 只供 DBA 手工执行模式使用。（已废弃，见上方说明）
 --
 -- 先按 migrations/README.md 列出嘅顺序成功执行所有 migrations/*.up.sql，
 -- 再执行呢个文件补齐 schema_migrations 账本。

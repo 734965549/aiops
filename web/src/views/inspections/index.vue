@@ -483,7 +483,7 @@ async function onTriggerRun(policyId: string) {
       await loadFindings()
     }
   } catch (e) {
-    Message.error(getApiError(e)?.message || '加载账号失败')
+    Message.error(getApiError(e)?.message || '巡检触发失败')
   } finally {
     triggeringId.value = ''
   }

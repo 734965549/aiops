@@ -21,9 +21,9 @@ func TestIngestService_CreateWritesIngestAudit(t *testing.T) {
 	_ = sources.Create(context.Background(), src)
 	svc := NewIngestService(alerts, events, sources, nil, nil, audit)
 	ctx := IngestContext{SourceID: src.ID, Token: "secret"}
-	payload := ingest.AlertmanagerWebhook{
+	payload := AlertmanagerWebhook{
 		Status: "firing",
-		Alerts: []ingest.AlertmanagerAlert{{
+		Alerts: []AlertmanagerAlert{{
 			Labels: map[string]string{"alertname": "HighCPU", "service": "payment"},
 		}},
 	}

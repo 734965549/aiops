@@ -82,6 +82,15 @@
         </a-form-item>
       </a-form>
 
+      <a-alert
+        v-if="listLoadError"
+        type="error"
+        :title="listLoadError"
+        closable
+        style="margin-bottom: 12px"
+        @close="listLoadError = ''"
+      />
+
       <a-table
         :columns="columns"
         :data="alerts"
@@ -344,6 +353,13 @@
                 {{ record.enabled ? '启用' : '禁用' }}
               </a-tag>
             </template>
+            <template #secretMasked="{ record }">
+              <span v-if="record.secret_masked">{{ record.secret_masked }}</span>
+              <span
+                v-else
+                class="text-muted"
+              >未配置</span>
+            </template>
             <template #webhook="{ record }">
               <a-typography-text
                 copyable
@@ -408,6 +424,12 @@
                   v-model="sourceForm.secret"
                   placeholder="X-AIOPS-Webhook-Token"
                 />
+                <div
+                  v-if="editingSourceId && editingSourceSecretMasked"
+                  class="field-hint"
+                >
+                  当前已配置密钥：{{ editingSourceSecretMasked }}
+                </div>
               </a-form-item>
               <a-form-item label="环境">
                 <a-input
@@ -713,6 +735,7 @@ const detail = ref<AlertDetail | null>(null)
 const selectedAlertId = ref('')
 
 const loadingList = ref(false)
+const listLoadError = ref('')
 const loadingDetail = ref(false)
 const loadingSources = ref(false)
 const actionLoading = ref(false)
@@ -734,6 +757,7 @@ const showAIModal = ref(false)
 const showExecutionModal = ref(false)
 
 const editingSourceId = ref('')
+const editingSourceSecretMasked = ref('')
 const aiResult = ref<AnalyzeAlertResult | null>(null)
 
 const filters = reactive({
@@ -818,6 +842,7 @@ const sourceColumns = [
   { title: 'ID', dataIndex: 'id', width: 100 },
   { title: '名称', dataIndex: 'name' },
   { title: '类型', dataIndex: 'type', width: 160, ellipsis: true },
+  { title: '密钥', slotName: 'secretMasked', width: 80 },
   { title: '状态', slotName: 'enabled', width: 80 },
   { title: 'Webhook', slotName: 'webhook', ellipsis: true },
   { title: '操作', slotName: 'sourceActions', width: 80 }
@@ -958,6 +983,7 @@ function webhookUrl(source: Pick<AlertSource, 'id' | 'type'>) {
 
 async function loadAlerts() {
   loadingList.value = true
+  listLoadError.value = ''
   try {
     const res = await alertApi.listAlerts({
       page: pagination.current,
@@ -970,6 +996,10 @@ async function loadAlerts() {
     })
     alerts.value = res.items
     pagination.total = res.total
+  } catch (err) {
+    alerts.value = []
+    pagination.total = 0
+    listLoadError.value = getApiError(err)?.message || '加载告警列表失败'
   } finally {
     loadingList.value = false
   }
@@ -1280,6 +1310,7 @@ function openSourceModal() {
 
 function resetSourceForm() {
   editingSourceId.value = ''
+  editingSourceSecretMasked.value = ''
   sourceForm.id = ''
   sourceForm.name = ''
   sourceForm.type = 'prometheus_alertmanager'
@@ -1293,6 +1324,7 @@ function resetSourceForm() {
 function onSelectSource(record: TableData) {
   const src = record as AlertSource
   editingSourceId.value = src.id
+  editingSourceSecretMasked.value = src.secret_masked || ''
   sourceForm.id = src.id
   sourceForm.name = src.name
   sourceForm.type = src.type
@@ -1430,6 +1462,16 @@ onMounted(async () => {
     margin-left: 8px;
     color: var(--color-text-3);
     font-size: 12px;
+  }
+
+  .field-hint {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--color-text-3);
+  }
+
+  .text-muted {
+    color: var(--color-text-3);
   }
 }
 </style>

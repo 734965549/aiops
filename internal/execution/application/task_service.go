@@ -232,12 +232,12 @@ func (s *TaskService) Create(ctx context.Context, actor Actor, in CreateTaskInpu
 			rollback = cloneMap(runbookTpl.RollbackPlan)
 		}
 		if err := validateParameterSchema(runbookTpl.ParameterSchema, params); err != nil {
-			return nil, apperr.New(apperr.CodeInvalidArgument, err.Error())
+			return nil, err
 		}
 		runbookSnapshot = buildRunbookSnapshot(runbookTpl)
 		execSteps, err = buildStepsFromRunbook(taskID, runbookTpl, params, taskDryRun, now)
 		if err != nil {
-			return nil, apperr.New(apperr.CodeInvalidArgument, err.Error())
+			return nil, err
 		}
 	} else {
 		opType = domain.OperationType(opTypeRaw)
@@ -358,7 +358,7 @@ func buildStepsFromRunbook(
 		stepDryRun := taskDryRun && rs.DryRunSupported
 		parameters := mergeStepParameters(rs.DefaultParameters, userParams)
 		if err := validateParameterSchema(rs.ParameterSchema, parameters); err != nil {
-			return nil, fmt.Errorf("step %d %s: %w", rs.StepOrder, rs.Name, err)
+			return nil, apperr.Newf(apperr.CodeInvalidArgument, "step %d %s: %s", rs.StepOrder, rs.Name, apperr.MessageOf(err))
 		}
 		steps = append(steps, domain.Step{
 			ID:              uuid.NewString(),
@@ -453,7 +453,11 @@ func (s *TaskService) Confirm(ctx context.Context, taskID string, actor Actor, i
 		return nil, apperr.New(apperr.CodeInvalidArgument, "confirm_text must be CONFIRM")
 	}
 	now := s.now()
-	task, err := s.tasks.UpdateStatusIf(ctx, strings.TrimSpace(taskID), domain.StatusPendingConfirm, domain.StatusPendingExecute, func(t *domain.Task) {
+	from, to, err := domain.TransitionForAction(domain.ActionConfirm)
+	if err != nil {
+		return nil, wrapExecError(err, "confirm execution task failed")
+	}
+	task, err := s.tasks.UpdateStatusIf(ctx, strings.TrimSpace(taskID), from, to, func(t *domain.Task) {
 		t.ConfirmedBy = strings.TrimSpace(actor.UserID)
 		t.ConfirmedAt = &now
 		if t.ExecutionMode == domain.ModeAgent {
@@ -464,20 +468,24 @@ func (s *TaskService) Confirm(ctx context.Context, taskID string, actor Actor, i
 	if err != nil {
 		return nil, wrapExecError(err, "confirm execution task failed")
 	}
-	s.recordAudit(ctx, task.ID, actor.UserID, AuditConfirm, map[string]any{"status": string(domain.StatusPendingExecute), "result": "success"})
+	s.recordAudit(ctx, task.ID, actor.UserID, AuditConfirm, map[string]any{"status": string(to), "result": "success"})
 	dto := ToTaskDTO(*task)
 	return &dto, nil
 }
 
 func (s *TaskService) rejectTask(ctx context.Context, taskID string, actor Actor) (*TaskDTO, error) {
 	now := s.now()
-	task, err := s.tasks.UpdateStatusIf(ctx, strings.TrimSpace(taskID), domain.StatusPendingConfirm, domain.StatusCancelled, func(t *domain.Task) {
+	from, to, err := domain.TransitionForAction(domain.ActionReject)
+	if err != nil {
+		return nil, wrapExecError(err, "reject execution task failed")
+	}
+	task, err := s.tasks.UpdateStatusIf(ctx, strings.TrimSpace(taskID), from, to, func(t *domain.Task) {
 		t.UpdatedAt = now
 	})
 	if err != nil {
 		return nil, wrapExecError(err, "reject execution task failed")
 	}
-	s.recordAudit(ctx, task.ID, actor.UserID, AuditReject, map[string]any{"status": string(domain.StatusCancelled), "result": "success"})
+	s.recordAudit(ctx, task.ID, actor.UserID, AuditReject, map[string]any{"status": string(to), "result": "success"})
 	dto := ToTaskDTO(*task)
 	return &dto, nil
 }
@@ -495,8 +503,15 @@ func (s *TaskService) Execute(ctx context.Context, taskID string, actor Actor) (
 	if task.ExecutionMode == domain.ModeAgent {
 		return nil, apperr.New(apperr.CodeFailedPrecondition, "agent mode tasks must be executed by execution agent after confirm")
 	}
+	if !domain.CanExecute(task.Status) {
+		return nil, apperr.New(apperr.CodeInvalidArgument, "execution task is not in pending_execute status")
+	}
+	from, to, transErr := domain.TransitionForAction(domain.ActionExecute)
+	if transErr != nil {
+		return nil, wrapExecError(transErr, "start execution task failed")
+	}
 	now := s.now()
-	task, err := s.tasks.UpdateStatusIf(ctx, taskID, domain.StatusPendingExecute, domain.StatusRunning, func(t *domain.Task) {
+	task, err := s.tasks.UpdateStatusIf(ctx, taskID, from, to, func(t *domain.Task) {
 		t.ExecutedBy = strings.TrimSpace(actor.UserID)
 		t.StartedAt = &now
 		t.UpdatedAt = now
@@ -748,10 +763,10 @@ func (s *TaskService) createAgentTask(
 		return nil, wrapExecError(err, "medium does not support command spec")
 	}
 	if err := ValidateCommandArguments(spec.ArgumentSchema, arguments); err != nil {
-		return nil, apperr.New(apperr.CodeInvalidArgument, err.Error())
+		return nil, err
 	}
 	if _, err := BuildCommandArgv(spec.CommandTemplate, arguments); err != nil {
-		return nil, apperr.New(apperr.CodeInvalidArgument, err.Error())
+		return nil, err
 	}
 
 	name := strings.TrimSpace(in.Name)

@@ -91,7 +91,6 @@ import {
 } from '@arco-design/web-vue/es/icon'
 import { useAuthStore } from '@/stores/auth'
 import { fetchCurrentUser } from '@/api/system'
-import { getApiError } from '@/api/request'
 import OceanBackdrop from './components/OceanBackdrop.vue'
 
 const route = useRoute()
@@ -145,16 +144,8 @@ onMounted(async () => {
   try {
     const u = await fetchCurrentUser()
     auth.setUser(u)
-  } catch (err) {
-    const apiErr = getApiError(err)
-    if (apiErr) {
-      console.warn('[identity/me]', {
-        status: apiErr.status,
-        code: apiErr.code,
-        message: apiErr.message,
-        trace_id: apiErr.traceId
-      })
-    }
+  } catch {
+    /* 错误已由拦截器提示；用户信息刷新失败不阻断布局渲染。 */
   }
 })
 </script>

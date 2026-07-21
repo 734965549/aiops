@@ -29,6 +29,7 @@ deployments/.env.production
 .idea/
 .vscode/
 .trae/
+.zcode/
 *.swp
 
 # Logs

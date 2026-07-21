@@ -1,10 +1,11 @@
-# 生产首个安全管理员初始化（0044 锁定默认 admin 后使用）。
+﻿# 生产首个安全管理员初始化（0044 锁定默认 admin 后使用）。
 # 用法示例：
 #   ./scripts/provision-prod-admin.ps1 -PgPassword '<db-password>'
 #   ./scripts/provision-prod-admin.ps1 -Username ops-admin -GeneratePassword
 #
 # 默认重新激活被 0044 锁定的 username=admin 账号并绑定 admin 角色；
 # 指定 -Username 且非 admin 时创建新用户并绑定 admin 角色。
+# 可重复执行：目标用户已是 active + 非空密码 + admin 角色时幂等跳过；-Force 才重置密码。
 
 param(
     [string]$PgHost = "127.0.0.1",
@@ -130,6 +131,46 @@ if ([string]::IsNullOrWhiteSpace($PgPassword)) {
     exit 1
 }
 
+Write-Step "checking migration 0044 state for username=$Username"
+
+$escapedUser = Escape-SqlLiteral $Username
+$userStatus = Invoke-SqlScalar -Sql ("SELECT status FROM iam_user WHERE username = '" + $escapedUser + "' LIMIT 1;")
+$userHash = Invoke-SqlScalar -Sql ("SELECT password_hash FROM iam_user WHERE username = '" + $escapedUser + "' LIMIT 1;")
+$userIdExisting = Invoke-SqlScalar -Sql ("SELECT user_id FROM iam_user WHERE username = '" + $escapedUser + "' LIMIT 1;")
+$roleBoundExisting = "0"
+if (-not [string]::IsNullOrWhiteSpace($userIdExisting)) {
+    $escapedUserIdExisting = Escape-SqlLiteral $userIdExisting
+    $roleBoundExisting = Invoke-SqlScalar -Sql @"
+SELECT count(*)
+FROM iam_user_role ur
+JOIN iam_role r ON r.role_id = ur.role_id
+WHERE ur.user_id = '$escapedUserIdExisting' AND r.code = 'admin';
+"@
+}
+
+# 可重复执行：已有安全管理员（active + 密码哈希 + admin 角色）时直接成功退出，不改密码。
+# 需要重置密码时显式传 -Force。
+if (-not $Force -and $userStatus -eq "active" -and -not [string]::IsNullOrWhiteSpace($userHash) -and $roleBoundExisting -eq "1") {
+    Write-Pass ("admin already provisioned: username=" + $Username + ", user_id=" + $userIdExisting + " (skip; use -Force to reset password)")
+    exit 0
+}
+
+if ($Username -eq "admin") {
+    if ([string]::IsNullOrWhiteSpace($userStatus)) {
+        Write-Fail "username=admin not found; run migrations through 0016 first"
+        exit 1
+    }
+    if ($userStatus -ne "locked" -and -not $Force) {
+        Write-Fail ("expected admin status=locked after 0044 (or already-provisioned active admin), got status=" + $userStatus + "; use -Force to override")
+        exit 1
+    }
+} else {
+    if (-not [string]::IsNullOrWhiteSpace($userStatus) -and -not $Force) {
+        Write-Fail ("username already exists: " + $Username + "; use -Force to reset password")
+        exit 1
+    }
+}
+
 $plainPassword = $Password
 if ($GeneratePassword) {
     $plainPassword = New-RandomPassword
@@ -150,32 +191,6 @@ if ([string]::IsNullOrWhiteSpace($plainPassword)) {
 if ($plainPassword.Length -lt 12) {
     Write-Fail "password too short (minimum 12 characters recommended)"
     exit 1
-}
-
-Write-Step "checking migration 0044 state for username=$Username"
-
-$escapedUser = Escape-SqlLiteral $Username
-$userStatus = Invoke-SqlScalar -Sql ("SELECT status FROM iam_user WHERE username = '" + $escapedUser + "' LIMIT 1;")
-$userHash = Invoke-SqlScalar -Sql ("SELECT password_hash FROM iam_user WHERE username = '" + $escapedUser + "' LIMIT 1;")
-
-if ($Username -eq "admin") {
-    if ([string]::IsNullOrWhiteSpace($userStatus)) {
-        Write-Fail "username=admin not found; run migrations through 0016 first"
-        exit 1
-    }
-    if ($userStatus -eq "active" -and -not [string]::IsNullOrWhiteSpace($userHash) -and -not $Force) {
-        Write-Fail "admin is already active with a password set; use -Force to overwrite"
-        exit 1
-    }
-    if ($userStatus -ne "locked" -and -not $Force) {
-        Write-Fail ("expected admin status=locked after 0044, got status=" + $userStatus + "; use -Force to override")
-        exit 1
-    }
-} else {
-    if (-not [string]::IsNullOrWhiteSpace($userStatus) -and -not $Force) {
-        Write-Fail ("username already exists: " + $Username + "; use -Force to reset password")
-        exit 1
-    }
 }
 
 Write-Step "hashing password (bcrypt cost 12 via pkg/auth)"

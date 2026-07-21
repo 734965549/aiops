@@ -30,6 +30,13 @@
                     {{ record.enabled ? '启用' : '禁用' }}
                   </a-tag>
                 </template>
+                <template #hasApiKey="{ record }">
+                  <span v-if="record.has_api_key">已配置</span>
+                  <span
+                    v-else
+                    class="text-muted"
+                  >未配置</span>
+                </template>
                 <template #actions="{ record }">
                   <a-popconfirm
                     content="确认删除该 Provider？"
@@ -95,6 +102,12 @@
                     v-model="form.api_key"
                     placeholder="新增必填；编辑留空则保留原密钥"
                   />
+                  <div
+                    v-if="editingId && formHasApiKey"
+                    class="field-hint"
+                  >
+                    当前已配置密钥
+                  </div>
                 </a-form-item>
                 <a-form-item label="超时 (ms)">
                   <a-input-number
@@ -232,12 +245,14 @@ const savingProvider = ref(false)
 const invoking = ref(false)
 const invokeResult = ref<InvokeToolResult | null>(null)
 const editingId = ref('')
+const formHasApiKey = ref(false)
 const payloadText = ref('{}')
 
 const providerColumns = [
   { title: 'ID', dataIndex: 'id', width: 140 },
   { title: '名称', dataIndex: 'name' },
   { title: '类型', dataIndex: 'type', width: 70 },
+  { title: '密钥', slotName: 'hasApiKey', width: 80 },
   { title: '状态', slotName: 'enabled', width: 80 },
   { title: '操作', slotName: 'actions', width: 80 }
 ]
@@ -291,6 +306,7 @@ async function loadProviders() {
 function onSelectProvider(record: Record<string, unknown>) {
   const p = record as unknown as AIProvider
   editingId.value = p.id
+  formHasApiKey.value = !!p.has_api_key
   form.id = p.id
   form.name = p.name
   form.type = p.type
@@ -303,6 +319,7 @@ function onSelectProvider(record: Record<string, unknown>) {
 
 function resetForm() {
   editingId.value = ''
+  formHasApiKey.value = false
   Object.assign(form, emptyForm())
 }
 
@@ -403,5 +420,13 @@ onMounted(loadProviders)
   line-height: 1.5;
   overflow: auto;
   max-height: 480px;
+}
+.field-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+.text-muted {
+  color: var(--color-text-3);
 }
 </style>

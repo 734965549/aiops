@@ -27,7 +27,7 @@ docker-compose.dev.yml（覆盖）
 
 - `make docker` 产出 `aiops-api:$(VERSION)`（`VERSION` 默认 `git describe` 或 `dev`）。
 - Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}`，与 Makefile 对齐；构建前可设 `AIOPS_VERSION=$(git describe --tags --always --dirty)`。
-- 生产 `docker-compose.prod.yml` 使用完整镜像引用 `${AIOPS_IMAGE:?...}`（不再拼接仓库名），优先 digest（`registry/repo@sha256:...`），禁止 latest；上线前运行 `scripts/verify-prod-version.ps1` 或 `scripts/deploy-prod.ps1` 校验。dev 仍用 `AIOPS_VERSION` tag。
+- 生产 `docker-compose.prod.yml` 使用完整镜像引用 `${AIOPS_IMAGE:?...}`（不再拼接仓库名），优先 digest（`registry/repo@sha256:...`），禁止 latest；上线前运行 `scripts/verify-prod-version.ps1` 或 `scripts/deploy-prod.ps1 -SkipUp` 校验。`scripts/deploy-prod.ps1` 已扩展为完整发布链路（备份 → migrate → verify → 建管理员 → up API → /readyz），加 `-SkipUp` 才退化为仅校验镜像；详见 `docs/release-checklist.md` §9。dev 仍用 `AIOPS_VERSION` tag。
 
 ## 入参
 
@@ -49,7 +49,7 @@ docker-compose.dev.yml（覆盖）
 ## 安全提示
 
 - PostgreSQL 默认 `aiops/aiops`、Web 登录 `admin/admin123`、dev JWT 占位值**只适用于本机联调或受控初始化**。
-- 生产部署：勿将 PostgreSQL / Redis 端口发布到公网或宿主机；JWT、DB 密码、Integration 凭据加密密钥、`AIOPS_EXECUTION__AGENT_REGISTER_TOKEN` 须通过 secrets / CI 注入；关闭 bootstrap；`database.auto_migrate=false`；先执行 `/app/aiops-migrate`（或 `go run ./cmd/migrate`）再启 API。迁移 `0044` 已按 `username=admin` + 已知 admin123 哈希锁定默认管理员（status=locked、清空 password_hash），API 对外开放前运行 `scripts/provision-prod-admin.ps1` 创建安全管理员（bcrypt cost 12 + admin 角色），不得依赖默认账号（详见 `docs/release-checklist.md` §2.8 / §5.1）。
+- 生产部署：勿将 PostgreSQL / Redis 端口发布到公网或宿主机；JWT、DB 密码、Integration 凭据加密密钥、`AIOPS_EXECUTION__AGENT_REGISTER_TOKEN` 须通过 secrets / CI 注入；关闭 bootstrap；`database.auto_migrate=false`；先执行 `/app/aiops-migrate`（或 `go run ./cmd/migrate`）再启 API。迁移 `0044` 已按 `username=admin` + 已知 admin123 哈希锁定默认管理员（status=locked、清空 password_hash），API 对外开放前运行 `scripts/provision-prod-admin.ps1` 创建安全管理员（bcrypt cost 12 + admin 角色），不得依赖默认账号（详见 `docs/release-checklist.md` §2.8 / §5.1）。JWT TTL 生产默认 60min / 72h；API 容器非 root + read_only + cap_drop + no-new-privileges。
 - `aiops-api:1.2` 起，非 dev 环境必须配置 `AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY`。该密钥用于加密云账号 AK/SK、Token 等接入凭据，必须是独立强随机值，不能为空、不能使用 dev 占位符、不能与 `AIOPS_AUTH__JWT_SECRET` 相同。
 
 ## 生产前端接入（CORS + VITE_API_BASE）

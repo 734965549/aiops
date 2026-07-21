@@ -103,7 +103,7 @@ aiops/
 
 | 工具 | 版本要求 | 说明 |
 | --- | --- | --- |
-| Go | 1.22+ | 后端运行时 |
+| Go | 1.26+ | 后端运行时 |
 | Node.js | 18+ | 前端运行时 |
 | Docker / Docker Desktop | 任意近期版本 | 启动 PostgreSQL + Redis |
 | Make | 可选 | 使用根目录 `Makefile` 简化命令 |
@@ -145,7 +145,7 @@ make migrate-up
 go run ./cmd/migrate -config configs/config.yaml
 ```
 
-当前迁移文件（`0001` -> `0042`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
+当前迁移文件（`0001` -> `0045`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -185,8 +185,10 @@ go run ./cmd/migrate -config configs/config.yaml
 | `0039` | `0039_cleanup_orphaned_application_refs.up.sql` | Asset：清理 `0032` DELETE 遗留的 `alert_alert`/`inspection_policy` 孤儿引用，按 `integration_account` 计算 old->new 映射改写为新格式；不依赖 `has_old`；幂等；依赖 pgcrypto |
 | `0040` | `0040_application_ref_integrity_view.up.sql` | Asset：创建持久视图 `v_asset_app_ref_integrity`，暴露 `asset_resource`/`asset_match_rule`/`alert_alert`/`inspection_policy` 中指向不存在 `asset_application` 的孤儿引用；不修改数据，不阻断迁移；幂等（`CREATE OR REPLACE VIEW`）；验收方式 `SELECT * FROM v_asset_app_ref_integrity` 期望 0 行 |
 | `0041` | `0041_legacy_app_id_convergence_guard.up.sql` | Asset：legacy 应用收敛硬阻断守卫，若 `asset_application` 中仍存在 `cloud-<account_id>` 格式 legacy 应用则 `CHECK(n=0)` 失败导致迁移终止；不修改业务数据；若 0041 阻断需排查 0032/0037 收敛失败或代码路径仍在创建旧格式应用，修复后由 `0042` 收口补建 |
-
 | `0042` | `0042_backfill_orphaned_app_refs_and_guard.up.sql` | Asset：补建 0039 改写后仍被引用但不存在的新格式 cloud application ID 对应的 `asset_application` 记录（字段与 `ensureCloudApplication` 一致），并将 `v_asset_app_ref_integrity` 作为硬验收（`CHECK(n=0)`），补建后仍有孤儿则迁移失败；幂等（`ON CONFLICT DO NOTHING`）；依赖 pgcrypto |
+| `0043` | `0043_fix_orphaned_alert_app_refs.up.sql` | Asset：修复 `DeleteApplication` 缺失跨上下文引用检查导致的孤儿告警引用；将 `alert_alert` 中指向不存在应用的 `application_id`/`application_name` 置空，移除 `inspection_policy.scope.application_ids` 中的孤儿元素；`CHECK(n=0)` 硬验收确保修复后 `v_asset_app_ref_integrity` 返回 0 行；幂等 |
+| `0044` | `0044_lock_default_admin_account.up.sql` | Identity：锁定 `username='admin'` 且 `password_hash` 仍为已知 admin123 哈希的默认管理员（`status=locked`、清空 `password_hash`）；不覆盖 DBA 已设置的强密码；dev/test 在 bootstrap 启用时由 `EnsureBootstrapUser` 重新激活，生产 bootstrap 关闭则保持锁定、须由 DBA 创建安全管理员；幂等 |
+| `0045` | `0045_inspection_policy_deleted_scope_cleanup.up.sql` | Asset：回填清空已软删除 `inspection_policy.scope.application_ids`；重建 `v_asset_app_ref_integrity` 仅检查 `deleted=false` 策略；与 `ApplicationReferenceChecker` 及运行时 `SoftDelete` 契约一致；幂等 |
 
 详见 `ops/migration-contract.md`。
 

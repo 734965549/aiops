@@ -35,7 +35,7 @@
 
 #### 响应示例
 
-列表接口**不返回明文** `api_key`：已配置密钥时 `api_key` 固定为掩码 `****`，并通过 `has_api_key` 表示是否已设置。
+列表接口**不返回** `api_key` 字段；通过 `has_api_key` 表示是否已配置密钥。
 
 ```json
 {
@@ -48,7 +48,6 @@
       "name": "Demo HTTP Provider A",
       "type": "a",
       "base_url": "http://127.0.0.1:9000",
-      "api_key": "****",
       "has_api_key": true,
       "timeout_ms": 30000,
       "headers": {

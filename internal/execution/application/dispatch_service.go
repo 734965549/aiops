@@ -99,7 +99,7 @@ func (s *DispatchService) Lease(ctx context.Context, agent *domain.ExecutionAgen
 		}
 		return nil, wrapExecError(err, "find dispatchable task failed")
 	}
-	if task.Status != domain.StatusPendingExecute || task.DispatchStatus != domain.DispatchPending {
+	if !domain.CanExecute(task.Status) || task.DispatchStatus != domain.DispatchPending {
 		return &LeaseTaskResult{}, nil
 	}
 	steps, err := s.steps.ListByTaskID(ctx, task.ID)
@@ -116,7 +116,7 @@ func (s *DispatchService) Lease(ctx context.Context, agent *domain.ExecutionAgen
 	}
 	argv, err := BuildCommandArgv(step.CommandTemplate, step.Arguments)
 	if err != nil {
-		return nil, apperr.New(apperr.CodeInvalidArgument, err.Error())
+		return nil, err
 	}
 
 	now := s.now()
@@ -131,7 +131,11 @@ func (s *DispatchService) Lease(ctx context.Context, agent *domain.ExecutionAgen
 		return nil, wrapExecError(err, "create execution lease failed")
 	}
 
-	task.Status = domain.StatusRunning
+	to, err := domain.TransitionExecute(task.Status)
+	if err != nil {
+		return nil, wrapExecError(err, "mark task leased failed")
+	}
+	task.Status = to
 	task.DispatchStatus = domain.DispatchLeased
 	task.AgentID = agent.AgentID
 	task.LeaseID = leaseID
