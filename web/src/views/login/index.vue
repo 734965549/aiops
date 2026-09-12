@@ -323,8 +323,8 @@ function applyScenePointer() {
 
   const deltaX = pointerX - renderedPointerX
   const deltaY = pointerY - renderedPointerY
-  renderedPointerX += deltaX * 0.18
-  renderedPointerY += deltaY * 0.18
+  renderedPointerX += deltaX * 0.35
+  renderedPointerY += deltaY * 0.35
 
   const normalizedPosition = Math.max(0, Math.min(1, (renderedPointerX - 0.12) / 0.7))
   const guidePosition = Math.pow(normalizedPosition, 1.25) * 100
@@ -1051,7 +1051,6 @@ async function onOAuthLogin(providerId: string) {
     #000 calc(var(--morph-position) + 32%),
     #000 100%
   );
-  transition: mask-image 60ms linear, -webkit-mask-image 60ms linear;
   will-change: mask-image;
 }
 
@@ -1115,7 +1114,6 @@ async function onOAuthLogin(providerId: string) {
   z-index: 0;
   transform: scale(1.085);
   transform-origin: var(--morph-x) var(--morph-y);
-  transition: transform 180ms ease-out;
   will-change: transform;
 }
 
@@ -1203,7 +1201,6 @@ async function onOAuthLogin(providerId: string) {
   background: #f4f2ea;
   box-shadow: 0 0 0 4px rgba(244, 242, 234, 0.5);
   transform: translate(-50%, -50%);
-  transition: left 80ms linear;
 }
 
 @keyframes organic-breathe {
