@@ -14,8 +14,12 @@ server:
   host: 0.0.0.0
   port: 8080
   read_timeout_s: 15
+  read_header_timeout_s: 5
   write_timeout_s: 30
   shutdown_timeout_s: 10
+  max_header_bytes: 1048576       # 1MB
+  max_request_body_bytes: 10485760 # 10MB
+  trusted_proxies: []            # 生产环境置于反向代理后时配置代理 IP/CIDR，留空禁用代理信任
 
 logger:
   level: info       # debug | info | warn | error

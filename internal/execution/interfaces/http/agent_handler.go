@@ -1,11 +1,13 @@
 package http
 
 import (
+	"crypto/subtle"
+	"strings"
+
 	execapp "github.com/734965549/aiops/internal/execution/application"
 	apperr "github.com/734965549/aiops/pkg/errors"
 	httpx "github.com/734965549/aiops/pkg/transport/http"
 	"github.com/gin-gonic/gin"
-	"strings"
 )
 
 const ctxKeyAgentID = "execution_agent_id"
@@ -73,7 +75,7 @@ func (h *AgentHandler) Register(c *gin.Context) {
 	if h.register != nil {
 		expected = h.register()
 	}
-	if expected == "" || token != expected {
+	if expected == "" || subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
 		httpx.FailWith(c, apperr.CodePermissionDenied, "invalid register token")
 		return
 	}

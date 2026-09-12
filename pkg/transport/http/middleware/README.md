@@ -10,16 +10,19 @@
 - `recovery`：防止 panic 直接打爆服务。
 - `request_log`：记录请求方法、路径、耗时、状态码。
 - `cors`：处理浏览器跨域。
+- `security`：注入安全响应头（X-Frame-Options、X-Content-Type-Options、CSP等）并提供全局请求体大小限制。
 - `auth`：检查 `Authorization: Bearer <token>`。
 
 ## 调用关系
 
 ```text
 客户端请求
+  -> SecurityHeaders
   -> Trace
   -> Recovery
   -> RequestLog
   -> CORS
+  -> RequestBodyLimit
   -> Auth（受保护路由）
   -> 业务 Handler
 ```
@@ -28,10 +31,12 @@
 
 | 中间件 | 入参 | 说明 |
 | --- | --- | --- |
+| SecurityHeaders | 无 | 为响应头注入安全标头 |
 | Trace | Header `X-Trace-ID` 或空 | 有就沿用，冇就生成 |
 | Recovery | Gin Context | 捕获 panic |
 | RequestLog | 请求方法、路径、IP、耗时 | 写访问日志 |
 | CORS | Origin、Method、Headers | 判断是否允许跨域 |
+| RequestBodyLimit | 最大字节限制（如 10MB） | 超过大小时终止并返回 413 Payload Too Large |
 | Auth | Bearer access token | 验证登录身份 |
 
 ## 出参

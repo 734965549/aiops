@@ -45,11 +45,15 @@ type AppConfig struct {
 
 // ServerConfig 描述 HTTP 服务监听参数。
 type ServerConfig struct {
-	Host             string `mapstructure:"host"`
-	Port             int    `mapstructure:"port"`
-	ReadTimeoutS     int    `mapstructure:"read_timeout_s"`
-	WriteTimeoutS    int    `mapstructure:"write_timeout_s"`
-	ShutdownTimeoutS int    `mapstructure:"shutdown_timeout_s"`
+	Host                string   `mapstructure:"host"`
+	Port                int      `mapstructure:"port"`
+	ReadTimeoutS        int      `mapstructure:"read_timeout_s"`
+	ReadHeaderTimeoutS  int      `mapstructure:"read_header_timeout_s"`
+	WriteTimeoutS       int      `mapstructure:"write_timeout_s"`
+	ShutdownTimeoutS    int      `mapstructure:"shutdown_timeout_s"`
+	MaxHeaderBytes      int      `mapstructure:"max_header_bytes"`
+	MaxRequestBodyBytes int64    `mapstructure:"max_request_body_bytes"`
+	TrustedProxies      []string `mapstructure:"trusted_proxies"`
 }
 
 // LoggerConfig 描述日志参数。
@@ -503,8 +507,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.host", "0.0.0.0")
 	v.SetDefault("server.port", 8080)
 	v.SetDefault("server.read_timeout_s", 15)
+	v.SetDefault("server.read_header_timeout_s", 5)
 	v.SetDefault("server.write_timeout_s", 30)
 	v.SetDefault("server.shutdown_timeout_s", 10)
+	v.SetDefault("server.max_header_bytes", 1<<20)          // 1MB
+	v.SetDefault("server.max_request_body_bytes", 10<<20)   // 10MB
+	v.SetDefault("server.trusted_proxies", []string{})
 
 	v.SetDefault("logger.level", "info")
 	v.SetDefault("logger.format", "console")

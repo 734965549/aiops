@@ -57,12 +57,23 @@ func NewEngine(opt Options) *gin.Engine {
 	}
 	r := gin.New()
 
-	// 通用中间件顺序：Trace -> Recovery -> RequestLog -> CORS。
-	// Trace 必须在最外层，确保后续日志与响应都能拿到 trace_id。
+	// 配置受信代理 (F-03)
+	if len(cfg.Server.TrustedProxies) > 0 {
+		_ = r.SetTrustedProxies(cfg.Server.TrustedProxies)
+	} else {
+		_ = r.SetTrustedProxies(nil)
+	}
+
+	// 通用中间件顺序：SecurityHeaders -> Trace -> Recovery -> RequestLog -> CORS -> RequestBodyLimit。
+	// Trace 在最外层，确保后续日志与响应都能拿到 trace_id。
+	r.Use(middleware.SecurityHeaders())
 	r.Use(middleware.Trace())
 	r.Use(middleware.Recovery())
 	r.Use(middleware.RequestLog())
 	r.Use(middleware.CORS(cfg.CORS))
+	if cfg.Server.MaxRequestBodyBytes > 0 {
+		r.Use(middleware.RequestBodyLimit(cfg.Server.MaxRequestBodyBytes))
+	}
 
 	registerSystemRoutes(r, cfg, opt.DB, opt.Redis, opt.MigrationDir, opt.StartedAt)
 
