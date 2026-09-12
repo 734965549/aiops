@@ -25,6 +25,7 @@ type OperationAuditFilter struct {
 	ResourceID   string
 	UserID       string
 	Action       string
+	TraceID      string
 	Limit        int
 	Offset       int
 }

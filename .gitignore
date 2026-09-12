@@ -48,3 +48,6 @@ web/.vite/
 # OS
 .DS_Store
 Thumbs.db
+
+# Agent / Tooling Cache
+.codebase-memory/

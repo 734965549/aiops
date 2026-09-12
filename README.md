@@ -13,7 +13,7 @@
 | Runbook 处置预案 | ✅ | `/runbooks` | `e2e-runbook.ps1` | 模板管理、告警推荐、多步任务生成 |
 | Execution 自动化执行 | ✅ | `/executions` | `e2e-execution.ps1` | 人工确认、执行代理、时间线回写 |
 | Dashboard 首页驾驶舱 | ✅ | `/dashboard` | API 抽检 | 告警/执行/资产/Runbook 聚合摘要 |
-| Audit 审计中心 | ✅ API | `/audits` | UI 查询/导出 | 关键操作审计写入、筛选、详情查看与 CSV 导出 |
+| Audit 审计中心 | ✅ | `/audits` | UI 查询/聚合/导出 | 关键操作审计写入、Trace/资源/用户多维聚合、详情查看与 CSV 导出 |
 | AI 运维助手 | ✅ API | `/ai-assistant` | — | Provider 管理、告警分析、工具调用 |
 | Integration 接入账号 | ✅ | `/integrations` | `e2e-integration.ps1` | 云账号/观测平台账号注册、凭据引用、连通性测试 |
 | Observability 统一观测 | ✅ | `/observability` | `e2e-observability.ps1` | 指标、日志、链路、拓扑统一查询，fake provider 与 Huawei CES 指标路径 |

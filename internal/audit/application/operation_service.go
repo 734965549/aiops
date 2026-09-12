@@ -7,6 +7,7 @@ import (
 
 	"github.com/734965549/aiops/internal/audit/domain"
 	apperr "github.com/734965549/aiops/pkg/errors"
+	httpx "github.com/734965549/aiops/pkg/transport/http"
 	"github.com/google/uuid"
 )
 
@@ -40,6 +41,11 @@ func (s *OperationAuditService) Record(ctx context.Context, in RecordInput) erro
 	if payload == nil {
 		payload = map[string]any{}
 	}
+	if _, ok := payload["trace_id"]; !ok {
+		if tr := httpx.TraceIDFromCtx(ctx); tr != "" {
+			payload["trace_id"] = tr
+		}
+	}
 	audit := domain.OperationAudit{
 		ID:           uuid.NewString(),
 		UserID:       strings.TrimSpace(in.UserID),
@@ -67,6 +73,7 @@ type ListQuery struct {
 	ResourceID   string
 	UserID       string
 	Action       string
+	TraceID      string
 }
 
 // OperationAuditDTO 对外审计对象。
@@ -100,6 +107,7 @@ func (s *OperationAuditService) List(ctx context.Context, q ListQuery) ([]Operat
 		ResourceID:   strings.TrimSpace(q.ResourceID),
 		UserID:       strings.TrimSpace(q.UserID),
 		Action:       strings.TrimSpace(q.Action),
+		TraceID:      strings.TrimSpace(q.TraceID),
 		Limit:        q.PageSize,
 		Offset:       (q.Page - 1) * q.PageSize,
 	}

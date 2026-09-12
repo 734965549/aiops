@@ -301,6 +301,7 @@ go run ./cmd/migrate
 | 执行记录 | ☐ | `e2e-runbook.ps1` ☐ | ☐ | ☐ | ☐ |
 | Dashboard 摘要 | ☐ | 手工/API ☐ | ☐ | ☐ | ☐ |
 | 权限管理 P1 | ☐ | `e2e-identity-access.ps1` ☐ | ☐ | ☐ | ☐ |
+| 审计中心 UI | ☐ | 手工/API ☐ | ☐ | ☐ | ☐ |
 | 权限校验 | ☐ | 负向用例 ☐ | ☐ | ☐ | ☐ |
 
 **签字**：验收人 ______　日期 ______　环境 ______（dev/staging/prod）

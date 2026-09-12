@@ -106,6 +106,9 @@ func applyAuditFilter(q *gorm.DB, filter domain.OperationAuditFilter) *gorm.DB {
 	if v := strings.TrimSpace(filter.Action); v != "" {
 		q = q.Where("action = ?", v)
 	}
+	if v := strings.TrimSpace(filter.TraceID); v != "" {
+		q = q.Where("payload->>'trace_id' = ?", v)
+	}
 	return q
 }
 

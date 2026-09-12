@@ -159,7 +159,7 @@
 
 | 函数 | 接口 | 说明 |
 | --- | --- | --- |
-| `fetchAudits` | `GET /api/audits` | 操作审计分页查询，支持 `resource_type` / `resource_id` / `user_id` / `action` 筛选 |
+| `fetchAudits` | `GET /api/audits` | 操作审计分页查询，支持 `resource_type` / `resource_id` / `user_id` / `action` / `trace_id` 筛选 |
 
 页面：`views/audits/index.vue`。权限：`app:audits:read`。
 

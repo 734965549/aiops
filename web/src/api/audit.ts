@@ -26,6 +26,7 @@ export interface AuditListQuery {
   resource_id?: string
   user_id?: string
   action?: string
+  trace_id?: string
 }
 
 export function fetchAudits(query: AuditListQuery = {}) {

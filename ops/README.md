@@ -12,6 +12,7 @@
 - `ai-contract.md`：AI provider 管理、工具调用与前端交互契约。
 - `health-contract.md`：`/healthz`、`/readyz`、`/version` 契约。
 - `migration-contract.md`：数据库迁移 runner、版本文件和回滚责任边界。
+- `audit-contract.md`：操作审计检索、Trace 聚合、资源画像与导出契约。
 - `cloud-observability-contract.md`：Integration、Observability、Inspection、建议转执行的接口契约。
 - `execution-agent-contract.md`：Execution Agent、执行介体、Command Spec、租约和日志回传契约。
 

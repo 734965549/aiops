@@ -25,6 +25,7 @@ type auditListQuery struct {
 	ResourceID   string `form:"resource_id"`
 	UserID       string `form:"user_id"`
 	Action       string `form:"action"`
+	TraceID      string `form:"trace_id"`
 }
 
 // ListAudits GET /api/audits
@@ -40,6 +41,7 @@ func (h *Handler) ListAudits(c *gin.Context) {
 		Page: q.Page, PageSize: q.PageSize,
 		ResourceType: q.ResourceType, ResourceID: q.ResourceID,
 		UserID: q.UserID, Action: q.Action,
+		TraceID: q.TraceID,
 	})
 	if err != nil {
 		httpx.Fail(c, err)
