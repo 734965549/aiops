@@ -1,0 +1,31 @@
+# 独立前端服务：aiops-web（与 aiops-api 分开的镜像/容器）。
+# 前端 Nginx 托管 web/dist，并把 /api、/healthz、/readyz、/version 反代到同网络的 api:8080。
+#
+# 用法（须与主 compose 一起使用，以便复用 aiops-net 网络和 api 服务）：
+#   docker compose -f deployments/docker-compose.yml \
+#     -f deployments/docker-compose.dev.yml \
+#     -f deployments/docker-compose.host.yml \
+#     -f deployments/docker-compose.web.yml up -d
+#
+# 单独构建镜像（dev 的 web/Dockerfile 以 web/ 为构建上下文）：
+#   docker build -f web/Dockerfile -t aiops-web:dev web
+
+services:
+  web:
+    image: aiops-web:${AIOPS_VERSION:-dev}
+    container_name: aiops-web
+    restart: unless-stopped
+    build:
+      # web/Dockerfile 内部使用 COPY package*.json / COPY ./，上下文须为 web/。
+      context: ../web
+      dockerfile: Dockerfile
+    ports:
+      - "80:8080"
+    volumes:
+      # 覆盖镜像内 K8s 版 nginx.conf，改为反代 compose 服务名 api。
+      - ./nginx/web.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - aiops-net

@@ -21,44 +21,46 @@
         :fish-scale="0.92"
       />
 
-      <div class="hero-topline">
-        <span class="hero-brand">✦ AIOps Command</span>
-        <span class="hero-status">
-          <i :class="{ 'is-ready': readiness?.status === 'ready' }" />
-          {{ readiness?.status === 'ready' ? 'Platform ready' : 'Readiness pending' }}
-        </span>
-      </div>
-
-      <div class="hero-copy">
-        <span class="hero-kicker">Operational intelligence / with evidence</span>
-        <h1>将每一次信号，<br><em>转化为可追踪的行动。</em></h1>
-        <p>
-          从告警接入到审计追溯，让 AI 的建议始终运行在权限、风险与人工确认构成的安全边界内。
-        </p>
-        <div class="hero-actions">
-          <button
-            type="button"
-            class="hero-link hero-link-primary"
-            @click="go('/alerts')"
-          >
-            查看活跃告警 <span>↗</span>
-          </button>
-          <button
-            type="button"
-            class="hero-link"
-            @click="go('/executions')"
-          >
-            进入执行中心 <span>→</span>
-          </button>
+      <div class="hero-body">
+        <div class="hero-topline">
+          <span class="hero-brand">✦ AIOps Command</span>
+          <span class="hero-status">
+            <i :class="{ 'is-ready': readiness?.status === 'ready' }" />
+            {{ readiness?.status === 'ready' ? 'Platform ready' : 'Readiness pending' }}
+          </span>
         </div>
-      </div>
 
-      <div class="hero-flow">
-        <span><b>01</b> 告警接入</span>
-        <span><b>02</b> 资产匹配</span>
-        <span><b>03</b> Runbook 推荐</span>
-        <span><b>04</b> 执行确认</span>
-        <span><b>05</b> 审计追溯</span>
+        <div class="hero-copy">
+          <span class="hero-kicker">Operational intelligence / with evidence</span>
+          <h1>将每一次信号，<br><em>转化为可追踪的行动。</em></h1>
+          <p>
+            从告警接入到审计追溯，让 AI 的建议始终运行在权限、风险与人工确认构成的安全边界内。
+          </p>
+          <div class="hero-actions">
+            <button
+              type="button"
+              class="hero-link hero-link-primary"
+              @click="go('/alerts')"
+            >
+              查看活跃告警 <span>↗</span>
+            </button>
+            <button
+              type="button"
+              class="hero-link"
+              @click="go('/executions')"
+            >
+              进入执行中心 <span>→</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="hero-flow">
+          <span><b>01</b> 告警接入</span>
+          <span><b>02</b> 资产匹配</span>
+          <span><b>03</b> Runbook 推荐</span>
+          <span><b>04</b> 执行确认</span>
+          <span><b>05</b> 审计追溯</span>
+        </div>
       </div>
     </section>
 
@@ -84,7 +86,7 @@
 
     <a-row
       :gutter="16"
-      class="row"
+      class="row equal-row"
     >
       <a-col
         :xs="24"
@@ -201,11 +203,12 @@ onBeforeUnmount(() => {
 }
 
 .dashboard-hero {
-  min-height: clamp(430px, 54vh, 620px);
+  min-height: clamp(380px, 46vh, 540px);
   position: relative;
+  display: flex;
   overflow: hidden;
   border: 1px solid rgba(173, 235, 226, 0.34);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   color: #f4fffc;
   background: #053946;
   isolation: isolate;
@@ -218,7 +221,7 @@ onBeforeUnmount(() => {
   z-index: 3;
   pointer-events: none;
   border: 1px solid rgba(205, 249, 241, 0.24);
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
 }
 
 .hero-image {
@@ -255,12 +258,19 @@ onBeforeUnmount(() => {
   filter: drop-shadow(0 3px 5px rgba(0, 21, 29, 0.38));
 }
 
-.hero-topline {
-  position: absolute;
-  top: 31px;
-  right: 34px;
-  left: 34px;
+/* 内容层：flex 流式布局，topline / copy / flow 依次排列，
+   小屏缩放下不会再出现绝对定位导致的重叠 */
+.hero-body {
+  position: relative;
   z-index: 4;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 26px 32px;
+}
+
+.hero-topline {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -297,20 +307,20 @@ onBeforeUnmount(() => {
 }
 
 .hero-copy {
-  position: absolute;
-  top: 48%;
-  left: 50%;
-  z-index: 4;
-  width: min(680px, 68%);
-  max-width: none;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: min(680px, 100%);
+  margin: 0 auto;
   text-align: center;
   text-shadow: 0 2px 18px rgba(0, 22, 31, 0.34);
-  transform: translate(-50%, -50%);
 }
 
 .hero-kicker {
   display: block;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.17em;
@@ -319,37 +329,37 @@ onBeforeUnmount(() => {
 
 .hero-copy h1 {
   margin: 0;
-  font-family: var(--aiops-display);
-  font-size: clamp(38px, 3.3vw, 54px);
-  font-weight: 400;
+  font-family: inherit;
+  font-size: clamp(22px, 2.2vw, 30px);
+  font-weight: 600;
   letter-spacing: 0;
-  line-height: 1.02;
+  line-height: 1.25;
 }
 
 .hero-copy h1 em {
-  font-weight: 400;
+  font-style: normal;
 }
 
 .hero-copy p {
   max-width: 520px;
-  margin: 18px auto 0;
+  margin: 12px auto 0;
   color: rgba(233, 250, 246, 0.8);
-  font-size: 13px;
-  line-height: 1.75;
+  font-size: 12px;
+  line-height: 1.7;
 }
 
 .hero-actions {
   display: flex;
   justify-content: center;
   gap: 10px;
-  margin-top: 26px;
+  margin-top: 18px;
 }
 
 .hero-link {
-  height: 38px;
-  padding: 0 18px;
+  height: 34px;
+  padding: 0 16px;
   border: 1px solid rgba(214, 255, 247, 0.36);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   color: #f4fffc;
   font: inherit;
   font-size: 12px;
@@ -379,16 +389,12 @@ onBeforeUnmount(() => {
 }
 
 .hero-flow {
-  position: absolute;
-  right: 28px;
-  bottom: 26px;
-  left: 28px;
-  z-index: 4;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  padding: 13px 16px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  padding: 12px 16px;
   border: 1px solid rgba(205, 249, 241, 0.22);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: rgba(2, 35, 44, 0.6);
   backdrop-filter: blur(14px);
 }
@@ -410,29 +416,28 @@ onBeforeUnmount(() => {
   align-items: flex-end;
   justify-content: space-between;
   gap: 18px;
-  margin: 42px 0 18px;
-  padding: 0 2px 18px;
+  margin: 24px 0 16px;
+  padding: 0 2px 14px;
   border-bottom: 1px solid rgba(24, 27, 24, 0.16);
 }
 
 .dashboard-toolbar h2 {
-  margin: 8px 0 0;
-  color: #222721;
-  font-family: var(--aiops-display);
-  font-size: 31px;
-  font-style: italic;
-  font-weight: 400;
-  letter-spacing: -0.03em;
+  margin: 6px 0 0;
+  color: var(--aiops-text-1);
+  font-family: inherit;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0;
 }
 
 .dashboard-toolbar p {
   margin: 7px 0 0;
-  color: #777c73;
+  color: var(--aiops-text-3);
   font-size: 12px;
 }
 
 .toolbar-kicker {
-  color: #747970;
+  color: var(--aiops-text-3);
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.16em;
@@ -443,42 +448,19 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 900px) {
-  .dashboard-hero {
-    min-height: 520px;
-  }
-
-  .hero-copy {
-    top: 47%;
-    width: min(620px, 78%);
-  }
-
-  .hero-copy h1 {
-    font-size: clamp(38px, 8vw, 58px);
-  }
-
-  .hero-flow {
-    grid-template-columns: repeat(2, 1fr);
-    gap: 8px;
-  }
-
-  .hero-flow span:last-child {
-    display: none;
+  .hero-body {
+    padding: 22px 24px;
   }
 }
 
 @media (max-width: 620px) {
-  .dashboard-hero {
-    min-height: 520px;
+  .hero-body {
+    gap: 18px;
+    padding: 20px;
   }
 
   .hero-image {
     object-position: 56% 42%;
-  }
-
-  .hero-topline {
-    top: 26px;
-    right: 26px;
-    left: 26px;
   }
 
   .hero-brand {
@@ -487,17 +469,6 @@ onBeforeUnmount(() => {
 
   .hero-status {
     margin-left: auto;
-  }
-
-  .hero-copy {
-    top: 47%;
-    right: auto;
-    left: 50%;
-    width: calc(100% - 52px);
-  }
-
-  .hero-copy h1 {
-    font-size: 40px;
   }
 
   .hero-copy p {
@@ -509,16 +480,10 @@ onBeforeUnmount(() => {
     flex-wrap: wrap;
   }
 
-  .hero-flow {
-    right: 20px;
-    bottom: 20px;
-    left: 20px;
-  }
-
   .dashboard-toolbar {
     align-items: flex-start;
     flex-direction: column;
-    margin-top: 30px;
+    margin-top: 20px;
   }
 }
 </style>

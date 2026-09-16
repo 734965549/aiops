@@ -153,7 +153,8 @@ onMounted(async () => {
 <style scoped lang="scss">
 .layout {
   position: relative;
-  min-height: 100vh;
+  /* 锁定为视口高度：全局不产生 body 滚动条，仅 .main 内部滚动，侧边导航保持固定。 */
+  height: 100vh;
   overflow: hidden;
   background: #063b45;
 }
@@ -163,10 +164,21 @@ onMounted(async () => {
   z-index: 3;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: rgba(3, 29, 36, 0.84) !important;
   border-right: 1px solid rgba(193, 239, 230, 0.17);
   box-shadow: 18px 0 44px rgba(0, 21, 29, 0.18);
   backdrop-filter: blur(20px) saturate(1.08);
+}
+
+/* Arco 会在 sider 内包一层 -children，flex 链必须从它开始：
+   logo / 菜单 / 页脚都成为 flex 子项，菜单独立滚动，页脚不再需要
+   绝对定位 + 硬编码 padding-bottom 避让。 */
+.sider :deep(.arco-layout-sider-children) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .logo {
@@ -225,7 +237,8 @@ onMounted(async () => {
 
 .sider :deep(.arco-menu) {
   flex: 1;
-  padding-bottom: 154px;
+  min-height: 0;
+  overflow-y: auto;
   background: transparent !important;
 }
 
@@ -265,12 +278,10 @@ onMounted(async () => {
 }
 
 .sider-foot {
-  position: absolute;
-  right: 16px;
-  bottom: 18px;
-  left: 16px;
+  flex: 0 0 auto;
   display: flex;
   gap: 10px;
+  margin: 0 16px 18px;
   padding: 14px;
   border-top: 1px solid rgba(193, 239, 230, 0.14);
   color: rgba(212, 239, 233, 0.56);
@@ -282,7 +293,7 @@ onMounted(async () => {
   flex: 0 0 auto;
   margin-top: 4px;
   border-radius: 50%;
-  background: #7de0cb;
+  background: var(--aiops-accent-bright);
   box-shadow: 0 0 0 5px rgba(125, 224, 203, 0.11), 0 0 14px rgba(125, 224, 203, 0.42);
 }
 
@@ -319,7 +330,7 @@ onMounted(async () => {
   justify-content: space-between;
   color: #effbf8;
   border: 1px solid rgba(190, 239, 231, 0.2);
-  border-radius: 16px 16px 0 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   background: rgba(4, 38, 46, 0.68);
   box-shadow: 0 18px 50px rgba(0, 25, 33, 0.13);
   backdrop-filter: blur(20px) saturate(1.1);
@@ -366,7 +377,7 @@ onMounted(async () => {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #7de0cb;
+  background: var(--aiops-accent-bright);
   box-shadow: 0 0 0 4px rgba(125, 224, 203, 0.11), 0 0 12px rgba(125, 224, 203, 0.38);
 }
 
@@ -379,12 +390,14 @@ onMounted(async () => {
 
 .main {
   position: relative;
-  min-height: calc(100vh - 90px);
+  /* flex: 1 + min-height: 0 让内容区在固定高度内收缩并内部滚动。 */
+  flex: 1;
+  min-height: 0;
   margin: 0 14px 14px;
   padding: 18px;
   border: 1px solid rgba(190, 239, 231, 0.2);
   border-top: 0;
-  border-radius: 0 0 16px 16px;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
   background: radial-gradient(
     ellipse 58% 54% at 50% 42%,
     rgba(246, 250, 248, 0.94) 0%,

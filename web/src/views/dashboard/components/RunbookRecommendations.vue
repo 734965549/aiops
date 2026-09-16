@@ -142,7 +142,7 @@ function onRowClick(record: TableData) {
   margin-bottom: 12px;
   padding: 8px 12px;
   background: var(--color-fill-1);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 .rec-alert {
   display: flex;

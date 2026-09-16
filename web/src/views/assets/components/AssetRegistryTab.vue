@@ -7,7 +7,7 @@
       <a-card
         title="应用"
         :bordered="false"
-        class="assets-card assets-card-fixed"
+        class="assets-card"
       >
         <template #extra>
           <a-space>
@@ -24,12 +24,12 @@
         </template>
 
         <a-table
+          class="page-table"
           :columns="appColumns"
           :data="applications"
           :loading="appsLoading"
           row-key="id"
           :pagination="appPagination"
-          :scroll="tableScroll"
           :bordered="false"
           :row-class="appRowClass"
           @page-change="(page: number) => emit('app-page-change', page)"
@@ -79,7 +79,7 @@
       <a-card
         :title="resourceCardTitle"
         :bordered="false"
-        class="assets-card assets-card-fixed"
+        class="assets-card"
       >
         <template #extra>
           <a-space wrap>
@@ -150,6 +150,7 @@
         />
         <a-table
           v-else
+          class="page-table"
           :columns="resourceColumns"
           :data="resources"
           :loading="resourcesLoading"
@@ -318,7 +319,6 @@ const props = defineProps<{
   appsLoading: boolean
   appColumns: TableInstance['columns']
   appPagination: PaginationConfig
-  tableScroll: Record<string, unknown>
   appRowClass: (record: TableData) => string
   selectedAppId: string
   resourceCardTitle: string

@@ -2,7 +2,7 @@
   <a-card
     title="同步批次"
     :bordered="false"
-    class="assets-card assets-card-fixed"
+    class="assets-card"
   >
     <template #extra>
       <a-space>
@@ -25,12 +25,12 @@
       </a-space>
     </template>
     <a-table
+      class="page-table"
       :columns="syncBatchColumns"
       :data="syncBatches"
       :loading="syncBatchesLoading"
       row-key="batch_id"
       :pagination="syncPagination"
-      :scroll="tableScroll"
       :bordered="false"
       @page-change="(page: number) => emit('page-change', page)"
       @page-size-change="(size: number) => emit('page-size-change', size)"
@@ -93,7 +93,6 @@ defineProps<{
   syncBatchesLoading: boolean
   syncBatchColumns: TableInstance['columns']
   syncPagination: PaginationConfig
-  tableScroll: Record<string, unknown>
   syncLoading: boolean
 }>()
 

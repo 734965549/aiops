@@ -1,12 +1,21 @@
 <template>
-  <div class="ai-assistant">
-    <a-tabs default-active-key="providers">
+  <div class="page-shell ai-assistant">
+    <a-tabs
+      default-active-key="providers"
+      class="page-tabs"
+    >
       <a-tab-pane
         key="providers"
         title="Provider 管理"
       >
-        <a-row :gutter="16">
-          <a-col :span="14">
+        <a-row
+          :gutter="16"
+          class="equal-row"
+        >
+          <a-col
+            :xs="24"
+            :lg="14"
+          >
             <a-card title="Provider 列表">
               <template #extra>
                 <a-button
@@ -54,11 +63,15 @@
               </a-table>
             </a-card>
           </a-col>
-          <a-col :span="10">
+          <a-col
+            :xs="24"
+            :lg="10"
+          >
             <a-card :title="form.id ? '编辑 Provider' : '新增 Provider'">
               <a-form
                 :model="form"
                 layout="vertical"
+                size="small"
               >
                 <a-form-item
                   label="ID"
@@ -148,12 +161,19 @@
         key="invoke"
         title="工具调用"
       >
-        <a-row :gutter="16">
-          <a-col :span="12">
+        <a-row
+          :gutter="16"
+          class="equal-row"
+        >
+          <a-col
+            :xs="24"
+            :lg="12"
+          >
             <a-card title="调用参数">
               <a-form
                 :model="invokeForm"
                 layout="vertical"
+                size="small"
               >
                 <a-form-item
                   label="Provider"
@@ -209,7 +229,10 @@
               </a-form>
             </a-card>
           </a-col>
-          <a-col :span="12">
+          <a-col
+            :xs="24"
+            :lg="12"
+          >
             <a-card title="调用结果">
               <pre
                 v-if="invokeResult"
@@ -408,24 +431,106 @@ onMounted(loadProviders)
 </script>
 
 <style scoped>
-.ai-assistant {
-  min-height: 400px;
+/* 文字控件保持 100% 原始大小；内容超高时卡片体内部滚动，页面不出滚动条。
+   容器/页签填充链由全局 .page-shell / .page-tabs 提供。 */
+.ai-assistant :deep(.arco-tabs-content) {
+  padding-top: 10px;
 }
+
+/* 页签头（吸顶兜底）：胶囊化页签，选中态高对比，清晰可见 */
+.ai-assistant :deep(.arco-tabs-nav) {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  margin: 0 0 10px;
+  padding: 6px 0 10px;
+  background: transparent;
+}
+
+.ai-assistant :deep(.arco-tabs-nav-type-line .arco-tabs-tab) {
+  margin: 0 10px 0 0;
+  padding: 0 18px;
+  height: 34px;
+  border: 1px solid rgba(81, 102, 63, 0.16);
+  border-radius: var(--radius-md);
+  color: #4a544c;
+  font-weight: 500;
+  background: rgba(81, 102, 63, 0.06);
+  transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+/* 关闭 Arco 默认的标题悬停填充，避免与胶囊底色叠加 */
+.ai-assistant :deep(.arco-tabs-tab-title:before) {
+  background-color: transparent !important;
+}
+
+.ai-assistant :deep(.arco-tabs-nav-type-line .arco-tabs-tab:hover) {
+  color: #263328;
+  background: rgba(81, 102, 63, 0.14);
+  border-color: rgba(81, 102, 63, 0.28);
+}
+
+/* 选中页签：苔绿实底 + 白字，一眼可见 */
+.ai-assistant :deep(.arco-tabs-nav-type-line .arco-tabs-tab-active),
+.ai-assistant :deep(.arco-tabs-nav-type-line .arco-tabs-tab-active:hover) {
+  color: #ffffff;
+  border-color: #51663f;
+  background: #51663f;
+  box-shadow: 0 2px 10px rgba(81, 102, 63, 0.35);
+}
+
+.ai-assistant :deep(.arco-tabs-tab-active .arco-tabs-tab-title) {
+  color: #ffffff !important;
+}
+
+/* 绿色胶囊已表明选中态，去掉 Arco 默认的蓝色下划指示条 */
+.ai-assistant :deep(.arco-tabs-nav-ink) {
+  display: none !important;
+}
+
+/* 左右两列等高由全局 .equal-row 提供；这里让行铺满页签 pane */
+.ai-assistant .equal-row {
+  flex: 1;
+  min-height: 0;
+}
+
+.ai-assistant :deep(.arco-card-header) {
+  flex: 0 0 auto;
+}
+
+.ai-assistant :deep(.arco-card-body) {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 16px;
+}
+
+/* 紧凑表单：缩小表单项间距与标签留白 */
+.ai-assistant :deep(.arco-form-item) {
+  margin-bottom: 10px;
+}
+
+.ai-assistant :deep(.arco-form-item-label-col) {
+  padding-bottom: 3px;
+}
+
 .result-json {
   margin: 0;
   padding: 12px;
   background: var(--color-fill-1);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
   line-height: 1.5;
   overflow: auto;
-  max-height: 480px;
 }
+
 .field-hint {
   margin-top: 4px;
   font-size: 12px;
   color: var(--color-text-3);
 }
+
 .text-muted {
   color: var(--color-text-3);
 }

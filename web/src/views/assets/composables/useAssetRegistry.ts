@@ -30,8 +30,7 @@ export function useAssetRegistry(options: {
   const appSaving = ref(false)
   const resourceSaving = ref(false)
 
-  const tableScroll = { y: 'calc(100vh - 330px)' }
-  const resourceTableScroll = { x: 1880, y: 'calc(100vh - 330px)' }
+  const resourceTableScroll = { x: 1880 }
 
   const appPagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
   const resourcePagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
@@ -378,7 +377,6 @@ export function useAssetRegistry(options: {
     resourceFilters,
     appPagination,
     resourcePagination,
-    tableScroll,
     resourceTableScroll,
     appColumns,
     resourceColumns,

@@ -10,11 +10,52 @@ const publicClient = axios.create({
   timeout: 30_000
 })
 
+/**
+ * 公开接口（登录/刷新等）的 HTTP 错误。
+ * 独立于 request.ts 的 ApiHttpError，避免引入 request -> stores/auth -> identity 的循环依赖。
+ */
+export class PublicApiError extends Error {
+  status: number
+  code: string
+  traceId?: string
+
+  constructor(status: number, code: string, message: string, traceId?: string) {
+    super(message)
+    this.name = 'PublicApiError'
+    this.status = status
+    this.code = code
+    this.traceId = traceId
+  }
+}
+
+export function isPublicApiError(error: unknown): error is PublicApiError {
+  return error instanceof PublicApiError
+}
+
 async function unwrapPublic<T>(promise: Promise<AxiosResponse<ApiResponse<T>>>): Promise<T> {
-  const resp = await promise
+  let resp: AxiosResponse<ApiResponse<T>>
+  try {
+    resp = await promise
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response) {
+      const body = err.response.data as ApiResponse | undefined
+      throw new PublicApiError(
+        err.response.status,
+        body?.code || 'UNKNOWN',
+        body?.message || `request failed with status ${err.response.status}`,
+        body?.trace_id
+      )
+    }
+    throw new PublicApiError(0, 'NETWORK_ERROR', err instanceof Error ? err.message : 'network error')
+  }
   const body = resp.data
   if (body?.code !== 'OK') {
-    throw new Error(body?.message || body?.code || 'request failed')
+    throw new PublicApiError(
+      resp.status,
+      body?.code || 'UNKNOWN',
+      body?.message || body?.code || 'request failed',
+      body?.trace_id
+    )
   }
   return body.data as T
 }

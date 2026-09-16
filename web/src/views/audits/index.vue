@@ -1,22 +1,23 @@
 <template>
-  <div class="audits-page">
+  <div class="page-shell">
     <a-card
       title="审计中心"
       :bordered="false"
+      class="page-card"
     >
       <template #extra>
         <a-space>
-          <a-button
-            :loading="exporting"
-            @click="exportCsv"
-          >
-            导出 CSV
-          </a-button>
           <a-button
             :loading="loading"
             @click="loadAudits"
           >
             刷新
+          </a-button>
+          <a-button
+            :loading="exporting"
+            @click="exportCsv"
+          >
+            导出 CSV
           </a-button>
         </a-space>
       </template>
@@ -40,7 +41,7 @@
             v-model="filters.resource_id"
             allow-clear
             placeholder="业务 ID"
-            style="width: 220px"
+            style="width: 200px"
             @press-enter="onSearch"
           />
         </a-form-item>
@@ -49,7 +50,7 @@
             v-model="filters.user_id"
             allow-clear
             placeholder="操作者"
-            style="width: 180px"
+            style="width: 200px"
             @press-enter="onSearch"
           />
         </a-form-item>
@@ -58,7 +59,7 @@
             v-model="filters.action"
             allow-clear
             placeholder="create / close / execute"
-            style="width: 180px"
+            style="width: 200px"
             @press-enter="onSearch"
           />
         </a-form-item>
@@ -78,6 +79,7 @@
       </a-form>
 
       <a-table
+        class="page-table"
         :columns="columns"
         :data="audits"
         :loading="loading"
@@ -368,14 +370,6 @@ onMounted(loadAudits)
 </script>
 
 <style scoped>
-.audits-page {
-  min-height: 100%;
-}
-
-.filter-form {
-  margin-bottom: 16px;
-}
-
 .detail-desc {
   margin-bottom: 16px;
 }
@@ -389,7 +383,7 @@ onMounted(loadAudits)
   overflow: auto;
   margin: 0;
   padding: 12px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--color-fill-2);
   color: var(--color-text-1);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
