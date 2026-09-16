@@ -2,7 +2,7 @@ package application
 
 import "context"
 
-// AlertContext 供 AI 分析读取嘅告警快照（只读 port，避免 AI 依赖 Alert application）。
+// AlertContext 供 AI 分析读取告警快照（只读 port，避免 AI 依赖 Alert application）。
 type AlertContext struct {
 	ID              string
 	Name            string

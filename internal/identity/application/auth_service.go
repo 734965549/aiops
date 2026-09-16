@@ -269,6 +269,22 @@ func (s *AuthService) EnsureBootstrapUser(ctx context.Context, username, passwor
 		return apperr.Wrap(err, apperr.CodeInternal, "check bootstrap user failed")
 	}
 	if existing != nil {
+		// 默认管理员被迁移 0044 锁定时，bootstrap 启用则用配置密码重新激活。
+		// 生产环境 bootstrap 关闭（username 为空），不会进入此分支，默认账号保持锁定、不可登录。
+		// 已激活的账号不被改动，避免覆盖 DBA 设置的密码。
+		if existing.Status == domain.UserStatusLocked {
+			hash, err := auth.HashPassword(password)
+			if err != nil {
+				return apperr.Wrap(err, apperr.CodeInternal, "hash bootstrap password failed")
+			}
+			if err := s.users.Reactivate(ctx, existing.ID, hash); err != nil {
+				return apperr.Wrap(err, apperr.CodeInternal, "reactivate bootstrap user failed")
+			}
+			logger.From(ctx).Info("bootstrap user re-activated",
+				logger.String("username", existing.Username),
+				logger.Time("at", time.Now()),
+			)
+		}
 		return nil
 	}
 	hash, err := auth.HashPassword(password)

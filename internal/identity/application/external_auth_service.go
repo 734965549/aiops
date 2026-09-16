@@ -20,7 +20,7 @@ type ExternalLoginInput struct {
 	Password   string
 }
 
-// OAuthCallbackInput 係 OAuth2/OIDC 回调参数，包含服务端校验 state 时需要嘅客户端上下文。
+// OAuthCallbackInput 是 OAuth2/OIDC 回调参数，包含服务端校验 state 时需要的客户端上下文。
 type OAuthCallbackInput struct {
 	ProviderID string
 	Code       string
@@ -29,7 +29,7 @@ type OAuthCallbackInput struct {
 	UserAgent  string
 }
 
-// OAuthAuthorizeInput 用嚟签发授权地址，并将 state 绑定到发起授权嘅客户端。
+// OAuthAuthorizeInput 用于签发授权地址，并将 state 绑定到发起授权的客户端。
 type OAuthAuthorizeInput struct {
 	ProviderID string
 	ClientIP   string

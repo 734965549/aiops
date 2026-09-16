@@ -1,12 +1,51 @@
+/* ============================================================
+   全局设计基座：设计 token + 页面容器规范 + Arco 主题微调
+   ============================================================ */
+
 :root {
-  --aiops-ink: #071226;
-  --aiops-panel: rgba(255, 255, 255, 0.88);
-  --aiops-panel-strong: rgba(255, 255, 255, 0.96);
-  --aiops-border: rgba(22, 93, 255, 0.12);
-  --aiops-cyan: #00dcc5;
-  --aiops-blue: #165dff;
-  --aiops-violet: #6d5dfc;
-  --aiops-text-soft: #5d6b86;
+  /* —— 基础色板（苔绿纸面主题）—— */
+  --aiops-ink: #171b17;
+  --aiops-paper: #f7f6f0;
+  --aiops-paper-muted: #ebeae3;
+  --aiops-panel: rgba(255, 255, 252, 0.88);
+  --aiops-panel-strong: #fffefa;
+  --aiops-border: rgba(24, 27, 24, 0.14);
+  --aiops-border-soft: rgba(24, 27, 24, 0.09);
+  --aiops-moss: #51663f;
+  --aiops-moss-dark: #263328;
+  --aiops-blue: #315a63;
+  --aiops-cyan: #5c7b6a;
+  --aiops-violet: #685f79;
+  --aiops-display: Georgia, 'Noto Serif SC', 'Songti SC', 'STSong', serif;
+
+  /* —— 语义色：页面内不得再写死第三套色值 —— */
+  --aiops-accent: var(--aiops-moss);
+  --aiops-accent-strong: var(--aiops-moss-dark);
+  --aiops-accent-hover: #3f5135;
+  --aiops-accent-soft: rgba(81, 102, 63, 0.14);
+  --aiops-accent-bright: #7de0cb; /* 深色导航区（青色）唯一强调色 */
+  --aiops-danger: #f53f3f;
+  --aiops-warning: #ff7d00;
+  --aiops-success: #00b42a;
+  --aiops-text-1: #242923;
+  --aiops-text-2: #4a544c;
+  --aiops-text-3: #6d7269;
+  --aiops-text-soft: var(--aiops-text-3);
+  --aiops-surface: #ffffff;
+  --aiops-surface-muted: rgba(255, 255, 252, 0.72);
+
+  /* —— 半径级差：全站只允许 4 / 8 / 12 / full —— */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
+
+  /* —— 间距刻度 —— */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
 }
 
 html,
@@ -17,12 +56,14 @@ body,
   padding: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
     'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Helvetica, Arial, sans-serif;
-  background: #071226;
-  color: #1d273b;
+  background: var(--aiops-paper-muted);
+  color: var(--aiops-ink);
 }
 
 body {
   min-width: 320px;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
 a {
@@ -35,120 +76,273 @@ a {
 }
 
 ::selection {
-  color: #fff;
-  background: rgba(22, 93, 255, 0.75);
+  color: #f8f7f1;
+  background: var(--aiops-accent-hover);
 }
 
+/* ============================================================
+   页面容器规范（唯一约定）
+   - .page-shell：占满 .main（100% 高、flex 列），内部滚动
+   - .page-card / .page-table / .page-tabs：向下传递填充链
+   - 所有页面根节点一律 page-shell，禁止再写 calc(100vh - Npx)
+     或零散 min-height
+   ============================================================ */
+
+.page-shell {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 内容自然流式增长、页面内滚动的变体（表单页、长内容页） */
+.page-shell--flow {
+  overflow: auto;
+}
+
+.page-shell > .page-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.page-shell > .page-card > .arco-card-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 表格填充链：表格区滚动、分页固定底部 */
+.page-table {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.page-table > .arco-spin {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.page-table > .arco-spin > .arco-table-container {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.page-table > .arco-spin > .arco-table-pagination {
+  flex-shrink: 0;
+  margin-top: 10px;
+}
+
+/* 页签填充链：页签内容铺满容器，每个 pane 自成滚动区 */
+.page-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.page-tabs > .arco-tabs-content {
+  flex: 1;
+  min-height: 0;
+}
+
+.page-tabs > .arco-tabs-content > .arco-tabs-content-list,
+.page-tabs > .arco-tabs-content > .arco-tabs-content-item,
+.page-tabs > .arco-tabs-content > .arco-tabs-content-list > .arco-tabs-pane {
+  height: 100%;
+}
+
+.page-tabs > .arco-tabs-content > .arco-tabs-content-list > .arco-tabs-pane {
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+/* 左右两列等高（覆盖 Arco Row 默认 align-items: flex-start） */
+.equal-row {
+  align-items: stretch;
+}
+
+.equal-row > .arco-col {
+  display: flex;
+  min-height: 0;
+}
+
+.equal-row > .arco-col > .arco-card {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  width: 100%;
+}
+
+/* 空状态：统一垂直居中、占满剩余高度 */
+.page-empty {
+  flex: 1;
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 页签内操作工具条：与卡片 extra 同一套节奏 */
+.pane-toolbar {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+/* 筛选区：统一标签宽度，换行后输入框左边缘对齐 */
+.filter-form.arco-form .arco-form-item-label-col {
+  min-width: 72px;
+  padding-right: var(--space-2);
+  justify-content: flex-end;
+}
+
+.filter-form {
+  flex-shrink: 0;
+  margin-bottom: var(--space-4);
+}
+
+/* ============================================================
+   Arco 组件主题微调
+   ============================================================ */
+
 .arco-card {
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
+  background: var(--aiops-panel) !important;
+  box-shadow: none;
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+/* 仅显式 bordered 的卡片带边框；:bordered="false" 真正生效 */
+.arco-card-bordered {
   border: 1px solid var(--aiops-border) !important;
-  background:
-    linear-gradient(180deg, var(--aiops-panel-strong), var(--aiops-panel)),
-    radial-gradient(circle at top right, rgba(0, 220, 197, 0.12), transparent 34%);
-  box-shadow: 0 16px 44px rgba(12, 31, 65, 0.1);
-  backdrop-filter: blur(16px);
 }
 
 .arco-card-hoverable:hover {
   transform: translateY(-2px);
-  border-color: rgba(0, 220, 197, 0.34) !important;
-  box-shadow: 0 20px 54px rgba(22, 93, 255, 0.16);
+  border-color: rgba(81, 102, 63, 0.42) !important;
+  box-shadow: 0 16px 34px rgba(36, 43, 34, 0.08);
 }
 
 .arco-card-header {
-  min-height: 48px;
-  border-bottom: 1px solid rgba(22, 93, 255, 0.08);
+  min-height: 50px;
+  border-bottom: 1px solid var(--aiops-border-soft);
 }
 
 .arco-card-header-title {
-  color: #17223b;
-  font-weight: 700;
+  color: var(--aiops-text-1);
+  font-family: var(--aiops-display);
+  font-size: 16px;
+  font-style: italic;
+  font-weight: 500;
 }
 
 .arco-btn-primary,
 .arco-btn-primary:not(.arco-btn-disabled) {
-  border: 0;
-  background: linear-gradient(135deg, var(--aiops-blue), var(--aiops-cyan));
-  box-shadow: 0 10px 26px rgba(22, 93, 255, 0.24);
+  border-color: var(--aiops-accent-strong);
+  background: var(--aiops-accent-strong);
+  box-shadow: none;
 }
 
 .arco-btn-primary:not(.arco-btn-disabled):hover {
-  filter: saturate(1.12) brightness(1.03);
-  box-shadow: 0 14px 32px rgba(0, 220, 197, 0.24);
+  border-color: var(--aiops-accent-hover);
+  background: var(--aiops-accent-hover);
+  box-shadow: 0 10px 22px rgba(38, 51, 40, 0.16);
+}
+
+.arco-btn-secondary,
+.arco-btn-outline {
+  border-color: rgba(24, 27, 24, 0.16);
+  background: var(--aiops-surface-muted);
+}
+
+.arco-link {
+  color: var(--aiops-accent);
 }
 
 .arco-table {
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
+  background: transparent;
+}
+
+.arco-table-container {
+  border-color: rgba(24, 27, 24, 0.1) !important;
 }
 
 .arco-table-th {
-  color: #4d5b76;
-  background: rgba(231, 244, 255, 0.8) !important;
+  color: #5d625a;
+  background: rgba(229, 229, 220, 0.68) !important;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.arco-table-td {
+  border-color: rgba(24, 27, 24, 0.07) !important;
+  background: rgba(255, 255, 252, 0.52);
 }
 
 .arco-table-tr:hover .arco-table-td {
-  background: rgba(218, 240, 255, 0.62) !important;
+  background: rgba(232, 235, 225, 0.82) !important;
+}
+
+/* 数值列右对齐，方便扫读 */
+.arco-table-th-align-right,
+.arco-table-td-align-right {
+  text-align: right;
 }
 
 .arco-tag {
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-weight: 600;
-}
-
-.arco-menu-dark {
-  background: transparent !important;
-}
-
-.arco-menu-dark .arco-menu-item {
-  margin: 6px 12px;
-  width: calc(100% - 24px);
-  border-radius: 8px;
-  color: rgba(226, 246, 255, 0.72);
-}
-
-.arco-menu-dark .arco-menu-item:hover {
-  color: #fff;
-  background: rgba(56, 189, 248, 0.12);
-}
-
-.arco-menu-dark .arco-menu-selected {
-  color: #f8feff !important;
-  background: linear-gradient(135deg, rgba(22, 93, 255, 0.76), rgba(0, 220, 197, 0.46)) !important;
-  box-shadow: 0 12px 30px rgba(0, 220, 197, 0.2);
 }
 
 .arco-input-wrapper,
 .arco-select-view-single,
 .arco-input-number,
 .arco-textarea-wrapper {
-  border-radius: 8px;
+  border-color: rgba(24, 27, 24, 0.15);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 252, 0.78);
 }
 
 .arco-input-wrapper:focus-within,
 .arco-select-view-focus,
 .arco-textarea-wrapper:focus-within {
-  border-color: rgba(0, 220, 197, 0.75) !important;
-  box-shadow: 0 0 0 3px rgba(0, 220, 197, 0.12);
+  border-color: rgba(81, 102, 63, 0.72) !important;
+  box-shadow: 0 0 0 3px rgba(81, 102, 63, 0.1);
 }
 
-.tech-scanline {
-  position: relative;
-  overflow: hidden;
+.arco-tabs-nav-type-rounded .arco-tabs-tab-active {
+  color: #f8f7f1;
+  background: var(--aiops-accent-strong);
 }
 
-.tech-scanline::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(180deg, transparent, rgba(0, 220, 197, 0.12), transparent);
-  transform: translateY(-100%);
-  animation: scanline 4.8s linear infinite;
+.arco-modal,
+.arco-drawer {
+  background: var(--aiops-paper);
 }
 
-@keyframes scanline {
-  to {
-    transform: translateY(100%);
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

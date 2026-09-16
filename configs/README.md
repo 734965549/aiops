@@ -27,6 +27,7 @@ cmd/api -config 指定配置文件（可选；唔传则 env + 默认值）
 | `logger` | 日志级别、格式、输出位置 |
 | `cors` | 跨域 origin 列表、是否允许凭证 |
 | `ai.providers` | AI 工具提供方列表；启动时载入内存注册表，亦可用 API 维护 |
+| `integration` | Integration 接入账号凭据加密密钥与密钥版本 |
 
 ## 出参
 
@@ -35,8 +36,19 @@ cmd/api -config 指定配置文件（可选；唔传则 env + 默认值）
 - HTTP 服务监听端口。
 - 数据库同 Redis 连接。
 - token 签发同过期时间。
+- Integration 接入账号 AK/SK、Token 等凭据的加密与解密。
 - 日志格式同保存位置。
 - 启动期默认管理员同 AI provider 初始列表。
+
+## Integration 凭据加密密钥
+
+`integration.credential_encryption_key` 用于加密 `integration_credential_ref` 中的接入账号凭据，环境变量为 `AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY`。从 `aiops-api:1.2` 起，非 dev 环境会在启动阶段校验该值：不能为空，不能使用 `dev-integration-credential-key-change-me` 等占位值，不能与 `auth.jwt_secret` 相同，并需要满足长度、字符多样性和熵要求。
+
+生产和测试集群应通过 Secret / CI 注入该项，不要写入 Git、ConfigMap、镜像层或前端环境变量。生成示例：
+
+```bash
+openssl rand -base64 32
+```
 
 ## AI providers 说明
 

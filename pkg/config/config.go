@@ -13,6 +13,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -21,13 +22,13 @@ import (
 
 // Config 是平台运行所需的全部配置项的聚合根。
 type Config struct {
-	App      AppConfig      `mapstructure:"app"`
-	Server   ServerConfig   `mapstructure:"server"`
-	Logger   LoggerConfig   `mapstructure:"logger"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	Auth     AuthConfig     `mapstructure:"auth"`
-	Identity IdentityConfig `mapstructure:"identity"`
+	App         AppConfig         `mapstructure:"app"`
+	Server      ServerConfig      `mapstructure:"server"`
+	Logger      LoggerConfig      `mapstructure:"logger"`
+	Database    DatabaseConfig    `mapstructure:"database"`
+	Redis       RedisConfig       `mapstructure:"redis"`
+	Auth        AuthConfig        `mapstructure:"auth"`
+	Identity    IdentityConfig    `mapstructure:"identity"`
 	CORS        CORSConfig        `mapstructure:"cors"`
 	AI          AIConfig          `mapstructure:"ai"`
 	Integration IntegrationConfig `mapstructure:"integration"`
@@ -124,7 +125,7 @@ type AuthConfig struct {
 	// GrantCacheTTLS 控制 LoadUserGrantContext 的 Redis 短期缓存秒数；0 表示禁用。
 	GrantCacheTTLS int                  `mapstructure:"grant_cache_ttl_s"`
 	LoginRateLimit LoginRateLimitConfig `mapstructure:"login_rate_limit"`
-	// LoginIPAllowlist 控制登录相关入口嘅来源 IP；空列表表示唔限制。
+	// LoginIPAllowlist 控制登录相关入口的来源 IP；空列表表示不限制。
 	LoginIPAllowlist []string `mapstructure:"login_ip_allowlist"`
 }
 
@@ -312,6 +313,9 @@ func Load(configPath string) (*Config, error) {
 			return nil, fmt.Errorf("read config: %w", err)
 		}
 	}
+	// viper.AutomaticEnv 仅对 Get* 生效，Unmarshal 不会读取环境变量。
+	// 生产 Compose 仅注入 env 时须在此将 env 写回 viper，否则 slice/string 字段会丢失。
+	materializeEnv(v, "AIOPS_")
 
 	var c Config
 	if err := v.Unmarshal(&c); err != nil {
@@ -324,6 +328,9 @@ func Load(configPath string) (*Config, error) {
 // normalize 修正环境变量与 viper 合并后的边界情况（如 slice 逗号分隔、CORS 安全回退）。
 func (c *Config) normalize() {
 	c.CORS = normalizeCORSConfig(c.CORS)
+	if c.App.Env != "prod" && len(c.CORS.AllowOrigins) == 0 {
+		c.CORS.AllowOrigins = []string{defaultDevCORSOrigin}
+	}
 	c.Auth.LoginIPAllowlist = normalizeStringList(c.Auth.LoginIPAllowlist)
 }
 
@@ -352,7 +359,7 @@ func normalizeCORSConfig(cfg CORSConfig) CORSConfig {
 	}
 }
 
-// normalizeStringList 展开逗号分隔嘅配置项，方便 YAML 同环境变量共用同一套解析。
+// normalizeStringList 展开逗号分隔的配置项，方便 YAML 和环境变量共用同一套解析。
 func normalizeStringList(items []string) []string {
 	expanded := make([]string, 0, len(items))
 	for _, item := range items {
@@ -403,7 +410,26 @@ func (c *Config) Validate() error {
 	if err := validateIntegrationConfig(c.Integration, c.App.Env, c.Auth.JWTSecret); err != nil {
 		return err
 	}
+	if err := validateExecutionConfig(c.Execution, c.App.Env); err != nil {
+		return err
+	}
 	return nil
+}
+
+// materializeEnv 将 AIOPS_ 前缀环境变量写入 viper，使后续 Unmarshal 能读到纯 env 配置。
+func materializeEnv(v *viper.Viper, envPrefix string) {
+	keyReplacer := strings.NewReplacer("__", ".")
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, envPrefix) {
+			continue
+		}
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		key := strings.ToLower(keyReplacer.Replace(strings.TrimPrefix(name, envPrefix)))
+		v.Set(key, value)
+	}
 }
 
 func validateLoggerConfig(cfg LoggerConfig) error {
@@ -439,9 +465,6 @@ func validateCORS(env string, cfg CORSConfig) error {
 		}
 	}
 	if env == "prod" {
-		if len(cfg.AllowOrigins) == 0 {
-			return fmt.Errorf("cors.allow_origins must be explicitly configured in prod")
-		}
 		for _, origin := range cfg.AllowOrigins {
 			if origin == "*" {
 				return fmt.Errorf("cors.allow_origins must not contain * in prod")
@@ -451,7 +474,7 @@ func validateCORS(env string, cfg CORSConfig) error {
 	return nil
 }
 
-// validateIPAllowlist 校验登录 IP 白名单入面嘅单 IP 同 CIDR 网段。
+// validateIPAllowlist 校验登录 IP 白名单中的单 IP 和 CIDR 网段。
 func validateIPAllowlist(entries []string) error {
 	for _, entry := range entries {
 		entry = strings.TrimSpace(entry)
@@ -531,6 +554,5 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.login_rate_limit.username_failures_before_lockout", 5)
 	v.SetDefault("auth.login_rate_limit.lockout_s", 900)
 
-	v.SetDefault("cors.allow_origins", []string{"http://localhost:5173"})
 	v.SetDefault("cors.allow_credentials", true)
 }

@@ -27,14 +27,14 @@ type LogEntry struct {
 
 // TraceSpan 链路 Span 摘要。
 type TraceSpan struct {
-	TraceID     string `json:"trace_id"`
-	SpanID      string `json:"span_id"`
-	Service     string `json:"service"`
-	Operation   string `json:"operation"`
-	StartTime   int64  `json:"start_time"`
-	DurationMS  int    `json:"duration_ms"`
-	Status      string `json:"status"`
-	Error       bool   `json:"error"`
+	TraceID      string `json:"trace_id"`
+	SpanID       string `json:"span_id"`
+	Service      string `json:"service"`
+	Operation    string `json:"operation"`
+	StartTime    int64  `json:"start_time"`
+	DurationMS   int    `json:"duration_ms"`
+	Status       string `json:"status"`
+	Error        bool   `json:"error"`
 	ErrorSummary string `json:"error_summary,omitempty"`
 }
 
@@ -64,13 +64,13 @@ type TopologySnapshot struct {
 
 // CloudResource 云资源摘要（AssetDiscoveryPort 归一化结果）。
 type CloudResource struct {
-	ResourceID   string            `json:"resource_id"`
-	Name         string            `json:"name"`
-	Type         string            `json:"type"`
-	Region       string            `json:"region"`
-	Status       string            `json:"status"`
-	Labels       map[string]string `json:"labels,omitempty"`
-	ProviderRef  string            `json:"provider_ref,omitempty"`
+	ResourceID  string            `json:"resource_id"`
+	Name        string            `json:"name"`
+	Type        string            `json:"type"`
+	Region      string            `json:"region"`
+	Status      string            `json:"status"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	ProviderRef string            `json:"provider_ref,omitempty"`
 }
 
 // AlertRule 告警规则摘要。

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/734965549/aiops/internal/execution/domain"
+	apperr "github.com/734965549/aiops/pkg/errors"
 )
 
 var shellMetaPattern = regexp.MustCompile(`[;&|$` + "`" + `<>]`)
@@ -30,7 +31,7 @@ func validateStringPatterns(schema map[string]any, value any, path string) error
 	case "object":
 		obj, ok := value.(map[string]any)
 		if !ok {
-			return fmt.Errorf("%s must be an object", path)
+			return apperr.Newf(apperr.CodeInvalidArgument, "%s must be an object", path)
 		}
 		props, _ := schema["properties"].(map[string]any)
 		for key, propSchema := range props {
@@ -54,14 +55,14 @@ func validateStringPatterns(schema map[string]any, value any, path string) error
 		if pattern, ok := schema["pattern"].(string); ok && strings.TrimSpace(pattern) != "" {
 			re, err := regexp.Compile(pattern)
 			if err != nil {
-				return fmt.Errorf("%s has invalid pattern in schema", path)
+				return apperr.Newf(apperr.CodeInvalidArgument, "%s has invalid pattern in schema", path)
 			}
 			if !re.MatchString(s) {
-				return fmt.Errorf("%s does not match required pattern", path)
+				return apperr.Newf(apperr.CodeInvalidArgument, "%s does not match required pattern", path)
 			}
 		}
 		if shellMetaPattern.MatchString(s) {
-			return fmt.Errorf("%s contains forbidden shell metacharacters", path)
+			return apperr.Newf(apperr.CodeInvalidArgument, "%s contains forbidden shell metacharacters", path)
 		}
 	}
 	return nil
@@ -71,26 +72,26 @@ func validateStringPatterns(schema map[string]any, value any, path string) error
 func BuildCommandArgv(template string, arguments map[string]any) ([]string, error) {
 	template = strings.TrimSpace(template)
 	if template == "" {
-		return nil, fmt.Errorf("command template is empty")
+		return nil, apperr.New(apperr.CodeInvalidArgument, "command template is empty")
 	}
 	rendered := template
 	for key, val := range arguments {
 		placeholder := "{" + key + "}"
 		strVal := fmt.Sprint(val)
 		if shellMetaPattern.MatchString(strVal) {
-			return nil, fmt.Errorf("argument %s contains forbidden shell metacharacters", key)
+			return nil, apperr.Newf(apperr.CodeInvalidArgument, "argument %s contains forbidden shell metacharacters", key)
 		}
 		rendered = strings.ReplaceAll(rendered, placeholder, strVal)
 	}
 	if strings.Contains(rendered, "{") && strings.Contains(rendered, "}") {
-		return nil, fmt.Errorf("command template has unresolved placeholders")
+		return nil, apperr.New(apperr.CodeInvalidArgument, "command template has unresolved placeholders")
 	}
 	if shellMetaPattern.MatchString(rendered) {
-		return nil, fmt.Errorf("rendered command contains forbidden shell metacharacters")
+		return nil, apperr.New(apperr.CodeInvalidArgument, "rendered command contains forbidden shell metacharacters")
 	}
 	parts := strings.Fields(rendered)
 	if len(parts) == 0 {
-		return nil, fmt.Errorf("rendered command is empty")
+		return nil, apperr.New(apperr.CodeInvalidArgument, "rendered command is empty")
 	}
 	return parts, nil
 }

@@ -82,34 +82,34 @@ func (s *IngestService) VerifySource(ctx context.Context, ingestCtx IngestContex
 }
 
 // IngestAlertmanager 处理 Prometheus Alertmanager Webhook payload（§6.1）；入口含 §3.2 鉴权与幂等。
-func (s *IngestService) IngestAlertmanager(ctx context.Context, ingestCtx IngestContext, payload ingest.AlertmanagerWebhook) (*IngestResultDTO, error) {
+func (s *IngestService) IngestAlertmanager(ctx context.Context, ingestCtx IngestContext, payload AlertmanagerWebhook) (*IngestResultDTO, error) {
 	src, err := s.VerifySource(ctx, ingestCtx)
 	if err != nil {
 		return nil, err
 	}
 	key := ingestIdempotencyKey(ingestCtx.SourceID, ingestCtx.RequestID)
 	return s.idempotency.do(ctx, key, func() (*IngestResultDTO, error) {
-		defaults := ingest.EnvironmentDefaults{Environment: src.Environment, BusinessLine: src.BusinessLine}
-		normalized := ingest.ParseAlertmanagerWebhook(payload, defaults)
+		defaults := EnvironmentDefaults{Environment: src.Environment, BusinessLine: src.BusinessLine}
+		normalized := ParseAlertmanagerWebhook(payload, defaults)
 		return s.ingestNormalized(ctx, src, ingestCtx, normalized)
 	})
 }
 
 // IngestGeneric 处理通用 Webhook（§6.2）；入口含 §3.2 鉴权与幂等。
-func (s *IngestService) IngestGeneric(ctx context.Context, ingestCtx IngestContext, payload ingest.GenericWebhookPayload) (*IngestResultDTO, error) {
+func (s *IngestService) IngestGeneric(ctx context.Context, ingestCtx IngestContext, payload GenericWebhookPayload) (*IngestResultDTO, error) {
 	src, err := s.VerifySource(ctx, ingestCtx)
 	if err != nil {
 		return nil, err
 	}
 	key := ingestIdempotencyKey(ingestCtx.SourceID, ingestCtx.RequestID)
 	return s.idempotency.do(ctx, key, func() (*IngestResultDTO, error) {
-		defaults := ingest.EnvironmentDefaults{Environment: src.Environment, BusinessLine: src.BusinessLine}
-		normalized := []ingest.NormalizedAlert{ingest.ParseGenericWebhook(payload, defaults)}
+		defaults := EnvironmentDefaults{Environment: src.Environment, BusinessLine: src.BusinessLine}
+		normalized := []NormalizedAlert{ParseGenericWebhook(payload, defaults)}
 		return s.ingestNormalized(ctx, src, ingestCtx, normalized)
 	})
 }
 
-func (s *IngestService) ingestNormalized(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, items []ingest.NormalizedAlert) (*IngestResultDTO, error) {
+func (s *IngestService) ingestNormalized(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, items []NormalizedAlert) (*IngestResultDTO, error) {
 	if s == nil || s.alerts == nil {
 		return nil, apperr.New(apperr.CodeUnavailable, "alert ingest is not enabled")
 	}
@@ -142,7 +142,7 @@ func (s *IngestService) ingestNormalized(ctx context.Context, src *domain.AlertS
 }
 
 // processOne 处理单条归一化告警：firing 新建/更新，resolved 转 recovered，recovered 后 firing 重新打开当前 lifecycle，closed 后 firing 新建 lifecycle。
-func (s *IngestService) processOne(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, item ingest.NormalizedAlert) (created, updated, recovered, ignored int, err error) {
+func (s *IngestService) processOne(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, item NormalizedAlert) (created, updated, recovered, ignored int, err error) {
 	dedupKey := ingest.ComputeDedupKey(src.ID, firstNonEmpty(item.Fingerprint, item.ExternalID), item.RuleName, item.ResourceName, item.Labels)
 	now := time.Now()
 	isResolved := strings.EqualFold(item.Status, "resolved")
@@ -171,7 +171,7 @@ func (s *IngestService) processOne(ctx context.Context, src *domain.AlertSource,
 	return s.processExistingActive(ctx, src, ingestCtx, item, active, now, isResolved)
 }
 
-func (s *IngestService) createActiveAlert(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, item ingest.NormalizedAlert, dedupKey string, lifecycleSeq int, now time.Time, eventMessage string) (created, updated, recovered, ignored int, err error) {
+func (s *IngestService) createActiveAlert(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, item NormalizedAlert, dedupKey string, lifecycleSeq int, now time.Time, eventMessage string) (created, updated, recovered, ignored int, err error) {
 	alert := s.newAlertFromNormalized(src, item, dedupKey, lifecycleSeq, now)
 	s.applyAssetLinks(ctx, alert, item)
 	if err := s.alerts.Create(ctx, alert); err != nil {
@@ -195,7 +195,7 @@ func (s *IngestService) createActiveAlert(ctx context.Context, src *domain.Alert
 	return
 }
 
-func (s *IngestService) processExistingActive(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, item ingest.NormalizedAlert, active *domain.Alert, now time.Time, isResolved bool) (created, updated, recovered, ignored int, err error) {
+func (s *IngestService) processExistingActive(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, item NormalizedAlert, active *domain.Alert, now time.Time, isResolved bool) (created, updated, recovered, ignored int, err error) {
 	if isResolved {
 		if active.Status == domain.StatusRecovered {
 			ignored = 1
@@ -262,7 +262,7 @@ func (s *IngestService) processExistingActive(ctx context.Context, src *domain.A
 	return
 }
 
-func (s *IngestService) newAlertFromNormalized(src *domain.AlertSource, item ingest.NormalizedAlert, dedupKey string, lifecycleSeq int, now time.Time) *domain.Alert {
+func (s *IngestService) newAlertFromNormalized(src *domain.AlertSource, item NormalizedAlert, dedupKey string, lifecycleSeq int, now time.Time) *domain.Alert {
 	firstSeen := item.FirstSeenAt
 	if firstSeen.IsZero() {
 		firstSeen = now
@@ -298,7 +298,7 @@ func (s *IngestService) newAlertFromNormalized(src *domain.AlertSource, item ing
 }
 
 // applyAssetLinks 按 §9.1 尝试匹配 Asset 注册表，写入 application_id / resource_id；失败仍保留告警。
-func (s *IngestService) applyAssetLinks(ctx context.Context, alert *domain.Alert, item ingest.NormalizedAlert) {
+func (s *IngestService) applyAssetLinks(ctx context.Context, alert *domain.Alert, item NormalizedAlert) {
 	if s == nil || s.assets == nil || alert == nil {
 		return
 	}
@@ -326,7 +326,7 @@ func (s *IngestService) applyAssetLinks(ctx context.Context, alert *domain.Alert
 }
 
 // recordIntegrationEvent 写入接入时间线，payload 含 §3.2 要求的 ip/user_agent/trace_id 及 request_id。
-func (s *IngestService) recordIntegrationEvent(ctx context.Context, alertID string, src *domain.AlertSource, ingestCtx IngestContext, eventType domain.AlertEventType, message string, item ingest.NormalizedAlert) error {
+func (s *IngestService) recordIntegrationEvent(ctx context.Context, alertID string, src *domain.AlertSource, ingestCtx IngestContext, eventType domain.AlertEventType, message string, item NormalizedAlert) error {
 	if s == nil || s.events == nil {
 		return nil
 	}

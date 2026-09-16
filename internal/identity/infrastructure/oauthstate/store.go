@@ -19,7 +19,7 @@ const (
 	redisKeyPrefix = "aiops:oauth_state:"
 )
 
-// Binding 记录 OAuth state 绑定嘅客户端上下文，用嚟降低 state 被拎走后跨客户端重放嘅风险。
+// Binding 记录 OAuth state 绑定的客户端上下文，用于降低 state 被窃取后跨客户端重放的风险。
 type Binding struct {
 	ClientIP  string
 	UserAgent string
@@ -31,13 +31,13 @@ type Store interface {
 	Consume(ctx context.Context, state, providerID string, binding Binding) error
 }
 
-// MemoryStore 係本地内存版 state store，适合单实例或测试环境。
+// MemoryStore 是本地内存版 state store，适合单实例或测试环境。
 type MemoryStore struct {
 	mu   sync.Mutex
 	data map[string]memoryEntry
 }
 
-// memoryEntry 保存 state 对应嘅 provider、客户端指纹同过期时间。
+// memoryEntry 保存 state 对应的 provider、客户端指纹和过期时间。
 type memoryEntry struct {
 	providerID string
 	binding    string
@@ -94,7 +94,7 @@ func (s *MemoryStore) Consume(_ context.Context, state, providerID string, bindi
 	return nil
 }
 
-// RedisStore 係 Redis 版 state store，适合多 API 实例共享 OAuth 回调状态。
+// RedisStore 是 Redis 版 state store，适合多 API 实例共享 OAuth 回调状态。
 type RedisStore struct {
 	client *redis.Client
 }
@@ -163,7 +163,7 @@ func (s *RedisStore) Consume(ctx context.Context, state, providerID string, bind
 	}
 }
 
-// Fingerprint 将 IP 同 User-Agent 做摘要；store 只保存指纹，唔保存完整 UA。
+// Fingerprint 将 IP 和 User-Agent 做摘要；store 只保存指纹，不保存完整 UA。
 func (b Binding) Fingerprint() string {
 	ip := trim(b.ClientIP)
 	ua := trim(b.UserAgent)
@@ -174,12 +174,12 @@ func (b Binding) Fingerprint() string {
 	return hex.EncodeToString(sum[:])
 }
 
-// encodeEntry 将 provider 同客户端指纹组合成可比较嘅存储值。
+// encodeEntry 将 provider 和客户端指纹组合成可比较的存储值。
 func encodeEntry(providerID, binding string) string {
 	return providerID + "\n" + binding
 }
 
-// trim 统一处理配置同请求参数两边可能带住嘅空白。
+// trim 统一处理配置和请求参数两边可能携带的空白。
 func trim(v string) string {
 	return strings.TrimSpace(v)
 }

@@ -14,7 +14,7 @@ import (
 
 // EvidenceAnalyzer 基于 Observability 证据链做规则分析。
 //
-// fake 同真实 provider 数据都要经同一条脱敏证据链；后续可替换成 AI Agent，但唔可以绕过凭据同执行边界。
+// fake 与真实 provider 数据都要经过同一条脱敏证据链；后续可替换成 AI Agent，但不能绕过凭据与执行边界。
 type EvidenceAnalyzer struct {
 	obs ObservabilityQueryPort
 }

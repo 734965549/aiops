@@ -2,7 +2,7 @@ package application
 
 import "context"
 
-// AssetMatchInput Alert 接入时传给 Asset 模块嘅标签快照（ops/alert-contract.md §9.1）。
+// AssetMatchInput 是 Alert 接入时传给 Asset 模块的标签快照（ops/alert-contract.md §9.1）。
 type AssetMatchInput struct {
 	SourceType      string
 	ApplicationName string

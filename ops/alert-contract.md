@@ -1,6 +1,6 @@
 # Alert 告警中心工程契约
 
-本文档定义 Alert 模块嘅稳定工程契约，供后端实现、前端联调、Webhook 接入同后续 AI / Execution / Audit 串联参考。
+本文档定义 Alert 模块的稳定工程契约，供后端实现、前端联调、Webhook 接入和后续 AI / Execution / Audit 串联参考。
 
 现有产品与架构约定来源：
 
@@ -20,7 +20,7 @@
 - 支持认领、转派、开始处理、手动恢复、关闭、静默、取消静默、备注。
 - 为 AI 分析、执行任务、审计日志预留稳定关联字段。
 
-第一阶段暂唔做：
+第一阶段暂不实现：
 
 - 告警规则管理 UI。
 - 复杂降噪策略编排。
@@ -74,7 +74,7 @@ Authorization: Bearer <access_token>
 
 ### 3.2 Webhook 接入接口
 
-Webhook 接入接口唔使用 Bearer token，避免外部监控系统同用户登录体系耦合。第一阶段建议使用共享密钥：
+Webhook 接入接口不使用 Bearer token，避免外部监控系统和用户登录体系耦合。第一阶段建议使用共享密钥：
 
 ```http
 X-AIOPS-Webhook-Token: <source secret>
@@ -82,7 +82,7 @@ X-AIOPS-Webhook-Token: <source secret>
 
 服务端必须：
 
-- 按 `source_id` 找到启用中嘅接入源。
+- 按 `source_id` 找到启用中的接入源。
 - 校验 token，失败返回 `UNAUTHENTICATED`。
 - 限制请求体大小，建议默认 `1MB`。
 - 记录来源 IP、User-Agent、trace_id。
@@ -106,7 +106,7 @@ API 内部枚举使用小写，前端展示可以转成大写。
 | `p0` | P0 | 严重故障，核心业务不可用或大范围影响 |
 | `p1` | P1 | 高危问题，关键服务明显异常 |
 | `p2` | P2 | 中等问题，局部影响或有劣化趋势 |
-| `p3` | P3 | 低优先级问题，需要跟进但唔紧急 |
+| `p3` | P3 | 低优先级问题，需要跟进但不紧急 |
 | `info` | Info | 信息类提醒 |
 
 级别归一化建议：
@@ -194,7 +194,7 @@ stateDiagram-v2
 
 ### 5.1 `Alert`
 
-`Alert` 係告警中心嘅主记录，一条记录代表一轮可处理嘅告警生命周期。
+`Alert` 是告警中心的主记录，一条记录代表一轮可处理的告警生命周期。
 
 | 字段 | 类型 | 必有 | 说明 |
 | --- | --- | --- | --- |
@@ -251,7 +251,7 @@ stateDiagram-v2
 
 ### 5.3 `AlertSource`
 
-`AlertSource` 係外部接入源配置；第一阶段可以先只落 Alertmanager。
+`AlertSource` 是外部接入源配置；第一阶段可以先只落 Alertmanager。
 
 | 字段 | 类型 | 必有 | 说明 |
 | --- | --- | --- | --- |
@@ -259,7 +259,7 @@ stateDiagram-v2
 | `name` | string | 是 | 显示名 |
 | `type` | string | 是 | `prometheus_alertmanager` / `huawei_ces` / `signoz` / `zabbix` / `custom_webhook` |
 | `enabled` | boolean | 是 | 是否启用 |
-| `secret_masked` | string | 否 | 密钥掩码，接口永远唔返回明文 |
+| `secret_masked` | string | 否 | 密钥掩码，接口永远不返回明文 |
 | `environment` | string | 否 | 默认环境 |
 | `business_line` | string | 否 | 默认业务线 |
 | `description` | string | 否 | 备注 |
@@ -413,13 +413,13 @@ stateDiagram-v2
 - `app` / `application`
 - `env` / `environment`
 
-唔建议纳入会频繁变化嘅标签，例如 request id、pod hash、message 文本。
+不建议纳入会频繁变化的标签，例如 request id、pod hash、message 文本。
 
 ### 7.2 幂等规则
 
 - 同一 active 告警重复 firing：更新 `last_seen_at`、`labels`、`annotations`、`occurrence_count`，写 `updated` 事件。
 - 同一告警 resolved：状态转 `recovered`，写 `recovered` 事件。
-- 同一 resolved 重复到达：保持 `recovered`，唔重复写无意义事件。
+- 同一 resolved 重复到达：保持 `recovered`，不重复写无意义事件。
 - `recovered` 后同一 `dedup_key` 再次 firing：重新打开当前 lifecycle，状态转 `new`，清 `recovered_at` 同认领/处理人信息，写 `triggered` 事件。
 - `closed` 后同一 `dedup_key` 再次 firing：第一阶段创建新告警记录（新 lifecycle）。
 - Webhook 响应 `ignored` 计数：空 `name`、无 active 告警时收到 `resolved`、已 `recovered` 重复 `resolved` 等；**静默告警 firing 仍走 `updated`，不计入 `ignored`**（§4.2）。
@@ -587,7 +587,7 @@ stateDiagram-v2
 约束：
 
 - 允许状态：`new` / `acknowledged` / `processing`（§4.2 人工状态图；`recovered` / `closed` / `silenced` 不可静默，`silenced` 须先 `unsilence` 或走其它流转）。
-- `duration_s` 必须大于 `0`，建议最大唔超过 `30d`。
+- `duration_s` 必须大于 `0`，建议最大不超过 `30d`。
 - 成功后状态：`silenced`。
 - 写入 `silenced` 事件。
 - 非法状态返回 `INVALID_ARGUMENT`。
@@ -646,7 +646,7 @@ stateDiagram-v2
 
 ### 8.12 接入源管理
 
-管理外部告警接入源（§5.3 `AlertSource`）；Webhook 路径参数 `:source_id` 即此处配置嘅 ID。接口返回 `secret_masked`，**永不**返回明文 `secret`。
+管理外部告警接入源（§5.3 `AlertSource`）；Webhook 路径参数 `:source_id` 即此处配置的 ID。接口返回 `secret_masked`，**永不**返回明文 `secret`。
 
 - 鉴权: 是（Bearer + `app:alerts:ingest`）
 
@@ -686,7 +686,7 @@ stateDiagram-v2
 | `business_line` | string | 否 | 默认业务线 |
 | `description` | string | 否 | 备注 |
 
-响应 `data`：创建后嘅 `AlertSource`。
+响应 `data`：创建后的 `AlertSource`。
 
 #### 8.12.4 更新接入源
 
@@ -695,7 +695,7 @@ stateDiagram-v2
 
 请求体字段同创建，除 `id` 外均可选；`secret` 省略则保留原密钥。
 
-响应 `data`：更新后嘅 `AlertSource`。
+响应 `data`：更新后的 `AlertSource`。
 
 #### 8.12.5 删除接入源
 
@@ -708,7 +708,7 @@ stateDiagram-v2
 
 ### 9.1 Asset
 
-Alert 只保存关联资源/应用嘅快照字段，真正资源详情由 Asset 模块提供。
+Alert 只保存关联资源/应用的快照字段，真正资源详情由 Asset 模块提供。
 
 实现方式：
 
@@ -770,7 +770,7 @@ Alert 时间线写 `execution_created` / `execution_started` / `execution_finish
 
 ### 9.4 Audit
 
-用户对告警嘅关键操作应写审计（落库 `audit_operation`，查询 `GET /api/audits`）：
+用户对告警的关键操作应写审计（落库 `audit_operation`，查询 `GET /api/audits`）：
 
 - 认领
 - 转派
@@ -835,7 +835,7 @@ Alert 时间线写 `execution_created` / `execution_started` / `execution_finish
 
 - 能创建一个 Alertmanager 接入源，并配置共享 token。
 - Alertmanager firing payload 能生成平台告警。
-- 同一告警重复 firing 会更新原记录而唔係无限新增。
+- 同一告警重复 firing 会更新原记录，而不是无限新增。
 - resolved payload 能将告警转为 `recovered`。
 - 用户可查看列表、详情与时间线。
 - 用户可认领、开始处理、关闭、静默、取消静默。
@@ -873,4 +873,4 @@ Alert 时间线写 `execution_created` / `execution_started` / `execution_finish
 - 告警聚合成 Incident。
 - 通知策略与升级策略。
 - 告警降噪规则：时间窗口、标签聚合、维护窗口、重复压缩。
-- 与 Asset 自动关联嘅更强 matcher。
+- 与 Asset 自动关联的更强 matcher。

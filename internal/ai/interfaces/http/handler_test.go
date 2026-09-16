@@ -65,8 +65,8 @@ func TestListProviders(t *testing.T) {
 	if !bytes.Contains(body, []byte("demo")) {
 		t.Fatalf("expected provider id in response: %s", string(body))
 	}
-	if !bytes.Contains(body, []byte(`"api_key":"****"`)) {
-		t.Fatalf("expected masked api_key: %s", string(body))
+	if bytes.Contains(body, []byte(`"api_key"`)) {
+		t.Fatalf("must not return api_key in list response: %s", string(body))
 	}
 	if !bytes.Contains(body, []byte(`"has_api_key":true`)) {
 		t.Fatalf("expected has_api_key true: %s", string(body))

@@ -160,6 +160,34 @@ func (r *UserRepository) Update(ctx context.Context, u *domain.User) error {
 	return nil
 }
 
+// Reactivate 把指定用户重置为 active 并写入新的密码哈希。
+//
+// 仅服务于 bootstrap 重新激活被迁移 0044 锁定的默认管理员：Update 故意不修改
+// password_hash，这里通过独立的受控写路径一次性更新 password_hash 与 status，
+// 单条 UPDATE 原子完成，updated_at 由 GORM Hook 维护。找不到记录返回
+// gorm.ErrRecordNotFound，与 Update 语义一致。
+func (r *UserRepository) Reactivate(ctx context.Context, userID, passwordHash string) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return errors.New("user id is required")
+	}
+	if passwordHash == "" {
+		return errors.New("password hash is required")
+	}
+	res := r.db.WithContext(ctx).Model(&userModel{}).Where("user_id = ?", userID).
+		Updates(map[string]any{
+			"password_hash": passwordHash,
+			"status":        string(domain.UserStatusActive),
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 // DeleteByID 删除平台用户（用于预置失败时的补偿回滚）。
 func (r *UserRepository) DeleteByID(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)

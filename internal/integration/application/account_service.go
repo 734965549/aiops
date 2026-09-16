@@ -61,19 +61,22 @@ type CreateAccountInput struct {
 	Enabled     *bool
 	OwnerTeam   string
 	Description string
+	ExtraConfig map[string]any
 }
 
 type UpdateAccountInput struct {
-	Name        *string
-	Provider    *string
-	AuthType    *string
-	Regions     []string
-	RegionsSet  bool
-	ProjectID   *string
-	Credential  map[string]string
-	Enabled     *bool
-	OwnerTeam   *string
-	Description *string
+	Name           *string
+	Provider       *string
+	AuthType       *string
+	Regions        []string
+	RegionsSet     bool
+	ProjectID      *string
+	Credential     map[string]string
+	Enabled        *bool
+	OwnerTeam      *string
+	Description    *string
+	ExtraConfig    map[string]any
+	ExtraConfigSet bool
 }
 
 type ListAccountsQuery struct {
@@ -154,6 +157,9 @@ func (s *AccountService) Create(ctx context.Context, actor Actor, in CreateAccou
 	if err := validateCredentialInput(provider, authType, in.Credential); err != nil {
 		return nil, err
 	}
+	if err := validateRegions(provider, in.Regions); err != nil {
+		return nil, err
+	}
 	accountID := strings.TrimSpace(in.AccountID)
 	if accountID == "" {
 		accountID = "acc-" + uuid.NewString()
@@ -173,6 +179,11 @@ func (s *AccountService) Create(ctx context.Context, actor Actor, in CreateAccou
 		OwnerTeam:   strings.TrimSpace(in.OwnerTeam),
 		Description: strings.TrimSpace(in.Description),
 	}
+	extraConfig, err := encodeExtraConfigInput(provider, in.ExtraConfig)
+	if err != nil {
+		return nil, err
+	}
+	acc.ExtraConfig = extraConfig
 	defaultCaps := domain.DefaultCapabilitiesForProvider(provider)
 	if err := s.runAccountWriteTransaction(ctx, func(ctx context.Context, repos domain.TransactionRepositories) error {
 		if err := repos.Accounts.Create(ctx, acc); err != nil {
@@ -230,6 +241,9 @@ func (s *AccountService) Update(ctx context.Context, accountID string, actor Act
 		acc.AuthType = a
 	}
 	if in.RegionsSet {
+		if err := validateRegions(acc.Provider, in.Regions); err != nil {
+			return nil, err
+		}
 		acc.Regions = normalizeRegions(in.Regions)
 	}
 	if in.ProjectID != nil {
@@ -243,6 +257,15 @@ func (s *AccountService) Update(ctx context.Context, accountID string, actor Act
 	}
 	if in.Description != nil {
 		acc.Description = strings.TrimSpace(*in.Description)
+	}
+	if in.ExtraConfigSet {
+		if acc.ExtraConfig, err = encodeExtraConfigInput(acc.Provider, in.ExtraConfig); err != nil {
+			return nil, err
+		}
+	} else if providerChanged {
+		if err := validateProviderExtraConfig(acc.Provider, safeExtraConfig(acc.ExtraConfig)); err != nil {
+			return nil, err
+		}
 	}
 	if err := validateProviderAuthType(acc.Provider, acc.AuthType); err != nil {
 		return nil, err
@@ -303,8 +326,19 @@ func (s *AccountService) Delete(ctx context.Context, accountID string, actor Act
 	if err != nil {
 		return err
 	}
-	if err := s.accounts.SoftDelete(ctx, acc.AccountID); err != nil {
-		return wrapIntegrationError(err, "delete integration account failed")
+	// 账号软删除保留行用于审计/巡检证据；凭据密文随删除一并硬删除，避免残留。
+	if err := s.runAccountWriteTransaction(ctx, func(ctx context.Context, repos domain.TransactionRepositories) error {
+		if err := repos.Accounts.SoftDelete(ctx, acc.AccountID); err != nil {
+			return wrapIntegrationError(err, "delete integration account failed")
+		}
+		if repos.Credentials != nil {
+			if err := repos.Credentials.DeleteByAccountID(ctx, acc.AccountID); err != nil {
+				return wrapIntegrationError(err, "delete integration credential failed")
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	s.recordAudit(ctx, acc.AccountID, actor.UserID, AuditAccountDelete, map[string]any{"result": "success"})
 	return nil
@@ -560,6 +594,52 @@ func normalizeCredential(input map[string]string) domain.CredentialMaterial {
 	return out
 }
 
+const huaweiRegionMaxLen = 64
+
+// validateRegions 在写入前按 provider 校验 region 列表。
+// huawei_cloud 使用与华为 Provider 一致的强规则（仅小写字母/数字/连字符，禁止首/尾/连续连字符，长度 ≤64）；
+// 其它 provider 至少通过通用字符门禁。任何非法 region 都返回 INVALID_ARGUMENT，不再静默丢弃。
+func validateRegions(provider domain.ProviderType, regions []string) error {
+	for _, r := range regions {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		switch provider {
+		case domain.ProviderHuaweiCloud:
+			if err := validateHuaweiRegion(r); err != nil {
+				return err
+			}
+		default:
+			if !isSafeRegion(r) {
+				return apperr.New(apperr.CodeInvalidArgument, "region contains invalid characters")
+			}
+		}
+	}
+	return nil
+}
+
+// validateHuaweiRegion 与 internal/observability/infrastructure/provider/huawei.validateRegion 保持一致，
+// 确保写入华为云账号的 region 在后续 endpoint 拼接时不会被拒绝。
+func validateHuaweiRegion(r string) error {
+	if len(r) > huaweiRegionMaxLen {
+		return apperr.New(apperr.CodeInvalidArgument, "region is too long")
+	}
+	for _, c := range r {
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9':
+		case c == '-':
+		default:
+			return apperr.New(apperr.CodeInvalidArgument, "region contains invalid characters")
+		}
+	}
+	if strings.HasPrefix(r, "-") || strings.HasSuffix(r, "-") || strings.Contains(r, "--") {
+		return apperr.New(apperr.CodeInvalidArgument, "region has invalid hyphen placement")
+	}
+	return nil
+}
+
 func normalizeRegions(in []string) []string {
 	if len(in) == 0 {
 		return []string{}
@@ -571,6 +651,9 @@ func normalizeRegions(in []string) []string {
 		if r == "" {
 			continue
 		}
+		if !isSafeRegion(r) {
+			continue
+		}
 		if _, ok := seen[r]; ok {
 			continue
 		}
@@ -579,6 +662,23 @@ func normalizeRegions(in []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// isSafeRegion 是通用字符门禁：region 标识符跨云厂商均为字母/数字/连字符，
+// 拒绝含路径/查询/主机分隔符（/ ? # @ : 及空白/控制字符）的输入，防止拼接
+// endpoint 时发生 SSRF 或签名请求外发。provider 级强校验由 huawei.buildEndpoint 兜底。
+func isSafeRegion(r string) bool {
+	for _, c := range r {
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		case c == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func sanitizeConnectivityMessage(msg string, secretValues ...string) string {

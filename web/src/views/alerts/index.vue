@@ -1,22 +1,23 @@
 <template>
-  <div class="alerts-page">
+  <div class="page-shell">
     <a-card
       title="告警中心"
       :bordered="false"
+      class="page-card"
     >
       <template #extra>
         <a-space>
-          <a-button
-            v-if="canManageSources"
-            @click="openSourceModal"
-          >
-            接入源管理
-          </a-button>
           <a-button
             :loading="loadingList"
             @click="loadAlerts"
           >
             刷新
+          </a-button>
+          <a-button
+            v-if="canManageSources"
+            @click="openSourceModal"
+          >
+            接入源管理
           </a-button>
         </a-space>
       </template>
@@ -49,7 +50,7 @@
             v-model="filters.severity"
             allow-clear
             placeholder="全部"
-            style="width: 100px"
+            style="width: 140px"
             :options="severityOptions"
           />
         </a-form-item>
@@ -82,7 +83,17 @@
         </a-form-item>
       </a-form>
 
+      <a-alert
+        v-if="listLoadError"
+        type="error"
+        :title="listLoadError"
+        closable
+        style="margin-bottom: 12px"
+        @close="listLoadError = ''"
+      />
+
       <a-table
+        class="page-table"
         :columns="columns"
         :data="alerts"
         :loading="loadingList"
@@ -344,6 +355,13 @@
                 {{ record.enabled ? '启用' : '禁用' }}
               </a-tag>
             </template>
+            <template #secretMasked="{ record }">
+              <span v-if="record.secret_masked">{{ record.secret_masked }}</span>
+              <span
+                v-else
+                class="text-muted"
+              >未配置</span>
+            </template>
             <template #webhook="{ record }">
               <a-typography-text
                 copyable
@@ -408,6 +426,12 @@
                   v-model="sourceForm.secret"
                   placeholder="X-AIOPS-Webhook-Token"
                 />
+                <div
+                  v-if="editingSourceId && editingSourceSecretMasked"
+                  class="field-hint"
+                >
+                  当前已配置密钥：{{ editingSourceSecretMasked }}
+                </div>
               </a-form-item>
               <a-form-item label="环境">
                 <a-input
@@ -692,7 +716,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Message, type TableData } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
+import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import { useAuthStore } from '@/stores/auth'
 import { getApiError } from '@/api/request'
 import { analyzeAlert, type AnalyzeAlertResult } from '@/api/ai'
@@ -712,6 +737,7 @@ const detail = ref<AlertDetail | null>(null)
 const selectedAlertId = ref('')
 
 const loadingList = ref(false)
+const listLoadError = ref('')
 const loadingDetail = ref(false)
 const loadingSources = ref(false)
 const actionLoading = ref(false)
@@ -733,6 +759,7 @@ const showAIModal = ref(false)
 const showExecutionModal = ref(false)
 
 const editingSourceId = ref('')
+const editingSourceSecretMasked = ref('')
 const aiResult = ref<AnalyzeAlertResult | null>(null)
 
 const filters = reactive({
@@ -808,7 +835,7 @@ const columns = [
   { title: '状态', slotName: 'status', width: 100 },
   { title: '来源', slotName: 'source', width: 140, ellipsis: true },
   { title: '环境', dataIndex: 'environment', width: 80 },
-  { title: '次数', dataIndex: 'occurrence_count', width: 70 },
+  { title: '次数', dataIndex: 'occurrence_count', width: 80, align: 'right' as const },
   { title: '最近更新', slotName: 'last_seen_at', width: 170 },
   { title: '操作', slotName: 'actions', width: 80 }
 ]
@@ -817,6 +844,7 @@ const sourceColumns = [
   { title: 'ID', dataIndex: 'id', width: 100 },
   { title: '名称', dataIndex: 'name' },
   { title: '类型', dataIndex: 'type', width: 160, ellipsis: true },
+  { title: '密钥', slotName: 'secretMasked', width: 80 },
   { title: '状态', slotName: 'enabled', width: 80 },
   { title: 'Webhook', slotName: 'webhook', ellipsis: true },
   { title: '操作', slotName: 'sourceActions', width: 80 }
@@ -957,6 +985,7 @@ function webhookUrl(source: Pick<AlertSource, 'id' | 'type'>) {
 
 async function loadAlerts() {
   loadingList.value = true
+  listLoadError.value = ''
   try {
     const res = await alertApi.listAlerts({
       page: pagination.current,
@@ -969,6 +998,10 @@ async function loadAlerts() {
     })
     alerts.value = res.items
     pagination.total = res.total
+  } catch (err) {
+    alerts.value = []
+    pagination.total = 0
+    listLoadError.value = getApiError(err)?.message || '加载告警列表失败'
   } finally {
     loadingList.value = false
   }
@@ -1279,6 +1312,7 @@ function openSourceModal() {
 
 function resetSourceForm() {
   editingSourceId.value = ''
+  editingSourceSecretMasked.value = ''
   sourceForm.id = ''
   sourceForm.name = ''
   sourceForm.type = 'prometheus_alertmanager'
@@ -1292,6 +1326,7 @@ function resetSourceForm() {
 function onSelectSource(record: TableData) {
   const src = record as AlertSource
   editingSourceId.value = src.id
+  editingSourceSecretMasked.value = src.secret_masked || ''
   sourceForm.id = src.id
   sourceForm.name = src.name
   sourceForm.type = src.type
@@ -1360,75 +1395,79 @@ onMounted(async () => {
 </script>
 
 <style scoped lang="scss">
-.alerts-page {
-  .filter-form {
-    margin-bottom: 16px;
-  }
+.detail-desc {
+  margin-bottom: 16px;
+}
 
-  .detail-desc {
-    margin-bottom: 16px;
-  }
+.action-bar {
+  margin: 16px 0;
+}
 
-  .action-bar {
-    margin: 16px 0;
-  }
+.timeline-card {
+  margin-top: 8px;
+  padding: 0;
+}
 
-  .timeline-card {
-    margin-top: 8px;
-    padding: 0;
-  }
+.event-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 
-  .event-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
+.event-time {
+  color: var(--color-text-3);
+  font-size: 12px;
+}
 
-  .event-time {
-    color: var(--color-text-3);
-    font-size: 12px;
-  }
+.event-msg {
+  margin-top: 4px;
+}
 
-  .event-msg {
-    margin-top: 4px;
-  }
+.event-actor {
+  margin-top: 2px;
+  color: var(--color-text-3);
+  font-size: 12px;
+}
 
-  .event-actor {
-    margin-top: 2px;
-    color: var(--color-text-3);
-    font-size: 12px;
-  }
+.ai-result {
+  margin-top: 12px;
+}
 
-  .ai-result {
-    margin-top: 12px;
-  }
+.runbook-list {
+  width: 100%;
+}
 
-  .runbook-list {
-    width: 100%;
-  }
+.runbook-item {
+  margin-left: 8px;
+}
 
-  .runbook-item {
-    margin-left: 8px;
-  }
+.runbook-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
 
-  .runbook-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-weight: 500;
-  }
+.runbook-meta,
+.runbook-desc {
+  color: var(--color-text-3);
+  font-size: 12px;
+  margin-top: 4px;
+}
 
-  .runbook-meta,
-  .runbook-desc {
-    color: var(--color-text-3);
-    font-size: 12px;
-    margin-top: 4px;
-  }
+.dry-run-hint {
+  margin-left: 8px;
+  color: var(--color-text-3);
+  font-size: 12px;
+}
 
-  .dry-run-hint {
-    margin-left: 8px;
-    color: var(--color-text-3);
-    font-size: 12px;
-  }
+.field-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+.text-muted {
+  color: var(--color-text-3);
 }
 </style>

@@ -21,6 +21,23 @@ func (f *fakeMatchRuleRepo) List(_ context.Context) ([]domain.MatchRule, error) 
 	return append([]domain.MatchRule(nil), f.rows...), nil
 }
 
+func (f *fakeMatchRuleRepo) ListPaged(_ context.Context, filter domain.MatchRuleFilter) ([]domain.MatchRule, int64, error) {
+	total := int64(len(f.rows))
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]domain.MatchRule, 0)
+	for i := offset; i < len(f.rows) && len(out) < limit; i++ {
+		out = append(out, f.rows[i])
+	}
+	return out, total, nil
+}
+
 func (f *fakeMatchRuleRepo) ListEnabledByPriority(_ context.Context) ([]domain.MatchRule, error) {
 	out := make([]domain.MatchRule, 0)
 	for _, row := range f.rows {

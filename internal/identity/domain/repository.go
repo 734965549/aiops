@@ -13,6 +13,10 @@ type UserRepository interface {
 	FindByUsername(ctx context.Context, username string) (*User, error)
 	Create(ctx context.Context, u *User) error
 	Update(ctx context.Context, u *User) error
+	// Reactivate 把指定用户重置为 active 并写入新的密码哈希，用于 bootstrap 重新
+	// 激活被迁移 0044 锁定的默认管理员；不改变 username。找不到记录时返回
+	// gorm.ErrRecordNotFound 等价语义（与 Update 一致）。
+	Reactivate(ctx context.Context, userID, passwordHash string) error
 	DeleteByID(ctx context.Context, id string) error
 }
 

@@ -1,17 +1,19 @@
 <template>
-  <div class="inspection-page">
+  <div class="page-shell">
     <a-card
       title="智能巡检"
       :bordered="false"
+      class="page-card"
     >
-      <a-tabs v-model:active-key="activeTab">
+      <a-tabs
+        v-model:active-key="activeTab"
+        class="page-tabs"
+      >
         <a-tab-pane
           key="policies"
           title="巡检策略"
         >
-          <a-space
-            style="margin-bottom: 12px"
-          >
+          <div class="pane-toolbar">
             <a-button
               :loading="policiesLoading"
               @click="loadPolicies"
@@ -24,8 +26,9 @@
             >
               新建策略
             </a-button>
-          </a-space>
+          </div>
           <a-table
+            class="page-table"
             :columns="policyColumns"
             :data="policies"
             :loading="policiesLoading"
@@ -76,14 +79,16 @@
           key="runs"
           title="巡检运行"
         >
-          <a-button
-            :loading="runsLoading"
-            style="margin-bottom: 12px"
-            @click="loadRuns"
-          >
-            刷新
-          </a-button>
+          <div class="pane-toolbar">
+            <a-button
+              :loading="runsLoading"
+              @click="loadRuns"
+            >
+              刷新
+            </a-button>
+          </div>
           <a-table
+            class="page-table"
             :columns="runColumns"
             :data="runs"
             :loading="runsLoading"
@@ -121,7 +126,7 @@
               <a-input
                 v-model="findingFilters.run_id"
                 placeholder="run-xxx"
-                style="width: 220px"
+                style="width: 200px"
               />
             </a-form-item>
             <a-form-item label="风险">
@@ -129,25 +134,41 @@
                 v-model="findingFilters.risk_level"
                 allow-clear
                 placeholder="全部"
-                style="width: 120px"
+                style="width: 140px"
               >
-                <a-option value="low">low</a-option>
-                <a-option value="medium">medium</a-option>
-                <a-option value="high">high</a-option>
-                <a-option value="critical">critical</a-option>
+                <a-option value="low">
+                  low
+                </a-option>
+                <a-option value="medium">
+                  medium
+                </a-option>
+                <a-option value="high">
+                  high
+                </a-option>
+                <a-option value="critical">
+                  critical
+                </a-option>
               </a-select>
             </a-form-item>
             <a-form-item>
-              <a-button
-                type="primary"
-                :loading="findingsLoading"
-                @click="loadFindings"
-              >
-                查询
-              </a-button>
+              <a-space>
+                <a-button
+                  type="primary"
+                  :loading="findingsLoading"
+                  @click="loadFindings"
+                >
+                  查询
+                </a-button>
+                <a-button
+                  @click="onResetFindingFilters"
+                >
+                  重置
+                </a-button>
+              </a-space>
             </a-form-item>
           </a-form>
           <a-table
+            class="page-table"
             :columns="findingColumns"
             :data="findings"
             :loading="findingsLoading"
@@ -236,12 +257,24 @@
             multiple
             placeholder="选择检查项"
           >
-            <a-option value="metrics.cpu">metrics.cpu</a-option>
-            <a-option value="metrics.memory">metrics.memory</a-option>
-            <a-option value="metrics.disk">metrics.disk</a-option>
-            <a-option value="traces.latency">traces.latency</a-option>
-            <a-option value="traces.error_rate">traces.error_rate</a-option>
-            <a-option value="logs.error_burst">logs.error_burst</a-option>
+            <a-option value="metrics.cpu">
+              metrics.cpu
+            </a-option>
+            <a-option value="metrics.memory">
+              metrics.memory
+            </a-option>
+            <a-option value="metrics.disk">
+              metrics.disk
+            </a-option>
+            <a-option value="traces.latency">
+              traces.latency
+            </a-option>
+            <a-option value="traces.error_rate">
+              traces.error_rate
+            </a-option>
+            <a-option value="logs.error_burst">
+              logs.error_burst
+            </a-option>
           </a-select>
         </a-form-item>
         <a-form-item label="Cron 调度">
@@ -271,7 +304,8 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { Message, Modal } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
+import Modal from '@arco-design/web-vue/es/modal'
 import { listIntegrationAccounts, type IntegrationAccount } from '@/api/integration'
 import {
   createPolicy,
@@ -330,7 +364,7 @@ const runColumns = [
 const findingColumns = [
   { title: '风险', slotName: 'risk', width: 90 },
   { title: '摘要', dataIndex: 'summary' },
-  { title: '置信度', dataIndex: 'confidence', width: 90 },
+  { title: '置信度', dataIndex: 'confidence', width: 100, align: 'right' as const },
   { title: '证据', slotName: 'evidence', width: 200 },
   { title: '建议', slotName: 'recommendations' }
 ]
@@ -419,6 +453,13 @@ function onFindingPageChange(page: number) {
   loadFindings()
 }
 
+function onResetFindingFilters() {
+  findingFilters.run_id = ''
+  findingFilters.risk_level = ''
+  findingPagination.current = 1
+  loadFindings()
+}
+
 function openCreatePolicy() {
   policyForm.name = ''
   policyForm.scope.account_id = accountOptions.value[0]?.account_id || ''
@@ -462,7 +503,7 @@ async function onTriggerRun(policyId: string) {
       await loadFindings()
     }
   } catch (e) {
-    Message.error(getApiError(e)?.message || '加载账号失败')
+    Message.error(getApiError(e)?.message || '巡检触发失败')
   } finally {
     triggeringId.value = ''
   }
@@ -498,9 +539,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.filter-form {
-  margin-bottom: 12px;
-}
 .rec-item {
   margin-bottom: 8px;
 }

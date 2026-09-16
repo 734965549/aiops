@@ -15,6 +15,7 @@ const (
 	AuditCreateMatchRule   AuditAction = "create"
 	AuditUpdateMatchRule   AuditAction = "update"
 	AuditDeleteMatchRule   AuditAction = "delete"
+	AuditAssetSync         AuditAction = "sync"
 )
 
 // AuditRecord 审计载荷。

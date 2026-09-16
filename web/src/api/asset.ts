@@ -1,4 +1,5 @@
-import { http } from './request'
+import { http, isApiHttpError } from './request'
+import type { PageResult } from './audit'
 
 export interface Application {
   id: string
@@ -19,6 +20,15 @@ export interface Resource {
   pod?: string
   node?: string
   instance?: string
+  source?: string
+  integration_account_id?: string
+  cloud_resource_id?: string
+  cloud_resource_type?: string
+  region?: string
+  sync_status?: string
+  last_synced_at?: number
+  sync_batch_id?: string
+  labels?: Record<string, string>
   created_at: number
   updated_at: number
 }
@@ -98,10 +108,11 @@ export interface UpdateApplicationInput {
   description?: string
 }
 
-export function listApplications() {
-  return http<{ items: Application[] }>({
+export function listApplications(params?: { page?: number; page_size?: number }) {
+  return http<PageResult<Application>>({
     url: '/api/assets/applications',
-    method: 'get'
+    method: 'get',
+    params
   })
 }
 
@@ -113,10 +124,19 @@ export function createApplication(input: CreateApplicationInput) {
   })
 }
 
-export function listResources(applicationId: string) {
-  return http<{ items: Resource[] }>({
+export interface ListResourcesParams {
+  page?: number
+  page_size?: number
+  cloud_resource_type?: string
+  region?: string
+  sync_status?: string
+}
+
+export function listResources(applicationId: string, params?: ListResourcesParams) {
+  return http<PageResult<Resource>>({
     url: `/api/assets/applications/${encodeURIComponent(applicationId)}/resources`,
-    method: 'get'
+    method: 'get',
+    params
   })
 }
 
@@ -158,10 +178,11 @@ export function deleteResource(id: string) {
   })
 }
 
-export function listMatchRules() {
-  return http<{ items: MatchRule[] }>({
+export function listMatchRules(params?: { page?: number; page_size?: number }) {
+  return http<PageResult<MatchRule>>({
     url: '/api/assets/match-rules',
-    method: 'get'
+    method: 'get',
+    params
   })
 }
 
@@ -186,4 +207,216 @@ export function deleteMatchRule(id: string) {
     url: `/api/assets/match-rules/${encodeURIComponent(id)}`,
     method: 'delete'
   })
+}
+
+export interface SyncBatchScopeSummary {
+  region: string
+  project_id?: string
+  sync_mode?: string
+  resource_group_id?: string
+  resource_group_name?: string
+  resource_group_selection?: string
+  ces_total?: number
+  raw_fetched_count?: number
+  mapped_count?: number
+  unique_discovered_count?: number
+  persisted_count?: number
+  duplicate_count?: number
+  persist_failed_count?: number
+  discovered_count?: number
+  failed_scopes?: string[]
+  successful_types?: string[]
+  query_failed_types?: string[]
+  conversion_failed_types?: string[]
+  unknown_namespace_count?: number
+  invalid_resource_count?: number
+  enriched_count?: number
+  enrichment_failed_count?: number
+  enrichment_failed_types?: string[]
+  enrichment_warnings?: string[]
+  enrichment_stage_error?: string
+  writeback_failed_count?: number
+  max_resources_reached?: boolean
+  product_names_empty?: boolean
+  partial_reason?: string
+}
+
+/**
+ * 批次 summary 的完整机器可读契约。
+ * 前端列表页应优先使用 `getSyncBatchSummaryDisplay()` 读取少量展示字段，
+ * 详情页再按需读取完整 summary，避免主列表被诊断字段淹没。
+ */
+export interface SyncBatchSummary {
+  sync_mode?: string
+  resource_group_name?: string
+  resource_group_id?: string
+  projects?: string[]
+  regions?: string[]
+  ces_total?: number
+  raw_fetched_count?: number
+  mapped_count?: number
+  unique_discovered_count?: number
+  persisted_count?: number
+  completed_count?: number
+  duplicate_count?: number
+  persist_failed_count?: number
+  discovered_count?: number
+  failed_scopes?: string[]
+  enriched_count?: number
+  enrichment_failed_count?: number
+  enrichment_failed_types?: string[]
+  enrichment_warnings?: string[]
+  enrichment_stage_error?: string
+  writeback_failed_count?: number
+  unknown_namespace_count?: number
+  invalid_resource_count?: number
+  max_resources_reached?: boolean
+  product_names_empty?: boolean
+  partial_reason?: string
+  query_failed_types?: string[]
+  conversion_failed_types?: string[]
+  scopes?: SyncBatchScopeSummary[]
+}
+
+export interface SyncBatchSummaryDisplay {
+  sync_mode?: string
+  resource_group_name?: string
+  resource_group_id?: string
+  projects?: string[]
+  regions?: string[]
+  ces_total?: number
+  discovered_count?: number
+  enriched_count?: number
+  partial_reason?: string
+  max_resources_reached?: boolean
+  product_names_empty?: boolean
+}
+
+export function getSyncBatchSummaryDisplay(summary?: SyncBatchSummary): SyncBatchSummaryDisplay | undefined {
+  if (!summary) return undefined
+  return {
+    sync_mode: summary.sync_mode,
+    resource_group_name: summary.resource_group_name,
+    resource_group_id: summary.resource_group_id,
+    projects: summary.projects,
+    regions: summary.regions,
+    ces_total: summary.ces_total,
+    discovered_count: summary.discovered_count,
+    enriched_count: summary.enriched_count,
+    partial_reason: summary.partial_reason,
+    max_resources_reached: summary.max_resources_reached,
+    product_names_empty: summary.product_names_empty
+  }
+}
+
+export interface SyncBatch {
+  batch_id: string
+  integration_account_id: string
+  provider: string
+  status: string
+  created_count: number
+  updated_count: number
+  completed_count: number
+  stale_count: number
+  failed_count: number
+  triggered_by?: string
+  message?: string
+  summary?: SyncBatchSummary
+  application_id?: string
+  started_at: number
+  finished_at?: number
+  created_at: number
+  updated_at: number
+}
+
+export interface SyncBatchNotice {
+  type: 'success' | 'warning' | 'error'
+  content: string
+}
+
+export function getSyncBatchNotice(batch: SyncBatch): SyncBatchNotice {
+  const summary = `新建 ${batch.created_count}，更新 ${batch.updated_count}，完成 ${batch.completed_count}，stale ${batch.stale_count}，失败 ${batch.failed_count}`
+  const detail = batch.message ? `：${batch.message}` : ''
+  switch (batch.status) {
+    case 'success':
+      return { type: 'success', content: `同步完成：${summary}${detail}` }
+    case 'partial':
+      return { type: 'warning', content: `同步部分完成：${summary}${detail}` }
+    case 'failed':
+      return { type: 'error', content: `同步失败：${summary}${detail}` }
+    default:
+      return { type: 'warning', content: `同步状态 ${batch.status}：${summary}${detail}` }
+  }
+}
+
+export function triggerAssetSync(accountId: string) {
+  return http<SyncBatch>({
+    url: '/api/assets/sync',
+    method: 'post',
+    data: { account_id: accountId }
+  })
+}
+
+export function isAssetSyncInProgressError(error: unknown) {
+  return (
+    isApiHttpError(error) &&
+    error.status === 409 &&
+    error.code === 'ALREADY_EXISTS' &&
+    error.message === 'sync already in progress for this account'
+  )
+}
+
+export function listSyncBatches(params?: { page?: number; page_size?: number; account_id?: string }) {
+  return http<PageResult<SyncBatch>>({
+    url: '/api/assets/sync/batches',
+    method: 'get',
+    params
+  })
+}
+
+export function getSyncBatch(batchId: string) {
+  return http<SyncBatch>({
+    url: `/api/assets/sync/batches/${encodeURIComponent(batchId)}`,
+    method: 'get'
+  })
+}
+
+/**
+ * 同步仍在进行（轮询超过 timeoutMs）时抛出，调用方可提示用户去同步批次页查看。
+ */
+export class SyncStillRunningError extends Error {
+  batchId: string
+  constructor(batchId: string) {
+    super('同步仍在进行，可在同步批次页查看')
+    this.name = 'SyncStillRunningError'
+    this.batchId = batchId
+  }
+}
+
+/**
+ * 轮询同步批次直到终态（success/partial/failed）或超时。
+ * 触发同步后端立即返回 running 批次，前端用此 helper 轮询 GetSyncBatch 拿终态结果。
+ *
+ * @param batchId 触发同步返回的 batch_id
+ * @param opts.intervalMs 轮询间隔，默认 2000ms
+ * @param opts.timeoutMs 轮询上限，默认 600000ms（10min）；超时抛 SyncStillRunningError
+ * @param opts.shouldStop 可选取消谓词，返回 true 立即停止轮询并抛错（用于组件卸载取消）
+ */
+export async function pollSyncBatch(
+  batchId: string,
+  opts: { intervalMs?: number; timeoutMs?: number; shouldStop?: () => boolean } = {}
+): Promise<SyncBatch> {
+  const interval = opts.intervalMs ?? 2000
+  const deadline = Date.now() + (opts.timeoutMs ?? 600_000)
+  while (Date.now() <= deadline) {
+    if (opts.shouldStop?.()) {
+      throw new Error('polling cancelled')
+    }
+    const batch = await getSyncBatch(batchId)
+    if (batch.status !== 'running') {
+      return batch
+    }
+    await new Promise((resolve) => setTimeout(resolve, interval))
+  }
+  throw new SyncStillRunningError(batchId)
 }

@@ -1,8 +1,9 @@
 <template>
-  <div class="runbooks-page">
+  <div class="page-shell">
     <a-card
       title="Runbook 预案"
       :bordered="false"
+      class="page-card"
     >
       <template #extra>
         <a-button
@@ -14,6 +15,7 @@
       </template>
 
       <a-table
+        class="page-table"
         :columns="columns"
         :data="templates"
         :loading="loading"
@@ -75,7 +77,7 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { Message } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
 import * as runbookApi from '@/api/runbook'
 import type { RunbookTemplate, RunbookTemplateDetail } from '@/api/runbook'
 
@@ -163,8 +165,3 @@ async function onToggleEnabled(record: RunbookTemplate, enabled: boolean) {
 onMounted(loadTemplates)
 </script>
 
-<style scoped>
-.runbooks-page {
-  min-height: 100%;
-}
-</style>

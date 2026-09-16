@@ -29,6 +29,8 @@ import (
 	alerthttp "github.com/734965549/aiops/internal/alert/interfaces/http"
 	assetapp "github.com/734965549/aiops/internal/asset/application"
 	assetaudit "github.com/734965549/aiops/internal/asset/infrastructure/audit"
+	assetinteg "github.com/734965549/aiops/internal/asset/infrastructure/integration"
+	assetobs "github.com/734965549/aiops/internal/asset/infrastructure/observability"
 	assetpg "github.com/734965549/aiops/internal/asset/infrastructure/persistence"
 	assethttp "github.com/734965549/aiops/internal/asset/interfaces/http"
 	auditapp "github.com/734965549/aiops/internal/audit/application"
@@ -51,6 +53,7 @@ import (
 	identitypg "github.com/734965549/aiops/internal/identity/infrastructure/persistence"
 	identityhttp "github.com/734965549/aiops/internal/identity/interfaces/http"
 	inspectionapp "github.com/734965549/aiops/internal/inspection/application"
+	inspectionasset "github.com/734965549/aiops/internal/inspection/infrastructure/asset"
 	inspectionaudit "github.com/734965549/aiops/internal/inspection/infrastructure/audit"
 	inspectionexec "github.com/734965549/aiops/internal/inspection/infrastructure/execution"
 	inspectionobs "github.com/734965549/aiops/internal/inspection/infrastructure/observability"
@@ -67,6 +70,7 @@ import (
 	obsinteg "github.com/734965549/aiops/internal/observability/infrastructure/integration"
 	obspg "github.com/734965549/aiops/internal/observability/infrastructure/persistence"
 	obsprovider "github.com/734965549/aiops/internal/observability/infrastructure/provider"
+	huaweiobs "github.com/734965549/aiops/internal/observability/infrastructure/provider/huawei"
 	obshttp "github.com/734965549/aiops/internal/observability/interfaces/http"
 	rbapp "github.com/734965549/aiops/internal/runbook/application"
 	rbalert "github.com/734965549/aiops/internal/runbook/infrastructure/alert"
@@ -83,7 +87,30 @@ import (
 
 func main() {
 	configPath := flag.String("config", "", "path to config file (default: ./configs/config.yaml)")
+	migrate := flag.Bool("migrate", false, "run database migrations and exit")
 	flag.Parse()
+
+	// -migrate 模式：仅执行数据库迁移后退出，供生产部署流水线在 API 启动前显式调用。
+	// docker-compose.prod.yml 推荐方式 A 即使用此模式。
+	if *migrate {
+		// 先加载配置以获取迁移超时时间，避免创建无超时 context。
+		cfg, cfgErr := config.Load(*configPath)
+		if cfgErr != nil {
+			logger.ReportError("migrate failed", cfgErr)
+			os.Exit(1)
+		}
+		timeout := time.Duration(cfg.Database.MigrateTimeoutS) * time.Second
+		if timeout <= 0 {
+			timeout = 5 * time.Minute
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if err := bootstrap.Migrate(ctx, *configPath); err != nil {
+			logger.ReportError("migrate failed", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	bootTimeout := 30 * time.Second
 	if cfg, err := config.Load(*configPath); err == nil && cfg.App.BootstrapTimeoutS > 0 {
@@ -211,9 +238,10 @@ func main() {
 	assetResRepo := assetpg.NewResourceRepository(app.DB)
 	assetRuleRepo := assetpg.NewMatchRuleRepository(app.DB)
 	assetMatcherSvc := assetapp.NewMatcherService(assetAppRepo, assetResRepo, assetRuleRepo)
-	assetSvc := assetapp.NewAssetService(assetAppRepo, assetResRepo, assetRuleRepo, assetAuditRecorder)
+	assetRefChecker := assetpg.NewApplicationReferenceChecker(app.DB)
+	assetDeleteExecutor := assetpg.NewApplicationDeleteExecutor(app.DB)
+	assetSvc := assetapp.NewAssetService(assetAppRepo, assetResRepo, assetRuleRepo, assetRefChecker, assetDeleteExecutor, assetAuditRecorder)
 	assetRuleSvc := assetapp.NewMatchRuleService(assetRuleRepo, assetAppRepo, assetResRepo, assetAuditRecorder)
-	assetHandler := assethttp.NewHandler(assetSvc, assetRuleSvc)
 
 	// ---- 装配 Alert 限界上下文（告警中心 Phase 1：接入/去重/状态流转）----
 	alertEventRepo := alertpg.NewAlertEventRepository(app.DB)
@@ -224,10 +252,7 @@ func main() {
 	var idemStore alertidem.Store
 	if app.Redis != nil {
 		// 幂等等待窗口应明显大于 HTTP 写超时，避免慢 ingest 时重放请求提前超时。
-		idemMaxWait := time.Duration(app.Cfg.Server.WriteTimeoutS)*time.Second + 60*time.Second
-		if idemMaxWait < 90*time.Second {
-			idemMaxWait = 90 * time.Second
-		}
+		idemMaxWait := max(time.Duration(app.Cfg.Server.WriteTimeoutS)*time.Second+60*time.Second, 90*time.Second)
 		idemStore = alertidem.NewRedisStore(app.Redis, alertidem.Config{
 			DefaultMaxWait: idemMaxWait,
 		})
@@ -296,12 +321,37 @@ func main() {
 	)
 	integHandler := integhttp.NewHandler(integAccountSvc)
 
-	// ---- 装配 Observability 限界上下文（Provider Port + fake adapter）----
+	// ---- 装配 Observability 限界上下文 ----
+	// huawei_cloud：ak_sk 指标经 integration credential repo + vault 解密后走真实 CES；
+	// 其余 huawei 能力与 signoz/prometheus 仍为 fake，供无云密钥环境联调。
 	obsEvidenceRepo := obspg.NewEvidenceRepository(app.DB)
 	obsAccountAdapter := obsinteg.NewAccountAdapter(integAccountRepo, integCapabilityRepo)
 	obsAuditRecorder := obsaudit.NewRecorder(auditSvc)
-	obsQuerySvc := obsapp.NewQueryService(obsAccountAdapter, obsprovider.DefaultFakeRegistry(), obsEvidenceRepo, obsAuditRecorder)
+	huaweiObsCreds := huaweiobs.NewCredentialProvider(integCredentialRepo, integVault)
+	obsQuerySvc := obsapp.NewQueryService(
+		obsAccountAdapter,
+		obsprovider.DefaultRegistry(huaweiObsCreds),
+		obsEvidenceRepo,
+		obsAuditRecorder,
+	)
 	obsHandler := obshttp.NewHandler(obsQuerySvc)
+
+	assetSyncBatchRepo := assetpg.NewSyncBatchRepository(app.DB)
+	assetDiscoveryAdapter := assetobs.NewDiscoveryAdapter(obsQuerySvc)
+	assetIntegAdapter := assetinteg.NewAccountAdapter(integAccountRepo, integCapabilityRepo)
+	// 注入进程级 context 与数据范围授权端口，使用单一强制依赖构造器完成装配。
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+	assetSyncSvc := assetapp.NewSyncService(
+		assetAppRepo,
+		assetResRepo,
+		assetSyncBatchRepo,
+		assetDiscoveryAdapter,
+		assetIntegAdapter,
+		assetAuditRecorder,
+	)
+	assetSyncSvc.SetLifecycle(rootCtx)
+	assetHandler := assethttp.NewHandler(assetSvc, assetRuleSvc, assetSyncSvc)
 
 	// ---- 装配 Inspection 限界上下文（巡检策略/运行/发现/建议 + 证据链分析）----
 	inspectionPolicyRepo := inspectionpg.NewPolicyRepository(app.DB)
@@ -312,12 +362,12 @@ func main() {
 	inspectionAuditRecorder := inspectionaudit.NewRecorder(auditSvc)
 	inspectionObsAdapter := inspectionobs.NewQueryAdapter(obsQuerySvc)
 	inspectionAnalyzer := inspectionapp.NewEvidenceAnalyzer(inspectionObsAdapter)
-	inspectionPolicySvc := inspectionapp.NewPolicyService(inspectionPolicyRepo, inspectionAuditRecorder)
+	inspectionAppCatalog := inspectionasset.NewApplicationCatalogAdapter(assetAppRepo)
+	inspectionPolicySvc := inspectionapp.NewPolicyService(inspectionPolicyRepo, inspectionAppCatalog, inspectionAuditRecorder)
 	inspectionRunSvc := inspectionapp.NewRunService(
 		inspectionPolicyRepo, inspectionRunRepo, inspectionFindingRepo, inspectionRecRepo,
-		inspectionAnalyzer, inspectionAuditRecorder,
+		inspectionAnalyzer, inspectionAuditRecorder, inspectionArtifactUOW,
 	)
-	inspectionRunSvc.SetArtifactUnitOfWork(inspectionArtifactUOW)
 	inspectionExecAdapter := inspectionexec.NewAdapter(execSvc)
 	inspectionRecSvc := inspectionapp.NewRecommendationService(inspectionRecRepo, inspectionExecAdapter, inspectionAuditRecorder)
 	inspectionHandler := inspectionhttp.NewHandler(inspectionPolicySvc, inspectionRunSvc, inspectionRecSvc)
@@ -364,14 +414,24 @@ func main() {
 		}
 	}
 
+	// 1. 取消进程级 context：在途后台同步 goroutine 收到 runCtx 取消，
+	//    discovery 循环退出，finalize 用独立短 ctx 落终态。
+	rootCancel()
+	// 2. 停止接收新 HTTP 请求并处理在途请求。
 	shutdownTimeout := time.Duration(app.Cfg.Server.ShutdownTimeoutS) * time.Second
 	if shutdownTimeout <= 0 {
 		shutdownTimeout = 10 * time.Second
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
+	httpShutdownCtx, cancelHTTP := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancelHTTP()
+	if err := srv.Shutdown(httpShutdownCtx); err != nil {
 		logger.L().Error("server shutdown error", logger.Error(err))
+	}
+	// 3. 后台同步等待使用独立预算，避免 HTTP drain 吃掉 finalize 时间。
+	syncShutdownCtx, cancelSync := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancelSync()
+	if !assetSyncSvc.WaitContext(syncShutdownCtx) {
+		logger.L().Warn("asset sync shutdown wait timed out")
 	}
 	logger.L().Info("aiops-api stopped")
 }

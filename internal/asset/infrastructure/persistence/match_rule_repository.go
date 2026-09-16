@@ -63,6 +63,31 @@ func (r *MatchRuleRepository) List(ctx context.Context) ([]domain.MatchRule, err
 	return toMatchRuleDomains(rows), nil
 }
 
+// ListPaged 按分页过滤返回匹配规则列表与总数，排序与 List 一致（priority DESC, created_at ASC, id ASC）。
+func (r *MatchRuleRepository) ListPaged(ctx context.Context, filter domain.MatchRuleFilter) ([]domain.MatchRule, int64, error) {
+	if r == nil || r.db == nil {
+		return nil, 0, errors.New("asset match rule repository is not configured")
+	}
+	q := r.db.WithContext(ctx).Model(&matchRuleModel{})
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	var rows []matchRuleModel
+	if err := q.Order("priority DESC, created_at ASC, id ASC").Limit(limit).Offset(offset).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	return toMatchRuleDomains(rows), total, nil
+}
+
 func (r *MatchRuleRepository) ListEnabledByPriority(ctx context.Context) ([]domain.MatchRule, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("asset match rule repository is not configured")

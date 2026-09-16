@@ -25,14 +25,14 @@ type policyListQuery struct {
 }
 
 type createPolicyRequest struct {
-	PolicyID             string                        `json:"policy_id"`
-	Name                 string                        `json:"name" binding:"required"`
-	Enabled              *bool                         `json:"enabled"`
-	Schedule             string                        `json:"schedule"`
-	Scope                inspectionapp.PolicyScopeDTO  `json:"scope" binding:"required"`
-	Checks               []string                      `json:"checks" binding:"required"`
-	AgentProfile         string                        `json:"agent_profile"`
-	NotificationPolicyID string                        `json:"notification_policy_id"`
+	PolicyID             string                       `json:"policy_id"`
+	Name                 string                       `json:"name" binding:"required"`
+	Enabled              *bool                        `json:"enabled"`
+	Schedule             string                       `json:"schedule"`
+	Scope                inspectionapp.PolicyScopeDTO `json:"scope" binding:"required"`
+	Checks               []string                     `json:"checks" binding:"required"`
+	AgentProfile         string                       `json:"agent_profile"`
+	NotificationPolicyID string                       `json:"notification_policy_id"`
 }
 
 type updatePolicyRequest struct {

@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// authAuditModel 对应 iam_auth_audit 表，保存认证入口嘅成功/失败事件。
+// authAuditModel 对应 iam_auth_audit 表，保存认证入口的成功/失败事件。
 type authAuditModel struct {
 	database.BaseModel
 	AuditID    string `gorm:"column:audit_id;type:varchar(36);uniqueIndex;not null"`
@@ -88,7 +88,7 @@ func (r *AuthAuditRepository) List(ctx context.Context, filter domain.AuthAuditF
 	return out, nil
 }
 
-// Count 统计符合筛选条件嘅认证审计数量。
+// Count 统计符合筛选条件的认证审计数量。
 func (r *AuthAuditRepository) Count(ctx context.Context, filter domain.AuthAuditFilter) (int64, error) {
 	if r == nil || r.db == nil {
 		return 0, errors.New("auth audit repository is not configured")

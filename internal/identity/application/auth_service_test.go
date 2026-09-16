@@ -66,6 +66,16 @@ func (f *fakeAuthUserRepo) Update(_ context.Context, u *domain.User) error {
 	return nil
 }
 
+func (f *fakeAuthUserRepo) Reactivate(_ context.Context, userID, passwordHash string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if existing, ok := f.byID[userID]; ok {
+		existing.PasswordHash = passwordHash
+		existing.Status = domain.UserStatusActive
+	}
+	return nil
+}
+
 func (f *fakeAuthUserRepo) DeleteByID(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -324,5 +334,34 @@ func TestAuthServiceEnsureBootstrapUserIdempotent(t *testing.T) {
 	}
 	if err := svc.EnsureBootstrapUser(ctx, "bootstrap", "password123", "Admin"); err != nil {
 		t.Fatalf("second bootstrap: %v", err)
+	}
+}
+
+func TestAuthServiceEnsureBootstrapUserReactivatesLocked(t *testing.T) {
+	svc, repo := newTestAuthService(t, auth.NoopRefreshTokenStore{})
+	ctx := context.Background()
+
+	// 模拟迁移 0044 锁定的默认 admin 账号。
+	locked := &domain.User{ID: "u-locked", Username: "admin", Status: domain.UserStatusLocked, PasswordHash: ""}
+	repo.byID["u-locked"] = locked
+	repo.byUsername["admin"] = locked
+
+	if err := svc.EnsureBootstrapUser(ctx, "admin", "newpass123", "Admin"); err != nil {
+		t.Fatalf("reactivate locked admin: %v", err)
+	}
+	if locked.Status != domain.UserStatusActive {
+		t.Fatalf("expected status active, got %s", locked.Status)
+	}
+	if locked.PasswordHash == "" {
+		t.Fatal("expected password hash set after reactivation")
+	}
+
+	// 已激活账号不应被 bootstrap 再次改动，避免覆盖 DBA 设置的密码。
+	before := locked.PasswordHash
+	if err := svc.EnsureBootstrapUser(ctx, "admin", "different456", "Admin"); err != nil {
+		t.Fatalf("second call on active admin: %v", err)
+	}
+	if locked.PasswordHash != before {
+		t.Fatal("active user password must not be changed by bootstrap")
 	}
 }

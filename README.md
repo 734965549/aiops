@@ -15,13 +15,14 @@
 | Dashboard 首页驾驶舱 | ✅ | `/dashboard` | API 抽检 | 告警/执行/资产/Runbook 聚合摘要 |
 | Audit 审计中心 | ✅ API | `/audits` | UI 查询/导出 | 关键操作审计写入、筛选、详情查看与 CSV 导出 |
 | AI 运维助手 | ✅ API | `/ai-assistant` | — | Provider 管理、告警分析、工具调用 |
-| Integration 接入账号 | ✅ | `/integrations` | 待补 E2E | 云账号/观测平台账号注册、凭据引用、连通性测试 |
-| Observability 统一观测 | ✅ | `/observability` | 待补 E2E | 指标、日志、链路、拓扑统一查询，第一版用 fake provider 跑通 |
-| Inspection 巡检中心 | ✅ | `/inspections` | 待补 E2E | 巡检策略、运行、Finding、Recommendation 同证据链 |
+| Integration 接入账号 | ✅ | `/integrations` | `e2e-integration.ps1` | 云账号/观测平台账号注册、凭据引用、连通性测试 |
+| Observability 统一观测 | ✅ | `/observability` | `e2e-observability.ps1` | 指标、日志、链路、拓扑统一查询，fake provider 与 Huawei CES 指标路径 |
+| Inspection 巡检中心 | ✅ | `/inspections` | `e2e-inspection.ps1` | 巡检策略、运行、Finding、Recommendation 与证据链 |
 
 **文档**：
 - [演示流程](docs/demo-flow.md) — 10 步完整闭环演示
-- [整体流程同调用关系（粤语版）](docs/AI运维平台整体流程与调用关系.md) — 将 P0 闭环、只读观测、巡检、执行介体串埋一张图
+- [整体流程与调用关系](docs/AI运维平台整体流程与调用关系.md) — 将 P0 闭环、只读观测、巡检、执行介体串联到一张图
+- [调用关系图](docs/AI运维平台调用关系图.md) — 后端总图、P0 时序、AI 工具、观测巡检与 Agent 派发图
 - [上线检查清单](docs/release-checklist.md) — 发布前必查项
 - [验收清单](docs/acceptance-checklist.md) — 模块级验收明细
 - [Kubernetes 部署说明](deployments/kubernetes.md) — 外挂 PostgreSQL/Redis 的 K8s 部署参考
@@ -40,9 +41,15 @@ cd web && npm run build
 # 业务链路 E2E
 .\scripts\e2e-alert.ps1
 .\scripts\e2e-asset.ps1
+.\scripts\e2e-asset-sync.ps1
 .\scripts\e2e-runbook.ps1
 .\scripts\e2e-execution.ps1
 .\scripts\e2e-identity-access.ps1
+.\scripts\e2e-integration.ps1
+.\scripts\e2e-observability.ps1
+.\scripts\e2e-inspection.ps1
+.\scripts\e2e-execution-agent.ps1
+.\scripts\e2e-execution-agent-permission.ps1
 ```
 
 ## 目录结构
@@ -96,7 +103,7 @@ aiops/
 
 | 工具 | 版本要求 | 说明 |
 | --- | --- | --- |
-| Go | 1.22+ | 后端运行时 |
+| Go | 1.26+ | 后端运行时 |
 | Node.js | 18+ | 前端运行时 |
 | Docker / Docker Desktop | 任意近期版本 | 启动 PostgreSQL + Redis |
 | Make | 可选 | 使用根目录 `Makefile` 简化命令 |
@@ -107,7 +114,10 @@ aiops/
 | --- | --- | --- |
 | **仅中间件** | `docker compose -f deployments/docker-compose.yml up -d postgres redis` | 本地 `go run ./cmd/api` 联调（推荐） |
 | **全栈（默认）** | `docker compose -f deployments/docker-compose.yml up -d` | 容器化 API + PG + Redis |
-| **全栈 dev 就绪** | `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d` | 自动迁移 + bootstrap 管理员 + 挂载 `config.yaml` |
+| **全栈 dev 就绪** | `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d` | 自动迁移 + bootstrap 管理员 + 挂载 `config.yaml`（仅后端） |
+| **全栈 + 前端容器** | `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml -f deployments/docker-compose.host.yml -f deployments/docker-compose.web.yml up -d` | 前后端分离容器：API + Web + PG + Redis；访问 `http://127.0.0.1/` |
+
+> 后端（`aiops-api`）与前端（`aiops-web`）是**两个独立镜像/容器**。前端服务由 `deployments/docker-compose.web.yml` 定义，使用 `deployments/nginx/web.conf` 反代 `api:8080`；`docker-compose.host.yml` 仅在 PostgreSQL 因 seccomp 报错的宿主机叠加。生产走 `docker-compose.prod.yml`。详见 `deployments/README.md`。
 
 ```bash
 # 仅 PostgreSQL + Redis（本地 go run 联调常用）
@@ -138,7 +148,7 @@ make migrate-up
 go run ./cmd/migrate -config configs/config.yaml
 ```
 
-当前迁移文件（`0001` → `0022`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，唔好手工补空账本）：
+当前迁移文件（`0001` -> `0045`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -159,6 +169,29 @@ go run ./cmd/migrate -config configs/config.yaml
 | `0019` | `0019_init_observability.up.sql` | Observability：证据引用与 `app:observability:read` |
 | `0020` | `0020_init_inspection.up.sql` | Inspection：巡检策略、运行、Finding、Recommendation |
 | `0022` | `0022_init_execution_agent.up.sql` | Execution Agent：执行介体、代理、Command Spec、租约、日志流 |
+| `0023` | `0023_asset_cloud_sync.up.sql` | Asset：云资源同步字段、同步批次、stale 标记 |
+| `0024` | `0024_integration_account_extra_config.up.sql` | Integration：integration_account.extra_config（provider 扩展配置，如 huawei sync_mode） |
+| `0025` | `0025_asset_resource_labels.up.sql` | Asset：asset_resource.labels（CES namespace/dim_name + 原生增强 label） |
+| `0026` | `0026_asset_cloud_sync_region_key.up.sql` | Asset：云资源唯一键加 region，避免多区域同类型同 ID 互相覆盖 |
+| `0027` | `0027_asset_sync_batch_message_text.up.sql` | Asset：`asset_sync_batch.message` 改为 TEXT，修复应用层 2000 rune 截断与 VARCHAR(512) 不一致 |
+| `0028` | `0028_asset_sync_batch_running_mutex.up.sql` | Asset：`asset_sync_batch.lease_expires_at` + running 部分唯一索引（账号级并发互斥） |
+| `0029` | `0029_huawei_legacy_accounts_native_sync_mode.up.sql` | Integration：历史空配置华为账号回填 `sync_mode=native`，修复 0024 空配置被解析为 ces 的灰度策略失效 |
+| `0030` | `0030_asset_sync_batch_fencing_token.up.sql` | Asset：`asset_sync_batch.fencing_token` 与 running 所有权校验索引，防止旧任务租约丢失后继续写入 |
+| `0031` | `0031_asset_sync_batch_summary.up.sql` | Asset：`asset_sync_batch.summary` JSONB 结构化摘要；批次详情页不再把 `message` 当作半结构化协议解析 |
+| `0032` | `0032_cleanup_legacy_cloud_application_ids.up.sql` | Asset：破坏性 DELETE 脚本，按 `application_id = 'cloud-' \|\| trim(account_id)` 精确关联 `integration_account` 删除旧格式 `cloud-<account_id>` 应用及其关联的 `asset_resource`/`asset_match_rule`（不处理 `alert_alert`/`inspection_policy`，由 `0039` 补全清理）；覆盖 `account_id` 不含 `-` 与含 `-` 两类账号；保留 `integration_account`，升级后需重新触发云同步（无需重新录入账号）；从未在共享环境执行，所有数据库须从零重建 |
+| `0033` | `0033_asset_sync_batch_triggered_by.up.sql` | Asset：`asset_sync_batch.triggered_by`（触发用户 user_id），reap 崩溃批次时审计 actor 取该字段还原原操作者 |
+| `0034` | `0034_huawei_ces_vpc_subtype_split.up.sql` | Asset：按 `labels->>'dim_name'` 把存量 `SYS.VPC` 的 `vpc` 行回填为 `eip`/`bandwidth`/`subnet`/`peering`，避免子资源语义混合与 ID 碰撞 |
+| `0035` | `0035_cloud_application_id_rune_truncation.up.sql` | Asset：按 sha1 后缀关联账号，把旧实现按字节截取的多字节账号 `cloud-` application_id 无损改写为按字符（rune）截取的 rune 版（与 `cloudApplicationID`/`0032` 的 `left(...,17)` 一致）；同步改写 `asset_resource`/`asset_match_rule`/`alert_alert`/`inspection_policy.scope.application_ids`；纯 ASCII 账号无改写；依赖 pgcrypto |
+| `0036` | `0036_cloud_application_name_include_account.up.sql` | Asset：调整云同步应用名称包含账号信息，避免多账号同名混淆；同步更新历史云同步应用展示与运维排查路径 |
+| `0037` | `0037_fix_huawei_ces_application_ids.up.sql` | Asset：修复 Huawei CES legacy/new application_id 并存时的安全合并；先迁移并去重子表引用，再删除旧应用；仅 legacy 存在时安全重命名，only new 时幂等 |
+| `0038` | `0038_cloud_application_name_normalize.up.sql` | Asset：把反向格式云同步应用名 `<provider>-<account_id>-cloud`（`ensureCloudApplication` 代码曾误用）归一化为契约格式 `<provider>-cloud-<account_id>`；account_id 从 description 提取；仅改 `name` 不改 `application_id`；幂等 |
+| `0039` | `0039_cleanup_orphaned_application_refs.up.sql` | Asset：清理 `0032` DELETE 遗留的 `alert_alert`/`inspection_policy` 孤儿引用，按 `integration_account` 计算 old->new 映射改写为新格式；不依赖 `has_old`；幂等；依赖 pgcrypto |
+| `0040` | `0040_application_ref_integrity_view.up.sql` | Asset：创建持久视图 `v_asset_app_ref_integrity`，暴露 `asset_resource`/`asset_match_rule`/`alert_alert`/`inspection_policy` 中指向不存在 `asset_application` 的孤儿引用；不修改数据，不阻断迁移；幂等（`CREATE OR REPLACE VIEW`）；验收方式 `SELECT * FROM v_asset_app_ref_integrity` 期望 0 行 |
+| `0041` | `0041_legacy_app_id_convergence_guard.up.sql` | Asset：legacy 应用收敛硬阻断守卫，若 `asset_application` 中仍存在 `cloud-<account_id>` 格式 legacy 应用则 `CHECK(n=0)` 失败导致迁移终止；不修改业务数据；若 0041 阻断需排查 0032/0037 收敛失败或代码路径仍在创建旧格式应用，修复后由 `0042` 收口补建 |
+| `0042` | `0042_backfill_orphaned_app_refs_and_guard.up.sql` | Asset：补建 0039 改写后仍被引用但不存在的新格式 cloud application ID 对应的 `asset_application` 记录（字段与 `ensureCloudApplication` 一致），并将 `v_asset_app_ref_integrity` 作为硬验收（`CHECK(n=0)`），补建后仍有孤儿则迁移失败；幂等（`ON CONFLICT DO NOTHING`）；依赖 pgcrypto |
+| `0043` | `0043_fix_orphaned_alert_app_refs.up.sql` | Asset：修复 `DeleteApplication` 缺失跨上下文引用检查导致的孤儿告警引用；将 `alert_alert` 中指向不存在应用的 `application_id`/`application_name` 置空，移除 `inspection_policy.scope.application_ids` 中的孤儿元素；`CHECK(n=0)` 硬验收确保修复后 `v_asset_app_ref_integrity` 返回 0 行；幂等 |
+| `0044` | `0044_lock_default_admin_account.up.sql` | Identity：锁定 `username='admin'` 且 `password_hash` 仍为已知 admin123 哈希的默认管理员（`status=locked`、清空 `password_hash`）；不覆盖 DBA 已设置的强密码；dev/test 在 bootstrap 启用时由 `EnsureBootstrapUser` 重新激活，生产 bootstrap 关闭则保持锁定、须由 DBA 创建安全管理员；幂等 |
+| `0045` | `0045_inspection_policy_deleted_scope_cleanup.up.sql` | Asset：回填清空已软删除 `inspection_policy.scope.application_ids`；重建 `v_asset_app_ref_integrity` 仅检查 `deleted=false` 策略；与 `ApplicationReferenceChecker` 及运行时 `SoftDelete` 契约一致；幂等 |
 
 详见 `ops/migration-contract.md`。
 
@@ -210,14 +243,17 @@ npm run dev
 
 默认监听 `http://127.0.0.1:5173`。`/api`、`/healthz`、`/readyz`、`/version` 已通过 vite 反向代理到后端 8080。
 
+也可以用容器跑前端（与后端分离）：叠加 `deployments/docker-compose.web.yml` 启动独立 `aiops-web` 容器，访问 `http://127.0.0.1/`。构建说明见 `web/Dockerfile` 与 `deployments/README.md`。
+
 ### Docker 镜像
 
 ```bash
 make docker                    # 产出 aiops-api:$(VERSION)
 AIOPS_VERSION=dev docker compose -f deployments/docker-compose.yml build api
+docker build -f web/Dockerfile -t aiops-web:dev web   # 前端镜像（上下文=web/）
 ```
 
-Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make docker` 输出一致。
+Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}`、`aiops-web:${AIOPS_VERSION:-dev}` 作为镜像标签，与构建命令输出一致。
 
 ### AI Provider 配置
 
@@ -266,6 +302,11 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 `config.Config.Validate()` 会在 bootstrap 阶段拦截致命错误：
 端口越界、数据库 host/name 为空、非 dev 环境使用占位/弱 JWT secret（含熵与字符多样性检查）等都会直接终止启动。
 
+从 `aiops-api:1.2` 起，启用 Integration 凭据加密校验：非 dev 环境必须配置独立强密钥
+`integration.credential_encryption_key`（环境变量 `AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY`），
+不得为空、不得使用 `dev-integration-credential-key-change-me` 等占位值、不得与 `auth.jwt_secret`
+相同。Kubernetes 部署需把该项放入 `aiops-api-secret`，详见 `deployments/kubernetes.md`。
+
 ### 日志
 
 - 第一阶段使用 `zap` 单进程日志；
@@ -311,13 +352,15 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 - `ops/execution-contract.md`：执行任务创建、确认、执行与时间线回写。
 - `ops/runbook-contract.md`：处置预案模板、告警推荐、多步骤任务生成。
 - `ops/ai-contract.md`：AI 模块 provider 管理、工具调用与前端交互契约。
+- `ops/cloud-observability-contract.md`：云账号只读接管、统一观测查询、巡检策略和建议转执行契约。
+- `ops/execution-agent-contract.md`：执行介体、执行代理、Command Spec、租约和日志回传契约。
 
 ## 当前能力摘要
 
 ### 已打通的 P0 闭环
 
 1. **告警接入**：Alertmanager Webhook 入库、去重、状态流转（认领/处理/恢复/关闭）。
-2. **资产匹配**：默认 §9.1 标签匹配 + 用户可配置 glob 规则（`asset_match_rule`）。
+2. **资产匹配**：默认 `ops/huawei-ces-sync-contract.md` §9.1 标签匹配 + 用户可配置 glob 规则（`asset_match_rule`）。
 3. **Runbook 推荐**：按告警标签/严重级别匹配预案，支持多步骤 dry-run 执行。
 4. **执行确认**：`pending_confirm` → 人工 CONFIRM → 执行 → 结果回写告警时间线。
 5. **Dashboard 汇总**：活跃告警、待确认执行、资产计数、最近执行与 Runbook 使用。
@@ -355,7 +398,8 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 - `docs/demo-flow.md` — 演示步骤与自动化验收
 - `docs/release-checklist.md` — 上线前检查清单
 - `docs/acceptance-checklist.md` — 模块验收明细
-- `docs/AI运维平台整体流程与调用关系.md` — 粤语版全链路图、DDD 调用关系同边界说明
+- `docs/AI运维平台整体流程与调用关系.md` — 全链路图、DDD 调用关系与边界说明
+- `docs/AI运维平台调用关系图.md` — 关键模块与时序调用图
 - `deployments/kubernetes.md` — Kubernetes 部署说明（外挂 PostgreSQL/Redis）
 - `docs/AI运维平台核心业务流程图.md`
 - `docs/AI运维平台信息架构.md`
@@ -381,6 +425,10 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make 
 详细设计见：
 
 - `docs/cloud-observability-agent-roadmap.md`：DDD 上下文、阶段步骤、数据模型、工作流和验收策略。
-- `docs/AI运维平台整体流程与调用关系.md`：用粤语说明 P0、Integration、Observability、Inspection、Execution Agent 点样串埋，改代码前建议先睇。
-- `ops/cloud-observability-contract.md`：云账号接入、指标/日志/链路查询、巡检策略和建议到执行的 API 契约草案。
+- `docs/AI运维平台整体流程与调用关系.md`：说明 P0、Integration、Observability、Inspection、Execution Agent 如何串联，改代码前建议先读。
+- `ops/cloud-observability-contract.md`：云账号接入、指标/日志/链路查询、巡检策略和建议到执行的 API 契约。
+- `ops/huawei-ces-sync-contract.md`：华为云 CES 资源同步稳定契约。
+- `docs/adr-huawei-ces-sync.md`：华为云 CES 同步架构决策记录。
+- `docs/huawei-ces-sync-runbook.md`：华为云 CES 同步运维步骤。
+- `docs/huawei-ces-sync-backlog.md`：华为云 CES 同步已知缺口与待办。
 - `ops/execution-agent-contract.md`：执行介体、执行代理、Command Spec、租约、日志回传和确认后执行的契约草案。

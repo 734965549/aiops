@@ -13,7 +13,7 @@ const (
 	ActorIntegration ActorType = "integration" // 外部接入（Webhook）
 )
 
-// AlertEvent 记录告警时间线上嘅单条事件，对应 alert_event 表。
+// AlertEvent 记录告警时间线上的单条事件，对应 alert_event 表。
 type AlertEvent struct {
 	ID        string         // 事件业务 ID
 	AlertID   string         // 所属告警 ID

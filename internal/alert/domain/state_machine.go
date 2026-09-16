@@ -1,7 +1,7 @@
 package domain
 
 // 状态机规则见 ops/alert-contract.md §4.2。
-// 非法流转由 application 层返回 INVALID_ARGUMENT，唔在此包构造 Error 对象。
+// 非法流转由 application 层返回 INVALID_ARGUMENT，不在此包构造 Error 对象。
 //
 // 人工操作走契约状态图（ActionRecover 仅 processing → recovered）；
 // 外部接入 resolved 走 ActionExternalRecover，允许任意 active 态直接进入 recovered（§4.3 recovered 事件）。

@@ -102,12 +102,17 @@ const router = createRouter({
 
 router.beforeEach((to, _from, next) => {
   const auth = useAuthStore()
+  if (!auth.token) {
+    auth.loadFromStorage()
+  }
+  if (to.path === '/login' && auth.token) {
+    const redirect = typeof to.query.redirect === 'string' ? to.query.redirect : ''
+    next({ path: redirect && redirect.startsWith('/') ? redirect : '/dashboard' })
+    return
+  }
   if (to.meta.public) {
     next()
     return
-  }
-  if (!auth.token) {
-    auth.loadFromStorage()
   }
   if (auth.token) {
     next()

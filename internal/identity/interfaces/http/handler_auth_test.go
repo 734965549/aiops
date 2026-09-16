@@ -225,6 +225,14 @@ func (f *fakeAuthUserRepo) Update(_ context.Context, u *domain.User) error {
 	return nil
 }
 
+func (f *fakeAuthUserRepo) Reactivate(_ context.Context, userID, passwordHash string) error {
+	if existing, ok := f.byID[userID]; ok {
+		existing.PasswordHash = passwordHash
+		existing.Status = domain.UserStatusActive
+	}
+	return nil
+}
+
 func (f *fakeAuthUserRepo) DeleteByID(_ context.Context, id string) error {
 	u, ok := f.byID[id]
 	if !ok {

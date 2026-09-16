@@ -1,9 +1,10 @@
 package application
 
 import (
-	"fmt"
 	"math"
 	"strings"
+
+	apperr "github.com/734965549/aiops/pkg/errors"
 )
 
 func validateParameterSchema(schema, value map[string]any) error {
@@ -25,11 +26,11 @@ func validateSchemaValue(schema map[string]any, value any, path string) error {
 	if props, ok := schema["properties"].(map[string]any); ok {
 		obj, ok := value.(map[string]any)
 		if !ok {
-			return fmt.Errorf("%s must be an object", path)
+			return apperr.Newf(apperr.CodeInvalidArgument, "%s must be an object", path)
 		}
 		for _, key := range requiredKeys(schema["required"]) {
 			if _, exists := obj[key]; !exists {
-				return fmt.Errorf("%s.%s is required", path, key)
+				return apperr.Newf(apperr.CodeInvalidArgument, "%s.%s is required", path, key)
 			}
 		}
 		for key, propSchema := range props {
@@ -94,7 +95,7 @@ func validateSchemaType(schemaType string, value any, path string) error {
 	default:
 		return nil
 	}
-	return fmt.Errorf("%s must be %s", path, schemaType)
+	return apperr.Newf(apperr.CodeInvalidArgument, "%s must be %s", path, schemaType)
 }
 
 func isNumber(v any) bool {

@@ -69,6 +69,35 @@ func (r *ApplicationRepository) List(ctx context.Context) ([]domain.Application,
 	return out, nil
 }
 
+// ListPaged 按分页过滤返回应用列表与总数，排序与 List 一致（created_at ASC, id ASC）。
+func (r *ApplicationRepository) ListPaged(ctx context.Context, filter domain.ApplicationFilter) ([]domain.Application, int64, error) {
+	if r == nil || r.db == nil {
+		return nil, 0, errors.New("asset application repository is not configured")
+	}
+	q := r.db.WithContext(ctx).Model(&applicationModel{})
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	var rows []applicationModel
+	if err := q.Order("created_at ASC, id ASC").Limit(limit).Offset(offset).Find(&rows).Error; err != nil {
+		return nil, 0, err
+	}
+	out := make([]domain.Application, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toApplicationDomain(&row))
+	}
+	return out, total, nil
+}
+
 func (r *ApplicationRepository) GetByID(ctx context.Context, id string) (*domain.Application, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("asset application repository is not configured")

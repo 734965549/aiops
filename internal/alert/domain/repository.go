@@ -32,7 +32,7 @@ type AlertRepository interface {
 	Create(ctx context.Context, alert *Alert) error
 	Update(ctx context.Context, alert *Alert) error
 	GetByID(ctx context.Context, alertID string) (*Alert, error)
-	// FindActiveByDedupKey 查找同一接入源下未 closed 嘅 active 告警（用于去重更新）。
+	// FindActiveByDedupKey 查找同一接入源下未 closed 的 active 告警（用于去重更新）。
 	FindActiveByDedupKey(ctx context.Context, sourceID, dedupKey string) (*Alert, error)
 	// MaxLifecycleSeq 返回 dedup_key 下已有最大 lifecycle_seq，closed 后重开时 +1。
 	MaxLifecycleSeq(ctx context.Context, dedupKey string) (int, error)

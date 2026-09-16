@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
+	identityapp "github.com/734965549/aiops/internal/identity/application"
 	integapp "github.com/734965549/aiops/internal/integration/application"
 	"github.com/734965549/aiops/internal/integration/domain"
 	"github.com/734965549/aiops/internal/integration/infrastructure/credential"
-	identityapp "github.com/734965549/aiops/internal/identity/application"
 	"github.com/734965549/aiops/internal/server"
 	"github.com/734965549/aiops/pkg/auth"
 	"github.com/734965549/aiops/pkg/config"

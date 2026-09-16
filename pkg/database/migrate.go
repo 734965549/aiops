@@ -1,12 +1,16 @@
 package database
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,50 +52,40 @@ func trimDirSuffix(path string) string {
 	return "."
 }
 
-// 平台采用「自实现的最小迁移 runner」，为唯一允许的迁移执行方式（见 ops/migration-contract.md）：
-//
-//   - 禁止与 golang-migrate 等外部工具混用同一数据库实例；
-//   - 通过 schema_migrations 表跟踪已应用版本，保证幂等与可重启；
-//   - 仅处理 *.up.sql；回滚由人工执行对应 *.down.sql；
-//   - 文件名要求 <version>_<name>.up.sql，<version> 4 位数字递增。
-//
-// 显式执行入口：make migrate / go run ./cmd/migrate。
-
 const schemaMigrationsTable = "schema_migrations"
 
-// 文件名规则：0001_init_identity.up.sql -> version=0001, name=init_identity。
 var migrationFilePattern = regexp.MustCompile(`^(\d{4,})_([a-zA-Z0-9_\-]+)\.up\.sql$`)
 
-// MigrationFile 描述一个迁移条目。
 type MigrationFile struct {
-	Version string // 4 位以上的版本号字符串，保持原始零填充以便字典序排序
-	Name    string // 业务可读的名称
-	Path    string // 绝对或相对的 SQL 文件路径
+	Version string
+	Name    string
+	Path    string
 }
 
-// MigrateOptions 控制 RunMigrations 的行为。
 type MigrateOptions struct {
-	// Dir 是 *.up.sql 所在目录。空则默认 ./migrations。
-	Dir string
+	Dir           string
+	TargetVersion string
 }
 
-// MigrationStatus 描述迁移就绪情况，供 readiness 检查复用。
 type MigrationStatus struct {
 	Dir            string
 	LatestVersion  string
 	AppliedVersion string
 	PendingCount   int
 	UpToDate       bool
+	PendingHash    string
+	ChecksumDrifts []ChecksumDrift
 }
 
-// RunMigrations 顺序执行 Dir 下尚未应用的 *.up.sql。
-//
-// 流程：
-//  1. 确保 schema_migrations 表存在；
-//  2. 扫描 Dir 下符合命名规则的 *.up.sql；
-//  3. 与 schema_migrations 中已应用版本求差集；
-//  4. 按版本号顺序、每个迁移单独事务地执行；
-//  5. 每个迁移成功后写入 schema_migrations。
+// ChecksumDrift 描述一个已应用迁移文件的 checksum 与当前文件内容不一致（或为空）。
+// 用于 /readyz 只读报告漂移，不做 backfill，不返回 error。
+type ChecksumDrift struct {
+	Version string
+	Name    string
+	Stored  string
+	Current string
+}
+
 func RunMigrations(ctx context.Context, db *gorm.DB, opt MigrateOptions) error {
 	if db == nil {
 		return fmt.Errorf("nil *gorm.DB")
@@ -100,11 +94,9 @@ func RunMigrations(ctx context.Context, db *gorm.DB, opt MigrateOptions) error {
 	if dir == "" {
 		dir = ResolveMigrationDir()
 	}
-
 	if err := ensureMigrationTable(ctx, db); err != nil {
 		return fmt.Errorf("ensure schema_migrations: %w", err)
 	}
-
 	files, err := scanMigrationFiles(dir)
 	if err != nil {
 		return fmt.Errorf("scan migration dir %q: %w", dir, err)
@@ -113,62 +105,144 @@ func RunMigrations(ctx context.Context, db *gorm.DB, opt MigrateOptions) error {
 		logger.From(ctx).Info("no migration files found", logger.String("dir", dir))
 		return nil
 	}
-
 	applied, err := loadAppliedVersions(ctx, db)
 	if err != nil {
 		return fmt.Errorf("load applied versions: %w", err)
 	}
-
+	if err := detectMigrationChecksumDrift(ctx, db, files, applied); err != nil {
+		return err
+	}
 	pending := make([]MigrationFile, 0)
 	for _, f := range files {
-		if !applied[f.Version] {
+		if _, ok := applied[f.Version]; !ok {
 			pending = append(pending, f)
 		}
 	}
+	pending = capPendingByTarget(pending, opt.TargetVersion)
 	if len(pending) == 0 {
-		logger.From(ctx).Info("database migrations up to date",
-			logger.Int("applied", len(applied)),
-			logger.Int("files", len(files)),
-		)
+		logger.From(ctx).Info("database migrations up to date", logger.Int("applied", len(applied)), logger.Int("files", len(files)))
 		return nil
 	}
-
-	logger.From(ctx).Info("applying database migrations",
-		logger.Int("pending", len(pending)),
-		logger.String("dir", dir),
-	)
+	logger.From(ctx).Info("applying database migrations", logger.Int("pending", len(pending)), logger.String("dir", dir))
 	for _, m := range pending {
 		if err := applyMigration(ctx, db, m); err != nil {
 			return fmt.Errorf("apply %s: %w", m.Version, err)
 		}
-		logger.From(ctx).Info("migration applied",
-			logger.String("version", m.Version),
-			logger.String("name", m.Name),
-		)
+		logger.From(ctx).Info("migration applied", logger.String("version", m.Version), logger.String("name", m.Name))
 	}
 	return nil
+}
+
+func capPendingByTarget(pending []MigrationFile, target string) []MigrationFile {
+	if target == "" {
+		return pending
+	}
+	// 版本号正则允许 4+ 位数字，字符串比较在 10000 vs 9999 时字典序错误。
+	// 优先按整数比较；target 非数字时回退字符串比较。
+	targetInt, targetIsInt := strconv.Atoi(target)
+	cut := len(pending)
+	for i, m := range pending {
+		var exceeded bool
+		if targetIsInt == nil {
+			if v, err := strconv.Atoi(m.Version); err == nil {
+				exceeded = v > targetInt
+			} else {
+				exceeded = m.Version > target
+			}
+		} else {
+			exceeded = m.Version > target
+		}
+		if exceeded {
+			cut = i
+			break
+		}
+	}
+	return pending[:cut]
+}
+
+func detectMigrationChecksumDrift(ctx context.Context, db *gorm.DB, files []MigrationFile, applied map[string]string) error {
+	if len(files) == 0 || len(applied) == 0 {
+		return nil
+	}
+	for _, f := range files {
+		stored, ok := applied[f.Version]
+		if !ok {
+			continue
+		}
+		content, err := os.ReadFile(f.Path)
+		if err != nil {
+			return fmt.Errorf("read migration %s for checksum: %w", f.Version, err)
+		}
+		current := migrationSQLHash(content)
+		if stored == "" {
+			if err := backfillMigrationChecksum(ctx, db, f.Version, current); err != nil {
+				return err
+			}
+			continue
+		}
+		if stored != current {
+			return fmt.Errorf("migration %s checksum drift detected: database=%s file=%s", f.Version, stored, current)
+		}
+	}
+	return nil
+}
+
+// computeChecksumDrifts 对已应用迁移做只读 checksum 比对。
+// 与 detectMigrationChecksumDrift（RunMigrations 使用）不同，它不做 backfill、不返回 error，
+// 仅报告漂移列表，供 /readyz 展示。空 checksum 也算漂移，因为意味着该版本缺少可校验的基线。
+func computeChecksumDrifts(files []MigrationFile, applied map[string]string) []ChecksumDrift {
+	if len(files) == 0 || len(applied) == 0 {
+		return nil
+	}
+	var drifts []ChecksumDrift
+	for _, f := range files {
+		stored, ok := applied[f.Version]
+		if !ok {
+			continue
+		}
+		content, err := os.ReadFile(f.Path)
+		if err != nil {
+			continue
+		}
+		current := migrationSQLHash(content)
+		if stored == "" || stored != current {
+			drifts = append(drifts, ChecksumDrift{
+				Version: f.Version,
+				Name:    f.Name,
+				Stored:  stored,
+				Current: current,
+			})
+		}
+	}
+	return drifts
+}
+
+func backfillMigrationChecksum(ctx context.Context, db *gorm.DB, version, checksum string) error {
+	return db.WithContext(ctx).Exec(fmt.Sprintf("UPDATE %s SET checksum = ? WHERE version = ? AND (checksum IS NULL OR checksum = '')", schemaMigrationsTable), checksum, version).Error
 }
 
 func ensureMigrationTable(ctx context.Context, db *gorm.DB) error {
 	stmt := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
         version    VARCHAR(64) PRIMARY KEY,
         name       VARCHAR(255) NOT NULL,
+        checksum   VARCHAR(64),
         applied_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
     )`, schemaMigrationsTable)
-	return db.WithContext(ctx).Exec(stmt).Error
+	if err := db.WithContext(ctx).Exec(stmt).Error; err != nil {
+		return err
+	}
+	return db.WithContext(ctx).Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS checksum VARCHAR(64)`, schemaMigrationsTable)).Error
 }
 
-func loadAppliedVersions(ctx context.Context, db *gorm.DB) (map[string]bool, error) {
-	type row struct{ Version string }
+func loadAppliedVersions(ctx context.Context, db *gorm.DB) (map[string]string, error) {
+	type row struct{ Version, Checksum string }
 	var rows []row
-	if err := db.WithContext(ctx).
-		Raw(fmt.Sprintf("SELECT version FROM %s", schemaMigrationsTable)).
-		Scan(&rows).Error; err != nil {
+	if err := db.WithContext(ctx).Raw(fmt.Sprintf("SELECT version, COALESCE(checksum, '') AS checksum FROM %s", schemaMigrationsTable)).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	applied := make(map[string]bool, len(rows))
+	applied := make(map[string]string, len(rows))
 	for _, r := range rows {
-		applied[r.Version] = true
+		applied[r.Version] = r.Checksum
 	}
 	return applied, nil
 }
@@ -188,11 +262,7 @@ func scanMigrationFiles(dir string) ([]MigrationFile, error) {
 		if len(matches) != 3 {
 			continue
 		}
-		files = append(files, MigrationFile{
-			Version: matches[1],
-			Name:    matches[2],
-			Path:    filepath.Join(dir, name),
-		})
+		files = append(files, MigrationFile{Version: matches[1], Name: matches[2], Path: filepath.Join(dir, name)})
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Version < files[j].Version })
 	return files, nil
@@ -203,19 +273,15 @@ func applyMigration(ctx context.Context, db *gorm.DB, m MigrationFile) error {
 	if err != nil {
 		return fmt.Errorf("read sql: %w", err)
 	}
+	checksum := migrationSQLHash(content)
 	sqlText := strings.TrimSpace(string(content))
 	if sqlText == "" {
 		return fmt.Errorf("empty migration file: %s", m.Path)
 	}
-
 	stmts := splitSQLStatements(sqlText)
 	if len(stmts) == 0 {
 		return fmt.Errorf("no executable statements in migration file: %s", m.Path)
 	}
-
-	// 单个迁移文件作为一个事务执行；PostgreSQL 支持事务内的 DDL，便于失败回滚。
-	// 按语句逐条执行：*.up.sql 常含多条 DDL/DML，RDS/PgBouncer 不接受单条 prepared
-	// statement 内嵌多命令（SQLSTATE 42601）。
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		exec := tx.Session(&gorm.Session{PrepareStmt: false})
 		for _, stmt := range stmts {
@@ -223,20 +289,15 @@ func applyMigration(ctx context.Context, db *gorm.DB, m MigrationFile) error {
 				return err
 			}
 		}
-		return tx.Exec(
-			fmt.Sprintf("INSERT INTO %s (version, name, applied_at) VALUES (?, ?, ?)", schemaMigrationsTable),
-			m.Version, m.Name, time.Now(),
-		).Error
+		return tx.Exec(fmt.Sprintf("INSERT INTO %s (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)", schemaMigrationsTable), m.Version, m.Name, checksum, time.Now()).Error
 	})
 }
 
-// splitSQLStatements 将迁移 SQL 按分号拆成可独立执行的语句（忽略整行 -- 注释）。
-//
-// 约定与限制（与仓库内 *.up.sql 风格一致）：
-//   - 仅剥离「整行」-- 注释；行内 -- 注释不在此处理；
-//   - 分号仅在单引号字符串外作为语句分隔符；支持 PostgreSQL ” 转义；
-//   - 不支持美元引用（$tag$...$tag$）、函数/触发器体内的多语句块——若未来需要，
-//     应改用专用 splitter 或将该逻辑拆成独立迁移文件。
+func migrationSQLHash(content []byte) string {
+	sum := sha256.Sum256(bytes.TrimSpace(content))
+	return hex.EncodeToString(sum[:])
+}
+
 func splitSQLStatements(sqlText string) []string {
 	var cleaned strings.Builder
 	for _, line := range strings.Split(sqlText, "\n") {
@@ -283,7 +344,6 @@ func splitOnSemicolonOutsideSingleQuotes(s string) []string {
 	return out
 }
 
-// ReadMigrationStatus 读取迁移就绪状态。
 func ReadMigrationStatus(ctx context.Context, db *gorm.DB, opt MigrateOptions) (MigrationStatus, error) {
 	status := MigrationStatus{Dir: opt.Dir}
 	if status.Dir == "" {
@@ -303,12 +363,13 @@ func ReadMigrationStatus(ctx context.Context, db *gorm.DB, opt MigrateOptions) (
 		return status, err
 	}
 	for _, f := range files {
-		if applied[f.Version] {
+		if _, ok := applied[f.Version]; ok {
 			status.AppliedVersion = f.Version
 			continue
 		}
 		status.PendingCount++
 	}
 	status.UpToDate = status.PendingCount == 0
+	status.ChecksumDrifts = computeChecksumDrifts(files, applied)
 	return status, nil
 }

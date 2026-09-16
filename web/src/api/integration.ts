@@ -3,6 +3,26 @@ import type { PageResult } from './audit'
 
 export type IntegrationProvider = 'huawei_cloud' | 'signoz' | 'prometheus'
 export type IntegrationAuthType = 'ak_sk' | 'agency' | 'api_token' | 'none'
+export type HuaweiCloudSyncMode = 'ces' | 'hybrid' | 'native'
+
+export interface HuaweiCloudRegionProject {
+  region: string
+  project_id: string
+  resource_group_id?: string
+  resource_group_name?: string
+}
+
+export interface HuaweiCloudExtraConfig {
+  sync_mode?: HuaweiCloudSyncMode
+  resource_group_name?: string
+  resource_group_id?: string
+  enterprise_project_id?: string
+  max_resources?: number
+  region_projects?: HuaweiCloudRegionProject[]
+  [key: string]: unknown
+}
+
+export type IntegrationExtraConfig = HuaweiCloudExtraConfig | Record<string, unknown>
 
 export interface IntegrationAccount {
   account_id: string
@@ -15,6 +35,7 @@ export interface IntegrationAccount {
   enabled: boolean
   owner_team?: string
   description?: string
+  extra_config?: IntegrationExtraConfig
   capabilities?: string[]
   last_check_status?: string
   created_at: number
@@ -48,6 +69,7 @@ export interface CreateAccountInput {
   enabled?: boolean
   owner_team?: string
   description?: string
+  extra_config?: IntegrationExtraConfig
 }
 
 export interface UpdateAccountInput {
@@ -60,6 +82,7 @@ export interface UpdateAccountInput {
   enabled?: boolean
   owner_team?: string
   description?: string
+  extra_config?: IntegrationExtraConfig
 }
 
 export function listIntegrationAccounts(query: ListAccountsQuery = {}) {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/734965549/aiops/internal/asset/domain"
 	"github.com/734965549/aiops/pkg/config"
 	"github.com/734965549/aiops/pkg/database"
 	"github.com/google/uuid"
@@ -84,6 +85,28 @@ func uniqueAssetAppID(t *testing.T) string {
 func uniqueAssetResourceID(t *testing.T) string {
 	t.Helper()
 	return uuid.NewString()
+}
+
+// createTestSyncBatch 创建一个 running 状态且租约有效的同步批次，用于仓储测试。
+func createTestSyncBatch(t *testing.T, db *gorm.DB, accountID, batchID, fencingToken string) *domain.SyncBatch {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	lease := now.Add(10 * time.Minute)
+	batch := &domain.SyncBatch{
+		BatchID:              batchID,
+		IntegrationAccountID: accountID,
+		Provider:             "huawei_ces",
+		Status:               domain.SyncBatchStatusRunning,
+		StartedAt:            now,
+		FencingToken:         fencingToken,
+		LeaseExpiresAt:       &lease,
+	}
+	repo := NewSyncBatchRepository(db)
+	if err := repo.Create(ctx, batch); err != nil {
+		t.Fatalf("create sync batch %s: %v", batchID, err)
+	}
+	return batch
 }
 
 func assetEnvOrDefault(key, fallback string) string {

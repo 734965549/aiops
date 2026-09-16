@@ -29,17 +29,17 @@ func (s AgentStatus) CanLease() bool {
 
 // ExecutionAgent 部署在介体上的执行代理。
 type ExecutionAgent struct {
-	AgentID        string
-	MediumID       string
-	Status         AgentStatus
-	PublicKey      string
-	TokenHash      string
-	Version        string
-	Capabilities   []string
-	RunningTasks   int
-	FreeSlots      int
-	LastHeartbeat  *time.Time
-	Disabled       bool
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	AgentID       string
+	MediumID      string
+	Status        AgentStatus
+	PublicKey     string
+	TokenHash     string
+	Version       string
+	Capabilities  []string
+	RunningTasks  int
+	FreeSlots     int
+	LastHeartbeat *time.Time
+	Disabled      bool
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }

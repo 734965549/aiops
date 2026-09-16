@@ -1,8 +1,9 @@
 <template>
-  <div class="ldap-import-page">
+  <div class="page-shell ldap-import-page">
     <a-card
       title="LDAP / AD 域账号导入"
       :bordered="false"
+      class="conn-card"
     >
       <a-alert
         type="info"
@@ -275,8 +276,9 @@
 
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { Message } from '@arco-design/web-vue'
-import type { TableColumnData, TableRowSelection, TreeNodeData } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
+import type { TableColumnData, TableRowSelection } from '@arco-design/web-vue/es/table/interface'
+import type { TreeNodeData } from '@arco-design/web-vue/es/tree/interface'
 import {
   browseLDAPOrganizations,
   closeLDAPSession,
@@ -480,23 +482,45 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped lang="scss">
+/* 容器由全局 .page-shell 提供：连接表单固定高度，浏览面板填满剩余空间并内部滚动 */
 .ldap-import-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
 }
+
+.conn-card {
+  flex: 0 0 auto;
+}
+
 .tip {
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
 }
 .conn-form {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 .session-meta {
   color: var(--color-text-3);
   font-size: 13px;
 }
 .browse-panel {
-  min-height: 480px;
+  flex: 1;
+  min-height: 0;
+}
+.browse-panel > :deep(.arco-col) {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+}
+.browse-panel :deep(.arco-card) {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.browse-panel :deep(.arco-card > .arco-card-body) {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 .org-label {
   color: var(--color-text-3);
@@ -504,6 +528,6 @@ onBeforeUnmount(() => {
   font-weight: normal;
 }
 .result-table {
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 </style>

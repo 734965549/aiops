@@ -131,9 +131,15 @@ func (r *PolicyRepository) SoftDelete(ctx context.Context, policyID string) erro
 	if r == nil || r.db == nil {
 		return errors.New("policy repository is not configured")
 	}
-	res := r.db.WithContext(ctx).Model(&policyModel{}).Where("policy_id = ? AND deleted = FALSE", policyID).Updates(map[string]any{
-		"deleted": true, "updated_at": time.Now(),
-	})
+	// 软删除时清空 scope.application_ids，与 ApplicationReferenceChecker / v_asset_app_ref_integrity 契约一致。
+	now := time.Now()
+	res := r.db.WithContext(ctx).Exec(`
+		UPDATE inspection_policy
+		SET deleted = TRUE,
+		    scope = jsonb_set(scope, '{application_ids}', '[]'::jsonb, true),
+		    updated_at = ?
+		WHERE policy_id = ? AND deleted = FALSE
+	`, now, policyID)
 	if res.Error != nil {
 		return res.Error
 	}

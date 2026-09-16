@@ -4,11 +4,11 @@
 
 `migrations` 系数据库结构嘅「装修图纸」。代码需要边啲表、边啲字段、边啲索引，都用 SQL 记录低。新环境启动时，可以按图纸自动装修数据库。
 
-## 生产 DBA 手工执行模式
+## 自研 runner 执行模式
 
-生产环境如果由 DBA 统一执行数据库初始化，则 `AIOPS_DATABASE__AUTO_MIGRATE=false`，API 启动时不会自动跑 SQL。DBA 只需要使用本目录作为统一 SQL 目录，不要从其它目录拼接脚本。
+生产 / 预发环境必须由 DBA 或发布流水线在部署 API 前显式执行本仓库自研 runner（`cmd/migrate` 二进制或 `go run ./cmd/migrate -config <path>`）。`AIOPS_DATABASE__AUTO_MIGRATE=false` 时 API 启动不会自动跑 SQL，只读取迁移状态供 `/readyz` 判断。
 
-执行顺序固定如下：
+当前 `*.up.sql` 迁移顺序如下，runner 会按版本号自动执行并维护 `schema_migrations` 账本：
 
 ```text
 0001_init_identity.up.sql
@@ -32,34 +32,54 @@
 0019_init_observability.up.sql
 0020_init_inspection.up.sql
 0022_init_execution_agent.up.sql
-manual_schema_migrations.sql
+0023_asset_cloud_sync.up.sql
+0024_integration_account_extra_config.up.sql
+0025_asset_resource_labels.up.sql
+0026_asset_cloud_sync_region_key.up.sql
+0027_asset_sync_batch_message_text.up.sql
+0028_asset_sync_batch_running_mutex.up.sql
+0029_huawei_legacy_accounts_native_sync_mode.up.sql
+0030_asset_sync_batch_fencing_token.up.sql
+0031_asset_sync_batch_summary.up.sql
+0032_cleanup_legacy_cloud_application_ids.up.sql
+0033_asset_sync_batch_triggered_by.up.sql
+0034_huawei_ces_vpc_subtype_split.up.sql
+0035_cloud_application_id_rune_truncation.up.sql
+0036_cloud_application_name_include_account.up.sql
+0037_fix_huawei_ces_application_ids.up.sql
+0038_cloud_application_name_normalize.up.sql
+0039_cleanup_orphaned_application_refs.up.sql
+0040_application_ref_integrity_view.up.sql
+0041_legacy_app_id_convergence_guard.up.sql
+0042_backfill_orphaned_app_refs_and_guard.up.sql
+0043_fix_orphaned_alert_app_refs.up.sql
+0044_lock_default_admin_account.up.sql
+0045_inspection_policy_deleted_scope_cleanup.up.sql
 ```
 
 说明：
 
 - `*.up.sql` 是真实建表、建索引、种子数据和权限数据。
-- `manual_schema_migrations.sql` 只用于 DBA 手工模式下补齐迁移账本，必须在前面所有 `*.up.sql` 成功后再执行。
-- `schema_migrations` 是 `/readyz` 判断数据库是否追平当前版本的账本；如果业务 SQL 已执行但账本没写，应用会认为 migration pending。
-- 不要为了让 `/readyz` 变绿而提前执行 `manual_schema_migrations.sql`。
+- `schema_migrations` 是 `/readyz` 判断数据库是否追平当前版本的账本，由自研 runner 维护；如果业务 SQL 已执行但账本没写，应用会认为 migration pending。
+- 开发 / 测试阶段可以按版本顺序重复跑同一批迁移脚本，但每条 `*.up.sql` 都必须做到幂等或顺序重跑安全。注意 `0032_cleanup_legacy_cloud_application_ids.up.sql` 是破坏性清理脚本（删除旧格式应用及关联数据），不是数据搬迁；该迁移从未在任何共享环境执行过，当前精确匹配版本为开发期最终版，所有数据库须从零重建，不得基于曾执行过旧版 0032 的数据库升级；后续修复走 `0037_fix_huawei_ces_application_ids.up.sql` 及后续版本。
+- 禁止在生产或预发环境手工 `psql -f migrations/*.up.sql`、手工执行 `manual_schema_migrations.sql`，或手工写入 / 修改 `schema_migrations`。
 - `*.down.sql` 只作为人工回滚参考，不由应用自动执行。
 - `0016_seed_default_admin_user.up.sql` 是 DBA 初始化入口账号兜底：创建/重置 `admin/admin123`，并把 `admin` 角色绑定到当前全部权限、数据范围和 AI 工具权限。只执行 `0001/0002` 不算完整初始化。
-- 当前仓库未包含 `0021` 文件；DBA 手工执行时按实际文件名顺序执行到 `0022`，唔好自己补一条空账本记录。
+- 当前仓库未包含 `0021` 文件；runner 会按实际文件名顺序执行到 `0045`，唔好自己补一条空账本记录。
 - Integration、Observability、Inspection 同 Execution Agent 点样串到主链路，睇 `docs/AI运维平台整体流程与调用关系.md`。
 
-示例：
+执行命令：
 
 ```bash
-psql "$AIOPS_DATABASE_DSN" -f migrations/0001_init_identity.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0002_seed_admin_permissions.up.sql
-# ...按上方顺序继续执行...
-psql "$AIOPS_DATABASE_DSN" -f migrations/0015_identity_access_control_management.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0016_seed_default_admin_user.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0017_repair_default_admin_superset.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0018_init_integration.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0019_init_observability.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0020_init_inspection.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/0022_init_execution_agent.up.sql
-psql "$AIOPS_DATABASE_DSN" -f migrations/manual_schema_migrations.sql
+# 生产 / 预发推荐使用已构建的自研 runner 二进制
+./migrate -config /path/to/config.yaml
+
+# 源码方式等价执行
+go run ./cmd/migrate -config /path/to/config.yaml
+
+# 本地联调也可使用 Makefile 封装
+make migrate
+make migrate-up
 ```
 
 执行后检查：
@@ -82,7 +102,7 @@ make migrate / go run ./cmd/migrate
 ```
 
 **仅当 `database.auto_migrate=true` 时**，`bootstrap.Init`（`cmd/api` 启动路径）才会在连接 PostgreSQL 后调用同一 `RunMigrations`。
-默认值为 `false`：生产由 DBA 按本文件“生产 DBA 手工执行模式”执行 SQL；本地联调可使用 `make migrate` / `make migrate-up` 显式建表，避免 API 启动时隐式迁移。
+默认值为 `false`：生产 / 预发由 DBA 或发布流水线显式执行自研 runner；本地联调可使用 `make migrate` / `make migrate-up` 显式建表，避免 API 启动时隐式迁移。
 
 受控 dev/test 可临时开启 `auto_migrate`（例如叠加 `deployments/docker-compose.dev.yml`），与 `make migrate` **二选一**。
 

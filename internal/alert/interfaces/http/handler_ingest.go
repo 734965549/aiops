@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	alertapp "github.com/734965549/aiops/internal/alert/application"
-	"github.com/734965549/aiops/internal/alert/infrastructure/ingest"
 	apperr "github.com/734965549/aiops/pkg/errors"
 	httpx "github.com/734965549/aiops/pkg/transport/http"
 	"github.com/gin-gonic/gin"
@@ -48,7 +47,7 @@ func (h *IngestHandler) IngestAlertmanager(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
-	var payload ingest.AlertmanagerWebhook
+	var payload alertapp.AlertmanagerWebhook
 	if err := decodeJSON(body, &payload); err != nil {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "invalid alertmanager payload")
 		return
@@ -74,7 +73,7 @@ func (h *IngestHandler) IngestWebhook(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
-	var payload ingest.GenericWebhookPayload
+	var payload alertapp.GenericWebhookPayload
 	if err := decodeJSON(body, &payload); err != nil {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "invalid webhook payload")
 		return

@@ -40,6 +40,23 @@ npm run build
 `vite.config.ts` 已通过 `root: realpathSync` + `preserveSymlinks` 规避。
 仍失败时请将仓库放到纯 ASCII 本地路径（如 `C:\dev\aiops`）再构建。
 
+## 容器化（前后端分离）
+
+前端是**独立镜像 `aiops-web`**，与后端 `aiops-api` 分开，不打包在一起：
+
+- 镜像构建文件：`web/Dockerfile`，**构建上下文为 `web/` 目录**（内部 `COPY package*.json` / `COPY ./`）。
+- 镜像内 Nginx 默认使用 `web/nginx.conf`（K8s 版，反代 `aiops-api.<ns>.svc.cluster.local`）。
+- Docker Compose 联调使用 `deployments/docker-compose.web.yml`，挂载 `deployments/nginx/web.conf` 反代同网络 `api:8080`，宿主机端口 80。
+
+构建镜像（注意上下文是 `web/`）：
+
+```bash
+docker build -f web/Dockerfile -t aiops-web:dev web   # 在仓库根目录
+# 或在 web/ 目录内：docker build -t aiops-web:dev .
+```
+
+同源反代部署时保持 `web/.env.production` 的 `VITE_API_BASE=`（空），浏览器请求同源 `/api`；分域部署再注入 API 地址。详见 `deployments/README.md`「生产前端接入」。
+
 ## Alert 模块 E2E
 
 后端与数据库就绪后，可在仓库根目录执行：

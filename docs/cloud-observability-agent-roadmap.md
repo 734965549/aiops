@@ -357,9 +357,9 @@ Recommendation
 
 ## 9. API 与前端页面规划
 
-详细 API 草案见 `ops/cloud-observability-contract.md`。
+详细 API 契约见 `ops/cloud-observability-contract.md`。
 
-粤语版全项目串联图见 `docs/AI运维平台整体流程与调用关系.md`。该文档将 P0 告警闭环、Integration 账号接入、Observability 查询、Inspection 巡检、Recommendation 转 Execution、Execution Agent 派发关系放喺同一张图，方便评审调用边界。
+全项目串联图见 `docs/AI运维平台整体流程与调用关系.md`。该文档将 P0 告警闭环、Integration 账号接入、Observability 查询、Inspection 巡检、Recommendation 转 Execution、Execution Agent 派发关系放在同一张图中，方便评审调用边界。
 
 | 页面 | 路由建议 | 说明 |
 | --- | --- | --- |
@@ -407,10 +407,11 @@ Recommendation
 
 - `internal/observability` 上下文。
 - Application 层 Port：`MetricQueryPort`、`LogSearchPort`、`TraceQueryPort`、`TopologyQueryPort`、`AssetDiscoveryPort`、`AlertRuleQueryPort`。
-- `ObservabilityProvider` + `ProviderRegistry`；infra 第一阶段为 `FakeProvider`（`huawei_cloud` / `signoz` / `prometheus`）。
+- `ObservabilityProvider` + `ProviderRegistry`；infra 第一阶段为 `FakeProvider`（`signoz` / `prometheus` 全 fake；`huawei_cloud` 在 `auth_type=none` 时全 fake）。
 - HTTP API：`/api/observability/metrics/query`、`/logs/search`、`/traces/query`、`/topology`。
 - 权限 `app:observability:read`、审计 `observability_query`、证据表 `obs_evidence_ref`（迁移 `0019`）。
-- `IntegrationAccountPort` 适配器复用 Integration 账号与凭据解析，业务层不直接依赖 GORM/云 SDK。
+- `IntegrationAccountPort` 适配器复用 Integration 账号与凭据引用（`credential_ref_id`），业务层不直接依赖 GORM/云 SDK。
+- `cmd/api/main.go` 装配：`huaweiobs.NewCredentialProvider(integCredentialRepo, integVault)` + `obsprovider.DefaultRegistry(huaweiObsCreds)`。
 
 验收：
 
@@ -421,30 +422,52 @@ Recommendation
 
 后续替换路径：`infrastructure/provider/huawei_ces` 等实现同一组 Port，注册到 `ProviderRegistry`，不影响 application 与 HTTP 契约。
 
-### 阶段 2：资源同步与拓扑
+**阶段 3 指标里程碑（已落地）**：`huawei_cloud` + `auth_type=ak_sk` 的 `QueryMetrics` 已走真实 CES；前端可创建带 `project_id` 的华为账号；连通性检查为字段校验；同账号的 logs/traces/topology/assets/alerts 对真实凭据返回 unsupported，对 `auth_type=none` 仍为 fake。
+
+**本阶段验收（华为 CES 指标）**：
+
+- 前端 `/integrations` 可创建 `huawei_cloud` + `ak_sk` + `region` + `project_id` 账号。
+- `/api/integrations/accounts/:account_id/check` 对 `ak_sk` 做字段级校验（凭据非空、regions 非空）；真实 IAM/CES 探活留待后续。
+- `/api/observability/metrics/query` 用该账号查询 `SYS.ECS` / `cpu_util` 等 CES 指标时返回真实 CES 数据点（非 fake）；响应含标准 `MetricSeries`、`evidence_id`，写审计。
+- 响应/日志/审计不含 AK/SK、`Authorization`、原始敏感报错。
+- 单测覆盖：`metric_mapper`、`credential` 缺失/错误、`CESClient` mock、`QueryService` 经真实 `huawei.Adapter` 集成路径。
+
+### 阶段 2：资源同步与拓扑（已落地）
 
 交付：
 
-- Huawei 资源只读 Adapter。
-- 资源同步批次、差异记录、`stale` 标记。
-- Asset 模块扩展同步来源字段。
-- 资源详情展示云资源 ID、region、同步时间。
+- Huawei 资源只读 Adapter（ECS/CCE/RDS/ELB `ListResources`，`auth_type=ak_sk`）。
+- 资源同步批次、`stale` 标记（迁移 `0023`）。
+- Asset 模块扩展同步来源字段 + `POST /api/assets/sync`。
+- 前端 `/assets` 与 `/integrations` 展示来源、云资源 ID、同步批次。
+
+补充目标：
+
+- 华为云资产同步的口径为**指定 CES 资源分组**下资源（默认候选名“全部资源”需用户在 CES 控制台预先创建；CES 官方 API 只返回用户创建的资源分组，不存在“总览全量”隐式口径，未命中指定组即失败，不回退最大资源组）。
+- 产品分层采用 `ces` / `hybrid` / `native` 三种同步模式：`ces` 为 P0/P1 默认模式，同步范围为指定资源分组下资源；`hybrid` 为 P2 增强模式，在指定资源分组发现后补充原生云服务详情；`native` 仅兼容旧 ECS/CCE/RDS/ELB 路径。
+- 当前 ECS/CCE/RDS/ELB 原生 API 同步只作为阶段 2 已落地能力、`hybrid` 增强路径或 `native` 兼容路径，不再作为完整性判断口径。
+- CES 资源分组同步的实现顺序、权限、分页、资源映射、stale 语义和验收标准见 `ops/huawei-ces-sync-contract.md`。
 
 验收：
 
-- 能从华为云只读账号同步 ECS/CCE/RDS/ELB 至资产注册表。
+- `sync_mode=ces` 时，仅授予 CES 只读权限的华为云账号即可按 CES 控制台“全部资源”口径同步到资产注册表。
+- `sync_mode=hybrid` 时，先保证 CES 资源完整入库，再按已授权的 ECS/RDS/ELB/EVS/VPC/OBS 等原生 API 补充详情；增强失败不影响基础资源入库。
+- `sync_mode=native` 保留旧 ECS/CCE/RDS/ELB 同步路径，但不承诺与 CES 控制台数量一致。
 - 同步失败不影响已有 P0 告警闭环。
 - 删除云端资源时平台标记 stale，不直接删除历史数据。
+- `scripts/e2e-asset-sync.ps1` 在 CI 可跑（fake provider）。
 
 ### 阶段 3：指标/日志/链路统一查询
 
 交付：
 
 - `internal/observability` 上下文（**阶段 1.5 已落地 Port + fake provider + HTTP + 审计**）。
-- Huawei CES 指标查询（替换 fake `MetricQueryPort` 实现）。
-- Huawei AOM/LTS 日志查询（替换 fake `LogSearchPort`）。
-- Huawei APM 和 Signoz Trace 查询（替换 fake `TraceQueryPort`）。
+- Huawei CES 指标查询（**已落地真实 metrics**：`auth_type=ak_sk` + `CredentialProvider` → CES `ShowMetricData`；`auth_type=none` 仍为 fake）。
+- Huawei AOM/LTS 日志查询（**待替换** fake `LogSearchPort`）。
+- Huawei APM 和 Signoz Trace 查询（**待替换** fake `TraceQueryPort`）。
 - EvidenceRef 证据引用（`0019` 已建 `obs_evidence_ref` 表）。
+
+**当前边界**：真实凭据的 `huawei_cloud` 账号调用 logs/traces/topology/assets/alerts 时返回 `capability unsupported`，不会返回 fake 样本；`signoz`/`prometheus` 仍为全 fake。
 
 验收：
 

@@ -3,166 +3,279 @@
     class="login-page"
     :class="pageStateClass"
   >
-    <div class="login-bg-grid" />
-    <div class="login-orbit orbit-one" />
-    <div class="login-orbit orbit-two" />
-
-    <section class="brand-panel">
-      <div class="brand-kicker">
-        AIOps Neural Console
-      </div>
-      <h1>让告警、资产与自动化执行形成闭环</h1>
-      <p>
-        统一接入身份源、Runbook、告警与 AI 工具网关，把运维动作沉淀成可追踪、可审计的智能控制台。
-      </p>
-
-      <div class="signal-card tech-scanline">
-        <div class="signal-header">
-          <span class="pulse-dot" />
-          实时态势感知
-        </div>
-        <div class="signal-lines">
-          <span />
-          <span />
-          <span />
-        </div>
-      </div>
-    </section>
-
-    <a-card
-      class="login-card"
-      :bordered="false"
+    <main
+      ref="sceneRef"
+      class="login-frame"
+      @pointermove="onScenePointerMove"
+      @pointerleave="onScenePointerLeave"
     >
-      <div class="sentinel-stage">
+      <section class="login-visual">
+        <img
+          class="login-visual-image login-visual-image-organic"
+          :src="organicHeroImage"
+          alt="覆有青苔的树木形态"
+        >
+        <img
+          class="login-visual-image login-visual-image-mechanical"
+          :src="mechanicalHeroImage"
+          alt=""
+          aria-hidden="true"
+        >
+        <MorphCanvas
+          ref="morphCanvasRef"
+          class="login-morph-canvas"
+          :organic-src="organicHeroImage"
+          :mechanical-src="mechanicalHeroImage"
+          @ready="morphReady = true"
+        />
+
         <div
-          v-for="idx in 3"
-          :key="idx"
-          class="sentinel"
-          :class="sentinelClass"
+          class="login-morph-lens"
+          aria-hidden="true"
         >
-          <span class="sentinel-ear left" />
-          <span class="sentinel-ear right" />
-          <span class="sentinel-head">
-            <span class="sentinel-eye left" />
-            <span class="sentinel-eye right" />
-            <span class="sentinel-visor" />
-          </span>
-          <span class="sentinel-body" />
-          <span class="sentinel-hand left" />
-          <span class="sentinel-hand right" />
-        </div>
-      </div>
-
-      <div class="login-title">
-        AI 运维平台
-      </div>
-      <div class="login-sub">
-        {{ loginModeLabel }}
-      </div>
-
-      <a-tabs
-        v-if="passwordProviders.length > 0"
-        v-model:active-key="activeProviderId"
-        type="rounded"
-        class="login-tabs"
-      >
-        <a-tab-pane
-          key="local"
-          title="本地账号"
-        />
-        <a-tab-pane
-          v-for="p in passwordProviders"
-          :key="p.id"
-          :title="p.name"
-        />
-      </a-tabs>
-
-      <a-form
-        :model="form"
-        layout="vertical"
-        class="login-form"
-        @submit="onSubmit"
-      >
-        <a-form-item
-          field="username"
-          label="用户名"
-          :rules="[{ required: true, message: '请输入用户名' }]"
-        >
-          <a-input
-            v-model="form.username"
-            :placeholder="isLocalLogin ? 'admin' : '域账号'"
-            allow-clear
-            @focus="activeField = 'username'"
-            @blur="activeField = ''"
-          />
-        </a-form-item>
-        <a-form-item
-          field="password"
-          label="密码"
-          :rules="[{ required: true, message: '请输入密码' }]"
-        >
-          <a-input-password
-            v-model="form.password"
-            placeholder="请输入密码"
-            allow-clear
-            @focus="activeField = 'password'"
-            @blur="activeField = ''"
-          />
-        </a-form-item>
-        <a-button
-          type="primary"
-          long
-          :loading="loading"
-          html-type="submit"
-          class="login-submit"
-        >
-          登录控制台
-        </a-button>
-      </a-form>
-
-      <div
-        v-if="oauthProviders.length > 0"
-        class="oauth-section"
-      >
-        <a-divider>或使用企业 SSO</a-divider>
-        <a-space
-          direction="vertical"
-          fill
-        >
-          <a-button
-            v-for="p in oauthProviders"
-            :key="p.id"
-            long
-            :loading="oauthLoadingId === p.id"
-            @click="onOAuthLogin(p.id)"
+          <img
+            class="login-visual-image login-morph-lens-image"
+            :src="organicHeroImage"
+            alt=""
           >
-            {{ p.name }}
-          </a-button>
-        </a-space>
-      </div>
+        </div>
+        <div
+          class="moss-burst"
+          aria-hidden="true"
+        />
+        <div
+          class="morph-interaction-zone"
+          aria-hidden="true"
+        />
 
-      <a-alert
-        type="info"
-        show-icon
-        class="login-tip"
-        :closable="false"
+        <div
+          v-if="isCollapsed"
+          class="collapsed-login-card"
+          @click="isCollapsed = false"
+        >
+          <div class="collapsed-login-header">
+            ENTERPRISE ACCESS
+          </div>
+          <div class="collapsed-login-content">
+            <span class="collapsed-login-text">展开登录</span>
+            <svg
+              class="collapsed-login-arrow"
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <path d="M7 17L17 7M17 7H7M17 7V17" />
+            </svg>
+          </div>
+        </div>
+
+        <header class="brand-bar">
+          <div class="brand-sign">
+            <span class="brand-star">✦</span>
+            <span>AI 运维平台</span>
+          </div>
+          <span class="brand-index">AIOPS / ACCESS / 01</span>
+        </header>
+
+        <div class="visual-copy">
+          <span class="visual-kicker">Intelligent operations, under control.</span>
+          <h1>让复杂的运维，<br><em>回到可控的秩序。</em></h1>
+          <p>
+            AI 提供分析、证据与计划；权限、确认、状态机和审计负责守住每一次真实执行。
+          </p>
+        </div>
+
+        <div
+          class="workflow-line"
+          aria-label="平台核心闭环"
+        >
+          <span><b>01</b> 告警接入</span>
+          <span><b>02</b> 资产匹配</span>
+          <span><b>03</b> Runbook 推荐</span>
+          <span><b>04</b> 安全执行</span>
+        </div>
+
+        <div class="visual-caption">
+          Nature of reliability / Human in the loop
+        </div>
+
+        <div
+          class="morph-guide"
+          aria-hidden="true"
+        >
+          <span>Organic</span>
+          <i><b /></i>
+          <span>System</span>
+        </div>
+      </section>
+
+      <section
+        class="login-access"
+        :class="{ 'is-collapsed': isCollapsed }"
       >
-        本地联调默认账号见 configs/config.example.yaml；企业 LDAP/AD 需在 identity.providers 中启用。
-      </a-alert>
-    </a-card>
+        <div class="access-meta">
+          <span>Enterprise access</span>
+          <span class="access-state"><i /> Protected</span>
+          <button
+            class="collapse-toggle"
+            title="折叠登录面板"
+            @click="isCollapsed = !isCollapsed"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M18 15l-6-6-6 6" />
+            </svg>
+          </button>
+        </div>
+
+        <a-card
+          class="login-card"
+          :bordered="false"
+        >
+          <div class="login-index">
+            02 / 身份验证
+          </div>
+          <div class="login-title">
+            登录控制台
+          </div>
+          <div class="login-sub">
+            {{ loginModeLabel }}
+          </div>
+
+          <a-tabs
+            v-if="passwordProviders.length > 0"
+            v-model:active-key="activeProviderId"
+            type="rounded"
+            class="login-tabs"
+          >
+            <a-tab-pane
+              key="local"
+              title="本地账号"
+            />
+            <a-tab-pane
+              v-for="p in passwordProviders"
+              :key="p.id"
+              :title="p.name"
+            />
+          </a-tabs>
+
+          <a-form
+            :model="form"
+            layout="vertical"
+            class="login-form"
+            @submit="onSubmit"
+          >
+            <a-form-item
+              field="username"
+              label="用户名"
+              :rules="[{ required: true, message: '请输入用户名' }]"
+            >
+              <a-input
+                v-model="form.username"
+                :placeholder="isLocalLogin ? 'admin' : '域账号'"
+                allow-clear
+                @focus="activeField = 'username'"
+                @blur="activeField = ''"
+              />
+            </a-form-item>
+            <a-form-item
+              field="password"
+              label="密码"
+              :rules="[{ required: true, message: '请输入密码' }]"
+            >
+              <a-input-password
+                v-model="form.password"
+                placeholder="请输入密码"
+                allow-clear
+                @focus="activeField = 'password'"
+                @blur="activeField = ''"
+              />
+            </a-form-item>
+            <a-button
+              type="primary"
+              long
+              :loading="loading"
+              html-type="submit"
+              class="login-submit"
+            >
+              登录控制台
+            </a-button>
+          </a-form>
+
+          <div
+            v-if="oauthProviders.length > 0"
+            class="oauth-section"
+          >
+            <a-divider>或使用企业 SSO</a-divider>
+            <a-space
+              direction="vertical"
+              fill
+            >
+              <a-button
+                v-for="p in oauthProviders"
+                :key="p.id"
+                long
+                :loading="oauthLoadingId === p.id"
+                @click="onOAuthLogin(p.id)"
+              >
+                {{ p.name }}
+              </a-button>
+            </a-space>
+          </div>
+
+          <a-alert
+            type="info"
+            show-icon
+            class="login-tip"
+            :closable="false"
+          >
+            本地联调默认账号见 configs/config.example.yaml；企业 LDAP/AD 需在 identity.providers 中启用。
+          </a-alert>
+        </a-card>
+
+        <footer class="access-footer">
+          <span>Bearer Token</span>
+          <span>RBAC</span>
+          <span>Trace &amp; Audit</span>
+        </footer>
+      </section>
+    </main>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Message } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
 import {
   fetchLoginProviders,
   fetchOAuthAuthorizeURL,
+  isPublicApiError,
   type IdentityProviderInfo
 } from '@/api/identity'
 import { useAuthStore } from '@/stores/auth'
+import organicHeroImage from '@/assets/aiops-hero-organic-dense.webp'
+import mechanicalHeroImage from '@/assets/aiops-hero-mechanical.webp'
+import MorphCanvas from './components/MorphCanvas.vue'
+
+type MorphCanvasExpose = {
+  setMorphState: (state: {
+    progress: number
+    x: number
+    y: number
+    active: boolean
+    energy: number
+  }) => void
+}
 
 const OAUTH_STATE_PREFIX = 'aiops_oauth_state:'
 
@@ -175,6 +288,16 @@ const providers = ref<IdentityProviderInfo[]>([])
 const activeProviderId = ref('local')
 const activeField = ref<'username' | 'password' | ''>('')
 const form = reactive({ username: '', password: '' })
+const sceneRef = ref<HTMLElement | null>(null)
+const morphCanvasRef = ref<MorphCanvasExpose | null>(null)
+const morphReady = ref(false)
+const isCollapsed = ref(true)
+let pointerFrame = 0
+let pointerX = 0.5
+let pointerY = 0.64
+let renderedPointerX = 0.5
+let renderedPointerY = 0.64
+let morphActive = false
 
 const passwordProviders = computed(() =>
   providers.value.filter((p) => p.type === 'ldap' || p.type === 'ad')
@@ -190,12 +313,83 @@ const loginModeLabel = computed(() => {
 })
 const pageStateClass = computed(() => ({
   'is-username': activeField.value === 'username',
-  'is-password': activeField.value === 'password'
+  'is-password': activeField.value === 'password',
+  'is-morph-ready': morphReady.value
 }))
-const sentinelClass = computed(() => ({
-  'sentinel-watch': activeField.value === 'username',
-  'sentinel-hide': activeField.value === 'password'
-}))
+
+function applyScenePointer() {
+  pointerFrame = 0
+  const scene = sceneRef.value
+  if (!scene) return
+
+  const deltaX = pointerX - renderedPointerX
+  const deltaY = pointerY - renderedPointerY
+  renderedPointerX += deltaX * 0.18
+  renderedPointerY += deltaY * 0.18
+
+  const normalizedPosition = Math.max(0, Math.min(1, (renderedPointerX - 0.12) / 0.7))
+  const guidePosition = Math.pow(normalizedPosition, 1.25) * 100
+  const morphPosition = -16 + (guidePosition / 100) * 132
+  const movement = Math.min(1, Math.hypot(deltaX, deltaY) * 10)
+  const morphEnergy = morphActive ? Math.max(0.28, movement) : 0
+
+  scene.style.setProperty('--morph-progress', String(guidePosition / 100))
+  scene.style.setProperty('--morph-position', `${morphPosition}%`)
+  scene.style.setProperty('--morph-guide-position', `${guidePosition}%`)
+  scene.style.setProperty('--morph-x', `${renderedPointerX * 100}%`)
+  scene.style.setProperty('--morph-y', `${renderedPointerY * 100}%`)
+  scene.style.setProperty('--morph-active', morphActive ? '1' : '0')
+  scene.style.setProperty('--morph-energy', String(morphEnergy))
+  morphCanvasRef.value?.setMorphState({
+    progress: guidePosition / 100,
+    x: renderedPointerX,
+    y: renderedPointerY,
+    active: morphActive,
+    energy: morphEnergy
+  })
+
+  if (Math.abs(deltaX) > 0.0008 || Math.abs(deltaY) > 0.0008) {
+    pointerFrame = window.requestAnimationFrame(applyScenePointer)
+  }
+}
+
+function scheduleScenePointer() {
+  if (!pointerFrame) {
+    pointerFrame = window.requestAnimationFrame(applyScenePointer)
+  }
+}
+
+function onScenePointerMove(event: PointerEvent) {
+  if (event.pointerType === 'touch') return
+  const scene = sceneRef.value
+  const target = event.target as HTMLElement | null
+  if (!scene) return
+
+  const rect = scene.getBoundingClientRect()
+  const nextPointerX = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
+  const nextPointerY = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height))
+  const subjectTop = 0.15 - nextPointerX * 0.15 - nextPointerX * nextPointerX * 0.25
+  const subjectBottom = 1.15 - nextPointerX * 0.08 - nextPointerX * nextPointerX * 0.15
+  const isOverSubject = nextPointerY >= subjectTop && nextPointerY <= subjectBottom
+
+  if (!isOverSubject || target?.closest('.login-access')) {
+    if (morphActive) {
+      morphActive = false
+      scheduleScenePointer()
+    }
+    return
+  }
+
+  morphActive = true
+  pointerX = nextPointerX
+  pointerY = nextPointerY
+  scheduleScenePointer()
+}
+
+function onScenePointerLeave() {
+  morphActive = false
+  scheduleScenePointer()
+}
 
 onMounted(async () => {
   await handleOAuthCallbackIfNeeded()
@@ -205,6 +399,10 @@ onMounted(async () => {
   } catch {
     providers.value = []
   }
+})
+
+onBeforeUnmount(() => {
+  if (pointerFrame) window.cancelAnimationFrame(pointerFrame)
 })
 
 async function handleOAuthCallbackIfNeeded() {
@@ -246,8 +444,13 @@ async function onSubmit() {
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
     router.replace(redirect || '/dashboard')
   } catch (err) {
-    const msg = err instanceof Error ? err.message : '登录失败'
-    Message.error(msg)
+    // 后端对用户不存在/密码错误/账号禁用统一返回 401，这里给出统一中文提示。
+    if (isPublicApiError(err) && err.status === 401) {
+      Message.error('账号或密码错误')
+    } else {
+      const msg = err instanceof Error ? err.message : '登录失败'
+      Message.error(msg)
+    }
   } finally {
     loading.value = false
   }
@@ -268,426 +471,803 @@ async function onOAuthLogin(providerId: string) {
 }
 </script>
 
+
 <style scoped lang="scss">
+/* ============================================================
+   登录页：分层构图 —— 底层视觉背景 + 右上悬浮认证面板
+   说明：原文件拆成三个 style 块相互覆盖（1500→1600、680→0、
+   42px→clamp、absolute→static），此处合并为唯一事实来源，
+   并删除模板中不存在的死规则。
+   ============================================================ */
 .login-page {
   min-height: 100vh;
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(320px, 560px) 440px;
-  align-items: center;
-  justify-content: center;
-  gap: 54px;
-  padding: 48px;
-  overflow: hidden;
-  color: #eaf7ff;
-  background:
-    radial-gradient(circle at 16% 20%, rgba(22, 93, 255, 0.38), transparent 30%),
-    radial-gradient(circle at 82% 16%, rgba(0, 220, 197, 0.26), transparent 28%),
-    linear-gradient(135deg, #061126 0%, #0a1731 52%, #071022 100%);
+  display: block;
+  padding: 14px;
+  overflow: auto;
+  color: #171b17;
+  background: #dcdcd4;
 }
 
-.login-bg-grid {
+.login-frame {
+  --morph-progress: 0.5;
+  --morph-position: 50%;
+  --morph-guide-position: 50%;
+  --morph-x: 50%;
+  --morph-y: 64%;
+  --morph-active: 0;
+  --morph-energy: 0;
+  width: min(1600px, 100%);
+  min-height: calc(100vh - 28px);
+  position: relative;
+  display: block;
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid rgba(24, 27, 24, 0.42);
+  border-radius: var(--radius-lg);
+  background: #eeeae0;
+  box-shadow: 0 30px 80px rgba(37, 41, 34, 0.14);
+  isolation: isolate;
+}
+
+/* —— 视觉层（绝对定位背景，不参与文档流） —— */
+.login-visual {
   position: absolute;
   inset: 0;
-  opacity: 0.55;
-  background-image:
-    linear-gradient(rgba(125, 211, 252, 0.11) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(125, 211, 252, 0.11) 1px, transparent 1px);
-  background-size: 44px 44px;
-  transform: perspective(700px) rotateX(58deg) translateY(18%);
-  transform-origin: bottom;
-  animation: grid-drift 18s linear infinite;
+  overflow: hidden;
+  background: #eeeae0;
+  isolation: isolate;
 }
 
-.login-page::before,
-.login-page::after {
+.login-visual::before {
   content: '';
   position: absolute;
-  width: 430px;
-  height: 430px;
-  border-radius: 999px;
-  filter: blur(36px);
-  opacity: 0.42;
+  inset: 14px;
+  z-index: 5;
   pointer-events: none;
+  border: 1px solid rgba(24, 27, 24, 0.3);
+  border-radius: var(--radius-md);
 }
 
-.login-page::before {
-  left: -140px;
-  bottom: -120px;
-  background: rgba(22, 93, 255, 0.55);
-}
-
-.login-page::after {
-  right: -120px;
-  top: -90px;
-  background: rgba(0, 220, 197, 0.38);
-}
-
-.login-orbit {
+.login-visual::after {
+  content: '';
   position: absolute;
-  border: 1px solid rgba(125, 211, 252, 0.16);
-  border-radius: 999px;
+  inset: 0;
+  z-index: 2;
   pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(245, 242, 233, 0.02) 0%, rgba(245, 242, 233, 0.03) 45%, rgba(245, 242, 233, 0.48) 100%),
+    radial-gradient(rgba(27, 31, 25, 0.2) 0.55px, transparent 0.7px);
+  background-size: 100% 100%, 8px 8px;
 }
 
-.orbit-one {
-  width: 560px;
-  height: 560px;
-  right: 5%;
-  top: 12%;
-  animation: spin 28s linear infinite;
+.login-visual-image {
+  position: absolute;
+  inset: -3%;
+  width: 106%;
+  height: 106%;
+  object-fit: cover;
+  object-position: 58% center;
+  animation: visual-drift 18s ease-in-out infinite alternate;
 }
 
-.orbit-two {
-  width: 300px;
-  height: 300px;
-  left: 13%;
-  bottom: 14%;
-  animation: spin 18s linear infinite reverse;
+.login-visual-image-organic {
+  z-index: 0;
+  transform: scale(1.035);
+  transform-origin: center;
+  animation: organic-breathe 18s ease-in-out infinite alternate;
 }
 
-.brand-panel,
-.login-card {
-  position: relative;
+.login-visual-image-mechanical {
   z-index: 1;
+  transform: scale(1.035);
+  opacity: 0.99;
+  filter: saturate(0.92) contrast(1.02);
+  mask-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent calc(var(--morph-position) - 32%),
+    rgba(0, 0, 0, 0.08) calc(var(--morph-position) - 22%),
+    rgba(0, 0, 0, 0.5) var(--morph-position),
+    rgba(0, 0, 0, 0.92) calc(var(--morph-position) + 22%),
+    #000 calc(var(--morph-position) + 32%),
+    #000 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent calc(var(--morph-position) - 32%),
+    rgba(0, 0, 0, 0.08) calc(var(--morph-position) - 22%),
+    rgba(0, 0, 0, 0.5) var(--morph-position),
+    rgba(0, 0, 0, 0.92) calc(var(--morph-position) + 22%),
+    #000 calc(var(--morph-position) + 32%),
+    #000 100%
+  );
+  transition: mask-image 60ms linear, -webkit-mask-image 60ms linear;
+  will-change: mask-image;
 }
 
-.brand-panel {
-  max-width: 560px;
+/* 光标驱动的材质变形（Canvas 就绪前用透镜层兜底） */
+.login-morph-canvas {
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 320ms ease;
 }
 
-.brand-kicker {
-  display: inline-flex;
-  margin-bottom: 18px;
-  padding: 6px 12px;
-  border: 1px solid rgba(0, 220, 197, 0.28);
-  border-radius: 999px;
-  color: #8ff8ee;
-  font-size: 12px;
-  font-weight: 800;
+.is-morph-ready .login-morph-canvas {
+  opacity: 1;
+}
+
+.is-morph-ready .login-morph-lens {
+  display: none;
+}
+
+.login-morph-lens {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  overflow: hidden;
+  opacity: var(--morph-active);
+  clip-path: polygon(0 64%, 23% 63%, 47% 56%, 100% 23%, 100% 62%, 72% 80%, 48% 92%, 31% 100%, 0 100%);
+  filter: saturate(1.12) contrast(1.04) drop-shadow(0 7px 12px rgba(42, 53, 27, 0.12));
+  mask-image: radial-gradient(
+    ellipse 16% 22% at var(--morph-x) var(--morph-y),
+    #000 0%,
+    rgba(0, 0, 0, 0.96) 34%,
+    rgba(0, 0, 0, 0.62) 57%,
+    rgba(0, 0, 0, 0.18) 76%,
+    transparent 100%
+  );
+  -webkit-mask-image: radial-gradient(
+    ellipse 16% 22% at var(--morph-x) var(--morph-y),
+    #000 0%,
+    rgba(0, 0, 0, 0.96) 34%,
+    rgba(0, 0, 0, 0.62) 57%,
+    rgba(0, 0, 0, 0.18) 76%,
+    transparent 100%
+  );
+  pointer-events: none;
+  transition: opacity 160ms ease;
+  will-change: opacity, mask-image;
+}
+
+.login-morph-lens::after {
+  content: '';
+  width: clamp(150px, 19vw, 280px);
+  aspect-ratio: 1.45;
+  position: absolute;
+  top: var(--morph-y);
+  left: var(--morph-x);
+  border: 1px solid rgba(219, 225, 198, 0.18);
+  border-radius: 50%;
+  box-shadow: inset 0 0 34px rgba(221, 230, 198, 0.09);
+  transform: translate(-50%, -50%) rotate(-8deg);
+}
+
+.login-morph-lens-image {
+  z-index: 0;
+  transform: scale(1.085);
+  transform-origin: var(--morph-x) var(--morph-y);
+  transition: transform 180ms ease-out;
+  will-change: transform;
+}
+
+.moss-burst {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  opacity: var(--morph-energy);
+  pointer-events: none;
+  transition: opacity 140ms ease;
+}
+
+.moss-burst::before,
+.moss-burst::after {
+  content: '';
+  position: absolute;
+  top: var(--morph-y);
+  left: var(--morph-x);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 9% 52%, rgba(72, 88, 39, 0.85) 0 2px, transparent 3px),
+    radial-gradient(circle at 22% 24%, rgba(93, 107, 53, 0.78) 0 1.5px, transparent 3px),
+    radial-gradient(circle at 36% 72%, rgba(58, 73, 32, 0.72) 0 2.5px, transparent 4px),
+    radial-gradient(circle at 58% 13%, rgba(108, 120, 64, 0.72) 0 2px, transparent 3.5px),
+    radial-gradient(circle at 71% 69%, rgba(62, 78, 35, 0.82) 0 1.5px, transparent 3px),
+    radial-gradient(circle at 88% 38%, rgba(85, 98, 48, 0.78) 0 2.5px, transparent 4px);
+  mix-blend-mode: multiply;
+  filter: blur(0.2px) drop-shadow(0 2px 3px rgba(42, 51, 24, 0.2));
+  transform: translate(-50%, -50%) rotate(-10deg);
+}
+
+.moss-burst::before {
+  width: clamp(170px, 24vw, 360px);
+  height: clamp(90px, 14vw, 210px);
+  animation: moss-scatter-primary 720ms ease-in-out infinite alternate;
+}
+
+.moss-burst::after {
+  width: clamp(120px, 17vw, 250px);
+  height: clamp(70px, 11vw, 160px);
+  opacity: 0.65;
+  animation: moss-scatter-secondary 940ms ease-in-out infinite alternate-reverse;
+}
+
+.morph-interaction-zone {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  clip-path: polygon(0 64%, 23% 63%, 47% 56%, 100% 23%, 100% 62%, 72% 80%, 48% 92%, 31% 100%, 0 100%);
+  cursor: ew-resize;
+}
+
+.morph-guide {
+  position: absolute;
+  right: 42px;
+  bottom: 42px;
+  z-index: 7;
+  width: min(320px, 32vw);
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  color: rgba(33, 38, 32, 0.7);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
   text-transform: uppercase;
-  background: rgba(0, 220, 197, 0.1);
 }
 
-.brand-panel h1 {
-  margin: 0;
-  max-width: 540px;
-  font-size: 42px;
-  line-height: 1.16;
-  letter-spacing: 0;
+.morph-guide i {
+  height: 1px;
+  position: relative;
+  display: block;
+  background: rgba(24, 27, 24, 0.24);
 }
 
-.brand-panel p {
-  margin: 18px 0 28px;
-  max-width: 520px;
-  color: rgba(226, 246, 255, 0.76);
-  font-size: 15px;
-  line-height: 1.8;
+.morph-guide b {
+  width: 8px;
+  height: 8px;
+  position: absolute;
+  top: 50%;
+  left: var(--morph-guide-position);
+  border: 1px solid rgba(24, 27, 24, 0.46);
+  border-radius: 50%;
+  background: #f4f2ea;
+  box-shadow: 0 0 0 4px rgba(244, 242, 234, 0.5);
+  transform: translate(-50%, -50%);
+  transition: left 80ms linear;
 }
 
-.signal-card {
-  width: min(430px, 100%);
-  padding: 18px;
-  border: 1px solid rgba(125, 211, 252, 0.2);
-  border-radius: 8px;
-  background: rgba(5, 17, 38, 0.58);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.24);
-  backdrop-filter: blur(16px);
+/* —— 品牌与文案层 —— */
+.brand-bar {
+  position: absolute;
+  top: 36px;
+  right: 38px;
+  left: 38px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #262b25;
+  font-size: 11px;
 }
 
-.signal-header {
+.brand-sign {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 16px;
-  font-size: 13px;
-  color: #dffcff;
+  font-family: var(--aiops-display);
+  font-style: italic;
+  font-weight: 600;
 }
 
-.pulse-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 999px;
-  background: #00dcc5;
-  box-shadow: 0 0 18px rgba(0, 220, 197, 0.92);
+.brand-star {
+  font-size: 16px;
 }
 
-.signal-lines {
+.brand-index {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.visual-copy {
+  position: absolute;
+  top: 50%;
+  left: clamp(42px, 6vw, 104px);
+  z-index: 6;
+  width: min(48vw, 690px);
+  transform: translateY(-58%);
+}
+
+.visual-kicker {
+  display: block;
+  margin-bottom: 20px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.visual-copy h1 {
+  margin: 0;
+  font-family: var(--aiops-display);
+  font-size: clamp(48px, 5.2vw, 82px);
+  font-weight: 400;
+  letter-spacing: -0.05em;
+  line-height: 1.06;
+}
+
+.visual-copy h1 em {
+  font-weight: 400;
+}
+
+.visual-copy p {
+  max-width: 480px;
+  margin: 26px 0 0;
+  color: #565c53;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.workflow-line {
+  position: absolute;
+  right: min(47vw, 600px);
+  bottom: 30px;
+  left: 42px;
+  z-index: 7;
   display: grid;
-  gap: 10px;
+  grid-template-columns: repeat(4, 1fr);
+  padding: 0 12px;
+  border: 1px solid rgba(24, 27, 24, 0.2);
+  border-radius: var(--radius-md);
+  background: rgba(249, 248, 242, 0.82);
+  box-shadow: 0 10px 30px rgba(28, 33, 26, 0.08);
+  backdrop-filter: blur(14px) saturate(0.9);
 }
 
-.signal-lines span {
-  height: 8px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, rgba(0, 220, 197, 0.75), rgba(22, 93, 255, 0.06));
+.workflow-line span {
+  padding: 12px 8px;
+  color: #41473f;
+  font-size: 11px;
 }
 
-.signal-lines span:nth-child(2) {
-  width: 72%;
+.workflow-line b {
+  margin-right: 6px;
+  color: #20251f;
+  font-family: var(--aiops-display);
+  font-style: italic;
 }
 
-.signal-lines span:nth-child(3) {
-  width: 84%;
+/* —— 认证面板（右上悬浮） —— */
+.login-access {
+  position: absolute;
+  top: 50%;
+  right: clamp(30px, 5vw, 78px);
+  z-index: 8;
+  width: min(430px, 36vw);
+  display: block;
+  padding: 28px 32px 24px;
+  border: 1px solid rgba(24, 27, 24, 0.28);
+  border-radius: var(--radius-lg);
+  background: rgba(248, 247, 241, 0.86);
+  box-shadow: 0 30px 70px rgba(30, 35, 28, 0.18);
+  backdrop-filter: blur(20px) saturate(0.9);
+  transform: translateY(-50%);
+  transition: background 220ms ease, box-shadow 220ms ease, transform 220ms ease;
 }
 
-.login-card {
-  width: 440px;
-  padding: 8px;
-  overflow: hidden;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(233, 246, 255, 0.88)),
-    radial-gradient(circle at 50% 0, rgba(0, 220, 197, 0.22), transparent 42%) !important;
-}
-
-.login-card::before {
+.login-access::before {
   content: '';
   position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(120deg, transparent 0%, rgba(255, 255, 255, 0.32) 36%, transparent 58%);
-  transform: translateX(-110%);
-  animation: card-shine 7s ease-in-out infinite;
+  top: 0;
+  right: 28px;
+  left: 28px;
+  height: 2px;
+  background: var(--aiops-accent);
+  transform: scaleX(0.22);
+  transform-origin: left;
+  transition: transform 260ms ease;
 }
 
-.sentinel-stage {
-  height: 118px;
+.is-username .login-access,
+.is-password .login-access {
+  background: rgba(255, 254, 249, 0.94);
+  box-shadow: 0 34px 80px rgba(30, 35, 28, 0.23);
+  transform: translateY(-50%) translateY(-3px);
+}
+
+.is-username .login-access::before,
+.is-password .login-access::before {
+  transform: scaleX(1);
+}
+
+.access-meta {
+  position: static;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 28px;
+  padding-right: 34px;
+  color: #747970;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.collapse-toggle {
+  display: flex;
+  align-items: center;
   justify-content: center;
-  gap: 14px;
-  margin-bottom: 8px;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #3a4237;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  transition: all 250ms ease;
 }
 
-.sentinel {
-  position: relative;
-  width: 74px;
-  height: 92px;
-  transform: translateY(0);
-  transition: transform 0.28s ease;
+.collapse-toggle:hover {
+  color: #171b17;
+  transform: scale(1.03);
 }
 
-.sentinel:nth-child(1),
-.sentinel:nth-child(3) {
-  transform: translateY(10px) scale(0.88);
-  opacity: 0.82;
+.access-state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
 }
 
-.sentinel-head {
+.access-state i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--aiops-accent);
+  box-shadow: 0 0 0 4px rgba(93, 118, 72, 0.1);
+}
+
+/* 折叠态：认证面板整体隐藏，视觉层出现展开卡片 */
+.login-access.is-collapsed {
+  display: none;
+}
+
+.collapsed-login-card {
   position: absolute;
-  top: 2px;
-  left: 50%;
-  width: 62px;
-  height: 58px;
-  border: 1px solid rgba(22, 93, 255, 0.2);
-  border-radius: 18px;
-  background: linear-gradient(180deg, #f8fdff, #c9f3ff);
-  box-shadow: inset 0 -8px 16px rgba(22, 93, 255, 0.12), 0 14px 28px rgba(22, 93, 255, 0.14);
-  transform: translateX(-50%);
-  transition: transform 0.28s ease;
+  top: 48%;
+  right: 5%;
+  transform: translateY(-50%);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 220px;
+  padding: 12px 18px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  border-radius: var(--radius-lg);
+  box-shadow:
+    0 4px 20px rgba(33, 38, 32, 0.06),
+    0 1px 4px rgba(33, 38, 32, 0.03);
+  cursor: pointer;
+  transition: all 300ms ease;
+  user-select: none;
 }
 
-.sentinel-ear {
-  position: absolute;
-  top: 26px;
-  width: 11px;
-  height: 20px;
-  border-radius: 8px;
-  background: #9feaff;
+.collapsed-login-card:hover {
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow:
+    0 12px 48px rgba(33, 38, 32, 0.12),
+    0 4px 12px rgba(33, 38, 32, 0.06);
+  transform: translateY(-3px);
 }
 
-.sentinel-ear.left {
-  left: 2px;
+.collapsed-login-header {
+  text-align: left;
+  color: #747970;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
-.sentinel-ear.right {
-  right: 2px;
+.collapsed-login-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
 }
 
-.sentinel-eye {
-  position: absolute;
-  top: 24px;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: #07223c;
-  box-shadow: 0 0 10px rgba(0, 220, 197, 0.85);
-  transition: transform 0.22s ease, opacity 0.18s ease;
+.collapsed-login-text {
+  text-align: left;
+  color: #171b17;
+  font-family: var(--aiops-display);
+  font-size: 18px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
 }
 
-.sentinel-eye.left {
-  left: 18px;
+.collapsed-login-arrow {
+  color: var(--aiops-accent);
+  flex-shrink: 0;
+  transition: transform 250ms ease;
 }
 
-.sentinel-eye.right {
-  right: 18px;
+.collapsed-login-card:hover .collapsed-login-arrow {
+  transform: translate(4px, -4px);
 }
 
-.sentinel-visor {
-  position: absolute;
-  left: 13px;
-  right: 13px;
-  bottom: 14px;
-  height: 4px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #165dff, #00dcc5);
-  opacity: 0.8;
+/* —— 登录卡片 —— */
+.login-card {
+  width: 100%;
+  max-width: none;
+  max-height: 600px;
+  margin: 0 auto;
+  border: 0 !important;
+  background: transparent !important;
+  backdrop-filter: none;
+  overflow: hidden;
 }
 
-.sentinel-body {
-  position: absolute;
-  left: 50%;
-  bottom: 0;
-  width: 46px;
-  height: 36px;
-  border-radius: 14px 14px 10px 10px;
-  background: linear-gradient(180deg, #3a7bff, #00c9b7);
-  transform: translateX(-50%);
-  box-shadow: 0 14px 28px rgba(0, 220, 197, 0.24);
+.login-card :deep(.arco-card-body) {
+  padding: 0;
 }
 
-.sentinel-hand {
-  position: absolute;
-  top: 53px;
-  width: 13px;
-  height: 32px;
-  border-radius: 999px;
-  background: #b9f2ff;
-  transform-origin: top center;
-  transition: transform 0.24s ease;
-}
-
-.sentinel-hand.left {
-  left: 8px;
-  transform: rotate(16deg);
-}
-
-.sentinel-hand.right {
-  right: 8px;
-  transform: rotate(-16deg);
-}
-
-.sentinel-watch .sentinel-head {
-  transform: translateX(-50%) rotate(4deg);
-}
-
-.sentinel-watch .sentinel-eye {
-  transform: translate(4px, 1px);
-}
-
-.sentinel-hide .sentinel-head {
-  transform: translateX(-50%) rotate(-14deg);
-}
-
-.sentinel-hide .sentinel-eye {
-  opacity: 0.25;
-  transform: translate(-7px, 0);
-}
-
-.sentinel-hide .sentinel-hand.left {
-  transform: translate(14px, -22px) rotate(76deg);
-}
-
-.sentinel-hide .sentinel-hand.right {
-  transform: translate(-14px, -22px) rotate(-76deg);
+.login-index {
+  margin-bottom: 18px;
+  color: #747970;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
 .login-title {
-  color: #111d33;
-  font-size: 22px;
-  font-weight: 800;
-  text-align: center;
+  color: #171b17;
+  font-family: var(--aiops-display);
+  font-size: clamp(34px, 3.2vw, 44px);
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: -0.04em;
 }
 
 .login-sub {
-  margin-top: 6px;
+  margin-top: 9px;
   color: var(--aiops-text-soft);
   font-size: 13px;
-  text-align: center;
 }
 
 .login-tabs {
-  margin: 22px 0 8px;
+  margin: 26px 0 4px;
 }
 
 .login-form {
-  margin-top: 20px;
+  margin-top: 24px;
+}
+
+.login-form :deep(.arco-form-item-label-col) {
+  padding-bottom: 7px;
+  color: #4e544c;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.login-form :deep(.arco-input-wrapper) {
+  height: 44px;
+  border-radius: 0;
+  border-width: 0 0 1px;
+  background: transparent;
+  box-shadow: none;
 }
 
 .login-submit {
-  height: 42px;
+  height: 46px;
+  margin-top: 8px;
+  border-radius: var(--radius-full);
+  border-color: var(--aiops-accent-strong) !important;
+  color: #f8fbf7 !important;
+  background: var(--aiops-accent-strong) !important;
   font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.login-submit:not(.arco-btn-disabled):hover {
+  border-color: var(--aiops-accent-hover) !important;
+  background: var(--aiops-accent-hover) !important;
 }
 
 .oauth-section {
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
 .login-tip {
-  margin-top: 16px;
-  border-radius: 8px;
+  margin-top: 18px;
+  border: 1px solid rgba(49, 90, 99, 0.14);
+  border-radius: var(--radius-md);
+  background: rgba(236, 241, 237, 0.72);
+  font-size: 11px;
+  line-height: 1.6;
 }
 
-.is-username .orbit-one {
-  border-color: rgba(0, 220, 197, 0.34);
+.access-footer {
+  position: static;
+  display: flex;
+  justify-content: space-between;
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(24, 27, 24, 0.1);
+  color: #8a8e86;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
-.is-password .login-card {
-  box-shadow: 0 24px 70px rgba(22, 93, 255, 0.28);
-}
-
-@keyframes grid-drift {
+/* —— 动画 —— */
+@keyframes visual-drift {
+  from {
+    transform: scale(1.025) translate3d(-0.8%, 0, 0);
+  }
   to {
-    background-position: 0 44px, 44px 0;
+    transform: scale(1.075) translate3d(1.2%, -0.8%, 0);
   }
 }
 
-@keyframes spin {
+@keyframes organic-breathe {
+  from {
+    transform: scale(1.035) translate3d(-0.35%, 0, 0);
+  }
   to {
-    transform: rotate(360deg);
+    transform: scale(1.055) translate3d(0.35%, -0.25%, 0);
   }
 }
 
-@keyframes card-shine {
-  0%,
-  48% {
-    transform: translateX(-110%);
+@keyframes moss-scatter-primary {
+  from {
+    opacity: 0.42;
+    transform: translate(-50%, -50%) rotate(-11deg) scale(0.92);
   }
-  64%,
-  100% {
-    transform: translateX(110%);
+  to {
+    opacity: 0.78;
+    transform: translate(-50%, -50%) rotate(-7deg) scale(1.06);
   }
 }
 
-@media (max-width: 980px) {
-  .login-page {
-    grid-template-columns: 1fr;
-    gap: 28px;
-    padding: 28px 18px;
+@keyframes moss-scatter-secondary {
+  from {
+    opacity: 0.24;
+    transform: translate(-50%, -50%) rotate(8deg) scale(0.9);
+  }
+  to {
+    opacity: 0.58;
+    transform: translate(-50%, -50%) rotate(13deg) scale(1.1);
+  }
+}
+
+/* —— 响应式 —— */
+@media (max-width: 1120px) {
+  .visual-copy {
+    left: 38px;
+    width: 45vw;
   }
 
-  .brand-panel {
-    max-width: 680px;
-    text-align: center;
+  .visual-copy h1 {
+    font-size: clamp(46px, 5.7vw, 64px);
   }
 
-  .brand-panel h1 {
-    max-width: none;
-    font-size: 30px;
-  }
-
-  .brand-panel p {
-    margin-left: auto;
-    margin-right: auto;
-  }
-
-  .signal-card {
+  .workflow-line {
     display: none;
   }
 
-  .login-card {
-    width: min(440px, 100%);
-    margin: 0 auto;
+  .login-access {
+    right: 28px;
+    width: min(400px, 43vw);
+  }
+
+  .morph-guide {
+    width: 250px;
+  }
+}
+
+@media (max-width: 820px) {
+  .login-page {
+    padding: 0;
+  }
+
+  .login-frame {
+    min-height: 820px;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .visual-copy,
+  .workflow-line {
+    display: none;
+  }
+
+  .login-visual-image {
+    object-position: 64% center;
+  }
+
+  .login-access {
+    top: 50%;
+    right: auto;
+    left: 50%;
+    width: min(470px, calc(100% - 40px));
+    transform: translate(-50%, -47%);
+  }
+
+  .is-username .login-access,
+  .is-password .login-access {
+    transform: translate(-50%, -47%) translateY(-3px);
+  }
+
+  .morph-guide {
+    right: 24px;
+    bottom: 28px;
+    left: 24px;
+    width: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .brand-bar {
+    top: 24px;
+    right: 24px;
+    left: 24px;
+  }
+
+  .brand-index {
+    display: none;
+  }
+
+  .visual-kicker {
+    margin-bottom: 12px;
+    font-size: 8px;
+  }
+
+  .login-access {
+    width: calc(100% - 30px);
+    padding: 26px 22px 22px;
+  }
+
+  .login-title {
+    font-size: 35px;
+  }
+
+  .access-footer {
+    gap: 12px;
+  }
+}
+
+@media (hover: none), (pointer: coarse), (prefers-reduced-motion: reduce) {
+  .login-visual-image-organic {
+    animation: none;
+  }
+
+  .login-visual-image-mechanical {
+    transition: none;
+  }
+
+  .login-morph-lens,
+  .moss-burst {
+    display: none;
+  }
+
+  .morph-interaction-zone {
+    pointer-events: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-visual-image {
+    animation: none;
   }
 }
 </style>

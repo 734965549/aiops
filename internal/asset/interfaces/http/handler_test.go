@@ -50,6 +50,23 @@ func (r *assetHTTPTestAppRepo) List(_ context.Context) ([]assetdomain.Applicatio
 	return out, nil
 }
 
+func (r *assetHTTPTestAppRepo) ListPaged(_ context.Context, filter assetdomain.ApplicationFilter) ([]assetdomain.Application, int64, error) {
+	total := int64(len(r.apps))
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]assetdomain.Application, 0)
+	for i := offset; i < len(r.apps) && len(out) < limit; i++ {
+		out = append(out, r.apps[i])
+	}
+	return out, total, nil
+}
+
 func (r *assetHTTPTestAppRepo) Count(_ context.Context) (int64, error) {
 	return int64(len(r.apps)), nil
 }
@@ -139,6 +156,39 @@ func (r *assetHTTPTestResRepo) ListByApplicationID(_ context.Context, applicatio
 	return out, nil
 }
 
+func (r *assetHTTPTestResRepo) ListByApplicationIDPaged(_ context.Context, applicationID string, filter assetdomain.ResourceFilter) ([]assetdomain.Resource, int64, error) {
+	matched := make([]assetdomain.Resource, 0)
+	for _, row := range r.rows {
+		if row.ApplicationID != applicationID {
+			continue
+		}
+		if filter.CloudResourceType != "" && row.CloudResourceType != filter.CloudResourceType {
+			continue
+		}
+		if filter.Region != "" && row.Region != filter.Region {
+			continue
+		}
+		if filter.SyncStatus != "" && row.SyncStatus != filter.SyncStatus {
+			continue
+		}
+		matched = append(matched, row)
+	}
+	total := int64(len(matched))
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]assetdomain.Resource, 0)
+	for i := offset; i < len(matched) && len(out) < limit; i++ {
+		out = append(out, matched[i])
+	}
+	return out, total, nil
+}
+
 func (r *assetHTTPTestResRepo) FindBestMatch(_ context.Context, q assetdomain.ResourceMatchQuery) (*assetdomain.Resource, error) {
 	for i := range r.rows {
 		row := r.rows[i]
@@ -196,6 +246,116 @@ func (r *assetHTTPTestResRepo) CountByApplicationID(_ context.Context, applicati
 	return n, nil
 }
 
+func (r *assetHTTPTestResRepo) FindByCloudKey(_ context.Context, key assetdomain.CloudResourceKey) (*assetdomain.Resource, error) {
+	for i := range r.rows {
+		row := r.rows[i]
+		if row.IntegrationAccountID == key.IntegrationAccountID &&
+			row.CloudResourceType == key.CloudResourceType &&
+			row.CloudResourceID == key.CloudResourceID &&
+			row.Region == key.Region {
+			cp := row
+			return &cp, nil
+		}
+	}
+	return nil, assetdomain.ErrNotFound
+}
+
+func (r *assetHTTPTestResRepo) UpsertCloudSyncWithLease(_ context.Context, res *assetdomain.Resource, _, _ string) (bool, error) {
+	key := assetdomain.CloudResourceKey{
+		IntegrationAccountID: res.IntegrationAccountID,
+		CloudResourceType:    res.CloudResourceType,
+		CloudResourceID:      res.CloudResourceID,
+		Region:               res.Region,
+	}
+	if existing, err := r.FindByCloudKey(context.Background(), key); err == nil && existing != nil {
+		res.ID = existing.ID
+		res.SyncBatchID = existing.SyncBatchID
+		return false, r.Update(context.Background(), res)
+	}
+	return true, r.Create(context.Background(), res)
+}
+
+// UpsertCloudSyncBatchWithLease mock 批量 upsert：逐条复用 UpsertCloudSyncWithLease，
+// 精确返回 created/updated 计数，供 HTTP 层测试覆盖批量路径。
+func (r *assetHTTPTestResRepo) UpsertCloudSyncBatchWithLease(ctx context.Context, resources []*assetdomain.Resource, batchID, fencingToken string) (int, int, error) {
+	var created, updated int
+	for _, res := range resources {
+		if res == nil {
+			continue
+		}
+		c, err := r.UpsertCloudSyncWithLease(ctx, res, batchID, fencingToken)
+		if err != nil {
+			return created, updated, err
+		}
+		if c {
+			created++
+		} else {
+			updated++
+		}
+	}
+	return created, updated, nil
+}
+
+func (r *assetHTTPTestResRepo) MarkStaleByAccountScopeExceptBatchWithLease(_ context.Context, accountID, region, cloudResourceType, batchID, _ string) (int64, error) {
+	var n int64
+	for i := range r.rows {
+		row := &r.rows[i]
+		if row.Source == assetdomain.ResourceSourceCloudSync &&
+			row.IntegrationAccountID == accountID &&
+			row.Region == region &&
+			row.CloudResourceType == cloudResourceType &&
+			row.SyncBatchID != batchID &&
+			row.SyncStatus == assetdomain.SyncStatusActive {
+			row.SyncStatus = assetdomain.SyncStatusStale
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (r *assetHTTPTestResRepo) MarkStaleByAccountRegionExceptTypesWithLease(_ context.Context, accountID, region string, exceptTypes []string, batchID, _ string) (int64, error) {
+	except := make(map[string]struct{}, len(exceptTypes))
+	for _, t := range exceptTypes {
+		except[strings.ToLower(strings.TrimSpace(t))] = struct{}{}
+	}
+	var n int64
+	for i := range r.rows {
+		row := &r.rows[i]
+		if row.Source == assetdomain.ResourceSourceCloudSync &&
+			row.IntegrationAccountID == accountID &&
+			row.Region == region &&
+			row.SyncBatchID != batchID &&
+			row.SyncStatus == assetdomain.SyncStatusActive {
+			if _, skip := except[strings.ToLower(strings.TrimSpace(row.CloudResourceType))]; skip {
+				continue
+			}
+			row.SyncStatus = assetdomain.SyncStatusStale
+			n++
+		}
+	}
+	return n, nil
+}
+
+// PatchCloudSyncLabelsBatchWithLease mock 带 lease 校验的批量 label 回写：按 cloud key 命中 active 资源后整体替换 labels。
+func (r *assetHTTPTestResRepo) PatchCloudSyncLabelsBatchWithLease(_ context.Context, patches []assetdomain.CloudSyncLabelPatch, _, _ string) (int, error) {
+	updated := 0
+	for _, p := range patches {
+		for i := range r.rows {
+			row := &r.rows[i]
+			if row.Source == assetdomain.ResourceSourceCloudSync &&
+				row.IntegrationAccountID == p.IntegrationAccountID &&
+				row.CloudResourceType == p.CloudResourceType &&
+				row.CloudResourceID == p.CloudResourceID &&
+				row.Region == p.Region &&
+				row.SyncStatus == assetdomain.SyncStatusActive {
+				row.Labels = p.Labels
+				updated++
+			}
+		}
+	}
+	return updated, nil
+}
+
 type assetHTTPTestRuleRepo struct {
 	rows []assetdomain.MatchRule
 }
@@ -209,6 +369,23 @@ func (r *assetHTTPTestRuleRepo) List(_ context.Context) ([]assetdomain.MatchRule
 	out := make([]assetdomain.MatchRule, len(r.rows))
 	copy(out, r.rows)
 	return out, nil
+}
+
+func (r *assetHTTPTestRuleRepo) ListPaged(_ context.Context, filter assetdomain.MatchRuleFilter) ([]assetdomain.MatchRule, int64, error) {
+	total := int64(len(r.rows))
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]assetdomain.MatchRule, 0)
+	for i := offset; i < len(r.rows) && len(out) < limit; i++ {
+		out = append(out, r.rows[i])
+	}
+	return out, total, nil
 }
 
 func (r *assetHTTPTestRuleRepo) ListEnabledByPriority(_ context.Context) ([]assetdomain.MatchRule, error) {
@@ -290,9 +467,9 @@ func newAssetHTTPEngine(t *testing.T, authz *fakeAssetHTTPAuthorizer) (*gin.Engi
 	appRepo := &assetHTTPTestAppRepo{}
 	resRepo := &assetHTTPTestResRepo{}
 	ruleRepo := &assetHTTPTestRuleRepo{}
-	svc := assetapp.NewAssetService(appRepo, resRepo, ruleRepo, assetapp.NoopAuditRecorder{})
+	svc := assetapp.NewAssetService(appRepo, resRepo, ruleRepo, nil, nil, assetapp.NoopAuditRecorder{})
 	matchRules := assetapp.NewMatchRuleService(ruleRepo, appRepo, resRepo, assetapp.NoopAuditRecorder{})
-	handler := NewHandler(svc, matchRules)
+	handler := NewHandler(svc, matchRules, nil)
 	registrar := NewRegistrar(handler, authz)
 
 	engine := server.NewEngine(server.Options{
@@ -358,6 +535,43 @@ func TestListApplications_PermissionDenied(t *testing.T) {
 	}
 	if authz.last.Resource != "assets" || authz.last.Action != "read" {
 		t.Fatalf("unexpected authz: %+v", authz.last)
+	}
+}
+
+func TestListApplications_Success(t *testing.T) {
+	authz := &fakeAssetHTTPAuthorizer{allowed: true}
+	engine, token, appRepo, _ := newAssetHTTPEngine(t, authz)
+	_ = appRepo.Create(context.Background(), &assetdomain.Application{ID: "app-1", Name: "payment-service", Environment: "prod"})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/assets/applications?page=1&page_size=10", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := decodeAssetEnvelope(t, w.Body.Bytes())
+	if resp.Code != "OK" {
+		t.Fatalf("unexpected envelope: %+v", resp)
+	}
+	var data struct {
+		Items []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"items"`
+		Total    int64 `json:"total"`
+		Page     int   `json:"page"`
+		PageSize int   `json:"page_size"`
+	}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Items) != 1 || data.Items[0].ID != "app-1" {
+		t.Fatalf("unexpected items: %+v", data.Items)
+	}
+	if data.Total != 1 || data.Page != 1 || data.PageSize != 10 {
+		t.Fatalf("unexpected pagination: total=%d page=%d page_size=%d", data.Total, data.Page, data.PageSize)
 	}
 }
 
@@ -469,7 +683,7 @@ func TestListResources_Success(t *testing.T) {
 	_ = appRepo.Create(context.Background(), &assetdomain.Application{ID: "app-1", Name: "svc", Environment: "prod"})
 	_ = resRepo.Create(context.Background(), &assetdomain.Resource{ID: "res-1", ApplicationID: "app-1", Pod: "p1"})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/assets/applications/app-1/resources", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/assets/applications/app-1/resources?page=1&page_size=10", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	engine.ServeHTTP(w, req)
@@ -483,12 +697,127 @@ func TestListResources_Success(t *testing.T) {
 			ID  string `json:"id"`
 			Pod string `json:"pod"`
 		} `json:"items"`
+		Total    int64 `json:"total"`
+		Page     int   `json:"page"`
+		PageSize int   `json:"page_size"`
 	}
 	if err := json.Unmarshal(resp.Data, &data); err != nil {
 		t.Fatal(err)
 	}
 	if len(data.Items) != 1 || data.Items[0].Pod != "p1" {
 		t.Fatalf("unexpected items: %+v", data.Items)
+	}
+	if data.Total != 1 || data.Page != 1 || data.PageSize != 10 {
+		t.Fatalf("unexpected pagination: total=%d page=%d page_size=%d", data.Total, data.Page, data.PageSize)
+	}
+}
+
+func TestListResources_FiltersCloudSyncFields(t *testing.T) {
+	authz := &fakeAssetHTTPAuthorizer{allowed: true}
+	engine, token, appRepo, resRepo := newAssetHTTPEngine(t, authz)
+	_ = appRepo.Create(context.Background(), &assetdomain.Application{ID: "app-1", Name: "svc", Environment: "prod"})
+	_ = resRepo.Create(context.Background(), &assetdomain.Resource{
+		ID: "res-ecs-active", ApplicationID: "app-1", Name: "ecs-active",
+		Source: assetdomain.ResourceSourceCloudSync, CloudResourceType: "ecs", Region: "cn-north-4", SyncStatus: assetdomain.SyncStatusActive,
+	})
+	_ = resRepo.Create(context.Background(), &assetdomain.Resource{
+		ID: "res-ecs-stale", ApplicationID: "app-1", Name: "ecs-stale",
+		Source: assetdomain.ResourceSourceCloudSync, CloudResourceType: "ecs", Region: "cn-north-4", SyncStatus: assetdomain.SyncStatusStale,
+	})
+	_ = resRepo.Create(context.Background(), &assetdomain.Resource{
+		ID: "res-rds-active", ApplicationID: "app-1", Name: "rds-active",
+		Source: assetdomain.ResourceSourceCloudSync, CloudResourceType: "rds", Region: "cn-south-1", SyncStatus: assetdomain.SyncStatusActive,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/assets/applications/app-1/resources?page=1&page_size=10&cloud_resource_type=ecs&region=cn-north-4&sync_status=active", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := decodeAssetEnvelope(t, w.Body.Bytes())
+	var data struct {
+		Items []struct {
+			ID                string `json:"id"`
+			CloudResourceType string `json:"cloud_resource_type"`
+			Region            string `json:"region"`
+			SyncStatus        string `json:"sync_status"`
+		} `json:"items"`
+		Total int64 `json:"total"`
+	}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Total != 1 || len(data.Items) != 1 {
+		t.Fatalf("unexpected filtered result: total=%d items=%+v", data.Total, data.Items)
+	}
+	item := data.Items[0]
+	if item.ID != "res-ecs-active" || item.CloudResourceType != "ecs" || item.Region != "cn-north-4" || item.SyncStatus != "active" {
+		t.Fatalf("unexpected item: %+v", item)
+	}
+}
+
+func TestListResources_LabelsPassthrough(t *testing.T) {
+	authz := &fakeAssetHTTPAuthorizer{allowed: true}
+	engine, token, appRepo, resRepo := newAssetHTTPEngine(t, authz)
+	_ = appRepo.Create(context.Background(), &assetdomain.Application{ID: "app-1", Name: "svc", Environment: "prod"})
+	_ = resRepo.Create(context.Background(), &assetdomain.Resource{
+		ID:            "res-1",
+		ApplicationID: "app-1",
+		Pod:           "p1",
+		Source:        assetdomain.ResourceSourceCloudSync,
+		Labels: map[string]string{
+			"namespace":  "SYS.ECS",
+			"dim_name":   "instance_id",
+			"private_ip": "10.0.0.1",
+			"flavor":     "s6.large.2",
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/assets/applications/app-1/resources?page=1&page_size=10", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := decodeAssetEnvelope(t, w.Body.Bytes())
+	var data struct {
+		Items []struct {
+			ID     string            `json:"id"`
+			Pod    string            `json:"pod"`
+			Labels map[string]string `json:"labels"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(data.Items))
+	}
+	item := data.Items[0]
+	if item.Pod != "p1" {
+		t.Fatalf("unexpected pod: %s", item.Pod)
+	}
+	if item.Labels == nil {
+		t.Fatal("expected labels to be present, got nil")
+	}
+	expected := map[string]string{
+		"namespace":  "SYS.ECS",
+		"dim_name":   "instance_id",
+		"private_ip": "10.0.0.1",
+		"flavor":     "s6.large.2",
+	}
+	if len(item.Labels) != len(expected) {
+		t.Fatalf("expected %d labels, got %d: %+v", len(expected), len(item.Labels), item.Labels)
+	}
+	for k, v := range expected {
+		if got, ok := item.Labels[k]; !ok || got != v {
+			t.Errorf("label %q: expected %q, got %q (present=%v)", k, v, got, ok)
+		}
 	}
 }
 

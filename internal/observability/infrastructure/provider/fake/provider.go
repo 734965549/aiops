@@ -162,7 +162,7 @@ func (p *Provider) QueryTopology(_ context.Context, _ domain.ProviderContext, q 
 	}, nil
 }
 
-func (p *Provider) ListResources(_ context.Context, pctx domain.ProviderContext, q domain.AssetDiscoveryQuery) ([]domain.CloudResource, error) {
+func (p *Provider) ListResources(_ context.Context, pctx domain.ProviderContext, q domain.AssetDiscoveryQuery) ([]domain.CloudResource, bool, error) {
 	limit := q.Limit
 	if limit <= 0 {
 		limit = 100
@@ -200,7 +200,7 @@ func (p *Provider) ListResources(_ context.Context, pctx domain.ProviderContext,
 			Labels:      map[string]string{"provider": p.providerType, "fake": "true"},
 		})
 	}
-	return resources[:min(len(resources), limit)], nil
+	return resources[:min(len(resources), limit)], false, nil
 }
 
 func (p *Provider) ListAlertRules(_ context.Context, pctx domain.ProviderContext, q domain.AlertRuleQuery) ([]domain.AlertRule, error) {

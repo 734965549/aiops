@@ -97,7 +97,7 @@ func (s *MediumService) Create(ctx context.Context, actor Actor, in CreateMedium
 	m := &domain.ExecutionMedium{
 		MediumID: mediumID, Name: name, MediumType: mediumType,
 		Environment: strings.TrimSpace(in.Environment), Region: strings.TrimSpace(in.Region),
-		NetworkZone: strings.TrimSpace(in.NetworkZone),
+		NetworkZone:  strings.TrimSpace(in.NetworkZone),
 		Capabilities: cloneStringSlice(in.Capabilities), AllowedCommandIDs: cloneStringSlice(in.AllowedCommandIDs),
 		MaxRiskLevel: maxRisk, Enabled: enabled, HealthStatus: domain.MediumHealthUnknown,
 		Description: strings.TrimSpace(in.Description), CreatedAt: now, UpdatedAt: now,

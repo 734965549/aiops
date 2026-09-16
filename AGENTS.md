@@ -46,7 +46,7 @@ AI/Agent 在本仓库协作时，优先维护这个闭环的稳定性。任何�
 
 ## 当前技术栈
 
-- 后端：Go 1.22、Gin、GORM、PostgreSQL、Redis、Viper、zap、JWT。
+- 后端：Go 1.26、Gin、GORM、PostgreSQL、Redis、Viper、zap、JWT。
 - 前端：Vue 3、TypeScript、Vite、Pinia、Vue Router、Arco Design、Axios。
 - 部署：Docker Compose；本地 dev 默认 API `8080`，前端 `5173`。
 

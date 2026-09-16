@@ -57,14 +57,11 @@ type providerRequest struct {
 	Description string            `json:"description"`
 }
 
-const maskedAPIKey = "****"
-
 type providerListItem struct {
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
 	Type        string            `json:"type"`
 	BaseURL     string            `json:"base_url"`
-	APIKey      string            `json:"api_key"`
 	HasAPIKey   bool              `json:"has_api_key"`
 	TimeoutMS   int64             `json:"timeout_ms"`
 	Headers     map[string]string `json:"headers"`
@@ -73,7 +70,7 @@ type providerListItem struct {
 }
 
 func maskProviderForList(p toolgateway.ProviderPublic) providerListItem {
-	item := providerListItem{
+	return providerListItem{
 		ID:          p.ID,
 		Name:        p.Name,
 		Type:        string(p.Type),
@@ -84,10 +81,6 @@ func maskProviderForList(p toolgateway.ProviderPublic) providerListItem {
 		Enabled:     p.Enabled,
 		Description: p.Description,
 	}
-	if item.HasAPIKey {
-		item.APIKey = maskedAPIKey
-	}
-	return item
 }
 
 func (h *Handler) ListProviders(c *gin.Context) {

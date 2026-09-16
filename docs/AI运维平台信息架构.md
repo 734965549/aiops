@@ -789,7 +789,7 @@ AI 不应只存在于独立助手页面中，而应嵌入多个业务页面。
 - 执行确认页增加执行介体、Command Spec、参数、风险、代理健康状态和日志脱敏说明。
 - 执行任务详情页增加代理领取记录、租约、stdout/stderr 日志流、exit_code 和证据引用。
 
-页面同后端上下文点样串联，详见 `docs/AI运维平台整体流程与调用关系.md`。该粤语版总览图会同时标出前端页面、HTTP API、application Port、Provider Adapter、审计同 Execution Agent 之间嘅调用关系。
+页面与后端上下文如何串联，详见 `docs/AI运维平台整体流程与调用关系.md`。该总览图同时标出前端页面、HTTP API、application Port、Provider Adapter、审计与 Execution Agent 之间的调用关系。
 
 ## 13. 信息架构总结
 

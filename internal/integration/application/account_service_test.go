@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/734965549/aiops/internal/integration/domain"
@@ -56,7 +58,15 @@ func (r *memAccountRepo) Count(context.Context, domain.AccountFilter) (int64, er
 	return 0, nil
 }
 
-func (r *memAccountRepo) SoftDelete(context.Context, string) error { return nil }
+func (r *memAccountRepo) SoftDelete(_ context.Context, accountID string) error {
+	acc, ok := r.byID[accountID]
+	if !ok {
+		return domain.ErrNotFound
+	}
+	acc.Deleted = true
+	acc.Enabled = false
+	return nil
+}
 
 type memCredentialRepo struct {
 	byAccount map[string]*domain.CredentialRef
@@ -90,7 +100,10 @@ func (r *memCredentialRepo) GetByAccountID(_ context.Context, accountID string) 
 	return &cp, nil
 }
 
-func (r *memCredentialRepo) DeleteByAccountID(context.Context, string) error { return nil }
+func (r *memCredentialRepo) DeleteByAccountID(_ context.Context, accountID string) error {
+	delete(r.byAccount, accountID)
+	return nil
+}
 
 type memCapabilityRepo struct {
 	byAccount map[string][]domain.Capability
@@ -150,6 +163,33 @@ func newTestAccountService(t *testing.T) (*AccountService, *memAccountRepo, *mem
 	return svc, accounts, creds
 }
 
+func TestDeletePurgesCredentials(t *testing.T) {
+	svc, _, creds := newTestAccountService(t)
+	dto, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
+		Name:       "hw-aksk",
+		Provider:   string(domain.ProviderHuaweiCloud),
+		AuthType:   string(domain.AuthAKSK),
+		Regions:    []string{"cn-south-1"},
+		ProjectID:  "proj-1",
+		Credential: map[string]string{"access_key": "AK", "secret_key": "SK"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := creds.GetByAccountID(context.Background(), dto.AccountID); err != nil {
+		t.Fatalf("credential should exist before delete: %v", err)
+	}
+	if err := svc.Delete(context.Background(), dto.AccountID, Actor{UserID: "u1"}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := creds.GetByAccountID(context.Background(), dto.AccountID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("credential should be purged after delete, got err=%v", err)
+	}
+	if _, err := svc.Get(context.Background(), dto.AccountID); err == nil {
+		t.Fatal("account should be soft-deleted and no longer active")
+	}
+}
+
 func TestCreateAuthNoneSkipsCredentialVault(t *testing.T) {
 	svc, accounts, creds := newTestAccountService(t)
 	dto, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
@@ -187,6 +227,108 @@ func TestCreateAuthNoneStoresOptionalConfig(t *testing.T) {
 	}
 	if len(creds.byAccount) != 1 {
 		t.Fatalf("expected one credential ref, got %d", len(creds.byAccount))
+	}
+}
+
+func TestCreateStoresExtraConfig(t *testing.T) {
+	svc, accounts, _ := newTestAccountService(t)
+	dto, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
+		Name: "hw-ces", Provider: string(domain.ProviderHuaweiCloud), AuthType: string(domain.AuthNone),
+		ExtraConfig: map[string]any{"sync_mode": "ces", "max_resources": float64(5000)},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	acc := accounts.byID[dto.AccountID]
+	if string(acc.ExtraConfig) != `{"max_resources":5000,"sync_mode":"ces"}` {
+		t.Fatalf("extra_config = %s", string(acc.ExtraConfig))
+	}
+	if dto.ExtraConfig["sync_mode"] != "ces" {
+		t.Fatalf("dto extra_config = %+v", dto.ExtraConfig)
+	}
+}
+
+// TestCreateHuaweiEmptyExtraConfigDefaultsToCES 验证华为账号未传 extra_config 时显式落库 ces，
+// 而不是 {}（后者会被解析器解释为 ces，但显式写入避免依赖默认值，符合 docs/huawei-ces-sync-runbook.md §2 灰度策略：新账号默认 ces）。
+func TestCreateHuaweiEmptyExtraConfigDefaultsToCES(t *testing.T) {
+	svc, accounts, _ := newTestAccountService(t)
+	dto, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
+		Name: "hw-default-ces", Provider: string(domain.ProviderHuaweiCloud), AuthType: string(domain.AuthNone),
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	acc := accounts.byID[dto.AccountID]
+	if string(acc.ExtraConfig) != `{"sync_mode":"ces"}` {
+		t.Fatalf("extra_config = %s, want {\"sync_mode\":\"ces\"}", string(acc.ExtraConfig))
+	}
+	if dto.ExtraConfig["sync_mode"] != "ces" {
+		t.Fatalf("dto extra_config = %+v, want sync_mode=ces", dto.ExtraConfig)
+	}
+}
+
+// TestCreateNonHuaweiEmptyExtraConfigStaysEmpty 验证非华为账号未传 extra_config 时仍写 {}，
+// 不受华为默认 ces 逻辑影响。
+func TestCreateNonHuaweiEmptyExtraConfigStaysEmpty(t *testing.T) {
+	svc, accounts, _ := newTestAccountService(t)
+	dto, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
+		Name: "prom-empty", Provider: string(domain.ProviderPrometheus), AuthType: string(domain.AuthNone),
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	acc := accounts.byID[dto.AccountID]
+	if string(acc.ExtraConfig) != `{}` {
+		t.Fatalf("extra_config = %s, want {}", string(acc.ExtraConfig))
+	}
+}
+
+func TestCreateRejectsSecretInExtraConfig(t *testing.T) {
+	cases := []struct {
+		name  string
+		extra map[string]any
+	}{
+		{"secret key", map[string]any{"secret_key": "do-not-store"}},
+		{"private key", map[string]any{"private_key": "do-not-store"}},
+		{"encryption key", map[string]any{"encryption_key": "do-not-store"}},
+		{"client key nested", map[string]any{"nested": map[string]any{"client_key": "do-not-store"}}},
+		{"private key in array", map[string]any{"items": []any{map[string]any{"private_key": "do-not-store"}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _ := newTestAccountService(t)
+			_, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
+				Name: "hw-bad", Provider: string(domain.ProviderHuaweiCloud), AuthType: string(domain.AuthNone),
+				ExtraConfig: tc.extra,
+			})
+			if err == nil {
+				t.Fatal("expected extra_config secret rejection")
+			}
+		})
+	}
+}
+
+func TestCreateRejectsInvalidHuaweiExtraConfig(t *testing.T) {
+	cases := []struct {
+		name  string
+		extra map[string]any
+	}{
+		{"invalid sync mode", map[string]any{"sync_mode": "bad"}},
+		{"max too large", map[string]any{"max_resources": float64(20001)}},
+		{"max wrong type", map[string]any{"max_resources": "20000"}},
+		{"region projects wrong type", map[string]any{"region_projects": "cn-south-1=pid"}},
+		{"region project missing project", map[string]any{"region_projects": []any{map[string]any{"region": "cn-south-1"}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _ := newTestAccountService(t)
+			_, err := svc.Create(context.Background(), Actor{UserID: "u1"}, CreateAccountInput{
+				Name: "hw-bad", Provider: string(domain.ProviderHuaweiCloud), AuthType: string(domain.AuthNone), ExtraConfig: tc.extra,
+			})
+			if err == nil {
+				t.Fatal("expected invalid extra_config rejection")
+			}
+		})
 	}
 }
 
@@ -376,5 +518,74 @@ func TestSanitizeConnectivityMessageRedactsCredentialValues(t *testing.T) {
 	got = sanitizeConnectivityMessage("provider timeout")
 	if got != "provider timeout" {
 		t.Fatalf("expected benign message preserved, got %q", got)
+	}
+}
+
+func TestNormalizeRegionsDropsDangerousCharacters(t *testing.T) {
+	in := []string{"cn-north-4", "evil.com/", "cn south", "cn@north", "cn?north", "ap-southeast-1", "  ", "cn-north-4"}
+	got := normalizeRegions(in)
+	// 危险字符被丢弃，合法 region 去重后保留并排序
+	if len(got) != 2 {
+		t.Fatalf("expected 2 safe regions, got %v", got)
+	}
+	if got[0] != "ap-southeast-1" || got[1] != "cn-north-4" {
+		t.Fatalf("unexpected regions: %v", got)
+	}
+}
+
+func TestNormalizeRegionsAllDangerousYieldsEmpty(t *testing.T) {
+	got := normalizeRegions([]string{"evil.com/", "cn?north", "a#b", "x@y"})
+	if len(got) != 0 {
+		t.Fatalf("expected empty slice for all-dangerous input, got %v", got)
+	}
+}
+
+func TestValidateRegionsAcceptsValidInput(t *testing.T) {
+	cases := []struct {
+		provider domain.ProviderType
+		regions  []string
+	}{
+		{domain.ProviderHuaweiCloud, []string{"cn-north-4", "ap-southeast-1"}},
+		{domain.ProviderHuaweiCloud, []string{"  cn-north-4  ", ""}},
+		{domain.ProviderPrometheus, []string{"CN-North-4"}},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			if err := validateRegions(tc.provider, tc.regions); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRegionsRejectsHuaweiInvalidRegions(t *testing.T) {
+	cases := []struct {
+		name   string
+		region string
+	}{
+		{"uppercase", "CN-North-4"},
+		{"leading hyphen", "-cn-north-4"},
+		{"trailing hyphen", "cn-north-4-"},
+		{"double hyphen", "cn--north"},
+		{"underscore", "cn_north"},
+		{"slash payload", "evil.com/"},
+		{"too long", strings.Repeat("a", huaweiRegionMaxLen+1)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateRegions(domain.ProviderHuaweiCloud, []string{tc.region}); err == nil {
+				t.Fatalf("expected error for region %q, got nil", tc.region)
+			}
+		})
+	}
+}
+
+func TestValidateRegionsRejectsDangerousCharactersForOtherProviders(t *testing.T) {
+	for _, p := range []domain.ProviderType{domain.ProviderPrometheus, domain.ProviderSigNoz} {
+		t.Run(string(p), func(t *testing.T) {
+			if err := validateRegions(p, []string{"evil.com/"}); err == nil {
+				t.Fatalf("expected error for dangerous region on %s", p)
+			}
+		})
 	}
 }

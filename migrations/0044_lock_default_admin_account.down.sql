@@ -1,0 +1,3 @@
+-- 0044 rollback reference (not auto-executed by the runner).
+-- Intentional no-op: do not restore default admin/admin123 credentials.
+-- Re-exposing known credentials would overwrite DBA-managed passwords.

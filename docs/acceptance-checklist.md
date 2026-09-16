@@ -2,7 +2,7 @@
 
 **范围**：告警接入 → 资产匹配 → Runbook 推荐 → 执行记录 → Dashboard 摘要 → 权限校验
 **环境**：PostgreSQL + API（8080）+ 前端（UI 验收时）
-**默认账号**：`admin` / `admin123`（admin 角色已绑定全部种子权限）
+**默认账号**（仅限 dev/演示）：`admin` / `admin123`（须叠加 `docker-compose.dev.yml` 或 bootstrap 启用）。迁移 `0044` 后生产默认锁定该账号，须 `scripts/provision-prod-admin.ps1` 创建安全管理员后再验收。
 
 ---
 
@@ -11,7 +11,7 @@
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
 | 0.1 | 依赖启动 | `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d` | Postgres 健康 |
-| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0007–0017，无报错 |
+| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0001–0042，无报错；当前仓库未包含 `0021` Notification 迁移 |
 | 0.3 | API 启动 | `go run ./cmd/api` 或 compose 内 api 服务 | 登录接口可用 |
 | 0.4 | 前端（UI 验收） | `cd web && npm run dev` | 可登录并访问各页面 |
 | 0.5 | 自动化冒烟 | 见 [§7 推荐验收顺序](#7-推荐验收顺序自动化) | 全部输出 `PASS` |
@@ -77,6 +77,25 @@
 | 2.2.2 | Pod 匹配 | labels 含 `pod=<registered_pod>` | `resource_id` 命中 |
 | 2.2.3 | 精确环境优先 | 同名应用：一条 `environment=''`，一条 `environment=prod` | prod 告警归 prod 应用 |
 | 2.2.4 | 未匹配降级 | 无对应注册表 | 告警仍保存，资产 ID 为空 |
+
+### 2.4 云资源同步（migration 0023，阶段 2）
+
+**脚本**：`scripts/e2e-asset-sync.ps1`
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 2.4.1 | 触发同步 | `POST /api/assets/sync`（`app:assets:write`） | 返回 `batch_id`、`status`、计数摘要 |
+| 2.4.2 | fake 账号同步 | `huawei_cloud` + `auth_type=none` | 资产表出现 `source=cloud_sync` 资源，含 `cloud_resource_id` |
+| 2.4.3 | 批次查询 | `GET /api/assets/sync/batches?account_id=` | 分页返回历史批次 |
+| 2.4.4 | stale 标记 | 二次同步且云端清单变化 | 未出现资源标记 `sync_status=stale`，不物理删除 |
+| 2.4.5 | 前端展示 | `/assets` 资源列表 | 来源、云资源 ID、region、同步状态可见 |
+| 2.4.6 | P0 不受影响 | 同步失败或禁用账号 | 告警 ingest / 匹配 / 执行闭环仍可跑 |
+| 2.4.7 | CES 资源分组口径 | `huawei_cloud` + `auth_type=ak_sk` + CES 只读权限 | 平台 `cloud_sync` active 资源数与**指定 CES 资源分组**（默认候选名“全部资源”，需预先创建）数量一致，或批次摘要能解释差异 |
+| 2.4.8 | CES 类型覆盖 | CES 中存在 EVS/VPC/OBS/DCS/DMS 等非 ECS 资源 | 对应资源进入 `asset_resource`，`cloud_resource_type` 与 namespace 映射正确 |
+| 2.4.9 | hybrid 增强 | `sync_mode=hybrid` 且授予部分云服务只读权限 | CES 基础资源数不下降；当前已落地 ECS/RDS/VPC/DCS/DMS 详情补充（EVS/OBS 待办）；任一增强失败时批次应为 `partial`，且摘要必须暴露 `enrichment_failed_count` / `enrichment_failed_types` |
+| 2.4.10 | native 兼容 | `sync_mode=native` | 沿用旧 ECS/CCE/RDS/ELB 同步路径，但页面和批次摘要不承诺与 CES 总览数量一致 |
+| 2.4.11 | 多区域 project_id | `extra_config.region_projects` 配置多 region 映射 | 每个 region 使用对应 project_id 调 CES；未命中回落账号 `project_id` |
+| 2.4.12 | 真实账号对账（可选，不进 CI） | 手工执行 `scripts/e2e-asset-sync-real.ps1` | 打印 region 摘要与 type 分组计数，人工比对 CES 控制台总数 |
 
 ### 2.3 可配置匹配规则（migration 0014）
 
@@ -246,6 +265,17 @@ go run ./cmd/migrate
 # 3. 资产匹配（独立 RunId，可重复跑）
 .\scripts\e2e-asset.ps1
 
+# 3.1 云资源同步（fake provider，migration 0023）
+.\scripts\e2e-asset-sync.ps1
+
+# 3.2 真实 CES 账号对账（可选，不进 CI；需真实 AK/SK 与 CES 只读权限）
+#     用于核对平台同步数量与 CES 控制台"全部资源"总数，验证 hybrid 增强是否命中。
+#     hybrid 只要任一增强失败，批次状态就必须为 partial，且 summary 需要带 enrichment_failed_count。
+#     推荐通过环境变量提供凭据，或运行脚本后按提示交互输入 SecretKey，避免密钥进入命令行历史。
+#     $env:HUAWEI_ACCESS_KEY="AKXXX"; $env:HUAWEI_SECRET_KEY="SKXXX"
+#     $env:HUAWEI_PROJECT_ID="0xxx"; $env:HUAWEI_REGIONS="cn-south-1"
+#     .\scripts\e2e-asset-sync-real.ps1
+
 # 4. Runbook 推荐 + 多步执行 + 时间线回写
 .\scripts\e2e-runbook.ps1
 
@@ -277,9 +307,9 @@ go run ./cmd/migrate
 
 ---
 
-## 9. 云厂商只读接管与观测智能体验收规划（P1+）
+## 9. 云厂商只读接管与观测智能体验收（P1+）
 
-本节用于后续阶段验收，不影响当前 P0 闭环验收。验收前建议先睇 `docs/AI运维平台整体流程与调用关系.md`，确认账号接入、观测查询、巡检证据、建议转执行同审计之间嘅调用关系。
+本节用于 P1+ 收口验收，不影响 P0 闭环验收。验收前建议先读 `docs/AI运维平台整体流程与调用关系.md`，确认账号接入、观测查询、巡检证据、建议转执行与审计之间的调用关系。
 
 ### 9.1 Integration 接入账号
 
@@ -315,8 +345,11 @@ go run ./cmd/migrate
 .\scripts\e2e-integration.ps1
 .\scripts\e2e-observability.ps1
 .\scripts\e2e-inspection.ps1
-.\scripts\e2e-notification.ps1
+.\scripts\e2e-execution-agent.ps1
+.\scripts\e2e-execution-agent-permission.ps1
 ```
+
+> Notification 模块与 `scripts/e2e-notification.ps1` 暂未落地，不纳入当前 P1+ 自动化验收。
 
 ### 9.5 Execution Agent 执行介体验收
 
@@ -347,7 +380,7 @@ go run ./cmd/migrate
 
 | 步骤 | 页面 | 操作 | 通过标准 |
 |------|------|------|----------|
-| A1 | 登录页 | 输入 `admin` / `admin123` 登录 | 进入系统，侧栏可见各模块 |
+| A1 | 登录页 | 输入 `admin` / `admin123` 登录（**dev/演示**；生产须先用 `provision-prod-admin.ps1` 创建管理员） | 进入系统，侧栏可见各模块 |
 | A2 | 侧栏 | 依次点击首页、告警、资产、Runbook、执行 | 各页面正常加载，无白屏 |
 
 ### Dashboard 首页

@@ -47,19 +47,19 @@ type RunDTO struct {
 }
 
 type FindingDTO struct {
-	FindingID         string                  `json:"finding_id"`
-	RunID             string                  `json:"run_id"`
-	PolicyID          string                  `json:"policy_id"`
-	RiskLevel         string                  `json:"risk_level"`
-	Category          string                  `json:"category"`
-	Summary           string                  `json:"summary"`
-	Detail            string                  `json:"detail,omitempty"`
-	AffectedResources []AffectedResourceDTO   `json:"affected_resources"`
-	EvidenceRefs      []string                `json:"evidence_refs"`
-	Recommendations   []RecommendationDTO     `json:"recommendations"`
-	Confidence        float64                 `json:"confidence"`
-	Uncertainty       string                  `json:"uncertainty"`
-	CreatedAt         int64                   `json:"created_at"`
+	FindingID         string                `json:"finding_id"`
+	RunID             string                `json:"run_id"`
+	PolicyID          string                `json:"policy_id"`
+	RiskLevel         string                `json:"risk_level"`
+	Category          string                `json:"category"`
+	Summary           string                `json:"summary"`
+	Detail            string                `json:"detail,omitempty"`
+	AffectedResources []AffectedResourceDTO `json:"affected_resources"`
+	EvidenceRefs      []string              `json:"evidence_refs"`
+	Recommendations   []RecommendationDTO   `json:"recommendations"`
+	Confidence        float64               `json:"confidence"`
+	Uncertainty       string                `json:"uncertainty"`
+	CreatedAt         int64                 `json:"created_at"`
 }
 
 type RecommendationDTO struct {

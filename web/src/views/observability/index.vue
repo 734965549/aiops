@@ -1,8 +1,9 @@
 <template>
-  <div class="observability-page">
+  <div class="page-shell observability-page">
     <a-card
       title="观测查询"
       :bordered="false"
+      class="page-card"
     >
       <a-form
         :model="common"
@@ -38,7 +39,10 @@
         </a-form-item>
       </a-form>
 
-      <a-tabs v-model:active-key="activeTab">
+      <a-tabs
+        v-model:active-key="activeTab"
+        class="page-tabs"
+      >
         <a-tab-pane
           key="metrics"
           title="指标"
@@ -48,12 +52,62 @@
             layout="inline"
             class="query-form"
           >
+            <a-form-item label="区域">
+              <a-select
+                v-model="metricsForm.region"
+                allow-search
+                allow-clear
+                placeholder="cn-north-4"
+                style="width: 160px"
+              >
+                <a-option
+                  v-for="region in selectedAccountRegions"
+                  :key="region"
+                  :value="region"
+                >
+                  {{ region }}
+                </a-option>
+              </a-select>
+            </a-form-item>
+            <a-form-item label="命名空间">
+              <a-input
+                v-model="metricsForm.namespace"
+                placeholder="SYS.ECS"
+                style="width: 160px"
+              />
+            </a-form-item>
             <a-form-item label="指标">
               <a-input
                 v-model="metricsForm.metric"
                 placeholder="cpu_util"
                 style="width: 160px"
               />
+            </a-form-item>
+            <a-form-item label="维度">
+              <a-input
+                v-model="metricsForm.dimensionsText"
+                placeholder="instance_id=ecs-xxx"
+                style="width: 220px"
+              />
+            </a-form-item>
+            <a-form-item label="聚合方式">
+              <a-select
+                v-model="metricsForm.aggregator"
+                style="width: 120px"
+              >
+                <a-option value="avg">
+                  avg
+                </a-option>
+                <a-option value="max">
+                  max
+                </a-option>
+                <a-option value="min">
+                  min
+                </a-option>
+                <a-option value="sum">
+                  sum
+                </a-option>
+              </a-select>
             </a-form-item>
             <a-form-item label="采样周期(s)">
               <a-input-number
@@ -77,7 +131,7 @@
             type="info"
             class="hint"
           >
-            单次最多 7 天窗口、1440 个采样点，period 最小 10 秒。
+            单次最多 7 天窗口、1440 个采样点，period 最小 10 秒。真实华为云指标请将维度替换为实际资源 ID。
           </a-alert>
           <a-table
             v-if="metricPoints.length"
@@ -87,10 +141,12 @@
             :pagination="false"
             size="small"
           />
-          <a-empty
+          <div
             v-else
-            description="暂无指标结果"
-          />
+            class="page-empty"
+          >
+            <a-empty description="暂无指标结果" />
+          </div>
           <div
             v-if="metricsEvidence"
             class="evidence"
@@ -278,8 +334,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { Message } from '@arco-design/web-vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import Message from '@arco-design/web-vue/es/message'
 import { listIntegrationAccounts, type IntegrationAccount } from '@/api/integration'
 import {
   queryMetrics,
@@ -298,7 +354,14 @@ const accountOptions = ref<IntegrationAccount[]>([])
 const common = reactive({ account_id: '' })
 const timeRange = ref<[Date, Date]>(defaultTimeRange())
 
-const metricsForm = reactive({ metric: 'cpu_util', period: 60 })
+const metricsForm = reactive({
+  region: '',
+  namespace: 'SYS.ECS',
+  metric: 'cpu_util',
+  dimensionsText: 'instance_id=ecs-xxx',
+  aggregator: 'avg',
+  period: 60
+})
 const metricsLoading = ref(false)
 const metricsEvidence = ref('')
 const metricSeriesRaw = ref<MetricPoint[]>([])
@@ -326,12 +389,12 @@ const topologyNodes = ref<Array<{ node_id: string; name: string; type: string; e
 const topologyEdges = ref<Array<{ edgeKey: string; from: string; to: string; call_count: number; error_rate?: number }>>([])
 
 const metricColumns = [
-  { title: '时间', dataIndex: 'tsLabel' },
-  { title: '值', dataIndex: 'value' }
+  { title: '时间', dataIndex: 'tsLabel', width: 170 },
+  { title: '值', dataIndex: 'value', width: 120, align: 'right' as const }
 ]
 
 const logColumns = [
-  { title: '时间', dataIndex: 'tsLabel', width: 180 },
+  { title: '时间', dataIndex: 'tsLabel', width: 170 },
   { title: '级别', dataIndex: 'level', width: 80 },
   { title: '服务', dataIndex: 'service', width: 140 },
   { title: '消息', dataIndex: 'message', ellipsis: true }
@@ -342,7 +405,7 @@ const traceColumns = [
   { title: 'Span ID', dataIndex: 'span_id', width: 140, ellipsis: true },
   { title: '服务', dataIndex: 'service', width: 140 },
   { title: '操作', dataIndex: 'operation', ellipsis: true },
-  { title: '耗时(ms)', dataIndex: 'duration_ms', width: 100 },
+  { title: '耗时(ms)', dataIndex: 'duration_ms', width: 100, align: 'right' as const },
   { title: '状态', dataIndex: 'status', width: 80 },
   { title: '错误', dataIndex: 'errorLabel', width: 60 }
 ]
@@ -358,14 +421,14 @@ const traceSpans = computed(() =>
 const nodeColumns = [
   { title: '节点', dataIndex: 'node_id' },
   { title: '类型', dataIndex: 'type', width: 100 },
-  { title: '错误率', dataIndex: 'error_rate', width: 90 },
-  { title: 'P95(ms)', dataIndex: 'p95_ms', width: 100 }
+  { title: '错误率', dataIndex: 'error_rate', width: 100, align: 'right' as const },
+  { title: 'P95(ms)', dataIndex: 'p95_ms', width: 100, align: 'right' as const }
 ]
 
 const edgeColumns = [
   { title: 'From', dataIndex: 'from' },
   { title: 'To', dataIndex: 'to' },
-  { title: '调用量', dataIndex: 'call_count', width: 100 }
+  { title: '调用量', dataIndex: 'call_count', width: 100, align: 'right' as const }
 ]
 
 const metricPoints = computed(() =>
@@ -375,6 +438,11 @@ const metricPoints = computed(() =>
     value: p.value
   }))
 )
+
+const selectedAccount = computed(() =>
+  accountOptions.value.find((item) => item.account_id === common.account_id)
+)
+const selectedAccountRegions = computed(() => selectedAccount.value?.regions || [])
 
 function defaultTimeRange(): [Date, Date] {
   const to = new Date()
@@ -401,6 +469,7 @@ async function loadAccounts() {
     if (!common.account_id && res.items.length) {
       common.account_id = res.items[0].account_id
     }
+    syncMetricsRegion()
   } catch (err) {
     Message.error(getApiError(err)?.message || '加载接入账号失败')
   } finally {
@@ -408,9 +477,74 @@ async function loadAccounts() {
   }
 }
 
+function syncMetricsRegion() {
+  const firstRegion = selectedAccountRegions.value[0]
+  metricsForm.region = firstRegion || ''
+}
+
+function parseDimensions(input: string): Record<string, string> | null {
+  const text = input.trim()
+  if (!text) {
+    return null
+  }
+  if (text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>
+      const dimensions = Object.entries(parsed).reduce<Record<string, string>>((acc, [key, value]) => {
+        const name = key.trim()
+        const dimensionValue = String(value ?? '').trim()
+        if (name && dimensionValue) {
+          acc[name] = dimensionValue
+        }
+        return acc
+      }, {})
+      return Object.keys(dimensions).length ? dimensions : null
+    } catch {
+      Message.warning('维度 JSON 格式不正确')
+      return null
+    }
+  }
+  const dimensions = text
+    .split(/[;,，；\n]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .reduce<Record<string, string>>((acc, item) => {
+      const index = item.indexOf('=')
+      if (index > 0) {
+        const key = item.slice(0, index).trim()
+        const value = item.slice(index + 1).trim()
+        if (key && value) {
+          acc[key] = value
+        }
+      }
+      return acc
+    }, {})
+  return Object.keys(dimensions).length ? dimensions : null
+}
+
+watch(
+  () => common.account_id,
+  () => syncMetricsRegion()
+)
+
 async function runMetricsQuery() {
   if (!common.account_id) {
     Message.warning('请选择接入账号')
+    return
+  }
+  const region = String(metricsForm.region || '').trim()
+  const namespace = String(metricsForm.namespace || '').trim()
+  if (!region) {
+    Message.warning('请选择区域')
+    return
+  }
+  if (!namespace) {
+    Message.warning('请输入命名空间')
+    return
+  }
+  const dimensions = parseDimensions(metricsForm.dimensionsText)
+  if (!dimensions) {
+    Message.warning('请输入指标维度')
     return
   }
   const bounds = timeBounds()
@@ -419,10 +553,14 @@ async function runMetricsQuery() {
   try {
     const res = await queryMetrics({
       account_id: common.account_id,
+      region,
+      namespace,
       metric: metricsForm.metric,
+      dimensions,
       from: bounds.from,
       to: bounds.to,
-      period: metricsForm.period
+      period: metricsForm.period,
+      aggregator: metricsForm.aggregator
     })
     metricSeriesRaw.value = res.series?.[0]?.points || []
     metricsEvidence.value = res.evidence_id
@@ -523,16 +661,20 @@ onMounted(loadAccounts)
 </script>
 
 <style scoped lang="scss">
+/* 容器/卡片/页签填充链由全局 .page-shell / .page-card / .page-tabs 提供 */
 .filter-form,
 .query-form {
-  margin-bottom: 16px;
+  flex-shrink: 0;
+  margin-bottom: var(--space-4);
 }
 
 .hint {
+  flex-shrink: 0;
   margin-bottom: 12px;
 }
 
 .evidence {
+  flex-shrink: 0;
   margin-top: 12px;
   color: var(--color-text-3);
   font-size: 12px;

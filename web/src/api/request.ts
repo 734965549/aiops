@@ -1,5 +1,5 @@
 import axios, { AxiosError, type AxiosInstance, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
-import { Message } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
 import { useAuthStore } from '@/stores/auth'
 
 // 与后端 pkg/transport/http.Response 对齐的统一响应结构。
@@ -22,6 +22,10 @@ export class ApiHttpError extends Error {
     this.code = code
     this.traceId = traceId
   }
+}
+
+export function isApiHttpError(error: unknown): error is ApiHttpError {
+  return error instanceof ApiHttpError
 }
 
 type RetryableConfig = InternalAxiosRequestConfig & { _retry?: boolean }
@@ -70,6 +74,15 @@ function permissionDeniedMessage(body?: ApiResponse) {
     return `权限不足：${detail}。${MIGRATION_HINT}`
   }
   return `权限不足：${detail}`
+}
+
+function isAssetSyncInProgressResponse(status: number, body?: ApiResponse, url?: string) {
+  return (
+    status === 409 &&
+    body?.code === 'ALREADY_EXISTS' &&
+    body?.message === 'sync already in progress for this account' &&
+    url === '/api/assets/sync'
+  )
 }
 
 request.interceptors.request.use((config: InternalAxiosRequestConfig) => {
@@ -129,6 +142,10 @@ request.interceptors.response.use(
 
       if (status === 503 || body?.code === 'UNAVAILABLE') {
         Message.warning(body?.message || '服务暂不可用，请检查后端配置与依赖')
+        return Promise.reject(apiError)
+      }
+
+      if (isAssetSyncInProgressResponse(status, body, original?.url)) {
         return Promise.reject(apiError)
       }
 

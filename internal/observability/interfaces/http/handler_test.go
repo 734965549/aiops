@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	integdomain "github.com/734965549/aiops/internal/integration/domain"
 	identityapp "github.com/734965549/aiops/internal/identity/application"
+	integdomain "github.com/734965549/aiops/internal/integration/domain"
 	obsapp "github.com/734965549/aiops/internal/observability/application"
 	"github.com/734965549/aiops/internal/observability/domain"
 	obsprovider "github.com/734965549/aiops/internal/observability/infrastructure/provider"
@@ -37,6 +37,7 @@ func (stubAccountPort) ResolveAccount(context.Context, string) (*domain.AccountS
 	return &domain.AccountSnapshot{
 		AccountID: "acc-test",
 		Provider:  string(integdomain.ProviderHuaweiCloud),
+		AuthType:  string(integdomain.AuthNone),
 		Capabilities: []string{
 			string(integdomain.CapabilityMetrics),
 			string(integdomain.CapabilityLogs),

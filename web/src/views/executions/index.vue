@@ -1,8 +1,9 @@
 <template>
-  <div class="executions-page">
+  <div class="page-shell">
     <a-card
       title="执行任务"
       :bordered="false"
+      class="page-card"
     >
       <template #extra>
         <a-button
@@ -32,7 +33,7 @@
             v-model="filters.status"
             allow-clear
             placeholder="全部"
-            style="width: 160px"
+            style="width: 140px"
             :options="statusOptions"
           />
         </a-form-item>
@@ -61,6 +62,7 @@
       </a-form>
 
       <a-table
+        class="page-table"
         :columns="columns"
         :data="tasks"
         :loading="loadingList"
@@ -247,7 +249,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Message, type TableData } from '@arco-design/web-vue'
+import Message from '@arco-design/web-vue/es/message'
+import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import * as executionApi from '@/api/execution'
 import type { ExecutionTask, ExecutionTaskDetail } from '@/api/execution'
 
@@ -294,7 +297,7 @@ const sourceTypeOptions = [
 
 const columns = [
   { title: '任务名称', dataIndex: 'name', ellipsis: true },
-  { title: '状态', slotName: 'status', width: 110 },
+  { title: '状态', slotName: 'status', width: 100 },
   { title: '风险', slotName: 'risk_level', width: 90 },
   { title: '操作', dataIndex: 'operation_type', width: 100 },
   { title: '来源', slotName: 'source', width: 140 },
@@ -507,9 +510,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.filter-form {
-  margin-bottom: 16px;
-}
 .detail-desc {
   margin-bottom: 16px;
 }

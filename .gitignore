@@ -23,10 +23,13 @@ go.work.sum
 .env
 .env.local
 .env.*.local
+deployments/.env.production
 
 # IDE
 .idea/
 .vscode/
+.trae/
+.zcode/
 *.swp
 
 # Logs

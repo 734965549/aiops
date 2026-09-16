@@ -31,7 +31,7 @@ const (
 
 // QueryService 统一编排观测查询：账号解析 -> 能力校验 -> Provider Port -> 证据引用 -> 审计。
 //
-// Service 只依赖 application Port，华为云、SigNoz、Prometheus 等差异留喺 infrastructure adapter。
+// Service 只依赖 application Port，华为云、SigNoz、Prometheus 等差异留在 infrastructure adapter。
 type QueryService struct {
 	accounts  IntegrationAccountPort
 	providers ProviderRegistry
@@ -227,7 +227,7 @@ func (s *QueryService) ListResources(ctx context.Context, actor Actor, q domain.
 	if !ok {
 		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider does not support asset discovery")
 	}
-	resources, err := port.ListResources(ctx, pctx, q)
+	resources, hasMore, err := port.ListResources(ctx, pctx, q)
 	if err != nil {
 		return nil, wrapProviderError(err, "list resources failed")
 	}
@@ -247,7 +247,85 @@ func (s *QueryService) ListResources(ctx context.Context, actor Actor, q domain.
 			"resource_count": len(resources), "evidence_id": evidenceID,
 		},
 	})
-	return &AssetDiscoveryResult{Resources: resources, EvidenceID: evidenceID}, nil
+	return &AssetDiscoveryResult{Resources: resources, EvidenceID: evidenceID, HasMore: hasMore}, nil
+}
+
+// ListAllResources 执行云资源全量同步发现，专供 Asset Sync 使用，不受交互查询 limit<=500 限制，
+// 见 ops/huawei-ces-sync-contract.md §7.2。复用 resolveEntry 做能力校验，保留 evidence 与审计。
+func (s *QueryService) ListAllResources(ctx context.Context, actor Actor, q AssetFullSyncQuery) (*AssetFullSyncResult, error) {
+	return s.ListAllResourcesDiscovery(ctx, actor, q)
+}
+
+// ListAllResourcesDiscovery 仅负责第一阶段：发现并返回基础资产。
+// hybrid 模式下原生 API 增强已拆分为独立第二阶段 EnrichAllResources，由 Asset 层在基础资源落库后调用，
+// 保证“增强失败不影响基础入库”。本阶段返回的资源只含 CES 基础 labels。
+func (s *QueryService) ListAllResourcesDiscovery(ctx context.Context, actor Actor, q AssetFullSyncQuery) (*AssetFullSyncResult, error) {
+	if s == nil || s.accounts == nil || s.providers == nil {
+		return nil, apperr.New(apperr.CodeUnavailable, "observability query service is not enabled")
+	}
+	q.AccountID = strings.TrimSpace(q.AccountID)
+	q.Provider = strings.TrimSpace(q.Provider)
+	q.Region = strings.TrimSpace(q.Region)
+	if q.AccountID == "" {
+		return nil, apperr.New(apperr.CodeInvalidArgument, "account_id is required")
+	}
+	if q.MaxResources <= 0 {
+		q.MaxResources = 20000
+	}
+	pctx, entry, err := s.resolveFullSyncEntry(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	q.AccountID = pctx.Account.AccountID
+	q.Provider = pctx.Account.Provider
+	port, ok := entry.(CloudFullSyncPort)
+	if !ok {
+		return nil, apperr.Wrap(domain.ErrCapabilityUnsupported, apperr.CodeFailedPrecondition, "provider does not support full sync")
+	}
+	resources, summary, err := port.ListAllResources(ctx, pctx, q)
+	if err != nil {
+		return nil, wrapProviderError(err, "list all resources failed")
+	}
+	evidenceID, err := s.persistEvidence(ctx, q.AccountID, "assets_full_sync", q, map[string]any{
+		"region": q.Region, "resource_count": len(resources),
+	})
+	if err != nil {
+		return nil, err
+	}
+	_ = s.audit.Record(ctx, AuditRecord{
+		ResourceType: "observability_query",
+		ResourceID:   evidenceID,
+		Action:       AuditResourcesList,
+		UserID:       actor.UserID,
+		Payload: map[string]any{
+			"account_id": q.AccountID, "provider": q.Provider, "region": q.Region,
+			"resource_count": len(resources), "evidence_id": evidenceID,
+		},
+	})
+	result := &AssetFullSyncResult{Resources: resources, EvidenceID: evidenceID}
+	if summary != nil {
+		result.Summary = *summary
+	}
+	return result, nil
+}
+
+// EnrichAllResources 对应 CloudEnrichmentPort 的第二阶段独立增强入口，由 Asset 层在基础资源落库后调用。
+// 见 huawei adapter.go EnrichAllResources / ops/huawei-ces-sync-contract.md §8.2。
+func (s *QueryService) EnrichAllResources(ctx context.Context, actor Actor, q AssetFullSyncQuery, resources []domain.CloudResource) (*AssetFullSyncEnrichmentResult, error) {
+	if len(resources) == 0 {
+		return &AssetFullSyncEnrichmentResult{}, nil
+	}
+	pctx, entry, err := s.resolveFullSyncEntry(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	q.AccountID = pctx.Account.AccountID
+	q.Provider = pctx.Account.Provider
+	port, ok := entry.(CloudEnrichmentPort)
+	if !ok {
+		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider does not support full sync enrichment")
+	}
+	return port.EnrichAllResources(ctx, actor, q, resources)
 }
 
 func (s *QueryService) ListAlertRules(ctx context.Context, actor Actor, q domain.AlertRuleQuery) (*AlertRuleQueryResult, error) {
@@ -319,6 +397,35 @@ func (s *QueryService) resolveEntry(ctx context.Context, accountID, provider str
 		return domain.ProviderContext{}, nil, err
 	}
 	return domain.ProviderContext{Account: *acc}, entry, nil
+}
+
+// resolveFullSyncEntry 为全量同步解析 ProviderContext 与 ProviderEntry。
+// 当 q.Account 非 nil（TriggerSync 冻结的配置快照）时，直接用它构造 ProviderContext，
+// 跳过 s.accounts.ResolveAccount 的 DB 重读，保证整个同步批次使用同一套配置，
+// 避免同步窗口内修改 sync_mode/resource_group/project_id 导致同批次混用多套配置，见 ops/huawei-ces-sync-contract.md §13.2。
+// 仍做能力校验与 provider 查找，确保冻结快照满足 assets 能力且 provider 已注册。
+// q.Account 为 nil 时回退 resolveEntry，保持交互式/旧调用方行为不变。
+func (s *QueryService) resolveFullSyncEntry(ctx context.Context, q AssetFullSyncQuery) (domain.ProviderContext, ProviderEntry, error) {
+	if q.Account != nil {
+		acc := *q.Account
+		wantProvider := strings.TrimSpace(q.Provider)
+		if wantProvider == "" {
+			wantProvider = acc.Provider
+		}
+		if wantProvider != acc.Provider {
+			return domain.ProviderContext{}, nil, apperr.New(apperr.CodeInvalidArgument, "provider mismatch with account")
+		}
+		if !hasCapability(acc.Capabilities, string(integdomain.CapabilityAssets)) {
+			return domain.ProviderContext{}, nil, apperr.New(apperr.CodeFailedPrecondition, "account does not support requested capability")
+		}
+		entry, err := s.providers.Get(wantProvider)
+		if err != nil {
+			return domain.ProviderContext{}, nil, err
+		}
+		acc.Provider = wantProvider
+		return domain.ProviderContext{Account: acc}, entry, nil
+	}
+	return s.resolveEntry(ctx, q.AccountID, q.Provider, integdomain.CapabilityAssets)
 }
 
 func (s *QueryService) persistEvidence(ctx context.Context, accountID, queryType string, query any, summary map[string]any) (string, error) {
@@ -523,8 +630,13 @@ func wrapProviderError(err error, op string) error {
 	if err == nil {
 		return nil
 	}
+	var ae *apperr.Error
+	if errors.As(err, &ae) && ae.Code != apperr.CodeInternal {
+		return ae
+	}
 	mapped := apperr.MapSentinels(err, op,
 		apperr.Sentinel{Err: domain.ErrInvalidArgument, Code: apperr.CodeInvalidArgument},
+		apperr.Sentinel{Err: domain.ErrNotFound, Code: apperr.CodeNotFound},
 		apperr.Sentinel{Err: domain.ErrCapabilityUnsupported, Code: apperr.CodeFailedPrecondition},
 		apperr.Sentinel{Err: domain.ErrUnsupportedProvider, Code: apperr.CodeFailedPrecondition},
 		apperr.Sentinel{Err: domain.ErrProviderUnavailable, Code: apperr.CodeUnavailable},

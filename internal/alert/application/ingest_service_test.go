@@ -54,9 +54,9 @@ func TestIngestService_FiringDedupAndRecover(t *testing.T) {
 	svc := newTestIngestService(alerts, events, sources)
 	ctx := IngestContext{SourceID: src.ID, Token: secret}
 
-	payload := ingest.AlertmanagerWebhook{
+	payload := AlertmanagerWebhook{
 		Status: "firing",
-		Alerts: []ingest.AlertmanagerAlert{{
+		Alerts: []AlertmanagerAlert{{
 			Status:      "firing",
 			Fingerprint: "fp-1",
 			Labels:      map[string]string{"alertname": "HighCPU", "severity": "critical"},
@@ -122,9 +122,9 @@ func TestIngestService_ExternalRecoverFromSilenced(t *testing.T) {
 		t.Fatalf("create silenced alert: %v", err)
 	}
 
-	resolved := ingest.AlertmanagerWebhook{
+	resolved := AlertmanagerWebhook{
 		Status: "resolved",
-		Alerts: []ingest.AlertmanagerAlert{{
+		Alerts: []AlertmanagerAlert{{
 			Status:      "resolved",
 			Fingerprint: "fp-silenced",
 			Labels:      labels,
@@ -170,9 +170,9 @@ func TestIngestService_RefireAfterRecoveredReopensLifecycle(t *testing.T) {
 	ctx := IngestContext{SourceID: src.ID, Token: secret}
 	bg := context.Background()
 
-	firingPayload := ingest.AlertmanagerWebhook{
+	firingPayload := AlertmanagerWebhook{
 		Status: "firing",
-		Alerts: []ingest.AlertmanagerAlert{{
+		Alerts: []AlertmanagerAlert{{
 			Status:      "firing",
 			Fingerprint: "fp-refire",
 			Labels:      map[string]string{"alertname": "DiskFull", "severity": "warning"},
@@ -184,9 +184,9 @@ func TestIngestService_RefireAfterRecoveredReopensLifecycle(t *testing.T) {
 		t.Fatalf("first firing: %v", err)
 	}
 
-	resolvedPayload := ingest.AlertmanagerWebhook{
+	resolvedPayload := AlertmanagerWebhook{
 		Status: "resolved",
-		Alerts: []ingest.AlertmanagerAlert{{
+		Alerts: []AlertmanagerAlert{{
 			Status:      "resolved",
 			Fingerprint: "fp-refire",
 			Labels:      map[string]string{"alertname": "DiskFull", "severity": "warning"},
@@ -303,9 +303,9 @@ func TestIngestService_CreateConflictRetriesAsUpdate(t *testing.T) {
 	svc := newTestIngestService(alerts, &fakeEventRepo{}, sources)
 	ctx := IngestContext{SourceID: src.ID, Token: secret}
 
-	payload := ingest.AlertmanagerWebhook{
+	payload := AlertmanagerWebhook{
 		Status: "firing",
-		Alerts: []ingest.AlertmanagerAlert{{
+		Alerts: []AlertmanagerAlert{{
 			Status:      "firing",
 			Fingerprint: "fp-race",
 			Labels:      map[string]string{"alertname": "HighCPU"},
@@ -350,9 +350,9 @@ func TestIngestService_IntegrationEventIncludesTraceID(t *testing.T) {
 	ingestCtx := IngestContext{SourceID: src.ID, Token: secret}
 	bg := httpx.ContextWithTraceID(context.Background(), traceID)
 
-	payload := ingest.AlertmanagerWebhook{
+	payload := AlertmanagerWebhook{
 		Status: "firing",
-		Alerts: []ingest.AlertmanagerAlert{{
+		Alerts: []AlertmanagerAlert{{
 			Status:      "firing",
 			Fingerprint: "fp-trace",
 			Labels:      map[string]string{"alertname": "HighCPU"},
@@ -401,9 +401,9 @@ func TestIngestService_IntegrationEventIncludesRequestMetadata(t *testing.T) {
 		IP:        "10.0.0.1",
 		UserAgent: "Alertmanager/0.27",
 	}
-	payload := ingest.AlertmanagerWebhook{
+	payload := AlertmanagerWebhook{
 		Status: "firing",
-		Alerts: []ingest.AlertmanagerAlert{{
+		Alerts: []AlertmanagerAlert{{
 			Status:      "firing",
 			Fingerprint: "fp-meta",
 			Labels:      map[string]string{"alertname": "HighCPU"},
@@ -443,9 +443,9 @@ func TestIngestService_RequestIdempotency(t *testing.T) {
 	events := &fakeEventRepo{}
 	svc := newTestIngestService(alerts, events, sources)
 	ingestCtx := IngestContext{SourceID: src.ID, Token: secret, RequestID: "dup-req-1"}
-	payload := ingest.AlertmanagerWebhook{
+	payload := AlertmanagerWebhook{
 		Status: "firing",
-		Alerts: []ingest.AlertmanagerAlert{{
+		Alerts: []AlertmanagerAlert{{
 			Status:      "firing",
 			Fingerprint: "fp-dup",
 			Labels:      map[string]string{"alertname": "HighCPU"},
@@ -484,9 +484,9 @@ func TestIngestService_RequestIdempotencyConcurrent(t *testing.T) {
 	events := &fakeEventRepo{}
 	svc := newTestIngestService(alerts, events, sources)
 	ingestCtx := IngestContext{SourceID: src.ID, Token: secret, RequestID: "concurrent-req-1"}
-	payload := ingest.AlertmanagerWebhook{
+	payload := AlertmanagerWebhook{
 		Status: "firing",
-		Alerts: []ingest.AlertmanagerAlert{{
+		Alerts: []AlertmanagerAlert{{
 			Status:      "firing",
 			Fingerprint: "fp-concurrent",
 			Labels:      map[string]string{"alertname": "HighCPU"},
@@ -568,9 +568,9 @@ func TestIngestService_RefireAfterClosedCreatesNewLifecycle(t *testing.T) {
 	ingestCtx := IngestContext{SourceID: src.ID, Token: secret}
 	bg := context.Background()
 
-	payload := ingest.AlertmanagerWebhook{
+	payload := AlertmanagerWebhook{
 		Status: "firing",
-		Alerts: []ingest.AlertmanagerAlert{{
+		Alerts: []AlertmanagerAlert{{
 			Status:      "firing",
 			Fingerprint: "fp-closed-refire",
 			Labels:      map[string]string{"alertname": "DiskFull"},

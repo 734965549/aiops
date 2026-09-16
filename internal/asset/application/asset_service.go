@@ -18,18 +18,24 @@ type Actor struct {
 
 // AssetService 管理应用与资源注册表。
 type AssetService struct {
-	apps      domain.ApplicationRepository
-	resources domain.ResourceRepository
-	rules     domain.MatchRuleRepository
-	audit     AuditRecorder
+	apps           domain.ApplicationRepository
+	resources      domain.ResourceRepository
+	rules          domain.MatchRuleRepository
+	refChecker     ApplicationReferenceChecker
+	deleteExecutor ApplicationDeleteExecutor
+	audit          AuditRecorder
 }
 
 // NewAssetService 构造资产管理服务。
-func NewAssetService(apps domain.ApplicationRepository, resources domain.ResourceRepository, rules domain.MatchRuleRepository, audit AuditRecorder) *AssetService {
+// deleteExecutor 用于 DeleteApplication 单事务删除；refChecker 在无 executor 时回退使用。
+func NewAssetService(apps domain.ApplicationRepository, resources domain.ResourceRepository, rules domain.MatchRuleRepository, refChecker ApplicationReferenceChecker, deleteExecutor ApplicationDeleteExecutor, audit AuditRecorder) *AssetService {
 	if audit == nil {
 		audit = NoopAuditRecorder{}
 	}
-	return &AssetService{apps: apps, resources: resources, rules: rules, audit: audit}
+	return &AssetService{
+		apps: apps, resources: resources, rules: rules,
+		refChecker: refChecker, deleteExecutor: deleteExecutor, audit: audit,
+	}
 }
 
 type CreateApplicationInput struct {
@@ -67,6 +73,27 @@ type UpdateResourceInput struct {
 	Instance     string
 }
 
+const (
+	assetDefaultPage     = 1
+	assetDefaultPageSize = 20
+	assetMaxPageSize     = 100
+)
+
+// ListApplicationsQuery 应用列表分页查询参数（page 从 1 开始，PageSize 默认 20、最大 100）。
+type ListApplicationsQuery struct {
+	Page     int
+	PageSize int
+}
+
+// ListResourcesQuery 资源列表分页查询参数（page 从 1 开始，PageSize 默认 20、最大 100）。
+type ListResourcesQuery struct {
+	Page              int
+	PageSize          int
+	CloudResourceType string
+	Region            string
+	SyncStatus        string
+}
+
 type ApplicationDTO struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -78,31 +105,44 @@ type ApplicationDTO struct {
 }
 
 type ResourceDTO struct {
-	ID            string `json:"id"`
-	ApplicationID string `json:"application_id"`
-	Name          string `json:"name,omitempty"`
-	ResourceType  string `json:"resource_type,omitempty"`
-	Namespace     string `json:"namespace,omitempty"`
-	Pod           string `json:"pod,omitempty"`
-	Node          string `json:"node,omitempty"`
-	Instance      string `json:"instance,omitempty"`
-	CreatedAt     int64  `json:"created_at"`
-	UpdatedAt     int64  `json:"updated_at"`
+	ID                   string            `json:"id"`
+	ApplicationID        string            `json:"application_id"`
+	Name                 string            `json:"name,omitempty"`
+	ResourceType         string            `json:"resource_type,omitempty"`
+	Namespace            string            `json:"namespace,omitempty"`
+	Pod                  string            `json:"pod,omitempty"`
+	Node                 string            `json:"node,omitempty"`
+	Instance             string            `json:"instance,omitempty"`
+	Source               string            `json:"source,omitempty"`
+	IntegrationAccountID string            `json:"integration_account_id,omitempty"`
+	CloudResourceID      string            `json:"cloud_resource_id,omitempty"`
+	CloudResourceType    string            `json:"cloud_resource_type,omitempty"`
+	Region               string            `json:"region,omitempty"`
+	SyncStatus           string            `json:"sync_status,omitempty"`
+	LastSyncedAt         int64             `json:"last_synced_at,omitempty"`
+	SyncBatchID          string            `json:"sync_batch_id,omitempty"`
+	Labels               map[string]string `json:"labels"`
+	CreatedAt            int64             `json:"created_at"`
+	UpdatedAt            int64             `json:"updated_at"`
 }
 
-func (s *AssetService) ListApplications(ctx context.Context) ([]ApplicationDTO, error) {
+func (s *AssetService) ListApplications(ctx context.Context, q ListApplicationsQuery) ([]ApplicationDTO, int64, error) {
 	if s == nil || s.apps == nil {
-		return nil, apperr.New(apperr.CodeUnavailable, "asset service is not enabled")
+		return nil, 0, apperr.New(apperr.CodeUnavailable, "asset service is not enabled")
 	}
-	rows, err := s.apps.List(ctx)
+	page, pageSize := normalizeAssetPage(q.Page, q.PageSize)
+	rows, total, err := s.apps.ListPaged(ctx, domain.ApplicationFilter{
+		Limit:  pageSize,
+		Offset: (page - 1) * pageSize,
+	})
 	if err != nil {
-		return nil, wrapAssetError(err, "list applications failed")
+		return nil, 0, wrapAssetError(err, "list applications failed")
 	}
 	out := make([]ApplicationDTO, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, toApplicationDTO(row))
 	}
-	return out, nil
+	return out, total, nil
 }
 
 func (s *AssetService) CreateApplication(ctx context.Context, actor Actor, in CreateApplicationInput) (*ApplicationDTO, error) {
@@ -172,6 +212,17 @@ func (s *AssetService) DeleteApplication(ctx context.Context, id string, actor A
 	if id == "" {
 		return apperr.New(apperr.CodeInvalidArgument, "id is required")
 	}
+	if s.deleteExecutor != nil {
+		if err := s.deleteExecutor.DeleteApplicationAtomic(ctx, id); err != nil {
+			return wrapAssetError(err, "delete application failed")
+		}
+		s.recordAudit(ctx, "application", id, actor.UserID, AuditDeleteApplication, map[string]any{"result": "success"})
+		return nil
+	}
+	return s.deleteApplicationLegacy(ctx, id, actor)
+}
+
+func (s *AssetService) deleteApplicationLegacy(ctx context.Context, id string, actor Actor) error {
 	if _, err := s.apps.GetByID(ctx, id); err != nil {
 		return wrapAssetError(err, "load application failed")
 	}
@@ -191,6 +242,25 @@ func (s *AssetService) DeleteApplication(ctx context.Context, id string, actor A
 			return apperr.Newf(apperr.CodeFailedPrecondition, "application has %d match rule(s), delete rules first", rn)
 		}
 	}
+	if s.refChecker != nil {
+		alertCount, err := s.refChecker.CountAlertsByApplicationID(ctx, id)
+		if err != nil {
+			return wrapAssetError(err, "count application alert references failed")
+		}
+		if alertCount > 0 {
+			return apperr.Newf(apperr.CodeFailedPrecondition, "application has %d alert reference(s), resolve or close those alerts first", alertCount)
+		}
+		policyCount, err := s.refChecker.CountInspectionPoliciesByApplicationID(ctx, id)
+		if err != nil {
+			return wrapAssetError(err, "count application inspection policy references failed")
+		}
+		if policyCount > 0 {
+			return apperr.Newf(apperr.CodeFailedPrecondition, "application has %d inspection policy reference(s), update those policies first", policyCount)
+		}
+		if err := s.refChecker.DetachClosedAlertReferences(ctx, id); err != nil {
+			return wrapAssetError(err, "detach closed alert references failed")
+		}
+	}
 	if err := s.apps.Delete(ctx, id); err != nil {
 		return wrapAssetError(err, "delete application failed")
 	}
@@ -198,23 +268,30 @@ func (s *AssetService) DeleteApplication(ctx context.Context, id string, actor A
 	return nil
 }
 
-func (s *AssetService) ListResources(ctx context.Context, applicationID string) ([]ResourceDTO, error) {
+func (s *AssetService) ListResources(ctx context.Context, applicationID string, q ListResourcesQuery) ([]ResourceDTO, int64, error) {
 	if s == nil || s.resources == nil {
-		return nil, apperr.New(apperr.CodeUnavailable, "asset service is not enabled")
+		return nil, 0, apperr.New(apperr.CodeUnavailable, "asset service is not enabled")
 	}
 	applicationID = strings.TrimSpace(applicationID)
 	if applicationID == "" {
-		return nil, apperr.New(apperr.CodeInvalidArgument, "application_id is required")
+		return nil, 0, apperr.New(apperr.CodeInvalidArgument, "application_id is required")
 	}
-	rows, err := s.resources.ListByApplicationID(ctx, applicationID)
+	page, pageSize := normalizeAssetPage(q.Page, q.PageSize)
+	rows, total, err := s.resources.ListByApplicationIDPaged(ctx, applicationID, domain.ResourceFilter{
+		CloudResourceType: strings.TrimSpace(q.CloudResourceType),
+		Region:            strings.TrimSpace(q.Region),
+		SyncStatus:        strings.TrimSpace(q.SyncStatus),
+		Limit:             pageSize,
+		Offset:            (page - 1) * pageSize,
+	})
 	if err != nil {
-		return nil, wrapAssetError(err, "list resources failed")
+		return nil, 0, wrapAssetError(err, "list resources failed")
 	}
 	out := make([]ResourceDTO, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, toResourceDTO(row))
 	}
-	return out, nil
+	return out, total, nil
 }
 
 func (s *AssetService) CreateResource(ctx context.Context, actor Actor, in CreateResourceInput) (*ResourceDTO, error) {
@@ -328,6 +405,19 @@ func (s *AssetService) recordAudit(ctx context.Context, resourceType, resourceID
 	})
 }
 
+func normalizeAssetPage(page, pageSize int) (int, int) {
+	if page <= 0 {
+		page = assetDefaultPage
+	}
+	if pageSize <= 0 {
+		pageSize = assetDefaultPageSize
+	}
+	if pageSize > assetMaxPageSize {
+		pageSize = assetMaxPageSize
+	}
+	return page, pageSize
+}
+
 func wrapAssetError(err error, op string) error {
 	if err == nil {
 		return nil
@@ -337,6 +427,8 @@ func wrapAssetError(err error, op string) error {
 		apperr.Sentinel{Err: domain.ErrAlreadyExists, Code: apperr.CodeAlreadyExists},
 		apperr.Sentinel{Err: domain.ErrHasResources, Code: apperr.CodeFailedPrecondition},
 		apperr.Sentinel{Err: domain.ErrHasMatchRules, Code: apperr.CodeFailedPrecondition},
+		apperr.Sentinel{Err: domain.ErrHasAlertReferences, Code: apperr.CodeFailedPrecondition},
+		apperr.Sentinel{Err: domain.ErrHasInspectionPolicyReferences, Code: apperr.CodeFailedPrecondition},
 	)
 	if apperr.FromError(mapped).Code != apperr.CodeInternal {
 		return mapped
@@ -357,18 +449,40 @@ func toApplicationDTO(a domain.Application) ApplicationDTO {
 }
 
 func toResourceDTO(r domain.Resource) ResourceDTO {
-	return ResourceDTO{
-		ID:            r.ID,
-		ApplicationID: r.ApplicationID,
-		Name:          r.Name,
-		ResourceType:  r.ResourceType,
-		Namespace:     r.Namespace,
-		Pod:           r.Pod,
-		Node:          r.Node,
-		Instance:      r.Instance,
-		CreatedAt:     r.CreatedAt.Unix(),
-		UpdatedAt:     r.UpdatedAt.Unix(),
+	dto := ResourceDTO{
+		ID:                   r.ID,
+		ApplicationID:        r.ApplicationID,
+		Name:                 r.Name,
+		ResourceType:         r.ResourceType,
+		Namespace:            r.Namespace,
+		Pod:                  r.Pod,
+		Node:                 r.Node,
+		Instance:             r.Instance,
+		Source:               r.Source,
+		IntegrationAccountID: r.IntegrationAccountID,
+		CloudResourceID:      r.CloudResourceID,
+		CloudResourceType:    r.CloudResourceType,
+		Region:               r.Region,
+		SyncStatus:           r.SyncStatus,
+		SyncBatchID:          r.SyncBatchID,
+		Labels:               ensureResourceLabels(r.Labels),
+		CreatedAt:            r.CreatedAt.Unix(),
+		UpdatedAt:            r.UpdatedAt.Unix(),
 	}
+	if r.LastSyncedAt != nil {
+		dto.LastSyncedAt = r.LastSyncedAt.Unix()
+	}
+	if dto.Source == "" {
+		dto.Source = domain.ResourceSourceManual
+	}
+	return dto
+}
+
+func ensureResourceLabels(labels map[string]string) map[string]string {
+	if labels == nil {
+		return map[string]string{}
+	}
+	return labels
 }
 
 func labelValue(labels map[string]string, key string) string {

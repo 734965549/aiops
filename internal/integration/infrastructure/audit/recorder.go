@@ -3,8 +3,8 @@ package audit
 import (
 	"context"
 
-	integapp "github.com/734965549/aiops/internal/integration/application"
 	auditapp "github.com/734965549/aiops/internal/audit/application"
+	integapp "github.com/734965549/aiops/internal/integration/application"
 )
 
 type Recorder struct {

@@ -15,11 +15,20 @@ const (
 
 // HealthMigrationDetails 描述迁移检查的结构化附加信息。
 type HealthMigrationDetails struct {
-	Dir            string `json:"dir,omitempty"`
-	LatestVersion  string `json:"latest_version,omitempty"`
-	AppliedVersion string `json:"applied_version,omitempty"`
-	PendingCount   int    `json:"pending_count,omitempty"`
-	UpToDate       bool   `json:"up_to_date,omitempty"`
+	Dir            string                `json:"dir,omitempty"`
+	LatestVersion  string                `json:"latest_version,omitempty"`
+	AppliedVersion string                `json:"applied_version,omitempty"`
+	PendingCount   int                   `json:"pending_count,omitempty"`
+	UpToDate       bool                  `json:"up_to_date,omitempty"`
+	ChecksumDrifts []HealthChecksumDrift `json:"checksum_drifts,omitempty"`
+}
+
+// HealthChecksumDrift 描述单个迁移版本的 checksum 漂移信息。
+type HealthChecksumDrift struct {
+	Version string `json:"version"`
+	Name    string `json:"name,omitempty"`
+	Stored  string `json:"stored,omitempty"`
+	Current string `json:"current,omitempty"`
 }
 
 // HealthDBDetails 描述数据库检查的结构化附加信息。

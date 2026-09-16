@@ -1,0 +1,4 @@
+-- 0039 down: 人工回滚参考，不由 runner 自动执行。
+-- 改写后的 application_id 无法自动反推回旧格式（新格式应用也可能由升级后的新同步创建）。
+-- 如需回滚，请对照升级前备份核对 alert_alert / inspection_policy 表。
+-- 生产回滚应由 DBA 按审批流程显式执行。

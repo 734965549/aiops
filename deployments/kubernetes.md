@@ -46,7 +46,7 @@ Browser
    npm run build
    ```
 
-   当前仓库没有前端 Dockerfile。生产可选择 Nginx 镜像、对象存储 + CDN，或企业静态资源平台托管 `web/dist`。
+   仓库已提供前端镜像构建文件 `web/Dockerfile`（Node 构建 + Nginx 托管，构建上下文为 `web/`）。生产可直接构建 `aiops-web` 镜像，也可选择对象存储 + CDN 或企业静态资源平台托管 `web/dist`。构建命令见下文「前端部署」。
 
 ## 外挂数据库要求
 
@@ -185,6 +185,8 @@ data:
   AIOPS_AUTH__BOOTSTRAP_PASSWORD: ""
   AIOPS_AUTH__BOOTSTRAP_DISPLAY_NAME: ""
 
+  AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY_VERSION: "1"
+
   # 分域部署时填写前端正式 origin；同源反代时可不依赖 CORS。
   AIOPS_CORS__ALLOW_ORIGINS: https://aiops.example.com
   AIOPS_CORS__ALLOW_CREDENTIALS: "true"
@@ -205,9 +207,26 @@ stringData:
   AIOPS_DATABASE__PASSWORD: "<postgres-password>"
   AIOPS_REDIS__PASSWORD: "<redis-password>"
   AIOPS_AUTH__JWT_SECRET: "<at-least-32-bytes-high-entropy-secret>"
+  AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY: "<independent-high-entropy-secret>"
 ```
 
 如果 Redis 不需要密码，可以删除 `AIOPS_REDIS__PASSWORD`，不要写空密码到共享模板中。
+
+`AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY` 用于加密 Integration 接入账号凭据，必须与
+`AIOPS_AUTH__JWT_SECRET` 分离。`aiops-api:1.2` 起非 dev 环境启动时会拒绝空值、弱密钥、dev
+占位符以及与 JWT secret 相同的值。建议使用 32 字节以上随机值，例如：
+
+```bash
+openssl rand -base64 32
+```
+
+升级已有集群时，如果 Secret 缺少该项，新版本 Pod 会在配置校验阶段退出，可先生成密钥并 patch：
+
+```bash
+KEY="$(openssl rand -base64 32)"
+kubectl -n aiops patch secret aiops-api-secret \
+  -p "{\"data\":{\"AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY\":\"$(printf %s "$KEY" | base64 | tr -d '\n')\"}}"
+```
 
 ### Deployment
 
@@ -381,21 +400,24 @@ docker run --rm -it \
 
 ### aiops-web 镜像
 
-仓库目前没有前端 Dockerfile，可以新增一个前端镜像构建文件，例如 `web/Dockerfile`：
+仓库已提供前端镜像构建文件 `web/Dockerfile`，构建上下文为 `web/`（内部路径不带 `web/` 前缀），内容如下：
 
 ```dockerfile
 FROM node:20-alpine AS builder
 WORKDIR /workspace
 
-COPY web/package*.json ./
+RUN npm install -g npm@11.6.2
+
+COPY package*.json ./
 RUN npm ci
 
-COPY web/ ./
+COPY . ./
 RUN npm run build
 
 FROM nginxinc/nginx-unprivileged:1.27-alpine
-COPY web/nginx.conf /etc/nginx/conf.d/default.conf
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /workspace/dist /usr/share/nginx/html
+
 EXPOSE 8080
 ```
 
@@ -443,11 +465,11 @@ server {
 构建和推送：
 
 ```bash
-docker build -f web/Dockerfile -t registry.example.com/aiops/aiops-web:<version> .
+docker build -f web/Dockerfile -t registry.example.com/aiops/aiops-web:<version> web
 docker push registry.example.com/aiops/aiops-web:<version>
 ```
 
-如果已经按上一节用 Docker 构建好了 `web/dist`，也可以只构建 Nginx 运行镜像，不再在镜像构建阶段执行 `npm ci`。例如新增 `web/Dockerfile.runtime`：
+如果已经按上一节用 Docker 构建好了 `web/dist`，也可以只构建 Nginx 运行镜像，跳过镜像内的 `npm ci`。仓库**未内置**该运行态 Dockerfile；如需此模式，请自行在 `web/` 下新增 `web/Dockerfile.runtime`：
 
 ```dockerfile
 FROM nginxinc/nginx-unprivileged:1.27-alpine
@@ -796,7 +818,7 @@ $env:API_BASE = "https://api.example.com"
 | `db` down | 安全组、DNS、SSL、账号密码或连接池配置错误 | 从临时调试 Pod 或 DBA 运维网络验证连通性 |
 | `redis` down | `redis.required=true` 且 Redis 不可达 | 检查 Redis 地址、密码、DB 编号和网络策略 |
 | 登录后 403 | 权限种子迁移未追平，常见于缺少 `0002` 或后续权限迁移 | 执行完整迁移并检查 `schema_migrations` |
-| API 启动失败 | prod 环境使用弱 JWT、配置非法、bootstrap 绑定失败 | 检查 Secret、关闭 bootstrap、确认迁移完整 |
+| API 启动失败 | prod 环境使用弱 JWT、缺少 `AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY`、配置非法、bootstrap 绑定失败 | 检查 Secret、关闭 bootstrap、确认迁移完整 |
 
 ## 生产安全检查
 
@@ -804,6 +826,7 @@ $env:API_BASE = "https://api.example.com"
 - `AIOPS_DATABASE__AUTO_MIGRATE=false`。
 - `AIOPS_AUTH__BOOTSTRAP_USERNAME/PASSWORD` 为空。
 - `AIOPS_AUTH__JWT_SECRET` 使用高熵密钥，长度至少 32 字节。
+- `AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY` 已通过 Secret 注入独立强密钥，且不同于 JWT secret。
 - PostgreSQL / Redis 不通过 Kubernetes LoadBalancer、NodePort 或 Ingress 暴露。
 - 前端不持有任何服务端密钥。
 - CORS 只允许正式前端域名。

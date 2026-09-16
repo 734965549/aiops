@@ -49,14 +49,14 @@ type AuthorizationReader interface {
 	Authorize(ctx context.Context, input application.AuthorizationInput) (*application.AuthorizationResult, error)
 }
 
-// AuthAuditService 係 HTTP 层依赖嘅认证审计服务，只暴露记录同管理员查询能力。
+// AuthAuditService 是 HTTP 层依赖的认证审计服务，只暴露记录和管理员查询能力。
 type AuthAuditService interface {
 	Record(ctx context.Context, audit domain.AuthAudit) error
 	List(ctx context.Context, filter domain.AuthAuditFilter) ([]domain.AuthAudit, error)
 	Count(ctx context.Context, filter domain.AuthAuditFilter) (int64, error)
 }
 
-// LoginIPAllowlist 负责判断登录相关入口係咪允许当前客户端 IP 访问。
+// LoginIPAllowlist 负责判断登录相关入口是否允许当前客户端 IP 访问。
 type LoginIPAllowlist interface {
 	Enabled() bool
 	Allows(ip string) bool
@@ -555,7 +555,7 @@ func (h *Handler) Permissions(c *gin.Context) {
 	httpx.OK(c, pagination.NewResult(resp, total, q.Query))
 }
 
-// AuthAudits 返回认证审计列表俾管理员查询同排障。
+// AuthAudits 返回认证审计列表，供管理员查询和排障。
 func (h *Handler) AuthAudits(c *gin.Context) {
 	if h.authAudit == nil {
 		httpx.FailWith(c, apperr.CodeUnavailable, "auth audit is not enabled")

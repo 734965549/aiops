@@ -69,7 +69,11 @@ func (h *AgentHandler) Register(c *gin.Context) {
 			token = strings.TrimSpace(parts[1])
 		}
 	}
-	if h.register != nil && token != h.register() {
+	expected := ""
+	if h.register != nil {
+		expected = h.register()
+	}
+	if expected == "" || token != expected {
 		httpx.FailWith(c, apperr.CodePermissionDenied, "invalid register token")
 		return
 	}

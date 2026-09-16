@@ -50,6 +50,16 @@ export default defineConfig(({ mode }) => {
         '/version': { target: apiTarget, changeOrigin: true }
       }
     },
+    css: {
+      preprocessorOptions: {
+        scss: {
+          api: 'modern-compiler'
+        },
+        sass: {
+          api: 'modern-compiler'
+        }
+      }
+    },
     build: {
       outDir: 'dist',
       rollupOptions: {
@@ -57,9 +67,6 @@ export default defineConfig(({ mode }) => {
           manualChunks(id) {
             if (!id.includes('node_modules')) {
               return
-            }
-            if (id.includes('@arco-design/web-vue')) {
-              return 'arco'
             }
             if (
               id.includes('/vue/') ||
@@ -70,6 +77,13 @@ export default defineConfig(({ mode }) => {
               id.includes('\\pinia\\')
             ) {
               return 'vue-vendor'
+            }
+            if (
+              id.includes('@arco-design') ||
+              id.includes('arco-design') ||
+              id.includes('b-validate')
+            ) {
+              return 'arco-vendor'
             }
             if (id.includes('axios')) {
               return 'axios'
