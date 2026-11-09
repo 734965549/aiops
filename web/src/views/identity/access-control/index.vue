@@ -1,8 +1,9 @@
 <template>
-  <div class="access-control-page">
+  <div class="page-shell access-control-page">
     <a-card
       title="权限管理"
       :bordered="false"
+      class="page-card"
     >
       <a-alert
         v-if="noAccess"
@@ -13,7 +14,10 @@
         {{ accessError || '当前账号缺少权限管理所需权限，页面结构已保留但数据不可操作。' }}
       </a-alert>
 
-      <a-tabs v-model:active-key="activeTab">
+      <a-tabs
+        v-model:active-key="activeTab"
+        class="page-tabs"
+      >
         <a-tab-pane
           key="user-roles"
           title="用户角色绑定"
@@ -44,7 +48,7 @@
                     v-model="userFilters.keyword"
                     allow-clear
                     placeholder="用户名 / 显示名 / 邮箱"
-                    style="width: 220px"
+                    style="width: 200px"
                     @press-enter="searchUsers"
                   />
                 </a-form-item>
@@ -53,7 +57,7 @@
                     v-model="userFilters.status"
                     allow-clear
                     placeholder="全部"
-                    style="width: 130px"
+                    style="width: 140px"
                   >
                     <a-option value="active">
                       active
@@ -67,12 +71,17 @@
                   </a-select>
                 </a-form-item>
                 <a-form-item>
-                  <a-button
-                    type="primary"
-                    @click="searchUsers"
-                  >
-                    查询
-                  </a-button>
+                  <a-space>
+                    <a-button
+                      type="primary"
+                      @click="searchUsers"
+                    >
+                      查询
+                    </a-button>
+                    <a-button @click="onResetUserFilters">
+                      重置
+                    </a-button>
+                  </a-space>
                 </a-form-item>
               </a-form>
 
@@ -456,6 +465,12 @@ async function searchUsers() {
   await loadUsers()
 }
 
+async function onResetUserFilters() {
+  userFilters.keyword = ''
+  userFilters.status = ''
+  await searchUsers()
+}
+
 async function onUserPageChange(page: number) {
   userPagination.current = page
   await loadUsers()
@@ -591,26 +606,68 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.access-control-page {
-  min-width: 0;
-}
+/* 满高布局：容器与页签填充链由全局 .page-shell / .page-tabs 提供；
+   内容超高时列表/面板内部滚动，页面不出滚动条 */
 
 .state-alert {
   margin-bottom: 14px;
 }
 
 .two-column {
+  height: 100%;
   display: grid;
   grid-template-columns: minmax(420px, 1.05fr) minmax(360px, 0.95fr);
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 .panel {
   min-width: 0;
-  padding: 16px;
-  border: 1px solid rgba(22, 93, 255, 0.12);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.72);
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-4);
+  border: 1px solid var(--aiops-border);
+  border-radius: var(--radius-md);
+  background: var(--aiops-surface-muted);
+}
+
+/* a-table 根节点会携带本组件 scope 属性，可直接匹配；
+   其内部 .arco-spin / .arco-table-container / .arco-table-pagination 是
+   Table 组件私有 DOM，不带本组件 data-v，必须 :deep 穿透。 */
+.panel > .arco-table {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel > .arco-table :deep(.arco-spin) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel > .arco-table :deep(.arco-table-container) {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.panel > .arco-table :deep(.arco-table-pagination) {
+  flex-shrink: 0;
+  margin-top: 10px;
+}
+
+/* “角色绑定”面板不是表格：panel > a-spin > (alert + 勾选列表)。
+   Arco Spin 的插槽内容是其直接子节点（无额外包裹层），
+   让 spin 撑满面板，勾选列表在面板内滚动。 */
+.panel > :deep(.arco-spin) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .panel-header,
@@ -618,61 +675,62 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   margin-bottom: 14px;
 }
 
 .panel-header strong,
 .grant-title strong {
   display: block;
-  color: #1d2538;
+  color: var(--aiops-text-1);
 }
 
 .panel-header span {
   display: block;
   margin-top: 3px;
-  color: #6b778c;
+  color: var(--aiops-text-3);
   font-size: 12px;
-}
-
-.filter-form {
-  margin-bottom: 12px;
 }
 
 .sub-text {
   margin-top: 2px;
-  color: #7a869a;
+  color: var(--aiops-text-3);
   font-size: 12px;
 }
 
 .mono-text {
   margin-left: 8px;
-  color: #5f6f89;
+  color: var(--aiops-text-3);
   font-family: Consolas, 'Liberation Mono', monospace;
   font-size: 12px;
 }
 
 .check-list {
   display: grid;
-  gap: 8px;
+  gap: var(--space-2);
+}
+
+/* 面板内勾选列表撑满并滚动（角色绑定面板 + 授权 tab 的 compact 列表共用） */
+.panel .check-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 .check-list.compact {
-  max-height: 480px;
-  overflow: auto;
-  padding-right: 4px;
+  padding-right: var(--space-1);
 }
 
 .check-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   min-width: 0;
   padding: 9px 10px;
-  border: 1px solid rgba(28, 83, 160, 0.1);
-  border-radius: 6px;
-  background: #fff;
+  border: 1px solid var(--aiops-border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--aiops-surface);
 }
 
 .check-title {
@@ -680,9 +738,10 @@ onMounted(async () => {
 }
 
 .grant-grid {
+  height: 100%;
   display: grid;
   grid-template-columns: minmax(320px, 1.2fr) minmax(260px, 0.9fr) minmax(260px, 0.9fr);
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 .grant-section {

@@ -114,7 +114,10 @@ aiops/
 | --- | --- | --- |
 | **仅中间件** | `docker compose -f deployments/docker-compose.yml up -d postgres redis` | 本地 `go run ./cmd/api` 联调（推荐） |
 | **全栈（默认）** | `docker compose -f deployments/docker-compose.yml up -d` | 容器化 API + PG + Redis |
-| **全栈 dev 就绪** | `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d` | 自动迁移 + bootstrap 管理员 + 挂载 `config.yaml` |
+| **全栈 dev 就绪** | `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d` | 自动迁移 + bootstrap 管理员 + 挂载 `config.yaml`（仅后端） |
+| **全栈 + 前端容器** | `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml -f deployments/docker-compose.host.yml -f deployments/docker-compose.web.yml up -d` | 前后端分离容器：API + Web + PG + Redis；访问 `http://127.0.0.1/` |
+
+> 后端（`aiops-api`）与前端（`aiops-web`）是**两个独立镜像/容器**。前端服务由 `deployments/docker-compose.web.yml` 定义，使用 `deployments/nginx/web.conf` 反代 `api:8080`；`docker-compose.host.yml` 仅在 PostgreSQL 因 seccomp 报错的宿主机叠加。生产走 `docker-compose.prod.yml`。详见 `deployments/README.md`。
 
 ```bash
 # 仅 PostgreSQL + Redis（本地 go run 联调常用）
@@ -240,14 +243,17 @@ npm run dev
 
 默认监听 `http://127.0.0.1:5173`。`/api`、`/healthz`、`/readyz`、`/version` 已通过 vite 反向代理到后端 8080。
 
+也可以用容器跑前端（与后端分离）：叠加 `deployments/docker-compose.web.yml` 启动独立 `aiops-web` 容器，访问 `http://127.0.0.1/`。构建说明见 `web/Dockerfile` 与 `deployments/README.md`。
+
 ### Docker 镜像
 
 ```bash
 make docker                    # 产出 aiops-api:$(VERSION)
 AIOPS_VERSION=dev docker compose -f deployments/docker-compose.yml build api
+docker build -f web/Dockerfile -t aiops-web:dev web   # 前端镜像（上下文=web/）
 ```
 
-Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}` 作为镜像标签，与 `make docker` 输出一致。
+Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}`、`aiops-web:${AIOPS_VERSION:-dev}` 作为镜像标签，与构建命令输出一致。
 
 ### AI Provider 配置
 

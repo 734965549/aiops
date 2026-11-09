@@ -7,20 +7,42 @@
 ## 调用关系
 
 ```text
-Dockerfile
+Dockerfile（后端）
   -> 编译 Go 后端（输出 /app/aiops-api 与 /app/aiops-migrate）
   -> 复制 migrations/（运行时供 /readyz 判读或 auto_migrate）
   -> 默认唔复制 config.yaml（运行时靠环境变量）
+
+web/Dockerfile（前端，独立镜像 aiops-web，构建上下文为 web/）
+  -> node:20-alpine 执行 npm ci + npm run build 产出 web/dist
+  -> nginx-unprivileged 托管 dist，监听 8080
+  -> 默认使用 web/nginx.conf（K8s，反代 aiops-api.<ns>.svc.cluster.local）
 
 docker-compose.yml（主文件）
   -> 启动 aiops-api（纯 env，默认唔自动迁移、无 bootstrap）
   -> 启动 PostgreSQL + Redis（端口映射到宿主机，仅限本机 dev）
   -> 无 .env 时 JWT 默认 dev 占位值；生产须显式注入；健康检查走 /readyz
+  -> 只含后端与中间件，前端不在其中
 
 docker-compose.dev.yml（覆盖）
   -> AUTO_MIGRATE=true + bootstrap 管理员
   -> 挂载 configs/config.example.yaml 为 /app/configs/config.yaml
   -> 覆盖 JWT 为 dev 占位值
+
+docker-compose.prod.yml（生产）
+  -> 只拉预构建镜像（${AIOPS_IMAGE}），不 build；PG/Redis 不映射宿主机端口
+  -> secrets 经 .env.production 注入；先 migrate 再启 API
+
+docker-compose.web.yml（独立前端服务，须与主文件一起用）
+  -> 构建/启动 aiops-web（与 aiops-api 分属不同容器/镜像）
+  -> 端口 80:8080，加入 aiops-net，依赖 api 健康
+  -> 挂载 deployments/nginx/web.conf，反代到同网络 api:8080
+
+deployments/nginx/web.conf
+  -> compose 专用的前端 Nginx 配置：/api、/healthz、/readyz、/version 反代 api:8080
+  -> 与 web/nginx.conf（K8s 服务名）区分，勿混用
+
+docker-compose.host.yml（主机专用兼容覆盖）
+  -> 仅对 postgres 放宽 seccomp：老内核 + 较新 Docker 时 PostgreSQL initdb 会 EPERM
 ```
 
 ## 镜像标签
@@ -33,18 +55,47 @@ docker-compose.dev.yml（覆盖）
 
 | 文件 | 入参 | 说明 |
 | --- | --- | --- |
-| `Dockerfile` | 源码、go.mod、go.sum | 构建后端二进制 |
-| `docker-compose.yml` | 可选 `JWT_SECRET`、可选 `AIOPS_VERSION` | 编排服务；PG 默认 aiops/aiops；Web 登录 admin/admin123 由完整迁移种子 |
+| `Dockerfile` | 源码、go.mod、go.sum | 构建后端二进制（`aiops-api` + `aiops-migrate`） |
+| `web/Dockerfile` | `web/` 目录（`package*.json`、源码） | 构建前端镜像，**构建上下文为 `web/`** |
+| `docker-compose.yml` | 可选 `JWT_SECRET`、可选 `AIOPS_VERSION` | 编排后端服务；PG 默认 aiops/aiops；Web 登录 admin/admin123 由完整迁移种子 |
 | `docker-compose.dev.yml` | 叠加于主文件 | dev 就绪：迁移 + admin + YAML |
+| `docker-compose.prod.yml` | `.env.production`（`AIOPS_IMAGE`、`POSTGRES_PASSWORD`、JWT/凭据密钥等） | 生产链路：预构建镜像 + secrets + 不暴露端口 |
+| `docker-compose.web.yml` | 叠加于主文件 | 独立 `aiops-web` 前端服务（端口 80） |
+| `nginx/web.conf` | 无 | compose 版前端反代配置（反代 `api:8080`） |
+| `docker-compose.host.yml` | 叠加于主文件 | 主机兼容覆盖：postgres `seccomp=unconfined`，仅在老内核需要 |
 | `.env` / 环境变量 | 数据库密码、JWT secret 等 | 覆盖部署配置 |
 
 ## 出参
 
 | 输出 | 说明 |
 | --- | --- |
-| Docker 镜像 | `aiops-api:<version>` |
-| 容器服务 | API（8080）、PostgreSQL（5432）、Redis（6379） |
+| Docker 镜像 | `aiops-api:<version>`（后端）、`aiops-web:<version>`（前端，叠加 `docker-compose.web.yml`） |
+| 容器服务 | API（8080）、PostgreSQL（5432）、Redis（6379）、Web（80→容器 8080，仅叠加 web 文件时） |
 | 暴露端口 | 主 compose 映射 PG/Redis 到宿主机，**仅限本机开发** |
+
+## 前后端分离
+
+后端与前端是**两个独立镜像、两个独立容器**，互不打包：
+
+- 后端：`aiops-api`（`deployments/Dockerfile`）。
+- 前端：`aiops-web`（`web/Dockerfile`，构建上下文为 `web/`），Nginx 托管 `web/dist`，并把 `/api`、`/healthz`、`/readyz`、`/version` 反代到 `api:8080`。
+
+本地一次起全栈（含前端容器）：
+
+```bash
+docker compose -f deployments/docker-compose.yml \
+  -f deployments/docker-compose.dev.yml \
+  -f deployments/docker-compose.host.yml \
+  -f deployments/docker-compose.web.yml up -d
+```
+
+访问 `http://127.0.0.1/`（web）与 `http://127.0.0.1:8080`（api）。单独构建前端镜像（注意构建上下文是 `web/`）：
+
+```bash
+docker build -f web/Dockerfile -t aiops-web:dev web
+```
+
+只想跑后端（不含前端容器）时，去掉 `-f deployments/docker-compose.web.yml` 即可。`docker-compose.host.yml` 仅在 PostgreSQL 因 seccomp 报错的宿主机才需要。
 
 ## 安全提示
 

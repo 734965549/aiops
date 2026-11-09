@@ -1,8 +1,9 @@
 <template>
-  <div class="observability-page">
+  <div class="page-shell observability-page">
     <a-card
       title="观测查询"
       :bordered="false"
+      class="page-card"
     >
       <a-form
         :model="common"
@@ -38,7 +39,10 @@
         </a-form-item>
       </a-form>
 
-      <a-tabs v-model:active-key="activeTab">
+      <a-tabs
+        v-model:active-key="activeTab"
+        class="page-tabs"
+      >
         <a-tab-pane
           key="metrics"
           title="指标"
@@ -137,10 +141,12 @@
             :pagination="false"
             size="small"
           />
-          <a-empty
+          <div
             v-else
-            description="暂无指标结果"
-          />
+            class="page-empty"
+          >
+            <a-empty description="暂无指标结果" />
+          </div>
           <div
             v-if="metricsEvidence"
             class="evidence"
@@ -383,12 +389,12 @@ const topologyNodes = ref<Array<{ node_id: string; name: string; type: string; e
 const topologyEdges = ref<Array<{ edgeKey: string; from: string; to: string; call_count: number; error_rate?: number }>>([])
 
 const metricColumns = [
-  { title: '时间', dataIndex: 'tsLabel' },
-  { title: '值', dataIndex: 'value' }
+  { title: '时间', dataIndex: 'tsLabel', width: 170 },
+  { title: '值', dataIndex: 'value', width: 120, align: 'right' as const }
 ]
 
 const logColumns = [
-  { title: '时间', dataIndex: 'tsLabel', width: 180 },
+  { title: '时间', dataIndex: 'tsLabel', width: 170 },
   { title: '级别', dataIndex: 'level', width: 80 },
   { title: '服务', dataIndex: 'service', width: 140 },
   { title: '消息', dataIndex: 'message', ellipsis: true }
@@ -399,7 +405,7 @@ const traceColumns = [
   { title: 'Span ID', dataIndex: 'span_id', width: 140, ellipsis: true },
   { title: '服务', dataIndex: 'service', width: 140 },
   { title: '操作', dataIndex: 'operation', ellipsis: true },
-  { title: '耗时(ms)', dataIndex: 'duration_ms', width: 100 },
+  { title: '耗时(ms)', dataIndex: 'duration_ms', width: 100, align: 'right' as const },
   { title: '状态', dataIndex: 'status', width: 80 },
   { title: '错误', dataIndex: 'errorLabel', width: 60 }
 ]
@@ -415,14 +421,14 @@ const traceSpans = computed(() =>
 const nodeColumns = [
   { title: '节点', dataIndex: 'node_id' },
   { title: '类型', dataIndex: 'type', width: 100 },
-  { title: '错误率', dataIndex: 'error_rate', width: 90 },
-  { title: 'P95(ms)', dataIndex: 'p95_ms', width: 100 }
+  { title: '错误率', dataIndex: 'error_rate', width: 100, align: 'right' as const },
+  { title: 'P95(ms)', dataIndex: 'p95_ms', width: 100, align: 'right' as const }
 ]
 
 const edgeColumns = [
   { title: 'From', dataIndex: 'from' },
   { title: 'To', dataIndex: 'to' },
-  { title: '调用量', dataIndex: 'call_count', width: 100 }
+  { title: '调用量', dataIndex: 'call_count', width: 100, align: 'right' as const }
 ]
 
 const metricPoints = computed(() =>
@@ -655,16 +661,20 @@ onMounted(loadAccounts)
 </script>
 
 <style scoped lang="scss">
+/* 容器/卡片/页签填充链由全局 .page-shell / .page-card / .page-tabs 提供 */
 .filter-form,
 .query-form {
-  margin-bottom: 16px;
+  flex-shrink: 0;
+  margin-bottom: var(--space-4);
 }
 
 .hint {
+  flex-shrink: 0;
   margin-bottom: 12px;
 }
 
 .evidence {
+  flex-shrink: 0;
   margin-top: 12px;
   color: var(--color-text-3);
   font-size: 12px;

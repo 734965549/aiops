@@ -2,7 +2,7 @@
   <a-card
     title="告警匹配规则"
     :bordered="false"
-    class="assets-card assets-card-fixed"
+    class="assets-card"
   >
     <template #extra>
       <a-space>
@@ -18,12 +18,12 @@
       </a-space>
     </template>
     <a-table
+      class="page-table"
       :columns="ruleColumns"
       :data="matchRules"
       :loading="rulesLoading"
       row-key="id"
       :pagination="rulePagination"
-      :scroll="tableScroll"
       :bordered="false"
       @page-change="(page: number) => emit('page-change', page)"
       @page-size-change="(size: number) => emit('page-size-change', size)"
@@ -80,7 +80,6 @@ defineProps<{
   rulesLoading: boolean
   ruleColumns: TableInstance['columns']
   rulePagination: PaginationConfig
-  tableScroll: Record<string, unknown>
 }>()
 
 const emit = defineEmits<{

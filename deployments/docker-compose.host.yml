@@ -1,0 +1,14 @@
+# 主机专用覆盖（非仓库通用配置）：CentOS 7 老内核 + Docker 26 默认 seccomp
+# 会拦截 PostgreSQL 16 初始化所需 syscall，导致 initdb 报
+# "could not write to file postmaster.pid: Operation not permitted"。
+# 仅对 postgres 放宽 seccomp；redis/api 保持默认。
+#
+# 用法：
+#   docker compose -f deployments/docker-compose.yml \
+#     -f deployments/docker-compose.dev.yml \
+#     -f deployments/docker-compose.host.yml up -d
+
+services:
+  postgres:
+    security_opt:
+      - seccomp=unconfined

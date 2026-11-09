@@ -1,8 +1,8 @@
 <template>
-  <div class="assets-page">
+  <div class="page-shell">
     <a-tabs
       v-model:active-key="activeTab"
-      class="assets-tabs"
+      class="assets-tabs page-tabs"
     >
       <a-tab-pane
         key="registry"
@@ -13,7 +13,6 @@
           :apps-loading="registry.appsLoading"
           :app-columns="registry.appColumns"
           :app-pagination="registry.appPagination"
-          :table-scroll="registry.tableScroll"
           :app-row-class="registry.appRowClass"
           :selected-app-id="registry.selectedAppId"
           :resource-card-title="registry.resourceCardTitle"
@@ -52,7 +51,6 @@
           :sync-batches-loading="sync.syncBatchesLoading"
           :sync-batch-columns="sync.syncBatchColumns"
           :sync-pagination="sync.syncPagination"
-          :table-scroll="sync.tableScroll"
           :sync-loading="sync.syncLoading"
           @trigger-sync="sync.runCloudSync"
           @refresh="sync.loadSyncBatches"
@@ -71,7 +69,6 @@
           :rules-loading="rules.rulesLoading"
           :rule-columns="rules.ruleColumns"
           :rule-pagination="rules.rulePagination"
-          :table-scroll="registry.tableScroll"
           @refresh="rules.loadMatchRules"
           @create="rules.openCreateMatchRule"
           @edit="rules.openEditMatchRule"
@@ -446,18 +443,7 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.assets-page {
-  height: calc(100vh - 144px);
-  min-height: 560px;
-  overflow: hidden;
-}
-
-.assets-tabs,
-:deep(.assets-tabs > .arco-tabs-content),
-:deep(.assets-tabs > .arco-tabs-content > .arco-tabs-content-list),
-:deep(.assets-tabs > .arco-tabs-content > .arco-tabs-content-list > .arco-tabs-pane) {
-  height: 100%;
-}
+/* 容器与页签填充链由全局 .page-shell / .page-tabs 提供 */
 
 :deep(.assets-tabs > .arco-tabs-nav) {
   margin-bottom: 12px;
@@ -468,30 +454,25 @@ onMounted(async () => {
   height: 100%;
 }
 
+:deep(.registry-layout > .arco-col) {
+  display: flex;
+}
+
+/* 卡片填充：与全局 .page-card 同一套 flex 链（注册页卡片在列内，需在此声明）；
+   表格滚动统一由表格自身的 .page-table 全局链负责，不再使用 scroll.y 第二套高度 */
 :deep(.assets-card) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
-:deep(.assets-card-fixed) {
-  height: calc(100% - 44px);
-}
-
-:deep(.assets-card .arco-card-body) {
-  height: calc(100% - 50px);
-  padding: 0 16px 12px;
-  overflow: hidden;
-}
-
-:deep(.assets-card .arco-table) {
-  height: 100%;
-}
-
-:deep(.assets-card .arco-table-container) {
-  height: calc(100% - 44px);
-}
-
-:deep(.assets-card .arco-table-pagination) {
-  margin-top: 10px;
+:deep(.assets-card > .arco-card-body) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 :deep(.assets-text-ellipsis) {
@@ -536,7 +517,7 @@ onMounted(async () => {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--color-border-2);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--color-fill-1);
 }
 

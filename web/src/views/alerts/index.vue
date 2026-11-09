@@ -1,22 +1,23 @@
 <template>
-  <div class="alerts-page">
+  <div class="page-shell">
     <a-card
       title="告警中心"
       :bordered="false"
+      class="page-card"
     >
       <template #extra>
         <a-space>
-          <a-button
-            v-if="canManageSources"
-            @click="openSourceModal"
-          >
-            接入源管理
-          </a-button>
           <a-button
             :loading="loadingList"
             @click="loadAlerts"
           >
             刷新
+          </a-button>
+          <a-button
+            v-if="canManageSources"
+            @click="openSourceModal"
+          >
+            接入源管理
           </a-button>
         </a-space>
       </template>
@@ -49,7 +50,7 @@
             v-model="filters.severity"
             allow-clear
             placeholder="全部"
-            style="width: 100px"
+            style="width: 140px"
             :options="severityOptions"
           />
         </a-form-item>
@@ -92,6 +93,7 @@
       />
 
       <a-table
+        class="page-table"
         :columns="columns"
         :data="alerts"
         :loading="loadingList"
@@ -833,7 +835,7 @@ const columns = [
   { title: '状态', slotName: 'status', width: 100 },
   { title: '来源', slotName: 'source', width: 140, ellipsis: true },
   { title: '环境', dataIndex: 'environment', width: 80 },
-  { title: '次数', dataIndex: 'occurrence_count', width: 70 },
+  { title: '次数', dataIndex: 'occurrence_count', width: 80, align: 'right' as const },
   { title: '最近更新', slotName: 'last_seen_at', width: 170 },
   { title: '操作', slotName: 'actions', width: 80 }
 ]
@@ -1393,85 +1395,79 @@ onMounted(async () => {
 </script>
 
 <style scoped lang="scss">
-.alerts-page {
-  .filter-form {
-    margin-bottom: 16px;
-  }
+.detail-desc {
+  margin-bottom: 16px;
+}
 
-  .detail-desc {
-    margin-bottom: 16px;
-  }
+.action-bar {
+  margin: 16px 0;
+}
 
-  .action-bar {
-    margin: 16px 0;
-  }
+.timeline-card {
+  margin-top: 8px;
+  padding: 0;
+}
 
-  .timeline-card {
-    margin-top: 8px;
-    padding: 0;
-  }
+.event-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 
-  .event-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
+.event-time {
+  color: var(--color-text-3);
+  font-size: 12px;
+}
 
-  .event-time {
-    color: var(--color-text-3);
-    font-size: 12px;
-  }
+.event-msg {
+  margin-top: 4px;
+}
 
-  .event-msg {
-    margin-top: 4px;
-  }
+.event-actor {
+  margin-top: 2px;
+  color: var(--color-text-3);
+  font-size: 12px;
+}
 
-  .event-actor {
-    margin-top: 2px;
-    color: var(--color-text-3);
-    font-size: 12px;
-  }
+.ai-result {
+  margin-top: 12px;
+}
 
-  .ai-result {
-    margin-top: 12px;
-  }
+.runbook-list {
+  width: 100%;
+}
 
-  .runbook-list {
-    width: 100%;
-  }
+.runbook-item {
+  margin-left: 8px;
+}
 
-  .runbook-item {
-    margin-left: 8px;
-  }
+.runbook-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
 
-  .runbook-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-weight: 500;
-  }
+.runbook-meta,
+.runbook-desc {
+  color: var(--color-text-3);
+  font-size: 12px;
+  margin-top: 4px;
+}
 
-  .runbook-meta,
-  .runbook-desc {
-    color: var(--color-text-3);
-    font-size: 12px;
-    margin-top: 4px;
-  }
+.dry-run-hint {
+  margin-left: 8px;
+  color: var(--color-text-3);
+  font-size: 12px;
+}
 
-  .dry-run-hint {
-    margin-left: 8px;
-    color: var(--color-text-3);
-    font-size: 12px;
-  }
+.field-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-3);
+}
 
-  .field-hint {
-    margin-top: 4px;
-    font-size: 12px;
-    color: var(--color-text-3);
-  }
-
-  .text-muted {
-    color: var(--color-text-3);
-  }
+.text-muted {
+  color: var(--color-text-3);
 }
 </style>

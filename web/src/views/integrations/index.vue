@@ -1,8 +1,9 @@
 <template>
-  <div class="integrations-page">
+  <div class="page-shell">
     <a-card
       title="云账号接入"
       :bordered="false"
+      class="page-card"
     >
       <template #extra>
         <a-space>
@@ -31,7 +32,7 @@
             v-model="filters.provider"
             allow-clear
             placeholder="全部"
-            style="width: 160px"
+            style="width: 140px"
           >
             <a-option value="huawei_cloud">
               华为云
@@ -49,7 +50,7 @@
             v-model="filters.enabled"
             allow-clear
             placeholder="全部"
-            style="width: 120px"
+            style="width: 140px"
           >
             <a-option :value="true">
               启用
@@ -60,16 +61,22 @@
           </a-select>
         </a-form-item>
         <a-form-item>
-          <a-button
-            type="primary"
-            @click="onSearch"
-          >
-            查询
-          </a-button>
+          <a-space>
+            <a-button
+              type="primary"
+              @click="onSearch"
+            >
+              查询
+            </a-button>
+            <a-button @click="onResetFilters">
+              重置
+            </a-button>
+          </a-space>
         </a-form-item>
       </a-form>
 
       <a-table
+        class="page-table"
         :columns="columns"
         :data="accounts"
         :loading="loading"
@@ -545,6 +552,12 @@ function onSearch() {
   loadAccounts()
 }
 
+function onResetFilters() {
+  filters.provider = undefined
+  filters.enabled = undefined
+  onSearch()
+}
+
 function onPageChange(page: number) {
   pagination.current = page
   loadAccounts()
@@ -736,10 +749,6 @@ onMounted(loadAccounts)
 </script>
 
 <style scoped lang="scss">
-.filter-form {
-  margin-bottom: 16px;
-}
-
 .sync-config-alert {
   margin-bottom: 16px;
 }

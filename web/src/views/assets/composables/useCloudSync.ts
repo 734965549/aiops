@@ -17,8 +17,6 @@ export function useCloudSync(options?: {
   const selectedSyncScopeKey = ref('')
   const selectedScopeSignalKey = ref('')
 
-  const tableScroll = { y: 'calc(100vh - 330px)' }
-
   const syncPagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
 
   // 请求序号：快速切换批次/翻页时丢弃旧响应，避免旧请求覆盖新结果。
@@ -374,7 +372,6 @@ export function useCloudSync(options?: {
     syncBatchDetail,
     selectedSyncScopeKey,
     selectedScopeSignalKey,
-    tableScroll,
     syncPagination,
     syncBatchColumns,
     syncBatchScopeDiagnosticColumns,

@@ -604,10 +604,33 @@ function formatTime(val: number | string | undefined): string {
   })
 }
 
+// 敏感字段识别：AK/SK、口令、令牌等一律脱敏后再展示或导出
+function isSensitiveKey(key: string) {
+  const normalized = key.toLowerCase().replace(/[-_\s]/g, '')
+  if (normalized === 'ak' || normalized === 'sk') return true
+  return /password|secret|token|apikey|authorization|jwt|accesskey/.test(normalized)
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Object.prototype.toString.call(value) === '[object Object]'
+}
+
+function redactPayload(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactPayload(item))
+  }
+  if (isPlainObject(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, isSensitiveKey(key) ? '******' : redactPayload(item)])
+    )
+  }
+  return value
+}
+
 function prettyJSON(obj: unknown): string {
   if (!obj) return '{}'
   try {
-    return JSON.stringify(obj, null, 2)
+    return JSON.stringify(redactPayload(obj), null, 2)
   } catch {
     return String(obj)
   }
@@ -838,7 +861,7 @@ async function exportCSV() {
       extractTraceID(it),
       it.ip || '',
       it.user_agent || '',
-      JSON.stringify(it.payload || {})
+      JSON.stringify(redactPayload(it.payload || {}))
     ].map(csvCell).join(','))
 
     const csvContent = [header.map(csvCell).join(','), ...rows].join('\r\n')

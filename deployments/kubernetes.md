@@ -46,7 +46,7 @@ Browser
    npm run build
    ```
 
-   当前仓库没有前端 Dockerfile。生产可选择 Nginx 镜像、对象存储 + CDN，或企业静态资源平台托管 `web/dist`。
+   仓库已提供前端镜像构建文件 `web/Dockerfile`（Node 构建 + Nginx 托管，构建上下文为 `web/`）。生产可直接构建 `aiops-web` 镜像，也可选择对象存储 + CDN 或企业静态资源平台托管 `web/dist`。构建命令见下文「前端部署」。
 
 ## 外挂数据库要求
 
@@ -400,21 +400,24 @@ docker run --rm -it \
 
 ### aiops-web 镜像
 
-仓库目前没有前端 Dockerfile，可以新增一个前端镜像构建文件，例如 `web/Dockerfile`：
+仓库已提供前端镜像构建文件 `web/Dockerfile`，构建上下文为 `web/`（内部路径不带 `web/` 前缀），内容如下：
 
 ```dockerfile
 FROM node:20-alpine AS builder
 WORKDIR /workspace
 
-COPY web/package*.json ./
+RUN npm install -g npm@11.6.2
+
+COPY package*.json ./
 RUN npm ci
 
-COPY web/ ./
+COPY . ./
 RUN npm run build
 
 FROM nginxinc/nginx-unprivileged:1.27-alpine
-COPY web/nginx.conf /etc/nginx/conf.d/default.conf
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /workspace/dist /usr/share/nginx/html
+
 EXPOSE 8080
 ```
 
@@ -466,7 +469,7 @@ docker build -f web/Dockerfile -t registry.example.com/aiops/aiops-web:<version>
 docker push registry.example.com/aiops/aiops-web:<version>
 ```
 
-如果已经按上一节用 Docker 构建好了 `web/dist`，也可以只构建 Nginx 运行镜像，不再在镜像构建阶段执行 `npm ci`。例如新增 `web/Dockerfile.runtime`：
+如果已经按上一节用 Docker 构建好了 `web/dist`，也可以只构建 Nginx 运行镜像，跳过镜像内的 `npm ci`。仓库**未内置**该运行态 Dockerfile；如需此模式，请自行在 `web/` 下新增 `web/Dockerfile.runtime`：
 
 ```dockerfile
 FROM nginxinc/nginx-unprivileged:1.27-alpine

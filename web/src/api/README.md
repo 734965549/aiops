@@ -14,6 +14,8 @@
 
 ## Identity（`identity.ts`）
 
+公开接口的 `unwrapPublic` 会把 HTTP 错误（401/403/429/5xx 等）和网络错误统一转换为 `PublicApiError`（含 `status/code/message/trace_id`），`message` 优先取后端响应体；调用方用 `isPublicApiError` 判断。登录页对 `status === 401` 统一提示“账号或密码错误”（后端对用户不存在/密码错误/账号禁用统一返回 401，避免信息差）。
+
 | 函数 | 接口 | 说明 |
 | --- | --- | --- |
 | `login` | `POST /api/identity/login` | 公开；返回 TokenPair |

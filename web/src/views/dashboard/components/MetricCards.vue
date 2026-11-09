@@ -113,8 +113,16 @@ const cards = computed(() => {
   cursor: pointer;
   min-height: 168px;
   position: relative;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   background: rgba(255, 255, 252, 0.68) !important;
+}
+/* 卡体 flex 列 + tip 置底：tip 换行时各卡数值仍保持在同一水平线上 */
+.metric-card :deep(.arco-card-body) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 .metric-card::before {
   content: '';
@@ -169,6 +177,8 @@ const cards = computed(() => {
 }
 .metric-card .metric-tip {
   position: relative;
+  margin-top: auto;
+  padding-top: 8px;
   color: #858a81;
   font-size: 11px;
   line-height: 1.5;
