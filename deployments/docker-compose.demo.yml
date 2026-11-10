@@ -1,0 +1,55 @@
+# 专属演示环境覆盖：与宿主机现有 PostgreSQL 完全隔离。
+#
+# 隔离手段（4 层）：
+#   1. 独立 compose project：-p aiops-demo
+#      -> 独立网络 aiops-demo_aiops-net、独立数据卷 aiops-demo_aiops-pg-data，
+#         不复用任何 aiops/lianghua project 的网络与卷。
+#   2. 独立容器名：aiops-demo-* ，避免与默认 aiops-postgres/aiops-redis/aiops-api/aiops-web 冲突。
+#   3. 独立端口段：宿主机 5432 已被现有 pgvector(lianghua-pg) 占用，故 PG 映射到 5433，
+#      Redis 映射到 6380；API 8080、前端 5173（与前端 dev 默认端口一致，便于直接访问）。
+#   4. 独立镜像标签：aiops-api:demo / aiops-web:demo，不覆盖其他标签。
+#
+# 用法：
+#   docker compose -p aiops-demo \
+#     -f deployments/docker-compose.yml \
+#     -f deployments/docker-compose.dev.yml \
+#     -f deployments/docker-compose.demo.yml up -d --build
+#
+# 停止并清理（只删本 project 的网络与卷，不影响其他 project）：
+#   docker compose -p aiops-demo \
+#     -f deployments/docker-compose.yml \
+#     -f deployments/docker-compose.dev.yml \
+#     -f deployments/docker-compose.demo.yml down -v
+
+services:
+  postgres:
+    container_name: aiops-demo-postgres
+    # !override：列表型字段在 merge 时默认是「追加」而非「替换」，
+    # 不加此标签会同时保留基线文件的 5432:5432，直接撞上宿主机现有 pgvector(lianghua-pg)。
+    ports: !override
+      - "5433:5432"
+    volumes: !override
+      - aiops-demo-pg-data:/var/lib/postgresql/data
+
+  redis:
+    container_name: aiops-demo-redis
+    ports: !override
+      - "6380:6379"
+    volumes: !override
+      - aiops-demo-redis-data:/data
+
+  api:
+    container_name: aiops-demo-api
+    image: aiops-api:demo
+    ports: !override
+      - "8080:8080"
+
+  web:
+    container_name: aiops-demo-web
+    image: aiops-web:demo
+    ports: !override
+      - "5173:8080"
+
+volumes:
+  aiops-demo-pg-data:
+  aiops-demo-redis-data:
