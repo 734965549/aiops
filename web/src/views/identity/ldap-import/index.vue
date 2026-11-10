@@ -1,5 +1,8 @@
 <template>
-  <div class="page-shell ldap-import-page">
+  <div
+    class="page-shell ldap-import-page"
+    :class="{ 'ldap-import-page--connected': connected }"
+  >
     <a-card
       title="LDAP / AD 域账号导入"
       :bordered="false"
@@ -482,7 +485,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped lang="scss">
-/* 容器由全局 .page-shell 提供：连接表单固定高度，浏览面板填满剩余空间并内部滚动 */
+/* 容器由全局 .page-shell 提供：满高、内部滚动 */
 .ldap-import-page {
   gap: var(--space-4);
 }
@@ -502,6 +505,12 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+
+/* 未连接时下方没有浏览面板，连接表单卡片铺满整个内容区，
+   避免页面下半部分留出大片未填充的空白背景。 */
+.ldap-import-page:not(.ldap-import-page--connected) .conn-card {
+  flex: 1 1 auto;
 }
 
 .tip {

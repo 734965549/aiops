@@ -1,5 +1,5 @@
 <template>
-  <div class="audit-page">
+  <div class="page-shell audit-page">
     <!-- 顶部聚合统计指标卡片 -->
     <a-row :gutter="16" class="stats-row">
       <a-col :span="6">
@@ -45,9 +45,15 @@
     </a-row>
 
     <!-- 主卡片：切换标签页（明细列表 vs 聚合分析） -->
-    <a-card class="main-card">
+    <a-card class="page-card main-card">
       <div class="card-toolbar">
-        <a-tabs v-model:active-key="activeTab" type="rounded">
+        <!-- hide-content：本页 a-tabs 仅作分段导航使用（真正的内容由下方
+             v-if 切换），保留 Arco 默认内容区会多出一段空白高度 -->
+        <a-tabs
+          v-model:active-key="activeTab"
+          type="rounded"
+          hide-content
+        >
           <a-tab-pane key="list">
             <template #title>
               <span><icon-unordered-list /> 操作明细</span>
@@ -177,13 +183,16 @@
       </div>
 
       <!-- Tab 1: 操作明细列表 -->
-      <div v-if="activeTab === 'list'">
+      <div
+        v-if="activeTab === 'list'"
+        class="tab-body"
+      >
         <a-table
           :data="items"
           :loading="loading"
           row-key="id"
           :pagination="pagination"
-          class="audit-table"
+          class="page-table audit-table"
           @page-change="onPageChange"
           @page-size-change="onPageSizeChange"
         >
@@ -259,7 +268,10 @@
       </div>
 
       <!-- Tab 2: 按资源聚合 -->
-      <div v-else-if="activeTab === 'agg-resource'">
+      <div
+        v-else-if="activeTab === 'agg-resource'"
+        class="tab-body"
+      >
         <div class="agg-description">
           <icon-info-circle /> 基于当前筛选条件统计的活跃资源及对应变更动作频次。
         </div>
@@ -268,6 +280,7 @@
           :loading="loading"
           row-key="key"
           :pagination="{ pageSize: 10, showTotal: true }"
+          class="page-table"
         >
           <template #columns>
             <a-table-column title="资源类型" data-index="resource_type" :width="130">
@@ -303,7 +316,10 @@
       </div>
 
       <!-- Tab 3: 按用户聚合 -->
-      <div v-else-if="activeTab === 'agg-user'">
+      <div
+        v-else-if="activeTab === 'agg-user'"
+        class="tab-body"
+      >
         <div class="agg-description">
           <icon-info-circle /> 统计不同用户/系统账户的操作频率及主要涉及的资源类型。
         </div>
@@ -312,6 +328,7 @@
           :loading="loading"
           row-key="user_id"
           :pagination="{ pageSize: 10, showTotal: true }"
+          class="page-table"
         >
           <template #columns>
             <a-table-column title="操作人 / 用户 ID" data-index="user_id" :width="260" ellipsis tooltip>
@@ -360,7 +377,10 @@
       </div>
 
       <!-- Tab 4: 按 Trace 聚合 -->
-      <div v-else-if="activeTab === 'agg-trace'">
+      <div
+        v-else-if="activeTab === 'agg-trace'"
+        class="tab-body"
+      >
         <div class="agg-description">
           <icon-info-circle /> 将同一 HTTP/MQ 链路（Trace ID）内产生的一连串写操作、审核确认聚合呈现，便于全链路根因排查。
         </div>
@@ -369,6 +389,7 @@
           :loading="loading"
           row-key="trace_id"
           :pagination="{ pageSize: 10, showTotal: true }"
+          class="page-table"
         >
           <template #columns>
             <a-table-column title="Trace ID" data-index="trace_id" :width="280" ellipsis tooltip>
@@ -888,14 +909,40 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* 容器由全局 .page-shell 提供：满高、内部滚动，不再自行计算 100vh 高度。
+   旧写法 min-height: calc(100vh - 64px) 与实际可用高度（.main 还要减去
+   header + margin + padding）不一致，会把内容顶出一段多余的纵向滚动条。 */
 .audit-page {
-  padding: 16px;
-  background-color: var(--color-fill-2);
-  min-height: calc(100vh - 64px);
+  /* 顶部指标卡行按内容高度固定，不参与剩余空间分配 */
+  gap: var(--space-4);
 }
 
 .stats-row {
-  margin-bottom: 16px;
+  flex-shrink: 0;
+}
+
+/* 工具条 / 筛选条按内容高度固定，剩余空间留给表格区 */
+.card-toolbar,
+.query-form,
+.active-filter-bar {
+  flex-shrink: 0;
+}
+
+/* 表格区填满主卡片剩余高度，表格自身内部滚动，分页固定在底部 */
+.tab-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.agg-description {
+  flex-shrink: 0;
+}
+
+.main-card {
+  border-radius: 6px;
+  background: var(--color-bg-2);
 }
 
 .stat-card {
