@@ -142,6 +142,74 @@ a {
   margin-top: 10px;
 }
 
+/* ============================================================
+   表格 100% 自适应（.page-table-fit）
+
+   列数较少的列表页加上这个类即可：列宽随容器等比缩放，始终铺满 100%，
+   不再出现横向滚动条，最右侧的「操作」列也不会被裁掉。
+
+   根因：Arco 的 TableColumnData.width 只接受 px，ColGroup 会渲染成
+     <col style="width:280px;min-width:280px;max-width:280px">
+   在 table-layout:fixed 下，列宽总和一旦超过容器宽度，浏览器会把 <table>
+   撑到「列宽总和」，容器随即出现横向滚动条。这里用作者 !important 覆盖
+   内联样式（作者 !important 优先于 inline 非 !important），把列宽交回
+   百分比 / 自动分配。
+
+   页面通过 --aiops-col-N（N=1..12）按 nth-child 指定百分比列宽；未指定时
+   浏览器等分剩余空间。增删列时同步调整变量序号即可。
+   注意：带 :scroll="{ x: ... }" 的宽表（如资源清单）不要套用本类。
+   ============================================================ */
+.page-table-fit {
+  /* 行多时保留纵向滚动，横向滚动条彻底关掉 */
+  > .arco-spin > .arco-table-container {
+    overflow-x: hidden;
+  }
+
+  .arco-table-element {
+    width: 100% !important;
+    table-layout: fixed !important;
+  }
+
+  .arco-table-element colgroup col {
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+  }
+
+  @for $i from 1 through 12 {
+    .arco-table-element colgroup col:nth-child(#{$i}) {
+      width: var(--aiops-col-#{$i}, auto) !important;
+    }
+  }
+
+  /* 窄容器下 Arco 默认 16px 左右内边距吃掉太多内容宽度，收紧为 8px */
+  &.arco-table .arco-table-cell {
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  /* 内容不再撑宽列：长串 ID 折行/省略，操作按钮允许换行 */
+  .arco-table-td .arco-table-cell,
+  .arco-table-td-content {
+    min-width: 0;
+  }
+
+  .arco-table-td-content {
+    overflow-wrap: anywhere;
+  }
+
+  /* Arco 内层容器默认 overflow-x:auto，兜底关掉第二道横向滚动条 */
+  .arco-table-body,
+  .arco-table-content-scroll-x {
+    overflow-x: hidden !important;
+  }
+
+  .arco-table-pagination {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+}
+
 /* 页签填充链：页签内容铺满容器，每个 pane 自成滚动区
 
    Arco 的真实 DOM 层级是：

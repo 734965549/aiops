@@ -76,17 +76,24 @@
       </a-form>
 
       <a-table
-        class="page-table"
+        class="page-table page-table-fit"
+        :style="fitTableStyle"
         :columns="columns"
         :data="accounts"
         :loading="loading"
         row-key="account_id"
         :pagination="pagination"
+        :table-layout-fixed="true"
         @page-change="onPageChange"
         @page-size-change="onPageSizeChange"
       >
         <template #provider="{ record }">
-          <a-tag>{{ record.provider }}</a-tag>
+          <a-tag
+            class="cell-tag"
+            :title="record.provider"
+          >
+            {{ record.provider }}
+          </a-tag>
         </template>
         <template #enabled="{ record }">
           <a-tag :color="record.enabled ? 'green' : 'gray'">
@@ -94,7 +101,10 @@
           </a-tag>
         </template>
         <template #capabilities="{ record }">
-          <a-space wrap>
+          <a-space
+            wrap
+            :size="4"
+          >
             <a-tag
               v-for="cap in record.capabilities || []"
               :key="cap"
@@ -109,7 +119,11 @@
           {{ record.last_check_status || '—' }}
         </template>
         <template #actions="{ record }">
-          <a-space>
+          <a-space
+            class="row-actions"
+            wrap
+            :size="4"
+          >
             <a-button
               type="text"
               size="small"
@@ -367,7 +381,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, type CSSProperties } from 'vue'
 import Message from '@arco-design/web-vue/es/message'
 import {
   checkIntegrationAccount,
@@ -454,14 +468,26 @@ const showRegionProjectFallback = computed(() => {
   return isHuaweiCloud.value && parseRegions(regionsText.value).length > 1 && missingRegionProjects.value.length > 0
 })
 
+// 列宽不再写死 px：比例由 fitTableStyle 以百分比注入，表格随容器自动缩放，
+// 始终 100% 铺满、不产生横向滚动条。顺序与 columns 一一对应。
+const fitTableStyle: CSSProperties = {
+  '--aiops-col-1': '16%',
+  '--aiops-col-2': '12%',
+  '--aiops-col-3': '13%',
+  '--aiops-col-4': '9%',
+  '--aiops-col-5': '18%',
+  '--aiops-col-6': '10%',
+  '--aiops-col-7': '22%'
+}
+
 const columns = [
-  { title: '账号 ID', dataIndex: 'account_id', width: 280, ellipsis: true },
-  { title: '名称', dataIndex: 'name', width: 160 },
-  { title: 'Provider', slotName: 'provider', width: 130 },
-  { title: '状态', slotName: 'enabled', width: 90 },
+  { title: '账号 ID', dataIndex: 'account_id', ellipsis: true, tooltip: true },
+  { title: '名称', dataIndex: 'name', ellipsis: true, tooltip: true },
+  { title: 'Provider', slotName: 'provider' },
+  { title: '状态', slotName: 'enabled' },
   { title: '能力', slotName: 'capabilities' },
-  { title: '最近检查', slotName: 'last_check', width: 100 },
-  { title: '操作', slotName: 'actions', width: 300 }
+  { title: '最近检查', slotName: 'last_check' },
+  { title: '操作', slotName: 'actions' }
 ]
 
 function resetHuaweiExtra() {
@@ -751,5 +777,20 @@ onMounted(loadAccounts)
 <style scoped lang="scss">
 .sync-config-alert {
   margin-bottom: 16px;
+}
+
+/* 操作列四个动作在窄窗口下自动换行，压紧内边距保证全部可见 */
+:deep(.row-actions .arco-btn) {
+  padding-right: 4px;
+  padding-left: 4px;
+}
+
+/* Provider 值较长（huawei_cloud），列被压窄时截断并保留原生 title 提示 */
+:deep(.cell-tag) {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 </style>
