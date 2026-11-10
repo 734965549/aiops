@@ -6,7 +6,13 @@ import type { TableInstance } from '@arco-design/web-vue/es/table'
 import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import * as assetApi from '@/api/asset'
 import type { Application, Resource } from '@/api/asset'
-import { labelEntries } from './assetUtils'
+import {
+  OPTIONAL_RESOURCE_COLUMNS,
+  labelEntries
+} from './assetUtils'
+import type { OptionalResourceColumnKey } from './assetUtils'
+
+type TableColumn = NonNullable<TableInstance['columns']>[number]
 
 export function useAssetRegistry(options: {
   selectedAppId: Ref<string>
@@ -29,12 +35,6 @@ export function useAssetRegistry(options: {
   const editingResourceId = ref('')
   const appSaving = ref(false)
   const resourceSaving = ref(false)
-
-  const resourceTableScroll = { x: 1880 }
-  // 应用表位于 span=10 的窄栏内，若不给 scroll.x，Arco 会压缩无固定宽度的
-  // 「描述」列（只剩 1~2 个字，显示为「描…」）。给出横向滚动下限后，
-  // 各列保持既定宽度，超出部分横向滚动，不再互相挤压。
-  const appTableScroll = { x: 560 }
 
   const appPagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
   const resourcePagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
@@ -61,32 +61,61 @@ export function useAssetRegistry(options: {
     instance: ''
   })
 
+  // 左栏只有 1~2 列可用：应用名 + 环境/Namespace/描述合并到同一单元格，
+  // 编辑/删除改为图标按钮，避免窄栏里再出现被压扁的文字列和横向滚动条。
   const appColumns: TableInstance['columns'] = [
-    { title: '应用名', dataIndex: 'name', ellipsis: true, tooltip: true, width: 120 },
-    { title: '环境', slotName: 'environment', width: 80 },
-    { title: 'Namespace', slotName: 'namespace', width: 110, ellipsis: true },
-    // 描述必须有明确宽度：否则在窄栏中会被压缩成只剩一两个字。
-    { title: '描述', dataIndex: 'description', width: 160, ellipsis: true, tooltip: true },
-    { title: '操作', slotName: 'actions', width: 100 }
+    { title: '应用', slotName: 'name', width: 200 },
+    { title: '操作', slotName: 'actions', width: 88 }
   ]
 
-  const resourceColumns: TableInstance['columns'] = [
-    { title: '资源名', dataIndex: 'name', ellipsis: true, tooltip: true, width: 140 },
+  // 「附加列」默认全部关闭。验收要求可见的「来源 / 云资源 ID / Region / 同步状态」
+  // 都在核心列里；勾选附加列后表格才切回横向滚动。
+  const visibleExtraColumns = ref<OptionalResourceColumnKey[]>([])
+
+  // 核心列宽度只用于「附加列开启」时的 scroll.x 计算；
+  // 默认视图下由 .page-table-fit 的 !important 百分比列宽覆盖。
+  const baseResourceColumns: TableInstance['columns'] = [
+    { title: '资源名', dataIndex: 'name', width: 150, ellipsis: true, tooltip: true },
     { title: '来源', slotName: 'source', width: 80 },
     { title: '类型', dataIndex: 'resource_type', width: 80 },
-    { title: '账号', slotName: 'integration_account_id', width: 180 },
     { title: '云类型', slotName: 'cloud_resource_type', width: 90 },
+    { title: '云账号', slotName: 'integration_account_id', width: 150 },
     { title: '云资源 ID', slotName: 'cloud_resource_id', width: 150, ellipsis: true },
     { title: 'Region', slotName: 'region', width: 100 },
-    { title: '同步状态', slotName: 'sync_status', width: 90 },
-    { title: '最近同步', slotName: 'last_synced_at', width: 150 },
-    { title: '最近成功批次', slotName: 'sync_batch_id', width: 180 },
-    { title: 'Labels', slotName: 'labels', width: 220 },
-    { title: 'Namespace', dataIndex: 'namespace', width: 110, ellipsis: true, tooltip: true },
-    { title: 'Pod', dataIndex: 'pod', width: 110, ellipsis: true, tooltip: true },
-    { title: 'Instance', dataIndex: 'instance', width: 120, ellipsis: true, tooltip: true },
-    { title: '操作', slotName: 'actions', width: 120, fixed: 'right' }
+    { title: '同步状态', slotName: 'sync_status', width: 90 }
   ]
+  const baseResourceWidth = baseResourceColumns.reduce((sum, col) => sum + (col.width || 0), 0) + 110
+
+  const resourceColumns = computed<TableInstance['columns']>(() => {
+    const extras: TableColumn[] = OPTIONAL_RESOURCE_COLUMNS
+      .filter((col) => visibleExtraColumns.value.includes(col.key))
+      .map((col) => ({
+        title: col.label,
+        width: col.width,
+        ...(col.slotName
+          ? { slotName: col.slotName }
+          : { dataIndex: col.dataIndex || col.key, ellipsis: true, tooltip: true })
+      }))
+    return [
+      ...baseResourceColumns,
+      ...extras,
+      {
+        title: '操作',
+        slotName: 'actions',
+        width: 110,
+        // 默认视图不横向滚动，无需固定列；fixed + 百分比列宽会让 sticky 计算错位。
+        ...(extras.length ? { fixed: 'right' as const } : {})
+      }
+    ]
+  })
+
+  const resourceTableScroll = computed<Record<string, unknown>>(() => {
+    if (!visibleExtraColumns.value.length) return {}
+    const extraWidth = OPTIONAL_RESOURCE_COLUMNS
+      .filter((col) => visibleExtraColumns.value.includes(col.key))
+      .reduce((sum, col) => sum + col.width, 0)
+    return { x: baseResourceWidth + extraWidth }
+  })
 
   const selectedApplication = computed(() => {
     return applications.value.find((a) => a.id === selectedAppId.value)
@@ -181,6 +210,17 @@ export function useAssetRegistry(options: {
   function applyResourceFilters() {
     resourcePagination.current = 1
     loadResources()
+  }
+
+  function resetResourceFilters() {
+    resourceFilters.cloud_resource_type = ''
+    resourceFilters.region = ''
+    resourceFilters.sync_status = ''
+    applyResourceFilters()
+  }
+
+  function setVisibleExtraColumns(keys: OptionalResourceColumnKey[]) {
+    visibleExtraColumns.value = keys
   }
 
   function onSelectApplication(record: TableData) {
@@ -380,10 +420,10 @@ export function useAssetRegistry(options: {
     appForm,
     resourceForm,
     resourceFilters,
+    visibleExtraColumns,
     appPagination,
     resourcePagination,
     resourceTableScroll,
-    appTableScroll,
     appColumns,
     resourceColumns,
     selectedApplication,
@@ -400,6 +440,8 @@ export function useAssetRegistry(options: {
     loadApplications,
     loadResources,
     applyResourceFilters,
+    resetResourceFilters,
+    setVisibleExtraColumns,
     onSelectApplication,
     openCreateApplication,
     openEditApplication,

@@ -1,8 +1,49 @@
 import type { SyncBatchSummary, SyncBatchSummaryDisplay } from '@/api/asset'
 
-// 资产页面纯函数：label 掩码/排序与同步批次 message 兼容解析。
+// 资产页面纯函数：label 掩码/排序、长 ID 短码、同步批次 message 兼容解析。
 // 抽离自 assets/index.vue 的 <script setup> 便于单测。
 // 见 ops/huawei-ces-sync-contract.md §15.5（labels 展示契约）与 §15.3（批次 summary / summary.scopes[] 展示）。
+
+/**
+ * 表格内的长 ID（云账号 / 云资源 ID / 批次 ID）只显示首段 + 尾段，全文交给 tooltip。
+ * 直接把 UUID / 36 位 ID 放进单元格会把列撑宽，进而逼出整表横向滚动条。
+ */
+export function shortId(value?: string, head = 8, tail = 4): string {
+  const text = (value || '').trim()
+  if (!text) return ''
+  if (text.length <= head + tail + 1) return text
+  return `${text.slice(0, head)}…${text.slice(-tail)}`
+}
+
+/**
+ * 资源表的「附加列」元数据。
+ * 默认视图只保留验收要求的核心列（来源、云资源 ID、Region、同步状态等），
+ * 其余低频列由用户在「列设置」里按需勾选，避免 15 列同时挤在窄栏里。
+ */
+export type OptionalResourceColumnKey =
+  | 'last_synced_at'
+  | 'sync_batch_id'
+  | 'labels'
+  | 'namespace'
+  | 'pod'
+  | 'instance'
+
+export interface OptionalResourceColumn {
+  key: OptionalResourceColumnKey
+  label: string
+  width: number
+  slotName?: string
+  dataIndex?: string
+}
+
+export const OPTIONAL_RESOURCE_COLUMNS: OptionalResourceColumn[] = [
+  { key: 'last_synced_at', label: '最近同步', width: 150, slotName: 'last_synced_at' },
+  { key: 'sync_batch_id', label: '最近成功批次', width: 180, slotName: 'sync_batch_id' },
+  { key: 'labels', label: 'Labels', width: 220, slotName: 'labels' },
+  { key: 'namespace', label: 'Namespace', width: 110, dataIndex: 'namespace' },
+  { key: 'pod', label: 'Pod', width: 110, dataIndex: 'pod' },
+  { key: 'instance', label: 'Instance', width: 120, dataIndex: 'instance' }
+]
 
 export type LabelEntry = {
   key: string

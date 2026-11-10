@@ -14,7 +14,6 @@
           :app-columns="registry.appColumns"
           :app-pagination="registry.appPagination"
           :app-row-class="registry.appRowClass"
-          :app-table-scroll="registry.appTableScroll"
           :selected-app-id="registry.selectedAppId"
           :resource-card-title="registry.resourceCardTitle"
           :resources="registry.resources"
@@ -24,7 +23,9 @@
           :resource-table-scroll="registry.resourceTableScroll"
           :resource-row-class="registry.resourceRowClass"
           :resource-filters="registry.resourceFilters"
+          :visible-extra-columns="registry.visibleExtraColumns"
           @update:resource-filters="(f) => Object.assign(registry.resourceFilters, f)"
+          @column-visibility-change="registry.setVisibleExtraColumns"
           @refresh-apps="registry.loadApplications"
           @create-app="registry.openCreateApplication"
           @edit-app="registry.openEditApplication"
@@ -34,6 +35,7 @@
           @edit-resource="registry.openEditResource"
           @delete-resource="registry.confirmDeleteResource"
           @apply-filters="registry.applyResourceFilters"
+          @reset-filters="registry.resetResourceFilters"
           @select-app="registry.onSelectApplication"
           @app-page-change="registry.onAppPageChange"
           @app-page-size-change="registry.onAppPageSizeChange"
@@ -450,40 +452,48 @@ onMounted(async () => {
   margin-bottom: 12px;
 }
 
-:deep(.registry-layout),
-:deep(.registry-layout > .arco-col) {
+/* 左右分栏：左栏是应用选择器（字段短、条数少），固定 300px；
+   右栏是资源宽表，占满剩余空间。用 grid 而非 a-row，避免 gutter 负 margin
+   把内容撑出 .main、在页面底部多出一条横向滚动条。 */
+:deep(.registry-layout) {
+  display: grid;
+  grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
+  gap: var(--space-4);
   height: 100%;
+  min-height: 0;
 }
 
-:deep(.registry-layout > .arco-col) {
+:deep(.registry-panel) {
   display: flex;
+  min-width: 0;
+  min-height: 0;
 }
 
 /* 卡片填充：与全局 .page-card 同一套 flex 链（注册页卡片在列内，需在此声明）；
    表格滚动统一由表格自身的 .page-table 全局链负责，不再使用 scroll.y 第二套高度 */
 :deep(.assets-card) {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-/* Arco 的 .arco-card-header 是固定 height:46px + overflow:hidden。
-   资源卡的工具条（云类型/Region/同步状态/筛选/刷新/新建资源）在窄栏下会折成两行，
-   固定高度会把第二行直接裁掉且无法滚动到。
-   这里改为按内容自适应高度，标题与工具条顶端对齐。 */
+/* header 只放标题 + 三个操作按钮。筛选表单已移到卡片 body 的工具条，
+   不再受 Arco 固定 header 高度裁切。 */
 :deep(.assets-card > .arco-card-header) {
+  /* Arco 默认给 header 固定 height + overflow:hidden，窄屏换行时会裁掉第二行 */
   height: auto;
   min-height: 50px;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--space-3);
 }
 
 :deep(.assets-card > .arco-card-header > .arco-card-header-extra) {
+  flex-shrink: 0;
   overflow: visible;
   white-space: normal;
-  text-overflow: clip;
 }
 
 :deep(.assets-card > .arco-card-body) {
@@ -493,6 +503,53 @@ onMounted(async () => {
   flex-direction: column;
 }
 
+/* 筛选工具条独立成行，窄屏自动换行；右侧给出结果总数，不占用表头空间 */
+:deep(.registry-toolbar) {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--space-3);
+  border-bottom: 1px solid var(--aiops-border-soft);
+}
+
+:deep(.registry-toolbar-count) {
+  flex-shrink: 0;
+  color: var(--aiops-text-3);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 应用单元格：主名 + 环境/Namespace 副行，替代被压扁的多列 */
+:deep(.app-cell) {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.4;
+  text-align: left;
+}
+
+:deep(.app-cell-name),
+:deep(.app-cell-meta) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:deep(.app-cell-name) {
+  color: var(--aiops-text-1);
+  font-weight: 600;
+}
+
+:deep(.app-cell-meta) {
+  color: var(--aiops-text-3);
+  font-size: 11px;
+}
+
+:deep(.assets-id),
 :deep(.assets-text-ellipsis) {
   display: inline-block;
   max-width: 100%;
@@ -500,6 +557,23 @@ onMounted(async () => {
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
+}
+
+/* 长 ID 一律显示短码，等宽字体避免列宽被 UUID 撑开 */
+:deep(.assets-id) {
+  color: var(--aiops-text-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* 窄屏两栏堆叠，高度交回内容流，由页签 pane 负责滚动 */
+@media (max-width: 1180px) {
+  :deep(.registry-layout) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(420px, 1fr);
+    height: auto;
+    min-height: 100%;
+  }
 }
 
 :deep(.assets-empty) {
@@ -568,5 +642,29 @@ onMounted(async () => {
   color: var(--color-text-1);
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+</style>
+
+<style>
+/* 列设置浮层挂载到 body，scoped 样式无法命中，使用带前缀的全局类名 */
+.assets-column-settings {
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.assets-column-settings-title {
+  color: var(--aiops-text-1);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.assets-column-settings-hint {
+  padding-top: 8px;
+  border-top: 1px solid var(--aiops-border-soft);
+  color: var(--aiops-text-3);
+  font-size: 11px;
+  line-height: 1.5;
 }
 </style>

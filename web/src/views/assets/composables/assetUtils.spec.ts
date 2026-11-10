@@ -2,6 +2,7 @@
 import type { SyncBatchSummary } from '@/api/asset'
 import { describe, expect, it } from 'vitest'
 import {
+  OPTIONAL_RESOURCE_COLUMNS,
   buildSyncBatchSignalTags,
   formatSyncBatchSummary,
   humanizeSyncPartialReason,
@@ -9,8 +10,35 @@ import {
   labelEntries,
   maskLabelValue,
   parseSyncBatchMessage,
-  preferredLabelKeys
+  preferredLabelKeys,
+  shortId
 } from './assetUtils'
+
+describe('shortId', () => {
+  it('returns short or empty values unchanged', () => {
+    expect(shortId('')).toBe('')
+    expect(shortId(undefined)).toBe('')
+    expect(shortId('cn-south-1')).toBe('cn-south-1')
+  })
+
+  it('keeps head and tail of long ids', () => {
+    expect(shortId('acc-50063711-8bfe-4d3e-9b05-1234abcd')).toBe('acc-5006…abcd')
+    expect(shortId('0123456789abcdef', 4, 2)).toBe('0123…ef')
+  })
+
+  it('trims surrounding whitespace before shortening', () => {
+    expect(shortId('  0123456789abcdef  ', 4, 2)).toBe('0123…ef')
+  })
+})
+
+describe('OPTIONAL_RESOURCE_COLUMNS', () => {
+  it('keeps keys unique and every column renderable', () => {
+    const keys = OPTIONAL_RESOURCE_COLUMNS.map((col) => col.key)
+    expect(new Set(keys).size).toBe(keys.length)
+    expect(OPTIONAL_RESOURCE_COLUMNS.every((col) => col.slotName || col.dataIndex)).toBe(true)
+    expect(OPTIONAL_RESOURCE_COLUMNS.every((col) => col.width > 0)).toBe(true)
+  })
+})
 
 describe('maskLabelValue', () => {
   it('returns original value for non-sensitive keys', () => {

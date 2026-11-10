@@ -1,21 +1,26 @@
 <template>
-  <a-row
-    :gutter="16"
-    class="registry-layout"
-  >
-    <a-col :span="10">
+  <div class="registry-layout">
+    <!-- 左栏：应用选择器。内容少、字段短，固定为窄栏，不再与右侧宽表平分宽度 -->
+    <section class="registry-panel registry-panel--apps">
       <a-card
         title="应用"
         :bordered="false"
         class="assets-card"
       >
         <template #extra>
-          <a-space>
-            <a-button @click="emit('refresh-apps')">
-              刷新
+          <a-space :size="6">
+            <a-button
+              size="small"
+              aria-label="刷新应用"
+              @click="emit('refresh-apps')"
+            >
+              <template #icon>
+                <IconRefresh />
+              </template>
             </a-button>
             <a-button
               type="primary"
+              size="small"
               @click="emit('create-app')"
             >
               新建应用
@@ -24,73 +29,136 @@
         </template>
 
         <a-table
-          class="page-table"
+          class="page-table page-table-fit"
+          :style="appFitStyle"
+          :table-layout-fixed="true"
           :columns="appColumns"
           :data="applications"
           :loading="appsLoading"
           row-key="id"
           :pagination="appPagination"
-          :scroll="appTableScroll"
           :bordered="false"
           :row-class="appRowClass"
           @page-change="(page: number) => emit('app-page-change', page)"
           @page-size-change="(size: number) => emit('app-page-size-change', size)"
           @row-click="(record: TableData) => emit('select-app', record)"
         >
-          <template #environment="{ record }">
-            {{ record.environment || '-' }}
-          </template>
-          <template #namespace="{ record }">
-            <a-tooltip
-              v-if="record.namespace"
-              :content="record.namespace"
-            >
-              <span class="assets-text-ellipsis">{{ record.namespace }}</span>
+          <template #name="{ record }">
+            <a-tooltip :content="appDetail(record as Application)">
+              <div class="app-cell">
+                <span class="app-cell-name">{{ record.name }}</span>
+                <span class="app-cell-meta">{{ appMeta(record as Application) }}</span>
+              </div>
             </a-tooltip>
-            <span v-else>-</span>
           </template>
           <template #actions="{ record }">
-            <a-space @click.stop>
-              <a-button
-                type="text"
-                size="small"
-                @click="emit('edit-app', record as Application)"
-              >
-                编辑
-              </a-button>
+            <a-space
+              :size="0"
+              @click.stop
+            >
+              <a-tooltip content="编辑应用">
+                <a-button
+                  type="text"
+                  size="mini"
+                  aria-label="编辑应用"
+                  @click="emit('edit-app', record as Application)"
+                >
+                  <template #icon>
+                    <IconEdit />
+                  </template>
+                </a-button>
+              </a-tooltip>
               <a-popconfirm
                 content="删除应用前需先清空其下所有资源，确定删除？"
                 @ok="emit('delete-app', record as Application)"
               >
                 <a-button
                   type="text"
-                  size="small"
+                  size="mini"
                   status="danger"
+                  aria-label="删除应用"
                 >
-                  删除
+                  <template #icon>
+                    <IconDelete />
+                  </template>
                 </a-button>
               </a-popconfirm>
             </a-space>
           </template>
         </a-table>
       </a-card>
-    </a-col>
+    </section>
 
-    <a-col :span="14">
+    <!-- 右栏：资源清单。占满剩余宽度，筛选与操作分层，默认视图不产生横向滚动 -->
+    <section class="registry-panel registry-panel--resources">
       <a-card
         :title="resourceCardTitle"
         :bordered="false"
         class="assets-card"
       >
         <template #extra>
-          <a-space wrap>
+          <a-space :size="6">
+            <a-popover
+              trigger="click"
+              position="br"
+            >
+              <a-button size="small">
+                <template #icon>
+                  <IconSettings />
+                </template>
+                列设置
+              </a-button>
+              <template #content>
+                <div class="assets-column-settings">
+                  <div class="assets-column-settings-title">
+                    附加列
+                  </div>
+                  <a-checkbox-group
+                    :model-value="visibleExtraColumns"
+                    direction="vertical"
+                    :options="optionalColumnOptions"
+                    @change="onVisibleColumnsChange"
+                  />
+                  <div class="assets-column-settings-hint">
+                    勾选后表格转为横向滚动模式
+                  </div>
+                </div>
+              </template>
+            </a-popover>
+            <a-button
+              size="small"
+              :disabled="!selectedAppId"
+              @click="emit('refresh-resources')"
+            >
+              <template #icon>
+                <IconRefresh />
+              </template>
+              刷新
+            </a-button>
+            <a-button
+              type="primary"
+              size="small"
+              :disabled="!selectedAppId"
+              @click="emit('create-resource')"
+            >
+              新建资源
+            </a-button>
+          </a-space>
+        </template>
+
+        <!-- 筛选独立成行：不再挤在 Arco 卡片 header（固定高度会裁掉换行内容） -->
+        <div class="registry-toolbar">
+          <a-space
+            wrap
+            :size="8"
+          >
             <a-input
               v-model="filterCloudResourceType"
               :disabled="!selectedAppId"
               allow-clear
               placeholder="云类型"
               size="small"
-              style="width: 96px"
+              style="width: 106px"
               @press-enter="emit('apply-filters')"
               @clear="emit('apply-filters')"
             />
@@ -100,7 +168,7 @@
               allow-clear
               placeholder="Region"
               size="small"
-              style="width: 110px"
+              style="width: 118px"
               @press-enter="emit('apply-filters')"
               @clear="emit('apply-filters')"
             />
@@ -110,7 +178,7 @@
               allow-clear
               placeholder="同步状态"
               size="small"
-              style="width: 110px"
+              style="width: 118px"
               @change="emit('apply-filters')"
               @clear="emit('apply-filters')"
             >
@@ -122,36 +190,34 @@
               </a-option>
             </a-select>
             <a-button
-              :disabled="!selectedAppId"
+              type="primary"
               size="small"
+              :disabled="!selectedAppId"
               @click="emit('apply-filters')"
             >
               筛选
             </a-button>
             <a-button
+              size="small"
               :disabled="!selectedAppId"
-              @click="emit('refresh-resources')"
+              @click="emit('reset-filters')"
             >
-              刷新
-            </a-button>
-            <a-button
-              type="primary"
-              :disabled="!selectedAppId"
-              @click="emit('create-resource')"
-            >
-              新建资源
+              重置
             </a-button>
           </a-space>
-        </template>
+          <span class="registry-toolbar-count">共 {{ resourcePagination.total }} 条资源</span>
+        </div>
 
         <a-empty
           v-if="!selectedAppId"
           class="assets-empty"
-          description="请先选择左侧应用"
+          description="请先在左侧选择应用"
         />
         <a-table
           v-else
-          class="page-table"
+          :class="['page-table', { 'page-table-fit': fitResourceTable }]"
+          :style="fitResourceTable ? resourceFitStyle : undefined"
+          :table-layout-fixed="true"
           :columns="resourceColumns"
           :data="resources"
           :loading="resourcesLoading"
@@ -183,7 +249,7 @@
               v-if="(record as Resource).cloud_resource_id"
               :content="(record as Resource).cloud_resource_id"
             >
-              <span class="assets-text-ellipsis">{{ (record as Resource).cloud_resource_id }}</span>
+              <span class="assets-id">{{ shortId((record as Resource).cloud_resource_id) }}</span>
             </a-tooltip>
             <span v-else>-</span>
           </template>
@@ -192,7 +258,7 @@
               v-if="(record as Resource).integration_account_id"
               :content="(record as Resource).integration_account_id"
             >
-              <span class="assets-text-ellipsis">{{ (record as Resource).integration_account_id }}</span>
+              <span class="assets-id">{{ shortId((record as Resource).integration_account_id) }}</span>
             </a-tooltip>
             <span v-else>-</span>
           </template>
@@ -204,7 +270,7 @@
               v-if="(record as Resource).region"
               :content="(record as Resource).region"
             >
-              <span class="assets-text-ellipsis">{{ (record as Resource).region }}</span>
+              <span class="assets-id">{{ (record as Resource).region }}</span>
             </a-tooltip>
             <span v-else>-</span>
           </template>
@@ -226,7 +292,7 @@
               v-if="(record as Resource).sync_batch_id"
               :content="(record as Resource).sync_batch_id"
             >
-              <span class="assets-text-ellipsis">{{ (record as Resource).sync_batch_id }}</span>
+              <span class="assets-id">{{ shortId((record as Resource).sync_batch_id) }}</span>
             </a-tooltip>
             <span v-else>-</span>
           </template>
@@ -266,10 +332,10 @@
             <span v-else>-</span>
           </template>
           <template #actions="{ record }">
-            <a-space>
+            <a-space :size="2">
               <a-button
                 type="text"
-                size="small"
+                size="mini"
                 @click="emit('edit-resource', record as Resource)"
               >
                 编辑
@@ -280,7 +346,7 @@
               >
                 <a-button
                   type="text"
-                  size="small"
+                  size="mini"
                   status="danger"
                 >
                   删除
@@ -290,16 +356,28 @@
           </template>
         </a-table>
       </a-card>
-    </a-col>
-  </a-row>
+    </section>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import type { CSSProperties } from 'vue'
+import {
+  IconDelete,
+  IconEdit,
+  IconRefresh,
+  IconSettings
+} from '@arco-design/web-vue/es/icon'
 import type { TableInstance } from '@arco-design/web-vue/es/table'
 import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import type { Application, Resource } from '@/api/asset'
-import { labelEntries } from '../composables/assetUtils'
+import {
+  OPTIONAL_RESOURCE_COLUMNS,
+  labelEntries,
+  shortId
+} from '../composables/assetUtils'
+import type { OptionalResourceColumnKey } from '../composables/assetUtils'
 
 interface PaginationConfig {
   current: number
@@ -321,7 +399,6 @@ const props = defineProps<{
   appColumns: TableInstance['columns']
   appPagination: PaginationConfig
   appRowClass: (record: TableData) => string
-  appTableScroll: Record<string, unknown>
   selectedAppId: string
   resourceCardTitle: string
   resources: Resource[]
@@ -331,6 +408,7 @@ const props = defineProps<{
   resourceTableScroll: Record<string, unknown>
   resourceRowClass: (record: TableData) => string
   resourceFilters: ResourceFilters
+  visibleExtraColumns: OptionalResourceColumnKey[]
 }>()
 
 const emit = defineEmits<{
@@ -343,6 +421,8 @@ const emit = defineEmits<{
   'edit-resource': [res: Resource]
   'delete-resource': [res: Resource]
   'apply-filters': []
+  'reset-filters': []
+  'column-visibility-change': [keys: OptionalResourceColumnKey[]]
   'select-app': [record: TableData]
   'app-page-change': [page: number]
   'app-page-size-change': [size: number]
@@ -365,6 +445,48 @@ const filterSyncStatus = computed({
   get: () => props.resourceFilters.sync_status,
   set: (val: string) => emit('update:resourceFilters', { ...props.resourceFilters, sync_status: val })
 })
+
+// 列宽按百分比交给 .page-table-fit，表格随容器缩放，始终 100% 铺满。
+// 顺序与 appColumns / 默认 resourceColumns 一一对应；勾选附加列后不再套用 fit。
+const appFitStyle: CSSProperties = {
+  '--aiops-col-1': '76%',
+  '--aiops-col-2': '24%'
+}
+
+const resourceFitStyle: CSSProperties = {
+  '--aiops-col-1': '16%',
+  '--aiops-col-2': '8%',
+  '--aiops-col-3': '8%',
+  '--aiops-col-4': '9%',
+  '--aiops-col-5': '14%',
+  '--aiops-col-6': '15%',
+  '--aiops-col-7': '10%',
+  '--aiops-col-8': '9%',
+  '--aiops-col-9': '11%'
+}
+
+const fitResourceTable = computed(() => !('x' in props.resourceTableScroll))
+
+const optionalColumnOptions = OPTIONAL_RESOURCE_COLUMNS.map((col) => ({
+  label: col.label,
+  value: col.key
+}))
+
+const optionalColumnKeys = OPTIONAL_RESOURCE_COLUMNS.map((col) => col.key)
+
+function onVisibleColumnsChange(values: unknown[]) {
+  // 只回传白名单内的 key，保持列定义与勾选状态严格对齐。
+  emit('column-visibility-change', optionalColumnKeys.filter((key) => values.includes(key)))
+}
+
+function appMeta(app: Application) {
+  const env = app.environment || 'default'
+  return app.namespace ? `${env} · ${app.namespace}` : env
+}
+
+function appDetail(app: Application) {
+  return [app.name, appMeta(app), app.description].filter(Boolean).join(' · ')
+}
 
 function formatTs(ts?: number) {
   if (!ts) return '-'
