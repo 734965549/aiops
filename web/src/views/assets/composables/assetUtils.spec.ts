@@ -280,6 +280,71 @@ describe('buildSyncBatchSignalTags', () => {
     expect(tags.some((t) => t.label === 'Scope incomplete')).toBe(false)
   })
 
+  it('shows dimension group count tag when dimension groups covered', () => {
+    const summary: SyncBatchSummary = {
+      sync_mode: 'ces',
+      resource_group_name: '全部资源',
+      resource_group_count: 10,
+      dimension_group_count: 4,
+      ces_total: 1826,
+      discovered_count: 1800
+    }
+    const tags = buildSyncBatchSignalTags(summary)
+    const dim = tags.find((t) => t.label === 'Dimension groups')
+    expect(dim).toBeTruthy()
+    expect(dim?.value).toContain('4')
+    expect(dim?.value).toContain('按资源实际维度发现')
+  })
+
+  it('omits dimension group tag when no dimension group covered', () => {
+    const summary: SyncBatchSummary = {
+      sync_mode: 'ces',
+      resource_group_name: '生产ecs',
+      resource_group_id: 'rg-001',
+      resource_group_count: 1,
+      dimension_group_count: 0,
+      ces_total: 5,
+      discovered_count: 5
+    }
+    const tags = buildSyncBatchSignalTags(summary)
+    expect(tags.some((t) => t.label === 'Dimension groups')).toBe(false)
+  })
+
+  it('flags dimension group coverage mismatch so operators know scope may be incomplete', () => {
+    const summary: SyncBatchSummary = {
+      sync_mode: 'ces',
+      resource_group_name: '全部资源',
+      resource_group_count: 10,
+      dimension_group_count: 4,
+      group_coverage_mismatches: ['大数据', '商用电站'],
+      scope_incomplete: true,
+      ces_total: 1826,
+      discovered_count: 1800
+    }
+    const tags = buildSyncBatchSignalTags(summary)
+    const mismatch = tags.find((t) => t.label === 'Coverage mismatch')
+    expect(mismatch).toBeTruthy()
+    expect(mismatch?.value).toContain('大数据')
+    expect(mismatch?.value).toContain('商用电站')
+    // 现有 Scope incomplete 标签语义不变。
+    expect(tags.find((t) => t.label === 'Scope incomplete')?.value).toContain('不标记 stale')
+  })
+
+  it('drops dimension-skip hint when failed_scopes is empty', () => {
+    // dimension 组不再因层级被跳过记 failed_scopes：无失败 scope 时不得出现 Failed scopes 标签。
+    const summary: SyncBatchSummary = {
+      sync_mode: 'ces',
+      resource_group_name: '全部资源',
+      resource_group_count: 10,
+      dimension_group_count: 4,
+      failed_scopes: [],
+      ces_total: 1826,
+      discovered_count: 1800
+    }
+    const tags = buildSyncBatchSignalTags(summary)
+    expect(tags.some((t) => t.label === 'Failed scopes')).toBe(false)
+  })
+
   it('returns empty array without summary', () => {
     expect(buildSyncBatchSignalTags(undefined)).toEqual([])
   })

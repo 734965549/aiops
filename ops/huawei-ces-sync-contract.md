@@ -72,8 +72,8 @@
 `summary` 只按四类理解：展示、对账、门控、诊断。新增字段先归类，再决定是否进入主契约正文。
 
 - 展示字段：`sync_mode`、`resource_group_name`、`resource_group_id`、`projects`、`regions`、`summary.scopes[]`
-- 对账字段：`raw_fetched_count`、`mapped_count`、`unique_discovered_count`、`persisted_count`、`duplicate_count`、`persist_failed_count`、`discovered_count`、`enriched_count`、`enrichment_failed_count`
-- 门控字段：`max_resources_reached`、`product_names_empty`、`query_failed_types`、`conversion_failed_types`、`enrichment_failed_types`、`enrichment_stage_error`、`writeback_failed_count`
+- 对账字段：`raw_fetched_count`、`mapped_count`、`unique_discovered_count`、`persisted_count`、`duplicate_count`、`persist_failed_count`、`discovered_count`、`enriched_count`、`enrichment_failed_count`、`resource_group_count`、`dimension_group_count`、`ces_total`
+- 门控字段：`max_resources_reached`、`product_names_empty`、`query_failed_types`、`conversion_failed_types`、`enrichment_failed_types`、`enrichment_stage_error`、`writeback_failed_count`、`scope_incomplete`、`group_coverage_mismatches`
 - 诊断字段：`failed_scopes`、`partial_reason`、`partial_reasons`、`enrichment_warnings`、`config_mode_fallback`
 
 约束：
@@ -352,17 +352,21 @@ sync_mode=native
 | --- | --- |
 | 资源范围 | 该 project/region 下全部 CES 资源组的并集 |
 | `product_names` | 逐组解析（各组 `product_names` 不同，不能只解析一次） |
+| `resource_level` | 逐组解析：product 级按 `product_names` 构造 (组, 产品+维度) 工作项；dimension 级按服务枚举构造 (组, 服务) 工作项（见 §8.5.1） |
 | 资源去重 | 跨组按唯一键 `(cloud_resource_type, cloud_resource_id, region)` 去重，同一资源命中多组只入库一次 |
 | `max_resources` | 原始行预算在**全部资源组之间共享**，不因组数增加而放大（见 §11） |
 | `resource_group_id` | 空（无单一分组），`resource_group_name` 固定为 `全部资源` |
-| `resource_group_count` | 本轮实际覆盖的资源组数量 |
+| `resource_group_count` | 本轮实际覆盖的资源组数量（含 dimension 级） |
+| `dimension_group_count` | 本轮覆盖的 dimension 级资源组数量（顶层 summary 为各 scope 求和）；存在 dimension 组时 message 追加 `dimension_groups=<N>` |
 | 单组失败 | 该组跳过并记入 `failed_scopes`，其余组继续；`scope_incomplete=true` |
+| dimension 组对账不符 | 组声明 total 大于实际拉取数且差值不可解释 → `scope_incomplete=true` + `group_coverage_mismatch=<组名>`（见 §8.5.1） |
 | 全部组不可解析 | 批次失败，返回 `no CES resource group could be resolved in region ...` |
 
 **聚合口径的 stale 门控**：并集并非 CES 的权威全量口径（资源可能未归入任何分组），因此：
 
-- 禁止区域级反向 stale，只对“本 region 查询成功且未失败”的类型逐类型标记（按 region 精确判定）；
-- `scope_incomplete=true`（有资源组被跳过）→ 该 region **禁止任何 stale 标记**，未覆盖资源可能仍存在于云端，误标 stale 会造成资产“消失”。
+- 禁止区域级反向 stale，只对“本 region 查询成功且未失败”的类型逐类型标记（按 region 精确判定）；dimension 组某服务完整查询成功（未失败、未截断）后，对应类型计入 `SuccessfulTypes` 参与逐类型 stale，失败/截断类型按 §13.1 剔除；
+- `Summary.ResourceLevel` 仅当**全部组均为 product 级且零跳过**时为 `product`；含 dimension 组或有组跳过时不为 `product`；
+- `scope_incomplete=true`（有资源组被跳过、层级未知或 dimension 组对账不符）→ 该 region **禁止任何 stale 标记**，未覆盖资源可能仍存在于云端，误标 stale 会造成资产“消失”。
 
 **错误可操作性**：未命中错误除保留 `no CES resource group matched` 前缀外，还必须带上本次尝试的口径与云端实际存在的资源组，便于运维判断是“名称写错”还是“该 project/region 下没有资源组”：
 
@@ -378,7 +382,7 @@ sync_mode=native
 - `available groups` 最多列出 10 个（名称 + ID），超出部分以 `(+N more)` 折叠，避免批次 `message` 过长。
 - 只输出资源组名称与 ID，**不含任何凭据或资源明细**。
 - 生产环境推荐显式填写 `resource_group_id`，以获得确定的同步范围与可用的反向 stale 语义。
-- 批次 `message` 在聚合口径下额外输出 `resource_groups=<数量>`，便于确认本轮实际扫了几个分组。
+- 批次 `message` 在聚合口径下额外输出 `resource_groups=<数量>`，便于确认本轮实际扫了几个分组；存在 dimension 组时追加 `dimension_groups=<N>`，dimension 组对账不符时追加 `group_coverage_mismatch=<组名,...>`。
 
 ### §8.5 product_names 解析
 
@@ -404,7 +408,10 @@ SYS.ECS,instance_id;SYS.EVS,disk_name
 - service 统一保留大写原值用于 CES 查询。
 - CES `product_names` 单项只含单个首层维度名称（`服务命名空间,首层维度名称`）；同一 service 多维度须拆成多个 product 项（以 `;` 分隔），不支持单项多 dim。解析时若遇单项多 dim，按单项单 dim 拆成多个 `cesProduct` 分别查询，并输出 warn 日志标记异常格式。
   - **拆分策略说明**：对 `SYS.VPC` 等聚合 namespace，不同 `dim_name` 映射不同 `cloud_resource_type`（见 §9.3），拆分是必需且正确的。对其他 namespace，拆分属防御性兜底；官方 `ListResourceGroupsServicesResources` 的 `dim_name` 参数支持逗号多维度联合查询（"多维度用`,`分隔"），拆分为多次单维度查询在语义上不等价，但 CES `product_names` 正常格式单项只含单个 dim，拆分仅在异常格式时触发。
-- **`resource_level` 响应字段**：官方 `ShowResourceGroup` API 的 `resource_level` 是**响应字段**（非查询参数），取值 `product`（云产品）或 `dimension`（子维度），见 https://support.huaweicloud.com/api-ces/ShowResourceGroup.html 。`product_names` 仅在 `resource_level=product` 时有意义（"创建资源层级为云产品时的云产品名称"）。SDK `huaweicloud-sdk-go-v3 v0.1.201` 的 `ShowResourceGroupResponse.ResourceLevel` 已暴露该字段（`Value()` 返回字符串）。代码从 Show 响应读取 `resource_level` 并传递到 `CESResourceDiscoverySummary.ResourceLevel`；P0 阶段仅支持 `resource_level=product` 的资源组，`dimension` 级或未知/空层级直接返回 `FAILED_PRECONDITION`，不静默回退。仅 `resource_level=product` 且 `product_names` 非空时 scope 才是权威范围，允许反向 stale（见 §13.1）。
+- **`resource_level` 响应字段**：官方 `ShowResourceGroup` API 的 `resource_level` 是**响应字段**（非查询参数），取值 `product`（云产品）或 `dimension`（子维度），见 https://support.huaweicloud.com/api-ces/ShowResourceGroup.html 。`product_names` 仅在 `resource_level=product` 时有意义（"创建资源层级为云产品时的云产品名称"）。SDK `huaweicloud-sdk-go-v3 v0.1.201` 的 `ShowResourceGroupResponse.ResourceLevel` 已暴露该字段（`Value()` 返回字符串）。代码从 Show 响应读取 `resource_level` 并传递到 `CESResourceDiscoverySummary.ResourceLevel` -> `CloudSyncSummary.ResourceLevel`，并按层级分流发现路径：
+  - `resource_level=product`：按 `product_names`（为空时走 §8.5 兜底白名单）构造 (组, 产品+维度) 工作项，查询带 `dim_name`。仅该层级且 `product_names` 非空时 scope 才是权威范围，允许反向 stale（见 §13.1）。
+  - `resource_level=dimension`：`product_names` 为空、无产品级语义，按**已知 namespace 服务枚举**构造 (组, 服务) 工作项（`cesNamespaceMappings` 全部 key，含 `SYS.RDS_MYSQL_CLUSTER`；查询**不带** `dim_name`，由服务端返回组内该服务全量资源），映射时按资源实际 `dimensions[]` 推导维度（见 §8.5.1、§9.2）。dimension 组**不是权威 scope**：不得触发区域级反向 stale，只按成功查询的类型逐类型 stale；不置 `product_names_empty`、不因层级记 `failed_scopes`；组级覆盖对账见 §8.5.1。
+  - 未知/空层级：无法判定应按产品语义还是维度语义发现，直接返回 `FAILED_PRECONDITION`（单组口径）或记 `failed_scopes` + `scope_incomplete`（聚合口径），不静默回退。
 - 平台 `cloud_resource_type` 使用映射表归一化为小写类型。
 - `namespace` 的权威性分层：
   - `resource_level=product` 且 `product_names` 非空时，`ShowResourceGroup` 返回的 namespace/dim_name 组合是**权威 scope**，可用于反向 stale。
@@ -413,8 +420,31 @@ SYS.ECS,instance_id;SYS.EVS,disk_name
 - 如果 `product_names` 为空，使用内置 CES namespace 白名单兜底，但该白名单不完整且部分维度可能错误；它只能用于有限发现与兼容展示，**不能作为权威 scope，也不得用于反向 stale**。batch message 必须记录 `product_names_empty=true`，且批次至少标记 `partial`，提示同步可能不完整，见 §13.1。前端批次页必须对该标志做显著风险提示，推荐展示“兜底发现，可能不完整”。
 - 兜底白名单只能用于兼容展示，不得提升为权威 scope，不得触发反向 stale，批次必须至少 `partial`。代码里建议用 `isFallbackWhitelistScope()` / `isAuthoritativeCESScope()` 显式区分，避免把 fallback 误当正常流程。
 
-### §8.6 分页策略
+### §8.5.1 dimension 级资源组的发现、映射与对账
 
+dimension 级资源组（按子维度/业务线建组，`product_names` 为空）自 2026-11-10 起正式支持，方案与验收依据见 [华为云 CES dimension 级资源组支持方案](../docs/huawei-ces-dimension-group-support-plan.md)。核心规则：
+
+**发现（服务枚举）**：
+
+- 对 dimension 组，按已知 namespace 集合（`cesNamespaceMappings` 的全部 key，含 `SYS.RDS_MYSQL_CLUSTER`）逐服务构造 `(组, 服务)` 工作项，查询**不带** `dim_name`——`ListResourceGroupsServicesResources` 的 `service` 是**路径参数必传**（漏传返回 404「API does not exist」），`dim_name` 可省略，省略即返回该组该服务的全量资源。
+- 不使用 `fallbackCESProducts` 的固定维度：dimension 组资源自带实际维度，无需猜测；`product_names_empty` 兜底语义与 dimension 路径完全无关（dimension 组**不置位**该标志）。
+- 不开放任意未知 namespace 自动探测：仅枚举白名单内的服务；组内属于未知 namespace（如 `SYS.GAUSSDB`）的服务不会被查询。
+- 调用量：`16 服务 × dimension 组数` 次服务级查询（含分页），全部走既有退避重试；`max_resources` 原始行预算在全部工作项（product + dimension）之间共享，不因组数放大（见 §11）。
+
+**映射（资源实际维度 + 优选维度规范化）**：
+
+- `labels.dim_name` = 资源实际返回的 `dimensions[]` 维度名（按返回顺序 join），`resolveNamespaceMappingByDim` 用实际维度解析（`SYS.VPC` 子类型因此自动正确拆分）。
+- **主维度规范化**：直接取“首个非空维度”会导致同一物理资源在不同层级组得到不同 `ProviderRef`（例如 ELB 在 product 组用 `loadbalancer_id`，在 dimension 组可能返回 `lbaas_instance_id`）。因此引入**每服务优选维度表**（初始值 = `fallbackCESProducts` 中该服务的维度，如 ECS→`instance_id`、EVS→`disk_name`、ELB→`loadbalancer_id`、OBS→`bucket_name`）：资源实际维度中包含优选维度时优先取它，缺失时才回落首个非空维度。目标：同一资源无论来自 product 组还是 dimension 组，`ResourceID` / `ProviderRef` 一致，唯一键 `(cloud_resource_type, cloud_resource_id, region)` 去重生效（见 §9.2/§9.4）。
+- `invalid_resource_count` / `unknown_namespace_count` / `conversion_failed_types` 等既有计数语义不变；跨组去重键不变，§9.5 三条恒等式不变（`duplicate_count` 可能因跨组命中上升，属正常折损）。
+
+**组级覆盖对账（不可妥协）**：
+
+- 逐组比对声明的 `resource_statistics.total` 与该组实际拉取行数，provider 层输出逐组 Warn 日志（组名、声明 total、实际发现、差值）。
+- dimension 组的服务枚举白名单未必覆盖组内全部服务；当声明 total 大于实际拉取数时，差值无法被既有计数解释（`invalid` / `duplicate` / `unknown_namespace` 都是已拉取资源的子集），**必须置 `scope_incomplete=true`**（该 region 禁止任何 stale），并在摘要与 message 给出可操作提示 `group_coverage_mismatch=<组名>`，不允许静默当作全覆盖。
+- `max_resources` 截断（`MaxResourcesReached=true`）时各组拉取数天然偏小，由截断门控统一禁 stale，不重复判定对账。
+- 长期解法：把新 namespace 补入映射表/枚举白名单；不开放任意 namespace 自动探测。
+
+### §8.6 分页策略
 `ListResourceGroupsServicesResources` 分页参数：`offset`、`limit`。
 
 ```text
@@ -465,6 +495,15 @@ while offset < count:
 2. 如果没有匹配，使用第一个非空 dimension value。
 3. 如果仍为空，使用 `resource_name`。
 4. 如果都为空，丢弃该资源并记录 `invalid_resource_count`。
+
+**dimension 路径（查询不带 `dim_name`，见 §8.5.1）**：
+
+1. 按每服务**优选维度表**（初始值 = `fallbackCESProducts` 中该服务的维度）匹配资源实际 `dimensions[]`：命中则取优选维度的 value。
+2. 未命中优选维度时，使用第一个非空实际 dimension value。
+3. 仍为空则回落 `resource_name`；都为空丢弃并记 `invalid_resource_count`。
+4. `labels.dim_name` 记录资源实际维度名（返回顺序 join），`namespace` 保留原始 namespace，便于追溯。
+
+优选维度规范化的目的：同一物理资源无论来自 product 组还是 dimension 组，`ResourceID` / `ProviderRef` 一致（例如 ELB 的 `loadbalancer_id` 优先于 `lbaas_instance_id`），跨组去重才能生效。
 
 ### §9.3 namespace 映射表
 
@@ -611,13 +650,20 @@ stale 标记按类型逐项判断，只有同时满足以下三项的类型才�
 - 从资源组移除的类型（不在 scope，也不在 exceptTypes）→ 旧资产 stale（修复点）；
 - 查询失败/转换失败/持久化失败的类型 → 保持 active（保守，与逐类型一致）。
 
+**dimension 级资源组的 stale 门控**：dimension 组按服务枚举 + 资源实际维度发现（见 §8.5.1），**不是权威 scope**：
+
+- 显式指定 dimension 组（单组口径，`specified_id`/`specified_name`/`default_name`）→ 发现成功后走逐类型 stale，**不做**区域级反向 stale（`Summary.ResourceLevel=dimension` 时禁止 `MarkStaleByAccountRegionExceptTypes`）；
+- 聚合口径含 dimension 组 → 沿用聚合口径门控（仅逐类型 stale，见下）；
+- dimension 组**不再**因层级被记入 `failed_scopes`，也**不置位** `product_names_empty`；仅真实失败（`ShowResourceGroup` 失败、服务查询失败）才记入 `failed_scopes`；
+- dimension 组覆盖对账不符（`group_coverage_mismatches` 非空 → `scope_incomplete=true`）→ 该 region **禁止任何 stale 标记**，包括逐类型 stale。
+
 `native`/通用/fake 路径 scope 非权威，仍用逐类型标记，不反向标记。
 
 **聚合口径（`resource_group_selection=all_groups`）的 stale 门控**：聚合口径覆盖全部资源组的并集，但并集仍不是 CES 的权威全量口径——资源可能未归入任何分组，因此：
 
 - **禁止区域级反向 stale**（不做 `MarkStaleByAccountRegionExceptTypes`）。未归入任何资源组的资源永远不会出现在本轮结果里，区域级反向标记会把它们误标 stale 而“消失”。
-- 只走**逐类型 stale**：本 region 查询成功（`SuccessfulTypes`）、且未发生转换失败/持久化失败的类型才允许标记。该判定按 **region 精确计算**，不使用跨 region 累积的快照。
-- `scope_incomplete=true`（有资源组被跳过，如 `ShowResourceGroup` 失败或 `resource_level` 非 `product`）→ 该 region **禁止任何 stale 标记**，包括逐类型 stale。
+- 只走**逐类型 stale**：本 region 查询成功（`SuccessfulTypes`）、且未发生转换失败/持久化失败的类型才允许标记。该判定按 **region 精确计算**，不使用跨 region 累积的快照。dimension 组某服务完整查询成功（未失败、未截断）后，对应类型计入 `SuccessfulTypes` 参与逐类型 stale；失败/截断类型按上文门控剔除。
+- `scope_incomplete=true`（有资源组被跳过、`resource_level` 未知，或 dimension 组覆盖对账不符，见 §8.5.1）→ 该 region **禁止任何 stale 标记**，包括逐类型 stale。
 
 见 §8.4。
 
@@ -800,7 +846,10 @@ trigger / input
 - `fake` 模式只用于 CI/E2E 或本地替身，不代表真实云侧语义；它的输出只能用于测试，不得反向驱动 stale 或对账结论。
 - `generic` 是跨云/通用发现语义，强调“适配器返回什么就同步什么”，不承诺 CES 资源分组完整性，也不应与 `ces`/`hybrid` 混为一谈。
 - 语义归类上，`ces`/`hybrid` 共享同一权威发现链路，`hybrid` 只是 `ces` 基础发现后的增强分支；`native` / `fake` / `generic` 都不能覆盖或改写 `ces` 结果。
-- `SyncBatch` DTO/API 已提供正式 `summary` 对象（`ces_total`、`discovered_count`、`failed_scopes`、`enriched_count`、`enrichment_failed_count`、`enrichment_failed_types`、`enrichment_warnings`、`enrichment_stage_error`、`writeback_failed_count` 等）；`enrichment_failed_count` 是可执行对账字段，始终等于去重后的 `enrichment_failed_types` 长度（不变式：`enrichment_failed_count == len(enrichment_failed_types)`）。`enrichment_warnings` 记录 best-effort 增强缺失（如 `dms.kafka`、`dms.rocketmq`、`vpc.subnet_count`），不影响批次状态，独立于 `enrichment_failed_types`。增强阶段整体致命错误由 `enrichment_stage_error`（字符串）记录，label 回写失败由 `writeback_failed_count` 记录，两者均驱动 `partial` 判定但不递增 `enrichment_failed_count`。
+- `SyncBatch` DTO/API 已提供正式 `summary` 对象（`ces_total`、`discovered_count`、`failed_scopes`、`enriched_count`、`enrichment_failed_count`、`enrichment_failed_types`、`enrichment_warnings`、`enrichment_stage_error`、`writeback_failed_count`、`resource_group_count`、`dimension_group_count`、`group_coverage_mismatches`、`scope_incomplete` 等）；`enrichment_failed_count` 是可执行对账字段，始终等于去重后的 `enrichment_failed_types` 长度（不变式：`enrichment_failed_count == len(enrichment_failed_types)`）。`enrichment_warnings` 记录 best-effort 增强缺失（如 `dms.kafka`、`dms.rocketmq`、`vpc.subnet_count`），不影响批次状态，独立于 `enrichment_failed_types`。增强阶段整体致命错误由 `enrichment_stage_error`（字符串）记录，label 回写失败由 `writeback_failed_count` 记录，两者均驱动 `partial` 判定但不递增 `enrichment_failed_count`。
+- `dimension_group_count` 为本轮覆盖的 dimension 级资源组数（按服务枚举 + 资源实际维度发现，见 §8.5.1；顶层为各 scope 求和）。批次诊断应展示信号标签 `Dimension groups = N 个（按资源实际维度发现）`。
+- `group_coverage_mismatches` 非空表示对应 dimension 组声明总数大于实际发现且差值不可解释（组内未知 namespace 服务未被枚举），此时 `scope_incomplete=true`、该 region 不标记 stale；前端需显著提示覆盖缺口。全组成功后批次状态由 `partial` 变为 `success` 属预期改善，不是回归。
+- 现有 `Scope incomplete` / `Failed scopes` 标签语义不变；dimension 组不再产生“维度组被跳过”类 `failed_scopes` 提示（`failed_scopes` 为空时不得出现该提示）。
 - `message` 仅保留人类可读的排障说明，建议持续收敛到最小必要信息，不应作为半结构化协议。
 - `config_mode_fallback=true` 表示本次同步曾因配置非法/不可用而回落到默认 CES 配置；它本身不是错误，但应被视为至少部分退化信号。该字段应优先体现在 `partial_reasons` 中，前端和运维不要单独解析 `message` 才判断是否发生 fallback。
 - 多区域同步时，前端排查“哪个 region 失败/用了哪个 project/group”必须读取 `summary.scopes[]`，不要依赖顶层 `regions`/`projects`/`resource_group_name`（它们是兼容聚合字段，会丢失归属关系）。

@@ -160,6 +160,46 @@ func fallbackProducts() []cesProduct {
 	return out
 }
 
+// preferredCESDimensions 是每服务优选主维度表，初始值取 fallbackCESProducts 中该服务的
+// 首个维度（如 ECS→instance_id、EVS→disk_name、ELB→loadbalancer_id、OBS→bucket_name）。
+// 用于 dimension 级资源组的主维度规范化：资源实际返回的 dimensions[] 中包含优选维度时
+// 优先取它，缺失时才回落首个非空维度。这样同一物理资源无论来自 product 组还是 dimension
+// 组，ResourceID/ProviderRef 一致，唯一键 (cloud_resource_type, cloud_resource_id, region)
+// 跨组去重才能生效，见 dimension 组支持方案 §4.3。
+var preferredCESDimensions = buildPreferredCESDimensions()
+
+func buildPreferredCESDimensions() map[string]string {
+	out := make(map[string]string, len(fallbackCESProducts))
+	for _, p := range fallbackCESProducts {
+		if len(p.DimNames) == 0 {
+			continue
+		}
+		if _, exists := out[p.Service]; !exists {
+			out[p.Service] = p.DimNames[0]
+		}
+	}
+	return out
+}
+
+// preferredCESDimension 返回该服务的优选主维度；未配置（如 SYS.APM/SYS.CES 无兜底维度）时返回空串。
+func preferredCESDimension(service string) string {
+	return preferredCESDimensions[service]
+}
+
+// dimensionServiceProducts 返回 dimension 级资源组的服务枚举工作项：按已知 namespace
+// 集合（cesNamespaceMappings 的全部 key）逐服务构造 cesProduct{Service: svc}，DimNames 为空
+// ——查询时不带 dim_name，由服务端返回该组该服务的全量资源，映射时按资源实际 dimensions
+// 推导维度，不使用 fallbackCESProducts 的固定维度（dimension 组资源自带实际维度，无需猜测），
+// 见 dimension 组支持方案 §4.2。按 service 排序保证工作项顺序确定（map 遍历无序）。
+func dimensionServiceProducts() []cesProduct {
+	out := make([]cesProduct, 0, len(cesNamespaceMappings))
+	for svc := range cesNamespaceMappings {
+		out = append(out, cesProduct{Service: svc})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
+	return out
+}
+
 // resolveNamespaceMapping 返回 namespace 对应的平台类型映射；未知 namespace 按小写兜底，见 §9.3。
 func resolveNamespaceMapping(namespace string) namespaceMapping {
 	if m, ok := cesNamespaceMappings[namespace]; ok {
@@ -285,14 +325,49 @@ func applyCESTagsToLabels(labels map[string]string, tags []cesTagInput) {
 	}
 }
 
+// effectiveDimensionNames 计算映射用的维度序列（effective）与 labels.dim_name 用的实际维度名（actual）。
+// product 路径（查询维度 dimNames 非空）：两者均为查询维度，行为与现状完全一致。
+// dimension 路径（dimNames 为空，查询不带 dim_name）：actual 取资源实际返回的 dimensions[]
+// 维度名（按返回顺序、去空）；effective 在优选维度命中实际维度时将其前置，使
+// selectPrimaryDimension / resolveNamespaceMappingByDim 优先按优选维度取值与拆分子类型，
+// 保证同一物理资源在 product 组与 dimension 组得到一致的主维度与 cloud_resource_type，
+// 见 dimension 组支持方案 §4.3。
+func effectiveDimensionNames(service string, dimNames []string, in cesResourceInput) (effective, actual []string) {
+	if len(dimNames) > 0 {
+		return dimNames, dimNames
+	}
+	for _, dim := range in.Dimensions {
+		if name := strings.TrimSpace(dim.Name); name != "" {
+			actual = append(actual, name)
+		}
+	}
+	effective = actual
+	preferred := preferredCESDimension(service)
+	if preferred == "" {
+		return effective, actual
+	}
+	for i, name := range actual {
+		if strings.EqualFold(name, preferred) {
+			// 优选维度前置，其余实际维度保持返回顺序（去掉重复的优选维度项）。
+			effective = append([]string{name}, actual[:i]...)
+			effective = append(effective, actual[i+1:]...)
+			break
+		}
+	}
+	return effective, actual
+}
+
 // mapCESResource 将单个 CES 资源映射为平台 CloudResource，见 §9.1。
+// dimNames 为查询维度：product 路径非空；dimension 路径为空，此时按资源实际 dimensions
+// 推导维度并用每服务优选维度表规范化主维度，见 effectiveDimensionNames。
 // ok=false 表示资源缺少主维度，调用方应丢弃并计入 invalid_resource_count。
 func mapCESResource(region, service string, dimNames []string, in cesResourceInput, groupID, groupName string) (domain.CloudResource, bool) {
-	primary := selectPrimaryDimension(dimNames, in)
+	effectiveDims, actualDims := effectiveDimensionNames(service, dimNames, in)
+	primary := selectPrimaryDimension(effectiveDims, in)
 	if primary == "" {
 		return domain.CloudResource{}, false
 	}
-	mapping := resolveNamespaceMappingByDim(service, dimNames)
+	mapping := resolveNamespaceMappingByDim(service, effectiveDims)
 	name := strings.TrimSpace(in.ResourceName)
 	if name == "" {
 		name = primary
@@ -305,7 +380,7 @@ func mapCESResource(region, service string, dimNames []string, in cesResourceInp
 	}
 	labels := map[string]string{
 		"namespace": service,
-		"dim_name":  strings.Join(dimNames, ","),
+		"dim_name":  strings.Join(actualDims, ","),
 	}
 	if ep := strings.TrimSpace(in.EnterpriseProjectID); ep != "" {
 		labels["enterprise_project_id"] = ep

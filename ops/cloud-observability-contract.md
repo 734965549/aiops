@@ -436,7 +436,9 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 | `resource_group_name` | string | 资源组名称（聚合口径下固定为 `全部资源`） |
 | `resource_group_id` | string | 资源组 ID（聚合口径下为空） |
 | `resource_group_count` | int | 本轮实际覆盖的资源组数量（聚合口径下 > 1） |
-| `scope_incomplete` | bool | 聚合口径下有资源组未被覆盖；该 scope 禁止 stale 标记 |
+| `dimension_group_count` | int | 本轮覆盖的 dimension 级资源组数（按服务枚举 + 资源实际维度发现；顶层为各 scope 求和） |
+| `group_coverage_mismatches` | string[] | dimension 组覆盖对账不符的组名（声明 total 大于实际发现且差值不可解释）；非空时 `scope_incomplete=true`，该 scope 禁止任何 stale |
+| `scope_incomplete` | bool | 聚合口径下有资源组未被覆盖（含 dimension 组对账不符）；该 scope 禁止 stale 标记 |
 | `projects` | string[] | 涉及 project 列表（兼容聚合，丢失归属关系） |
 | `regions` | string[] | 涉及 region 列表（兼容聚合，丢失归属关系） |
 | `ces_total` | int | CES 拉取的指标维度总数（各 scope 求和） |
@@ -476,6 +478,8 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 | `resource_group_name` | string | 资源组名称 |
 | `resource_group_selection` | string | 资源组选择方式（`specified_id`/`specified_name`/`default_name`/`all_groups`） |
 | `resource_group_count` | int | 该 scope 实际覆盖的资源组数量（聚合口径下 > 1） |
+| `dimension_group_count` | int | 该 scope 覆盖的 dimension 级资源组数 |
+| `group_coverage_mismatches` | string[] | 该 scope 内 dimension 组覆盖对账不符的组名；非空时 `scope_incomplete=true` |
 | `scope_incomplete` | bool | 聚合口径下有资源组未被覆盖；该 scope 禁止 stale 标记 |
 | `ces_total` | int | 该 scope CES 指标维度总数 |
 | `raw_fetched_count` | int | **本轮预算内实际进入后续处理链路的原始行数**；只统计已被 `max_resources` 接住并进入映射/去重/落库流水线的行，不表示云端总返回数，尾部被 `max_resources` 裁掉的行不计入 |
@@ -502,7 +506,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 
 多区域排查“哪个 region 失败、用了哪个 project/group”必须读取 `scopes[]`，不要依赖顶层 `regions`/`projects`/`resource_group_name`（它们是兼容聚合字段，会丢失归属关系）。失败 region 的 scope 同样会写入 `scopes[]`，并补齐 `project_id`/`sync_mode`/`resource_group_id`/`resource_group_name`，便于定位。
 
-**stale 标记语义**：`ces`/`hybrid` 模式下资源组 `product_names` 是权威 scope，采用反向 stale 标记——把 account+region 下所有 `active` 的 cloud_sync 资源（排除当前批次）标记为 `stale`，但跳过不确定类型（查询失败/转换失败/持久化失败）。这样从资源组移除的类型其旧资产也会被标记 stale，避免永久保持 `active`。`native`/通用/fake 路径 scope 非权威，仅对查询成功的类型逐类型标记 stale。`product_names` 为空时回落兜底白名单（不完整），批次至少标记 `partial`，message 含 `product_names_empty=true`。
+**stale 标记语义**：`ces`/`hybrid` 模式下 `resource_level=product` 且 `product_names` 非空的资源组是权威 scope，采用反向 stale 标记——把 account+region 下所有 `active` 的 cloud_sync 资源（排除当前批次）标记为 `stale`，但跳过不确定类型（查询失败/转换失败/持久化失败）。这样从资源组移除的类型其旧资产也会被标记 stale，避免永久保持 `active`。`resource_level=dimension` 的资源组（按服务枚举 + 资源实际维度发现）**不是权威 scope**，显式指定时只走逐类型 stale，不做区域级反向标记；聚合口径（`all_groups`）一律只走逐类型 stale。`native`/通用/fake 路径 scope 非权威，仅对查询成功的类型逐类型标记 stale。`product_names` 为空时回落兜底白名单（不完整），批次至少标记 `partial`，message 含 `product_names_empty=true`。`scope_incomplete=true`（资源组被跳过、层级未知或 dimension 组覆盖对账不符 `group_coverage_mismatches` 非空）时该 region 禁止任何 stale 标记。
 
 **partial 判定规则与计数不变式**：批次终态为 `partial` 的条件（满足任一即 partial）：`failed_count > 0`、`max_resources_reached`、`product_names_empty`，或任一 scope 出现 `enrichment_failed_count > 0`/`enrichment_failed_types` 非空/`enrichment_stage_error` 非空/`writeback_failed_count > 0`/`invalid_resource_count > 0`/`conversion_failed_types` 非空/`query_failed_types` 非空。`enrichment_warnings` 非空不触发 partial。计数不变式：`enrichment_failed_count == len(enrichment_failed_types)` 始终成立；`enrichment_stage_error` 与 `writeback_failed_count` 驱动 partial 但不递增 `enrichment_failed_count`，保持该不变式不被破坏；`enrichment_warnings` 独立于 `enrichment_failed_types`，不参与计数与 partial 判定。
 

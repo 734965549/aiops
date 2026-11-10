@@ -240,6 +240,8 @@ export interface SyncBatchScopeSummary {
   max_resources_reached?: boolean
   product_names_empty?: boolean
   resource_group_count?: number
+  dimension_group_count?: number
+  group_coverage_mismatches?: string[]
   scope_incomplete?: boolean
   partial_reason?: string
 }
@@ -276,6 +278,8 @@ export interface SyncBatchSummary {
   max_resources_reached?: boolean
   product_names_empty?: boolean
   resource_group_count?: number
+  dimension_group_count?: number
+  group_coverage_mismatches?: string[]
   scope_incomplete?: boolean
   partial_reason?: string
   query_failed_types?: string[]

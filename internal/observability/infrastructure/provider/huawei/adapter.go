@@ -279,8 +279,11 @@ func (a *Adapter) listAllResourcesCES(ctx context.Context, cred AKSKCredential, 
 		ProductNamesEmpty:     result.Summary.ProductNamesEmpty,
 		ResourceLevel:         result.Summary.ResourceLevel,
 		ResourceGroupCount:    result.Summary.ResourceGroupCount,
-		ScopeIncomplete:       result.Summary.ScopeIncomplete,
-		MaxResourcesReached:   result.Summary.MaxResourcesReached,
+		// dimension 级资源组覆盖数与对账不符组名透传，见 dimension 组支持方案 §4.6/§4.7。
+		DimensionGroupCount:     result.Summary.DimensionGroupCount,
+		GroupCoverageMismatches: append([]string(nil), result.Summary.GroupCoverageMismatches...),
+		ScopeIncomplete:         result.Summary.ScopeIncomplete,
+		MaxResourcesReached:     result.Summary.MaxResourcesReached,
 	}
 	return result.Resources, summary, nil
 }

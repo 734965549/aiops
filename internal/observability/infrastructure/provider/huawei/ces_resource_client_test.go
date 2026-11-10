@@ -37,6 +37,9 @@ type mockCESResourceGroupAPI struct {
 	showCallsByGroup map[string]int
 	// listResGroups 记录 ListResourceGroupsServicesResources 被请求的 group_id 顺序。
 	listResGroups []string
+	// listResDimNames 记录每次资源列表请求的 dim_name（与 listResInputs 同序，空串表示未传），
+	// 用于验证 dimension 组服务枚举查询不带 dim_name，见 dimension 组支持方案 §4.2。
+	listResDimNames []string
 
 	listGroupsCalls int
 	showCalls       int
@@ -82,6 +85,11 @@ func (m *mockCESResourceGroupAPI) ShowResourceGroup(req *cesv2model.ShowResource
 func (m *mockCESResourceGroupAPI) ListResourceGroupsServicesResources(req *cesv2model.ListResourceGroupsServicesResourcesRequest) (*cesv2model.ListResourceGroupsServicesResourcesResponse, error) {
 	m.listResCalls++
 	m.listResInputs = append(m.listResInputs, req.Service)
+	dimName := ""
+	if req.DimName != nil {
+		dimName = *req.DimName
+	}
+	m.listResDimNames = append(m.listResDimNames, dimName)
 	groupID := ""
 	if req != nil {
 		groupID = req.GroupId
@@ -126,6 +134,16 @@ func (m *mockCESResourceGroupAPI) ListResourceGroupsServicesResources(req *cesv2
 
 func int32Ptr(v int32) *int32 { return &v }
 func strPtr(v string) *string { return &v }
+
+// testSliceContains 判断切片是否包含目标字符串（测试辅助）。
+func testSliceContains(values []string, target string) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
+}
 
 func buildListGroupsResp(groups ...cesv2model.OneResourceGroupResp) *cesv2model.ListResourceGroupsResponse {
 	g := make([]cesv2model.OneResourceGroupResp, len(groups))
@@ -320,24 +338,114 @@ func TestDiscoverCESResources_EmptyProductNamesFallsBack(t *testing.T) {
 	}
 }
 
-// TestDiscoverCESResources_DimensionLevelFails 验证 resource_level=dimension 的资源组
-// 在 P0 阶段直接返回 FAILED_PRECONDITION，不静默回退。见 §8.5/§13.1。
-func TestDiscoverCESResources_DimensionLevelFails(t *testing.T) {
+// TestDiscoverCESResources_DimensionGroupEnumeratedByService 验证 dimension 级资源组
+// 不再被跳过：按已知 namespace 服务枚举发现（请求不带 dim_name），资源按实际维度映射；
+// 不置 product_names_empty、不记 failed_scopes；含 dimension 组时 ResourceLevel 不为 product，
+// 见 dimension 组支持方案 §4.2/§4.5。
+func TestDiscoverCESResources_DimensionGroupEnumeratedByService(t *testing.T) {
 	api := &mockCESResourceGroupAPI{
-		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(2)}}),
-		showResp:       buildShowRespWithLevel("全部资源", "SYS.ECS,instance_id", 2, "dimension"),
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "大数据", GroupId: "rg-bigdata", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}}),
+		showResp:       buildShowRespWithLevel("大数据", "", 1, "dimension"),
 		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
 			"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
 		},
 	}
-	_, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
 		ProjectID: "proj", Region: "r", MaxResources: 100,
 	})
-	if err == nil {
-		t.Fatalf("expected FAILED_PRECONDITION error for dimension level")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
 	}
-	if apperr.CodeOf(err) != apperr.CodeFailedPrecondition {
-		t.Fatalf("err code = %v, want FAILED_PRECONDITION", apperr.CodeOf(err))
+	if len(result.Resources) != 1 {
+		t.Fatalf("resource count = %d, want 1 (dimension group enumerated by service)", len(result.Resources))
+	}
+	if result.Resources[0].Type != "ecs" || result.Resources[0].ProviderRef != "i-1" {
+		t.Fatalf("resource = %+v, want ecs/i-1", result.Resources[0])
+	}
+	// dimension 组覆盖数与计数字段。
+	if result.Summary.DimensionGroupCount != 1 {
+		t.Fatalf("DimensionGroupCount = %d, want 1", result.Summary.DimensionGroupCount)
+	}
+	if result.Summary.ResourceGroupCount != 1 {
+		t.Fatalf("ResourceGroupCount = %d, want 1", result.Summary.ResourceGroupCount)
+	}
+	if result.Summary.CESTotal != 1 {
+		t.Fatalf("CESTotal = %d, want 1 (dimension group total counted)", result.Summary.CESTotal)
+	}
+	// dimension 组不置 product_names_empty、不记 failed_scopes、正常覆盖时无对账不符。
+	if result.Summary.ProductNamesEmpty {
+		t.Fatalf("ProductNamesEmpty should be false for dimension group")
+	}
+	if len(result.Summary.FailedScopes) != 0 {
+		t.Fatalf("FailedScopes = %v, want empty (level is no longer a skip reason)", result.Summary.FailedScopes)
+	}
+	if result.Summary.ScopeIncomplete {
+		t.Fatalf("ScopeIncomplete should be false when declared total is covered")
+	}
+	// 含 dimension 组时 scope 不是 product 级权威范围，禁止反向 stale。
+	if result.Summary.ResourceLevel == resourceLevelProduct {
+		t.Fatalf("ResourceLevel = %q, want non-product when dimension groups present", result.Summary.ResourceLevel)
+	}
+	// 服务枚举：查询的 service 集合 = 已知 namespace 全集，且全部不带 dim_name。
+	if api.listResCalls != len(cesNamespaceMappings) {
+		t.Fatalf("list calls = %d, want %d (one per known namespace)", api.listResCalls, len(cesNamespaceMappings))
+	}
+	queried := map[string]bool{}
+	for i, svc := range api.listResInputs {
+		queried[svc] = true
+		if api.listResDimNames[i] != "" {
+			t.Fatalf("service %s queried with dim_name=%q, want no dim_name for dimension enumeration", svc, api.listResDimNames[i])
+		}
+	}
+	for svc := range cesNamespaceMappings {
+		if !queried[svc] {
+			t.Fatalf("known namespace %s not enumerated for dimension group", svc)
+		}
+	}
+	// 服务枚举的每个服务查询成功（含 0 资源）都计入 SuccessfulTypes，与契约 §13.1
+	// "查询成功且本轮 0 资源的类型 → 旧资产 stale" 的现行规则一致，见 dimension 组支持方案 §4.5。
+	wantTypes := map[string]bool{}
+	for svc := range cesNamespaceMappings {
+		wantTypes[resolveNamespaceMapping(svc).CloudResourceType] = true
+	}
+	if len(result.Summary.SuccessfulTypes) != len(wantTypes) {
+		t.Fatalf("SuccessfulTypes = %v, want %d enumerated types", result.Summary.SuccessfulTypes, len(wantTypes))
+	}
+	for _, st := range result.Summary.SuccessfulTypes {
+		if !wantTypes[st] {
+			t.Fatalf("SuccessfulTypes contains %q outside enumerated namespaces", st)
+		}
+	}
+}
+
+// TestDiscoverCESResources_DimensionWithProductNamesUsesEnumeration 验证不一致响应：
+// resource_level=dimension 但 product_names 非空时，仍按服务枚举发现——
+// dimension 组的 product_names 语义不同于 product 级，不能复用产品级查询维度，见方案 §4.2。
+func TestDiscoverCESResources_DimensionWithProductNamesUsesEnumeration(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "商用电站", GroupId: "rg-biz", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}}),
+		showResp:       buildShowRespWithLevel("商用电站", "SYS.ECS,instance_id;SYS.EVS,disk_name", 1, "dimension"),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.EVS": buildListResResp(mkRes("disk-1", "disk_name", "d-1")),
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(result.Resources) != 1 {
+		t.Fatalf("resource count = %d, want 1", len(result.Resources))
+	}
+	if result.Resources[0].Type != "evs" {
+		t.Fatalf("Type = %q, want evs (actual dimensions drive mapping)", result.Resources[0].Type)
+	}
+	if result.Summary.ProductNamesEmpty {
+		t.Fatalf("ProductNamesEmpty should be false for dimension group")
+	}
+	if result.Summary.DimensionGroupCount != 1 {
+		t.Fatalf("DimensionGroupCount = %d, want 1", result.Summary.DimensionGroupCount)
 	}
 }
 
@@ -383,25 +491,361 @@ func TestDiscoverCESResources_UnknownLevelFails(t *testing.T) {
 	}
 }
 
-// TestDiscoverCESResources_DimensionWithProductNamesFails 验证不一致响应：
-// resource_level=dimension 但 product_names 非空时仍应返回 FAILED_PRECONDITION。
-// dimension 级资源组的 product_names 语义不同于 product 级，不能复用产品级反向 stale 逻辑。
-func TestDiscoverCESResources_DimensionWithProductNamesFails(t *testing.T) {
+// TestDiscoverCESResources_DimensionGroupSpecifiedID 验证显式 specified_id 指定 dimension 组
+// 不再返回 FAILED_PRECONDITION：发现后 ResourceLevel=dimension（非权威 scope），
+// sync_service 据此只做逐类型 stale，不做区域级反向 stale，见 dimension 组支持方案 §4.5。
+func TestDiscoverCESResources_DimensionGroupSpecifiedID(t *testing.T) {
 	api := &mockCESResourceGroupAPI{
-		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "全部资源", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(2)}}),
-		showResp:       buildShowRespWithLevel("全部资源", "SYS.ECS,instance_id;SYS.EVS,disk_name", 2, "dimension"),
+		showResp: buildShowRespWithLevel("户用电站", "", 2, "dimension"),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.EVS": buildListResResp(mkRes("disk-1", "disk_name", "d-1"), mkRes("disk-2", "disk_name", "d-2")),
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", ResourceGroupID: "rg-dianzhan", MaxResources: 100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(result.Resources) != 2 {
+		t.Fatalf("resource count = %d, want 2", len(result.Resources))
+	}
+	if result.Summary.ResourceGroupID != "rg-dianzhan" || result.Summary.ResourceGroupName != "户用电站" {
+		t.Fatalf("group = %s/%s, want rg-dianzhan/户用电站", result.Summary.ResourceGroupID, result.Summary.ResourceGroupName)
+	}
+	if result.Summary.ResourceLevel != resourceLevelDimension {
+		t.Fatalf("ResourceLevel = %q, want %q (dimension group is not authoritative)", result.Summary.ResourceLevel, resourceLevelDimension)
+	}
+	if result.Summary.DimensionGroupCount != 1 {
+		t.Fatalf("DimensionGroupCount = %d, want 1", result.Summary.DimensionGroupCount)
+	}
+	if result.Summary.ScopeIncomplete {
+		t.Fatalf("ScopeIncomplete should be false when declared total (2) is covered")
+	}
+	// 服务枚举的每个成功查询都计入 SuccessfulTypes（含 0 资源），见契约 §13.1/方案 §4.5。
+	if len(result.Summary.SuccessfulTypes) == 0 || !testSliceContains(result.Summary.SuccessfulTypes, "evs") {
+		t.Fatalf("SuccessfulTypes = %v, want to contain evs", result.Summary.SuccessfulTypes)
+	}
+}
+
+// TestDiscoverCESResources_DimensionVPCSubtypeSplitFromActualDims 验证 dimension 组
+// SYS.VPC 资源按实际返回的 dimensions 拆分子类型（publicip_id→eip、subnet_id→subnet），
+// 见 dimension 组支持方案 §4.3。
+func TestDiscoverCESResources_DimensionVPCSubtypeSplitFromActualDims(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "极光系统", GroupId: "rg-aurora", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(2)}}),
+		showResp:       buildShowRespWithLevel("极光系统", "", 2, "dimension"),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.VPC": buildListResResp(
+				mkRes("subnet-1", "subnet_id", "sub-1"),
+				mkRes("eip-1", "publicip_id", "pub-1"),
+			),
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	byRef := map[string]domain.CloudResource{}
+	for _, r := range result.Resources {
+		byRef[r.ProviderRef] = r
+	}
+	sub, ok := byRef["sub-1"]
+	if !ok || sub.Type != "subnet" {
+		t.Fatalf("subnet resource missing or wrong type: %+v", result.Resources)
+	}
+	eip, ok := byRef["pub-1"]
+	if !ok || eip.Type != "eip" {
+		t.Fatalf("eip resource missing or wrong type: %+v", result.Resources)
+	}
+	if eip.Labels["dim_name"] != "publicip_id" || sub.Labels["dim_name"] != "subnet_id" {
+		t.Fatalf("dim_name labels = %q/%q, want publicip_id/subnet_id (actual dimensions)", eip.Labels["dim_name"], sub.Labels["dim_name"])
+	}
+}
+
+// TestDiscoverCESResources_DimensionELBPreferredDimension 验证 ELB 在 dimension 组返回
+// lbaas_instance_id 与 loadbalancer_id 时，优选维度规范化后主维度取 loadbalancer_id，
+// 与 product 路径（查询维度 loadbalancer_id）的 ProviderRef/ResourceID 一致，
+// 保证跨层级组去重生效，见 dimension 组支持方案 §4.3。
+func TestDiscoverCESResources_DimensionELBPreferredDimension(t *testing.T) {
+	in := cesResourceInput{
+		ResourceName: "lb-shared",
+		Dimensions: []cesDimInput{
+			{Name: "lbaas_instance_id", Value: "lbaas-x"},
+			{Name: "loadbalancer_id", Value: "lb-1"},
+		},
+	}
+	// dimension 路径：查询维度为空，按实际维度 + 优选维度表推导。
+	dimCloud, ok := mapCESResource("cn-south-1", "SYS.ELB", nil, in, "rg-dim", "维度组")
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	// product 路径：查询维度 loadbalancer_id。
+	prodCloud, ok := mapCESResource("cn-south-1", "SYS.ELB", []string{"loadbalancer_id"}, in, "rg-prod", "产品组")
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if dimCloud.ProviderRef != "lb-1" {
+		t.Fatalf("dimension ProviderRef = %q, want lb-1 (preferred dimension wins)", dimCloud.ProviderRef)
+	}
+	if dimCloud.ResourceID != prodCloud.ResourceID {
+		t.Fatalf("ResourceID mismatch across levels: %q vs %q", dimCloud.ResourceID, prodCloud.ResourceID)
+	}
+	if dimCloud.Type != "elb" || prodCloud.Type != "elb" {
+		t.Fatalf("types = %q/%q, want elb/elb", dimCloud.Type, prodCloud.Type)
+	}
+	// labels.dim_name 记录资源实际维度名（返回顺序），便于追溯。
+	if dimCloud.Labels["dim_name"] != "lbaas_instance_id,loadbalancer_id" {
+		t.Fatalf("dim_name label = %q, want lbaas_instance_id,loadbalancer_id", dimCloud.Labels["dim_name"])
+	}
+	// 优选维度缺失时回落首个非空实际维度（ELB 仅有 lbaas_instance_id）。
+	onlyLbaas := cesResourceInput{Dimensions: []cesDimInput{{Name: "lbaas_instance_id", Value: "lbaas-y"}}}
+	fallbackCloud, ok := mapCESResource("cn-south-1", "SYS.ELB", nil, onlyLbaas, "", "")
+	if !ok || fallbackCloud.ProviderRef != "lbaas-y" {
+		t.Fatalf("fallback ProviderRef = %q, want lbaas-y (first non-empty actual dim)", fallbackCloud.ProviderRef)
+	}
+}
+
+// TestDiscoverCESResources_CrossLevelDedup 验证同一资源同时出现在 product 组与 dimension 组时
+// 按唯一键 (cloud_resource_type, cloud_resource_id, region) 去重，只入库一次，
+// 见 dimension 组支持方案 §4.3/§4.4。
+func TestDiscoverCESResources_CrossLevelDedup(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(
+			cesv2model.OneResourceGroupResp{GroupName: "生产ecs", GroupId: "rg-prod", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}},
+			cesv2model.OneResourceGroupResp{GroupName: "大数据", GroupId: "rg-dim", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}},
+		),
+		showRespsByGroup: map[string]*cesv2model.ShowResourceGroupResponse{
+			"rg-prod": buildShowResp("生产ecs", "SYS.ECS,instance_id", 1),
+			"rg-dim":  buildShowRespWithLevel("大数据", "", 1, "dimension"),
+		},
+		listRespsByGroup: map[string]map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"rg-prod": {
+				"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
+			},
+			"rg-dim": {
+				"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
+			},
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "cn-south-1", MaxResources: 100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(result.Resources) != 1 {
+		t.Fatalf("resource count = %d, want 1 (deduped across levels)", len(result.Resources))
+	}
+	if result.Summary.MappedCount != 2 {
+		t.Fatalf("MappedCount = %d, want 2 (includes duplicate)", result.Summary.MappedCount)
+	}
+	if result.Summary.DuplicateCount != 1 {
+		t.Fatalf("DuplicateCount = %d, want 1 (cross-level dedup loss)", result.Summary.DuplicateCount)
+	}
+	// 契约公式：mapped = unique + duplicate。
+	if result.Summary.MappedCount != result.Summary.UniqueDiscoveredCount+result.Summary.DuplicateCount {
+		t.Fatalf("mapped(%d) != unique(%d)+duplicate(%d)",
+			result.Summary.MappedCount, result.Summary.UniqueDiscoveredCount, result.Summary.DuplicateCount)
+	}
+	if result.Summary.DimensionGroupCount != 1 {
+		t.Fatalf("DimensionGroupCount = %d, want 1", result.Summary.DimensionGroupCount)
+	}
+	// 混合口径全部成功：无 failed scopes、无对账不符。
+	if len(result.Summary.FailedScopes) != 0 || result.Summary.ScopeIncomplete {
+		t.Fatalf("FailedScopes=%v ScopeIncomplete=%v, want empty/false", result.Summary.FailedScopes, result.Summary.ScopeIncomplete)
+	}
+	// 含 dimension 组 → ResourceLevel 不为 product（sync_service 不做区域级反向 stale）。
+	if result.Summary.ResourceLevel == resourceLevelProduct {
+		t.Fatalf("ResourceLevel = %q, want non-product", result.Summary.ResourceLevel)
+	}
+}
+
+// TestDiscoverCESResources_DimensionQueryFailedMarksScopeIncomplete 验证 dimension 组某服务
+// 查询失败：类型入 QueryFailedTypes 并从 SuccessfulTypes 剔除；组声明 total 与发现数不符且
+// 不可解释 → scope_incomplete=true + group_coverage_mismatch，见 dimension 组支持方案 §4.5/§4.6。
+func TestDiscoverCESResources_DimensionQueryFailedMarksScopeIncomplete(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "户用电站", GroupId: "rg-dz", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(2)}}),
+		showResp:       buildShowRespWithLevel("户用电站", "", 2, "dimension"),
 		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
 			"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
 		},
 	}
-	_, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+	// SYS.EVS 查询失败：evs 入 QueryFailedTypes 且不计入 SuccessfulTypes。
+	failAPI := &failingServiceAPI{inner: api, failService: "SYS.EVS", err: apperr.New(apperr.CodeUnavailable, "evs failed")}
+	result, err := discoverCESResources(context.Background(), failAPI, CESResourceDiscoveryRequest{
 		ProjectID: "proj", Region: "r", MaxResources: 100,
 	})
-	if err == nil {
-		t.Fatalf("expected FAILED_PRECONDITION error for dimension level with non-empty product_names")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
 	}
-	if apperr.CodeOf(err) != apperr.CodeFailedPrecondition {
-		t.Fatalf("err code = %v, want FAILED_PRECONDITION", apperr.CodeOf(err))
+	if len(result.Resources) != 1 {
+		t.Fatalf("resource count = %d, want 1 (ecs still discovered)", len(result.Resources))
+	}
+	if len(result.Summary.FailedScopes) != 1 {
+		t.Fatalf("FailedScopes = %v, want 1 (real query failure recorded)", result.Summary.FailedScopes)
+	}
+	if !reflect.DeepEqual(result.Summary.QueryFailedTypes, []string{"evs"}) {
+		t.Fatalf("QueryFailedTypes = %v, want [evs]", result.Summary.QueryFailedTypes)
+	}
+	// evs 查询失败 → 从 SuccessfulTypes 剔除；其余枚举服务仍计入。
+	if testSliceContains(result.Summary.SuccessfulTypes, "evs") {
+		t.Fatalf("SuccessfulTypes = %v, want evs excluded (query failed)", result.Summary.SuccessfulTypes)
+	}
+	if !testSliceContains(result.Summary.SuccessfulTypes, "ecs") {
+		t.Fatalf("SuccessfulTypes = %v, want to contain ecs", result.Summary.SuccessfulTypes)
+	}
+	// 声明 2 实际只拉到 1（evs 查询失败）→ 覆盖缺口不可解释 → scope_incomplete。
+	if !result.Summary.ScopeIncomplete {
+		t.Fatalf("ScopeIncomplete should be true when declared total exceeds fetched and diff is unexplained")
+	}
+	if !testSliceContains(result.Summary.GroupCoverageMismatches, "户用电站") {
+		t.Fatalf("GroupCoverageMismatches = %v, want to contain 户用电站", result.Summary.GroupCoverageMismatches)
+	}
+}
+
+// TestDiscoverCESResources_DimensionCoverageMismatch 验证 dimension 组声明 total 大于实际
+// 发现（未知 namespace 服务未被枚举）→ scope_incomplete=true + group_coverage_mismatch，
+// 且已发现资源仍正常返回（不因对账不符丢弃资源），见 dimension 组支持方案 §4.6。
+func TestDiscoverCESResources_DimensionCoverageMismatch(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "商用电站", GroupId: "rg-sy", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(10)}}),
+		showResp:       buildShowRespWithLevel("商用电站", "", 10, "dimension"),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// 发现的资源照常返回。
+	if len(result.Resources) != 1 {
+		t.Fatalf("resource count = %d, want 1 (discovered resources still returned)", len(result.Resources))
+	}
+	// 声明 10 vs 实际 1，差 9 无法由 invalid/duplicate 解释（都是已拉取子集）→ scope 不完整。
+	if !result.Summary.ScopeIncomplete {
+		t.Fatalf("ScopeIncomplete should be true on unexplained coverage gap")
+	}
+	if !testSliceContains(result.Summary.GroupCoverageMismatches, "商用电站") {
+		t.Fatalf("GroupCoverageMismatches = %v, want to contain 商用电站", result.Summary.GroupCoverageMismatches)
+	}
+	// 对账不符不是失败 scope：不记 failed_scopes。
+	if len(result.Summary.FailedScopes) != 0 {
+		t.Fatalf("FailedScopes = %v, want empty (mismatch is not a query failure)", result.Summary.FailedScopes)
+	}
+}
+
+// TestDiscoverCESResources_DimensionCoverageOKNotIncomplete 验证 dimension 组声明 total
+// 与实际拉取数一致（含跨组去重折损）时不对账不符：scope_incomplete=false，见方案 §4.6。
+func TestDiscoverCESResources_DimensionCoverageOKNotIncomplete(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "极光系统", GroupId: "rg-jg", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(3)}}),
+		showResp:       buildShowRespWithLevel("极光系统", "", 3, "dimension"),
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1"), mkRes("ecs-2", "instance_id", "i-2")),
+			"SYS.OBS": buildListResResp(mkRes("bucket-1", "bucket_name", "b-1")),
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(result.Resources) != 3 {
+		t.Fatalf("resource count = %d, want 3", len(result.Resources))
+	}
+	if result.Summary.ScopeIncomplete {
+		t.Fatalf("ScopeIncomplete should be false when fetched (3) covers declared total (3)")
+	}
+	if len(result.Summary.GroupCoverageMismatches) != 0 {
+		t.Fatalf("GroupCoverageMismatches = %v, want empty", result.Summary.GroupCoverageMismatches)
+	}
+}
+
+// TestDiscoverCESResources_DimensionSharesMaxResourcesBudget 验证 max_resources 原始行预算在
+// product 与 dimension 工作项之间共享，不因 dimension 服务枚举（16 服务/组）放大，见 §11/§4.2。
+// 截断时由 MaxResourcesReached 统一门控禁 stale，不再重复判定组级对账。
+func TestDiscoverCESResources_DimensionSharesMaxResourcesBudget(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(
+			cesv2model.OneResourceGroupResp{GroupName: "生产ecs", GroupId: "rg-prod", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}},
+			cesv2model.OneResourceGroupResp{GroupName: "大数据", GroupId: "rg-dim", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}},
+		),
+		showRespsByGroup: map[string]*cesv2model.ShowResourceGroupResponse{
+			"rg-prod": buildShowResp("生产ecs", "SYS.ECS,instance_id", 1),
+			"rg-dim":  buildShowRespWithLevel("大数据", "", 1, "dimension"),
+		},
+		listRespsByGroup: map[string]map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"rg-prod": {
+				"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
+			},
+			"rg-dim": {
+				"SYS.ECS": buildListResResp(mkRes("ecs-2", "instance_id", "i-2")),
+			},
+		},
+	}
+	// 预算 1：product 组取 1 条即达上限，dimension 组的服务枚举不被扫描。
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "cn-south-1", MaxResources: 1,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if result.Summary.RawFetchedCount > 1 {
+		t.Fatalf("RawFetchedCount = %d, want <= 1 (shared budget)", result.Summary.RawFetchedCount)
+	}
+	if !result.Summary.MaxResourcesReached {
+		t.Fatalf("MaxResourcesReached should be true when budget exhausted with dimension items remaining")
+	}
+	// 截断时所有组的拉取数天然偏小，不得因此误置 scope_incomplete。
+	if result.Summary.ScopeIncomplete {
+		t.Fatalf("ScopeIncomplete should not be set under truncation (MaxResourcesReached gates stale)")
+	}
+	if len(result.Summary.SuccessfulTypes) != 0 {
+		t.Fatalf("SuccessfulTypes = %v, want empty (truncated)", result.Summary.SuccessfulTypes)
+	}
+}
+
+// TestDiscoverCESResources_DimensionUnknownNamespaceNotEnumerated 验证 dimension 组内属于
+// 未知 namespace（不在 cesNamespaceMappings）的服务不会被枚举查询：这些资源发现不了，
+// 差值通过组级对账暴露为 scope_incomplete，见 dimension 组支持方案 §4.6。
+func TestDiscoverCESResources_DimensionUnknownNamespaceNotEnumerated(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(cesv2model.OneResourceGroupResp{GroupName: "大数据", GroupId: "rg-bd", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(5)}}),
+		showResp:       buildShowRespWithLevel("大数据", "", 5, "dimension"),
+		// SYS.GAUSSDB 是未知 namespace，不在枚举白名单内；mock 即便有数据也不会被查询。
+		listResps: map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"SYS.GAUSSDB": buildListResResp(mkRes("gaussdb-1", "instance_id", "g-1")),
+			"SYS.ECS":     buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "r", MaxResources: 100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	for _, svc := range api.listResInputs {
+		if svc == "SYS.GAUSSDB" {
+			t.Fatalf("unknown namespace SYS.GAUSSDB must not be enumerated for dimension group")
+		}
+	}
+	// 未知 namespace 资源发现不了，但对账暴露缺口：声明 5 vs 实际 1。
+	if len(result.Resources) != 1 {
+		t.Fatalf("resource count = %d, want 1 (unknown namespace service not queried)", len(result.Resources))
+	}
+	if !result.Summary.ScopeIncomplete {
+		t.Fatalf("ScopeIncomplete should be true (unknown namespace gap exposed by reconciliation)")
+	}
+	if !testSliceContains(result.Summary.GroupCoverageMismatches, "大数据") {
+		t.Fatalf("GroupCoverageMismatches = %v, want to contain 大数据", result.Summary.GroupCoverageMismatches)
 	}
 }
 

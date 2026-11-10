@@ -59,6 +59,15 @@ type AssetFullSyncQuery struct {
 // 因此禁止区域级反向 stale，只按成功查询的类型逐类型标记，见 §8.4/§13.1。
 const ResourceGroupSelectionAllGroups = "all_groups"
 
+// ShowResourceGroup 响应 resource_level 的取值，见 dimension 组支持方案 §4.5。
+// 仅 ResourceLevelProduct 且 product_names 非空时，scope 才是权威范围，允许区域级反向 stale；
+// ResourceLevelDimension 的组按服务枚举 + 资源实际维度发现，不是权威 scope，
+// 只按成功查询的类型逐类型 stale，禁止区域级反向标记。
+const (
+	ResourceLevelProduct   = "product"
+	ResourceLevelDimension = "dimension"
+)
+
 // CloudSyncSummary 云资源全量同步摘要，用于回写 batch message，见 ops/huawei-ces-sync-contract.md §7.2。
 // 字段分层以契约 §3.3 为准：对账字段用于验收与归档，门控字段驱动 stale/partial/finalize，
 // 诊断字段用于排障，展示字段仅用于 UI 说明。
@@ -94,8 +103,16 @@ type CloudSyncSummary struct {
 	// ResourceGroupCount 记录本轮实际覆盖的资源组数量。
 	// 聚合口径（全部资源组并集）下 > 1，单组口径下为 1。见 §8.4。
 	ResourceGroupCount int `json:"resource_group_count,omitempty"`
+	// DimensionGroupCount 记录本轮覆盖的 dimension 级资源组数量（顶层 summary 为各 scope 求和）。
+	// dimension 组按已知 namespace 服务枚举 + 资源实际维度发现，不是权威 scope，
+	// 见 dimension 组支持方案 §4.2/§4.5/§4.7。
+	DimensionGroupCount int `json:"dimension_group_count,omitempty"`
+	// GroupCoverageMismatches 记录组级覆盖对账不符的 dimension 组名：组声明 total 大于实际
+	// 拉取数且差值无法被既有计数解释（组内未知 namespace 服务未被枚举查询）。命中时
+	// ScopeIncomplete 必须为 true，该 region 禁止任何 stale，见 dimension 组支持方案 §4.6。
+	GroupCoverageMismatches []string `json:"group_coverage_mismatches,omitempty"`
 	// ScopeIncomplete 表示聚合口径下有资源组未能覆盖（ShowResourceGroup 失败、
-	// resource_level 非 product 等），scope 不完整，调用方必须禁止该 scope 的反向 stale。见 §8.4/§13.1。
+	// resource_level 未知、dimension 组覆盖对账不符等），scope 不完整，调用方必须禁止该 scope 的反向 stale。见 §8.4/§13.1。
 	ScopeIncomplete bool `json:"scope_incomplete,omitempty"`
 	// MaxResourcesReached 表示因达到上限而提前终止，调用方必须禁止该 scope 执行 stale，见 §13。
 	MaxResourcesReached bool `json:"max_resources_reached,omitempty"`

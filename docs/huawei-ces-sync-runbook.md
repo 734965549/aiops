@@ -120,6 +120,9 @@ unique_discovered_count  = persisted_count + persist_failed_count
 - `product_names_empty=true` 时，应明确标出是依赖白名单兜底而非按资源组/产品名过滤；
 - `summary.scopes[].resource_group_selection` 需要说明实际采用的是 `specified_id`（按 resource_group_id）、`specified_name`（按显式 resource_group_name）、`default_name`（命中默认候选名分组）还是 `all_groups`（聚合全部资源组并集）；
 - `summary.scopes[].resource_group_count` 在 `all_groups` 口径下给出本轮实际覆盖的资源组数量，`summary.scopes[].scope_incomplete=true` 表示有资源组未被覆盖（此时该 region 不标记 stale）。
+- `summary.scopes[].dimension_group_count` 给出本轮覆盖的 dimension 级资源组数量（顶层 `dimension_group_count` 为各 scope 求和）；dimension 组按已知 namespace 服务枚举 + 资源实际维度发现，不是权威 scope，只走逐类型 stale，不做区域级反向 stale（契约 §8.5.1/§13.1）。
+- 若 `group_coverage_mismatches` 非空（message 含 `group_coverage_mismatch=<组名,...>`）：表示对应 dimension 组声明 `resource_statistics.total` 大于实际拉取数且差值不可解释——通常是组内属于未知 namespace（不在 `cesNamespaceMappings`，如 `SYS.GAUSSDB`）的服务未被枚举查询。此时 `scope_incomplete=true`、该 region 禁止任何 stale；已发现资源仍全部入库，这是**保守设计行为而非同步失败**。处置：把新 namespace 补入映射表/枚举白名单后重跑，不要在未定位差值前手工标记 stale。
+- 若 `failed_scopes` 出现 `resource_level=... is not supported, group skipped`：仅当 `resource_level` 为未知/空层级（无法判定产品语义还是维度语义）时出现；`dimension` 级自 2026-11-10 起已正式支持，不再被跳过。
 
 4. 检查数据库或资源列表：
 
@@ -155,6 +158,18 @@ CES SYS.VPC 拆分后子类型数量 == platform cloud_resource_type=eip/bandwid
 1. 设置 `sync_mode=native`。
 2. 验证仍能沿用旧 ECS/CCE/RDS/ELB 同步路径。
 3. 验证文案和 batch message 不承诺与 CES 控制台数量一致。
+
+### 1.4.1 dimension 级资源组验收（真实账号 `acc-50843711-...`）
+
+账号配置保持 `{"sync_mode":"ces","max_resources":20000}`（cn-south-1，未指定资源组 → 聚合口径 `all_groups`）。该账号共 10 个资源组：6 个 product 级 + 4 个 dimension 级（大数据 / 户用电站 / 商用电站 / 极光系统）。
+
+1. 使用 `scripts/e2e-asset-sync-real.ps1` 完成真实账号验收并归档对账摘要。
+2. 10 个组全部覆盖：`summary` 含 `resource_group_count=10`、`dimension_group_count=4`（顶层为各 scope 求和）。
+3. 资源规模：active 资源 ≈ 621（product）+ 1205（dimension）− 跨组去重 − 非法资源；所有差值必须能由摘要计数或逐组对账 Warn 日志解释（重点解释探测 1191 vs 声明 1205 的 14 条差值，见方案 §7）。
+4. 批次状态 `success`（无其他失败时）；message 不再含 `resource_level="dimension" is not supported`，含 `dimension_groups=4`。
+5. stale 安全：无区域级反向 stale；未归入任何分组的资源不被新增误标；`scope_incomplete` 仅在真实缺口时出现（`group_coverage_mismatch` 非空即真实缺口）。
+6. `hybrid` 模式下 dimension 发现的资源按既有类型增强链路正常运作（EVS 既有匹配键缺口除外，见 backlog 缺口 4）。
+7. 全组成功后批次状态由 `partial` 翻转为 `success` 属预期改善，不是回归；发布说明中需明确。
 
 ### 1.5 回归验收
 
@@ -193,6 +208,8 @@ cd web && npm run build
 - CES 数量口径随 region、project_id、企业项目、资源分组变化，易被误读成“CES 总览全部资源”；验收必须按“目标 CES 资源分组 total”对账，并记录 region/project_id/enterprise_project_id/resource_group_id/resource_group_name，避免排障时拿错总览口径。
 - `product_names` 为空时，全量发现依赖内置 namespace 白名单，可能漏资源；需要在 batch message 中暴露。
 - CES 资源维度可能不是稳定的云资源 ID，映射时必须保留 namespace 和 dim_name，避免跨类型冲突。
+- dimension 级资源组按服务枚举白名单（已知 namespace）发现，组内未知 namespace 服务不在枚举范围内；组级覆盖对账（声明 total vs 实际拉取）暴露该缺口并置 `scope_incomplete` 禁 stale，长期解法是把新 namespace 补入映射表，不开放任意 namespace 自动探测（契约 §8.5.1）。
+- dimension 组的服务枚举会增加 API 调用量（16 服务 × dimension 组数，含分页）；共享 `max_resources` 预算不放大，同步耗时增加属预期，验收时记录耗时基线。
 - `asset_resource` 唯一约束已由迁移 `0026` 补齐为含 `region` 的部分唯一索引，可区分多区域同类型同云 ID 资源。
 - `asset_sync_batch` 已由迁移 `0030` 增加 `fencing_token`；续租必须按 `batch_id + fencing_token` 校验所有权，upsert/stale 写入前也必须确认仍持有 running 且未过期租约，避免旧任务在被 reap 后继续写入。
 - `asset_sync_batch` 由迁移 `0033` 增加 `triggered_by`（触发用户 user_id）；崩溃批次被 reap 时 `sync_reaped` 审计 actor 取该字段，避免归因到当次请求用户。

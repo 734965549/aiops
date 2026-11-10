@@ -97,21 +97,22 @@ type TriggerSyncInput struct {
 
 // SyncBatchSummaryDTO 是同步批次的机器可读全量摘要。
 // 字段分组：
-// - 展示：sync_mode、resource_group_name、resource_group_id、projects、regions
-// - 对账：ces_total、raw_fetched_count、mapped_count、unique_discovered_count、
-//   persisted_count、completed_count、duplicate_count、persist_failed_count、discovered_count
-// - 门控：max_resources_reached、product_names_empty、query_failed_types、conversion_failed_types
-// - 诊断：failed_scopes、enrichment_failed_types、partial_reason
-// - 逐 scope 明细：scopes[]（见 SyncBatchScopeSummaryDTO）
+//   - 展示：sync_mode、resource_group_name、resource_group_id、projects、regions
+//   - 对账：ces_total、raw_fetched_count、mapped_count、unique_discovered_count、
+//     persisted_count、completed_count、duplicate_count、persist_failed_count、discovered_count
+//   - 门控：max_resources_reached、product_names_empty、query_failed_types、conversion_failed_types
+//   - 诊断：failed_scopes、enrichment_failed_types、partial_reason
+//   - 逐 scope 明细：scopes[]（见 SyncBatchScopeSummaryDTO）
 //
 // 供审计、排障、验收与详情页使用；主列表应读取轻量展示层，不要展开全量字段。
 // 这里保留全量 summary，避免 message 再承担半结构化协议职责。
 //
 // 计数口径见 ops/cloud-observability-contract.md §5.5 与
 // ops/huawei-ces-sync-contract.md §9.5：
-//   raw_fetched_count        = mapped_count + invalid_resource_count
-//   mapped_count             = unique_discovered_count + duplicate_count
-//   unique_discovered_count  = persisted_count + persist_failed_count
+//
+//	raw_fetched_count        = mapped_count + invalid_resource_count
+//	mapped_count             = unique_discovered_count + duplicate_count
+//	unique_discovered_count  = persisted_count + persist_failed_count
 type SyncBatchSummaryDTO struct {
 	SyncMode              string   `json:"sync_mode,omitempty"`
 	ResourceGroupName     string   `json:"resource_group_name,omitempty"`
@@ -145,6 +146,12 @@ type SyncBatchSummaryDTO struct {
 	ConversionFailedTypes []string `json:"conversion_failed_types,omitempty"`
 	// ResourceGroupCount 记录本 scope 实际覆盖的资源组数量；聚合口径（全部资源组并集）下 > 1。
 	ResourceGroupCount int `json:"resource_group_count,omitempty"`
+	// DimensionGroupCount 记录本 scope 覆盖的 dimension 级资源组数量；顶层为各 scope 求和。
+	// dimension 组按服务枚举 + 资源实际维度发现，不是权威 scope，见 dimension 组支持方案 §4.5/§4.7。
+	DimensionGroupCount int `json:"dimension_group_count,omitempty"`
+	// GroupCoverageMismatches 记录组级覆盖对账不符的 dimension 组名（声明 total 大于实际拉取数
+	// 且差值不可解释），命中即 scope_incomplete，该 region 禁止任何 stale，见方案 §4.6。
+	GroupCoverageMismatches []string `json:"group_coverage_mismatches,omitempty"`
 	// ScopeIncomplete 表示聚合口径下有资源组未被覆盖，该 scope 禁止 stale 标记。
 	ScopeIncomplete bool `json:"scope_incomplete,omitempty"`
 	// Scopes 是逐 region/project/resource_group 的明细。多区域排查必须读取本字段，
@@ -187,6 +194,10 @@ type SyncBatchScopeSummaryDTO struct {
 	ProductNamesEmpty      bool     `json:"product_names_empty,omitempty"`
 	// ResourceGroupCount 记录本 scope 实际覆盖的资源组数量；聚合口径（全部资源组并集）下 > 1。
 	ResourceGroupCount int `json:"resource_group_count,omitempty"`
+	// DimensionGroupCount 记录本 scope 覆盖的 dimension 级资源组数量；顶层为各 scope 求和。
+	DimensionGroupCount int `json:"dimension_group_count,omitempty"`
+	// GroupCoverageMismatches 记录组级覆盖对账不符的 dimension 组名，见 dimension 组支持方案 §4.6。
+	GroupCoverageMismatches []string `json:"group_coverage_mismatches,omitempty"`
 	// ScopeIncomplete 表示聚合口径下有资源组未被覆盖，该 scope 禁止 stale 标记。
 	ScopeIncomplete bool `json:"scope_incomplete,omitempty"`
 }
@@ -995,6 +1006,14 @@ func (s *SyncService) syncCloudFullSync(
 		if summary.ResourceGroupCount > 1 {
 			line += fmt.Sprintf(" resource_groups=%d", summary.ResourceGroupCount)
 		}
+		// dimension 级资源组按服务枚举发现，组数与对账不符组名必须可从 message 直接观察，
+		// 见 dimension 组支持方案 §4.6/§4.7。
+		if summary.DimensionGroupCount > 0 {
+			line += fmt.Sprintf(" dimension_groups=%d", summary.DimensionGroupCount)
+		}
+		if len(summary.GroupCoverageMismatches) > 0 {
+			line += fmt.Sprintf(" group_coverage_mismatch=%s", strings.Join(summary.GroupCoverageMismatches, ","))
+		}
 		if summary.ScopeIncomplete {
 			line += " scope_incomplete=true"
 		}
@@ -1048,7 +1067,10 @@ func (s *SyncService) syncCloudFullSync(
 			}
 			continue
 		}
-		if isAuthoritativeScope(summary.SyncMode) && !summary.ProductNamesEmpty {
+		// 区域级反向 stale 只允许 product 级权威 scope：dimension 级资源组（显式指定单组时）
+		// 按服务枚举 + 资源实际维度发现，不是权威 scope，禁止反向标记，只走逐类型 stale，
+		// 见 dimension 组支持方案 §4.5。
+		if isAuthoritativeScope(summary.SyncMode) && !summary.ProductNamesEmpty && summary.ResourceLevel != obsapp.ResourceLevelDimension {
 			snapshot := collector.scopeSnapshot()
 			negativeScopes = append(negativeScopes, negativeStaleScope{
 				Region:      region,
@@ -1377,33 +1399,35 @@ func buildSyncBatchSummaryDTO(summaries []obsapp.CloudSyncSummary) *SyncBatchSum
 		return nil
 	}
 	dto := &SyncBatchSummaryDTO{
-		SyncMode:              firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.SyncMode }),
-		ResourceGroupName:     firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.ResourceGroupName }),
-		ResourceGroupID:       firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.ResourceGroupID }),
-		Projects:              uniqueSummaryStrings(summaries, func(s obsapp.CloudSyncSummary) string { return s.ProjectID }),
-		Regions:               uniqueSummaryStrings(summaries, func(s obsapp.CloudSyncSummary) string { return s.Region }),
-		CESTotal:              sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.CESTotal }),
-		RawFetchedCount:       sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.RawFetchedCount }),
-		MappedCount:           sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.MappedCount }),
-		UniqueDiscoveredCount: sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.UniqueDiscoveredCount }),
-		PersistedCount:        sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.PersistedCount }),
-		DuplicateCount:        sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.DuplicateCount }),
-		PersistFailedCount:    sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.PersistFailedCount }),
-		DiscoveredCount:       sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.Discovered }),
-		FailedScopes:          uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.FailedScopes }),
-		EnrichedCount:         sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.EnrichedCount }),
-		EnrichmentFailedTypes: uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.EnrichmentFailedTypes }),
-		EnrichmentWarnings:    uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.EnrichmentWarnings }),
-		EnrichmentStageError:  firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.EnrichmentStageError }),
-		WritebackFailedCount:  sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.WritebackFailedCount }),
-		UnknownNamespaceCount: sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.UnknownNamespaceCount }),
-		InvalidResourceCount:  sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.InvalidResourceCount }),
-		MaxResourcesReached:   anySummaryBool(summaries, func(s obsapp.CloudSyncSummary) bool { return s.MaxResourcesReached }),
-		ProductNamesEmpty:     anySummaryBool(summaries, func(s obsapp.CloudSyncSummary) bool { return s.ProductNamesEmpty }),
-		QueryFailedTypes:      uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.QueryFailedTypes }),
-		ConversionFailedTypes: uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.ConversionFailedTypes }),
-		ResourceGroupCount:    sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.ResourceGroupCount }),
-		ScopeIncomplete:       anySummaryBool(summaries, func(s obsapp.CloudSyncSummary) bool { return s.ScopeIncomplete }),
+		SyncMode:                firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.SyncMode }),
+		ResourceGroupName:       firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.ResourceGroupName }),
+		ResourceGroupID:         firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.ResourceGroupID }),
+		Projects:                uniqueSummaryStrings(summaries, func(s obsapp.CloudSyncSummary) string { return s.ProjectID }),
+		Regions:                 uniqueSummaryStrings(summaries, func(s obsapp.CloudSyncSummary) string { return s.Region }),
+		CESTotal:                sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.CESTotal }),
+		RawFetchedCount:         sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.RawFetchedCount }),
+		MappedCount:             sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.MappedCount }),
+		UniqueDiscoveredCount:   sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.UniqueDiscoveredCount }),
+		PersistedCount:          sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.PersistedCount }),
+		DuplicateCount:          sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.DuplicateCount }),
+		PersistFailedCount:      sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.PersistFailedCount }),
+		DiscoveredCount:         sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.Discovered }),
+		FailedScopes:            uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.FailedScopes }),
+		EnrichedCount:           sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.EnrichedCount }),
+		EnrichmentFailedTypes:   uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.EnrichmentFailedTypes }),
+		EnrichmentWarnings:      uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.EnrichmentWarnings }),
+		EnrichmentStageError:    firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.EnrichmentStageError }),
+		WritebackFailedCount:    sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.WritebackFailedCount }),
+		UnknownNamespaceCount:   sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.UnknownNamespaceCount }),
+		InvalidResourceCount:    sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.InvalidResourceCount }),
+		MaxResourcesReached:     anySummaryBool(summaries, func(s obsapp.CloudSyncSummary) bool { return s.MaxResourcesReached }),
+		ProductNamesEmpty:       anySummaryBool(summaries, func(s obsapp.CloudSyncSummary) bool { return s.ProductNamesEmpty }),
+		QueryFailedTypes:        uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.QueryFailedTypes }),
+		ConversionFailedTypes:   uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.ConversionFailedTypes }),
+		ResourceGroupCount:      sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.ResourceGroupCount }),
+		DimensionGroupCount:     sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.DimensionGroupCount }),
+		GroupCoverageMismatches: uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.GroupCoverageMismatches }),
+		ScopeIncomplete:         anySummaryBool(summaries, func(s obsapp.CloudSyncSummary) bool { return s.ScopeIncomplete }),
 	}
 	// completed_count 等于 persisted_count（summary 汇总口径），见契约 §5.5。
 	dto.CompletedCount = dto.PersistedCount
@@ -1451,36 +1475,38 @@ func buildSyncBatchScopeSummaries(summaries []obsapp.CloudSyncSummary) []SyncBat
 // scopeSummaryFromProvider 把单条 provider 摘要转成 scope 明细。
 func scopeSummaryFromProvider(s obsapp.CloudSyncSummary) SyncBatchScopeSummaryDTO {
 	return SyncBatchScopeSummaryDTO{
-		Region:                 s.Region,
-		ProjectID:              s.ProjectID,
-		SyncMode:               s.SyncMode,
-		ResourceGroupID:        s.ResourceGroupID,
-		ResourceGroupName:      s.ResourceGroupName,
-		ResourceGroupSelection: s.ResourceGroupSelection,
-		CESTotal:               s.CESTotal,
-		RawFetchedCount:        s.RawFetchedCount,
-		MappedCount:            s.MappedCount,
-		UniqueDiscoveredCount:  s.UniqueDiscoveredCount,
-		PersistedCount:         s.PersistedCount,
-		DuplicateCount:         s.DuplicateCount,
-		PersistFailedCount:     s.PersistFailedCount,
-		DiscoveredCount:        s.Discovered,
-		FailedScopes:           append([]string(nil), s.FailedScopes...),
-		SuccessfulTypes:        append([]string(nil), s.SuccessfulTypes...),
-		QueryFailedTypes:       append([]string(nil), s.QueryFailedTypes...),
-		ConversionFailedTypes:  append([]string(nil), s.ConversionFailedTypes...),
-		UnknownNamespaceCount:  s.UnknownNamespaceCount,
-		InvalidResourceCount:   s.InvalidResourceCount,
-		EnrichedCount:          s.EnrichedCount,
-		EnrichmentFailedCount:  s.EnrichmentFailedCount,
-		EnrichmentFailedTypes:  append([]string(nil), s.EnrichmentFailedTypes...),
-		EnrichmentWarnings:     append([]string(nil), s.EnrichmentWarnings...),
-		EnrichmentStageError:   s.EnrichmentStageError,
-		WritebackFailedCount:   s.WritebackFailedCount,
-		MaxResourcesReached:    s.MaxResourcesReached,
-		ProductNamesEmpty:      s.ProductNamesEmpty,
-		ResourceGroupCount:     s.ResourceGroupCount,
-		ScopeIncomplete:        s.ScopeIncomplete,
+		Region:                  s.Region,
+		ProjectID:               s.ProjectID,
+		SyncMode:                s.SyncMode,
+		ResourceGroupID:         s.ResourceGroupID,
+		ResourceGroupName:       s.ResourceGroupName,
+		ResourceGroupSelection:  s.ResourceGroupSelection,
+		CESTotal:                s.CESTotal,
+		RawFetchedCount:         s.RawFetchedCount,
+		MappedCount:             s.MappedCount,
+		UniqueDiscoveredCount:   s.UniqueDiscoveredCount,
+		PersistedCount:          s.PersistedCount,
+		DuplicateCount:          s.DuplicateCount,
+		PersistFailedCount:      s.PersistFailedCount,
+		DiscoveredCount:         s.Discovered,
+		FailedScopes:            append([]string(nil), s.FailedScopes...),
+		SuccessfulTypes:         append([]string(nil), s.SuccessfulTypes...),
+		QueryFailedTypes:        append([]string(nil), s.QueryFailedTypes...),
+		ConversionFailedTypes:   append([]string(nil), s.ConversionFailedTypes...),
+		UnknownNamespaceCount:   s.UnknownNamespaceCount,
+		InvalidResourceCount:    s.InvalidResourceCount,
+		EnrichedCount:           s.EnrichedCount,
+		EnrichmentFailedCount:   s.EnrichmentFailedCount,
+		EnrichmentFailedTypes:   append([]string(nil), s.EnrichmentFailedTypes...),
+		EnrichmentWarnings:      append([]string(nil), s.EnrichmentWarnings...),
+		EnrichmentStageError:    s.EnrichmentStageError,
+		WritebackFailedCount:    s.WritebackFailedCount,
+		MaxResourcesReached:     s.MaxResourcesReached,
+		ProductNamesEmpty:       s.ProductNamesEmpty,
+		ResourceGroupCount:      s.ResourceGroupCount,
+		DimensionGroupCount:     s.DimensionGroupCount,
+		GroupCoverageMismatches: append([]string(nil), s.GroupCoverageMismatches...),
+		ScopeIncomplete:         s.ScopeIncomplete,
 	}
 }
 
@@ -1510,6 +1536,8 @@ func mergeSyncBatchScopeSummary(dst *SyncBatchScopeSummaryDTO, s obsapp.CloudSyn
 	dst.MaxResourcesReached = dst.MaxResourcesReached || s.MaxResourcesReached
 	dst.ProductNamesEmpty = dst.ProductNamesEmpty || s.ProductNamesEmpty
 	dst.ResourceGroupCount = dst.ResourceGroupCount + s.ResourceGroupCount
+	dst.DimensionGroupCount = dst.DimensionGroupCount + s.DimensionGroupCount
+	dst.GroupCoverageMismatches = appendUniqueStrings(dst.GroupCoverageMismatches, s.GroupCoverageMismatches...)
 	dst.ScopeIncomplete = dst.ScopeIncomplete || s.ScopeIncomplete
 	// scope 级 enrichment_failed_count 同样保持等于其失败类型数，见契约 §13.1。
 	dst.EnrichmentFailedCount = len(dst.EnrichmentFailedTypes)

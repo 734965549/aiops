@@ -225,6 +225,183 @@ func TestMapCESResource_NoPrimaryDimReturnsFalse(t *testing.T) {
 	}
 }
 
+// TestPreferredCESDimensions 验证每服务优选维度表初始值取 fallbackCESProducts 该服务首维度，
+// 见 dimension 组支持方案 §4.3。
+func TestPreferredCESDimensions(t *testing.T) {
+	want := map[string]string{
+		"SYS.ECS":               "instance_id",
+		"SYS.EVS":               "disk_name",
+		"SYS.VPC":               "publicip_id",
+		"SYS.ELB":               "loadbalancer_id",
+		"SYS.RDS":               "rds_cluster_id",
+		"SYS.RDS_MYSQL_CLUSTER": "rds_cluster_id",
+		"SYS.OBS":               "bucket_name",
+		"SYS.DCS":               "dcs_instance_id",
+		"SYS.DMS":               "dms_instance_id",
+		"SYS.CCE":               "cluster_id",
+		"SYS.CBR":               "instance_id",
+		"SYS.VPCEP":             "vpcep_id",
+		"SYS.NAT":               "nat_gateway_id",
+		"SYS.SFS":               "share_id",
+	}
+	for svc, dim := range want {
+		if got := preferredCESDimension(svc); got != dim {
+			t.Fatalf("preferredCESDimension(%q) = %q, want %q", svc, got, dim)
+		}
+	}
+	// 无兜底维度的已知 namespace 没有优选维度，回落首个非空实际维度。
+	if got := preferredCESDimension("SYS.APM"); got != "" {
+		t.Fatalf("preferredCESDimension(SYS.APM) = %q, want empty", got)
+	}
+	if got := preferredCESDimension("SYS.CES"); got != "" {
+		t.Fatalf("preferredCESDimension(SYS.CES) = %q, want empty", got)
+	}
+}
+
+// TestDimensionServiceProducts 验证 dimension 组服务枚举工作项：覆盖 cesNamespaceMappings
+// 全部已知 namespace、不带维度、按 service 排序保证顺序确定，见 dimension 组支持方案 §4.2。
+func TestDimensionServiceProducts(t *testing.T) {
+	got := dimensionServiceProducts()
+	if len(got) != len(cesNamespaceMappings) {
+		t.Fatalf("dimensionServiceProducts count = %d, want %d", len(got), len(cesNamespaceMappings))
+	}
+	seen := map[string]bool{}
+	for i, p := range got {
+		if p.Service == "" {
+			t.Fatalf("item %d has empty service", i)
+		}
+		if len(p.DimNames) != 0 {
+			t.Fatalf("service %s has DimNames %v, want empty (dimension enumeration does not pass dim_name)", p.Service, p.DimNames)
+		}
+		if isUnknownNamespace(p.Service) {
+			t.Fatalf("service %s is not a known namespace (enumeration must stay within the whitelist)", p.Service)
+		}
+		if seen[p.Service] {
+			t.Fatalf("duplicate service %s", p.Service)
+		}
+		seen[p.Service] = true
+		if i > 0 && got[i-1].Service >= p.Service {
+			t.Fatalf("services not sorted: %s before %s", got[i-1].Service, p.Service)
+		}
+	}
+}
+
+// TestEffectiveDimensionNames_ProductPathUnchanged 验证 product 路径（查询维度非空）行为不变：
+// effective 与 actual 均为查询维度，与现状完全一致。
+func TestEffectiveDimensionNames_ProductPathUnchanged(t *testing.T) {
+	in := cesResourceInput{Dimensions: []cesDimInput{
+		{Name: "instance_id", Value: "i-1"},
+		{Name: "az", Value: "az-1"},
+	}}
+	effective, actual := effectiveDimensionNames("SYS.ECS", []string{"instance_id"}, in)
+	if !reflect.DeepEqual(effective, []string{"instance_id"}) || !reflect.DeepEqual(actual, []string{"instance_id"}) {
+		t.Fatalf("effective=%v actual=%v, want [instance_id]/[instance_id]", effective, actual)
+	}
+}
+
+// TestEffectiveDimensionNames_DimensionPreferredHoisted 验证 dimension 路径：优选维度命中
+// 实际维度时前置，其余实际维度保持返回顺序；未命中时 effective 等于实际维度序列，
+// 见 dimension 组支持方案 §4.3。
+func TestEffectiveDimensionNames_DimensionPreferredHoisted(t *testing.T) {
+	in := cesResourceInput{Dimensions: []cesDimInput{
+		{Name: "lbaas_instance_id", Value: "x"},
+		{Name: "loadbalancer_id", Value: "lb-1"},
+		{Name: "az", Value: "az-1"},
+	}}
+	effective, actual := effectiveDimensionNames("SYS.ELB", nil, in)
+	if !reflect.DeepEqual(effective, []string{"loadbalancer_id", "lbaas_instance_id", "az"}) {
+		t.Fatalf("effective = %v, want [loadbalancer_id lbaas_instance_id az] (preferred hoisted)", effective)
+	}
+	if !reflect.DeepEqual(actual, []string{"lbaas_instance_id", "loadbalancer_id", "az"}) {
+		t.Fatalf("actual = %v, want [lbaas_instance_id loadbalancer_id az] (return order)", actual)
+	}
+	// 优选维度缺失：effective 等于实际维度序列。
+	inNoPreferred := cesResourceInput{Dimensions: []cesDimInput{{Name: "lbaas_instance_id", Value: "x"}}}
+	effective2, actual2 := effectiveDimensionNames("SYS.ELB", nil, inNoPreferred)
+	if !reflect.DeepEqual(effective2, []string{"lbaas_instance_id"}) || !reflect.DeepEqual(actual2, []string{"lbaas_instance_id"}) {
+		t.Fatalf("effective=%v actual=%v, want [lbaas_instance_id]/[lbaas_instance_id]", effective2, actual2)
+	}
+	// 无维度：均为空。
+	effective3, actual3 := effectiveDimensionNames("SYS.ELB", nil, cesResourceInput{})
+	if len(effective3) != 0 || len(actual3) != 0 {
+		t.Fatalf("effective=%v actual=%v, want empty/empty", effective3, actual3)
+	}
+	// 空维度名被忽略。
+	inBlank := cesResourceInput{Dimensions: []cesDimInput{{Name: "  ", Value: "v"}, {Name: "instance_id", Value: "i-1"}}}
+	effective4, actual4 := effectiveDimensionNames("SYS.ECS", nil, inBlank)
+	if !reflect.DeepEqual(effective4, []string{"instance_id"}) || !reflect.DeepEqual(actual4, []string{"instance_id"}) {
+		t.Fatalf("effective=%v actual=%v, want [instance_id]/[instance_id] (blank dim name ignored)", effective4, actual4)
+	}
+}
+
+// TestMapCESResource_DimensionActualDims 验证 dimension 路径（查询维度为空）按资源实际
+// dimensions 映射：主维度来自实际维度，labels.dim_name 记录实际维度名（返回顺序），
+// 见 dimension 组支持方案 §4.3。
+func TestMapCESResource_DimensionActualDims(t *testing.T) {
+	in := cesResourceInput{
+		Status:       "health",
+		ResourceName: "bucket-prod",
+		Dimensions: []cesDimInput{
+			{Name: "bucket_name", Value: "b-1"},
+			{Name: "az", Value: "az-1"},
+		},
+	}
+	cloud, ok := mapCESResource("cn-south-1", "SYS.OBS", nil, in, "rg-dim", "大数据")
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if cloud.Type != "obs" {
+		t.Fatalf("Type = %q, want obs", cloud.Type)
+	}
+	if cloud.ProviderRef != "b-1" {
+		t.Fatalf("ProviderRef = %q, want b-1 (preferred bucket_name)", cloud.ProviderRef)
+	}
+	if cloud.ResourceID != "ces:cn-south-1:SYS.OBS:b-1" {
+		t.Fatalf("ResourceID = %q", cloud.ResourceID)
+	}
+	if cloud.Labels["dim_name"] != "bucket_name,az" {
+		t.Fatalf("dim_name label = %q, want bucket_name,az (actual dimensions in return order)", cloud.Labels["dim_name"])
+	}
+	if cloud.Labels["resource_group_id"] != "rg-dim" || cloud.Labels["resource_group_name"] != "大数据" {
+		t.Fatalf("group labels = %+v", cloud.Labels)
+	}
+}
+
+// TestMapCESResource_DimensionVPCCSubtypeFromActualDim 验证 dimension 路径 SYS.VPC 资源
+// 按实际维度拆分子类型：subnet_id→subnet、bandwidth_id→bandwidth，见方案 §4.3。
+func TestMapCESResource_DimensionVPCCSubtypeFromActualDim(t *testing.T) {
+	sub, ok := mapCESResource("r", "SYS.VPC", nil, cesResourceInput{
+		Dimensions: []cesDimInput{{Name: "subnet_id", Value: "sub-1"}},
+	}, "", "")
+	if !ok || sub.Type != "subnet" || sub.ProviderRef != "sub-1" {
+		t.Fatalf("subnet mapping = %+v ok=%v, want subnet/sub-1", sub, ok)
+	}
+	bw, ok := mapCESResource("r", "SYS.VPC", nil, cesResourceInput{
+		Dimensions: []cesDimInput{{Name: "bandwidth_id", Value: "bw-1"}},
+	}, "", "")
+	if !ok || bw.Type != "bandwidth" || bw.ProviderRef != "bw-1" {
+		t.Fatalf("bandwidth mapping = %+v ok=%v, want bandwidth/bw-1", bw, ok)
+	}
+	// 优选维度 publicip_id 命中时映射 eip，即使返回维度里还有其它维度。
+	eip, ok := mapCESResource("r", "SYS.VPC", nil, cesResourceInput{
+		Dimensions: []cesDimInput{{Name: "bandwidth_id", Value: "bw-2"}, {Name: "publicip_id", Value: "pub-1"}},
+	}, "", "")
+	if !ok || eip.Type != "eip" || eip.ProviderRef != "pub-1" {
+		t.Fatalf("eip mapping = %+v ok=%v, want eip/pub-1 (preferred dimension wins)", eip, ok)
+	}
+}
+
+// TestMapCESResource_DimensionUnknownServiceDim 验证 dimension 路径对未知维度的资源仍按
+// 实际维度取名（SYS.VPC 未知 dim 兜底 vpc 实体语义，非 VPC namespace 忽略 dim）。
+func TestMapCESResource_DimensionUnknownServiceDim(t *testing.T) {
+	cloud, ok := mapCESResource("r", "SYS.VPC", nil, cesResourceInput{
+		Dimensions: []cesDimInput{{Name: "some_unknown_dim", Value: "u-1"}},
+	}, "", "")
+	if !ok || cloud.Type != "vpc" || cloud.ProviderRef != "u-1" {
+		t.Fatalf("mapping = %+v ok=%v, want vpc/u-1", cloud, ok)
+	}
+}
+
 func TestMapCESResource_UnknownNamespace(t *testing.T) {
 	in := cesResourceInput{
 		ResourceName: "x",

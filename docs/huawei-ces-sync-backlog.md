@@ -1,6 +1,6 @@
 # 华为云 CES 同步已知缺口与待办
 
-> 本文档记录华为云 CES 资源同步的已落地进度、已知增强缺口与后续待办。大部分缺口仅影响 `sync_mode=hybrid` 的详情增强覆盖面，按需排期；少数缺口（如 `resource_level`，见第 4 节）涉及 CES 发现与 stale 边界，已修复。稳定的接口与状态机定义见《华为云 CES 同步稳定契约》([../ops/huawei-ces-sync-contract.md](../ops/huawei-ces-sync-contract.md))。
+> 本文档记录华为云 CES 资源同步的已落地进度、已知增强缺口与后续待办。大部分缺口仅影响 `sync_mode=hybrid` 的详情增强覆盖面，按需排期；少数缺口（如 `resource_level`/dimension 级资源组，见第 4 节）涉及 CES 发现与 stale 边界，已修复。稳定的接口与状态机定义见《华为云 CES 同步稳定契约》([../ops/huawei-ces-sync-contract.md](../ops/huawei-ces-sync-contract.md))。
 
 ## 1. 实现进度总览
 
@@ -17,7 +17,7 @@
 - 成功 scope 维度从旧路径的固定 `region/resource_type` 调整为 CES 返回的成功 `region/cloud_resource_type`。
 - stale 标记只对成功 scope 生效（见稳定契约 §13.1）。
 - 前端批次列表保留 message tooltip。
-- 批次摘要字段已统一为 `sync_mode / resource_group_name / resource_group_id / projects / regions / ces_total / raw_fetched_count / mapped_count / unique_discovered_count / persisted_count / completed_count / duplicate_count / persist_failed_count / discovered_count / failed_scopes / enriched_count / enrichment_failed_count / enrichment_failed_types / enrichment_warnings / enrichment_stage_error / writeback_failed_count / unknown_namespace_count / invalid_resource_count / max_resources_reached / product_names_empty / query_failed_types / conversion_failed_types`，旧的 `invalid_count`、`conversion_failed_count`、`resource_group`、`project_id` 等旧命名不再作为新协议字段。
+- 批次摘要字段已统一为 `sync_mode / resource_group_name / resource_group_id / projects / regions / ces_total / raw_fetched_count / mapped_count / unique_discovered_count / persisted_count / completed_count / duplicate_count / persist_failed_count / discovered_count / failed_scopes / enriched_count / enrichment_failed_count / enrichment_failed_types / enrichment_warnings / enrichment_stage_error / writeback_failed_count / unknown_namespace_count / invalid_resource_count / max_resources_reached / product_names_empty / query_failed_types / conversion_failed_types / resource_group_count / dimension_group_count / group_coverage_mismatches / scope_incomplete`，旧的 `invalid_count`、`conversion_failed_count`、`resource_group`、`project_id` 等旧命名不再作为新协议字段。
 
 ### 阶段 2：P2 Native API enrichment（部分落地）
 
@@ -138,10 +138,10 @@
 
 ## 4. CES 发现层待办（非增强类）
 
-### 待办 1：ShowResourceGroup `resource_level` 响应字段已接入（已修复）
+### 待办 1：dimension 级资源组支持（已落地，2026-11-10）
 
-- ~~官方 `ShowResourceGroup` API 支持 `resource_level=product|dimension` 查询参数~~ **更正**：`resource_level` 是 `ShowResourceGroup` 的**响应字段**（非查询参数），取值 `product`（云产品）或 `dimension`（子维度），见 https://support.huaweicloud.com/api-ces/ShowResourceGroup.html 。`product_names` 仅在 `resource_level=product` 时有意义。
-- ~~SDK `ShowResourceGroupRequest` 尚未暴露 `ResourceLevel` 字段~~ **更正**：SDK `huaweicloud-sdk-go-v3 v0.1.201` 的 `ShowResourceGroupResponse.ResourceLevel` 已暴露该字段（`Value()` 返回字符串），`OneResourceGroupResp.ResourceLevel` 同样存在。
-- **已修复**：代码从 Show 响应读取 `resource_level` 并传递到 `CESResourceDiscoverySummary.ResourceLevel` -> `CloudSyncSummary.ResourceLevel`。P0 阶段仅支持 `resource_level=product`，`dimension` 级或未知/空层级直接返回 `FAILED_PRECONDITION`，不静默回退。仅 `resource_level=product` 且 `product_names` 非空时 scope 才是权威范围，允许反向 stale。
-- **后续待办**：若需支持 `dimension` 级资源组，基于资源组详情和 `ListResourceGroupsServicesResources` 指定服务/维度资源接口建立精确范围，而非复用产品级反向 stale 逻辑。
-- 契约已同步更新，见 `ops/huawei-ces-sync-contract.md` §8.5/§13.1。
+- 官方 `ShowResourceGroup` API 的 `resource_level` 是**响应字段**（非查询参数），取值 `product`（云产品）或 `dimension`（子维度），见 https://support.huaweicloud.com/api-ces/ShowResourceGroup.html 。`product_names` 仅在 `resource_level=product` 时有意义。SDK `huaweicloud-sdk-go-v3 v0.1.201` 的 `ShowResourceGroupResponse.ResourceLevel` 已暴露该字段（`Value()` 返回字符串），`OneResourceGroupResp.ResourceLevel` 同样存在。
+- **已落地**：代码按 `resource_level` 分流发现路径——product 级按 `product_names` 查询；dimension 级按已知 namespace 服务枚举（`cesNamespaceMappings` 全部 key，查询不带 `dim_name`）+ 资源实际 `dimensions[]` 映射，主维度按每服务优选维度表规范化（与 product 路径 `ProviderRef` 一致，跨组去重生效）。dimension 组不再被跳过、不记 `failed_scopes`、不置 `product_names_empty`、不触发区域级反向 stale（不是权威 scope，只走逐类型 stale）。完整规范见稳定契约 §8.4/§8.5/§8.5.1/§9.2/§13.1，方案与验收依据见 [huawei-ces-dimension-group-support-plan.md](huawei-ces-dimension-group-support-plan.md)。
+- **组级覆盖对账**：逐组比对声明 `resource_statistics.total` 与实际拉取数，provider 层输出逐组 Warn 日志；dimension 组声明 total 大于实际拉取且差值不可解释（组内未知 namespace 服务未被枚举）时置 `scope_incomplete=true` 并给出 `group_coverage_mismatch=<组名>`，该 region 禁止任何 stale。
+- **摘要新字段**：`dimension_group_count`（各 scope 求和）、`group_coverage_mismatches`；批次 message 追加 `dimension_groups=<N>` 与 `group_coverage_mismatch=<组名,...>`；前端新增 `Dimension groups` / `Coverage mismatch` 信号标签。零数据库迁移。
+- **真实现状（实现后）**：真实账号 `acc-50843711-...`（cn-south-1）10 组（6 product + 4 dimension）全部覆盖，dimension 组约 1205 资源正常入库；全组成功时批次由 `partial` 变为 `success` 属预期改善。

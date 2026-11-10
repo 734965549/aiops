@@ -26,7 +26,15 @@ const aggregateResourceGroupName = "全部资源"
 
 // resourceLevelProduct 是 CES ShowResourceGroup 返回的 product 级资源组标识，
 // 只有该层级的产品集合才完整定义 scope 内的类型集合，见 §8.5。
-const resourceLevelProduct = "product"
+// resourceLevelDimension 是 CES ShowResourceGroup 返回的 dimension 级资源组标识
+// （按子维度/业务线建组，product_names 为空）。dimension 组按已知 namespace 服务枚举
+// 发现，不使用产品级 product_names 语义，也不得成为区域级反向 stale 的权威 scope，
+// 见 dimension 组支持方案 §4.2/§4.5。
+// 取值与观测层 obsapp.ResourceLevel* 常量单一来源，避免跨层漂移。
+const (
+	resourceLevelProduct   = obsapp.ResourceLevelProduct
+	resourceLevelDimension = obsapp.ResourceLevelDimension
+)
 
 var cesRetryDelays = []time.Duration{100 * time.Millisecond, 200 * time.Millisecond}
 
@@ -68,7 +76,8 @@ type CESResourceDiscoverySummary struct {
 	ProductNamesEmpty     bool
 	// ResourceLevel 记录 ShowResourceGroup 响应中的 resource_level 字段（product|dimension）。
 	// 仅 resource_level == "product" 且 product_names 非空时，scope 才是权威范围，允许反向 stale。
-	// P0 不支持 dimension 级资源组，发现阶段直接返回 FAILED_PRECONDITION。见 §8.5/§13.1。
+	// dimension 级资源组按服务枚举发现，不是权威 scope；含 dimension 组时本字段不为 product，
+	// 见 §8.5/§13.1 与 dimension 组支持方案 §4.5。
 	ResourceLevel string
 	// MaxResourcesReached 表示因达到 max_resources 上限而提前终止发现，
 	// 此时 SuccessfulTypes 不含被截断的类型，调用方必须禁止该 scope 执行 stale 标记，见 §13。
@@ -76,8 +85,17 @@ type CESResourceDiscoverySummary struct {
 	// ResourceGroupCount 记录本次发现实际覆盖的资源组数量。
 	// 聚合口径（"全部资源"= 账号下全部资源组的并集）下 > 1，见 §8.4。
 	ResourceGroupCount int
+	// DimensionGroupCount 记录本轮覆盖的 dimension 级资源组数量（顶层 summary 为各 scope 求和）。
+	// dimension 组按已知 namespace 服务枚举 + 资源实际维度发现，见 dimension 组支持方案 §4.2。
+	DimensionGroupCount int
+	// GroupCoverageMismatches 记录组级覆盖对账不符的 dimension 组名：组声明
+	// resource_statistics.total 大于实际拉取数，且差值无法被既有计数（invalid/duplicate 均属于
+	// 已拉取子集）解释——通常是组内属于未知 namespace 的服务未被枚举查询。命中时必须置
+	// ScopeIncomplete，禁止该 region 任何 stale，并给出可操作的组名提示，见方案 §4.6。
+	GroupCoverageMismatches []string
 	// ScopeIncomplete 表示聚合口径下存在未能覆盖的资源组（ShowResourceGroup 失败、
-	// resource_level 非 product 等），scope 不完整，调用方必须禁止该 scope 执行任何 stale 标记，见 §8.4/§13.1。
+	// resource_level 未知、dimension 组覆盖对账不符等），scope 不完整，调用方必须禁止该 scope
+	// 执行任何 stale 标记，见 §8.4/§13.1 与 dimension 组支持方案 §4.6。
 	ScopeIncomplete bool
 }
 
@@ -109,8 +127,9 @@ func NewCESResourceClient() *CESResourceClient {
 var _ CESResourceDiscoveryClient = (*CESResourceClient)(nil)
 
 // ListCESResources 按 ops/huawei-ces-sync-contract.md §8.1 执行 CES 资源全量发现：
-// ListResourceGroups -> 选组 -> ShowResourceGroup 解析 product_names ->
-// 对每个 service+dim_name 分页 ListResourceGroupsServicesResources -> mapCESResource。
+// ListResourceGroups -> 选组 -> ShowResourceGroup 解析 resource_level/product_names ->
+// product 级按 service+dim_name、dimension 级按服务枚举（不带 dim_name）分页
+// ListResourceGroupsServicesResources -> mapCESResource -> 组级覆盖对账。
 func (c *CESResourceClient) ListCESResources(ctx context.Context, cred AKSKCredential, req CESResourceDiscoveryRequest) (*CESResourceDiscoveryResult, error) {
 	if c == nil {
 		return nil, apperr.New(apperr.CodeUnavailable, "huawei ces resource client is not configured")
@@ -153,8 +172,11 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 	// 见 ops/huawei-ces-sync-contract.md §9.4。
 	seenKeys := make(map[string]struct{}, maxResources)
 
-	// 第一阶段：解析每个资源组的 product_names，构造 (资源组, 产品) 工作项。
-	// 聚合口径下各组 product_names 不同，必须逐组解析，不能只解析一次。
+	// 第一阶段：解析每个资源组的 resource_level 与 product_names，构造 (资源组, 产品) 工作项。
+	// product 级：按 product_names（为空时走兜底白名单）构造 (组, 产品+维度) 工作项，见 §8.5；
+	// dimension 级：按已知 namespace 服务枚举构造 (组, 服务) 工作项，查询不带 dim_name，
+	// 映射时按资源实际 dimensions 推导维度，见 dimension 组支持方案 §4.2。
+	// 聚合口径下各组配置不同，必须逐组解析，不能只解析一次。
 	type groupProduct struct {
 		group   selectedResourceGroup
 		product cesProduct
@@ -162,10 +184,19 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 	var items []groupProduct
 	cesTotal := 0
 	skippedGroups := 0
+	// groupDeclared/groupFetched 记录每个资源组声明的 total 与实际拉取到的原始行数，
+	// 用于组级覆盖对账，见 dimension 组支持方案 §4.6。
+	groupDeclared := make(map[string]int, len(selection.Groups))
+	groupFetched := make(map[string]int, len(selection.Groups))
+	// groupLevels 记录成功解析的组的 resource_level，供对账日志标注层级。
+	groupLevels := make(map[string]string, len(selection.Groups))
+	// dimensionGroupIDs 按 selection 顺序记录成功解析的 dimension 组 ID。
+	var dimensionGroupIDs []string
 	for _, group := range selection.Groups {
 		if err := ctx.Err(); err != nil {
 			return nil, mapCESError(err)
 		}
+		groupDeclared[group.GroupID] = group.Total
 		products, productNamesEmpty, resourceLevel, err := resolveProducts(ctx, api, group.GroupID, group.shown)
 		if err != nil {
 			if !aggregate {
@@ -182,11 +213,40 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 			)
 			continue
 		}
-		if resourceLevel != "product" {
-			// P0 仅支持 resource_level=product 的资源组，见 §8.5。
+		switch resourceLevel {
+		case resourceLevelProduct:
+			groupLevels[group.GroupID] = resourceLevelProduct
+			if productNamesEmpty {
+				result.Summary.ProductNamesEmpty = true
+			}
+			cesTotal += group.Total
+			for _, product := range products {
+				items = append(items, groupProduct{group: group, product: product})
+			}
+		case resourceLevelDimension:
+			// dimension 级资源组：服务枚举白名单逐服务查询（不带 dim_name），资源按实际维度映射。
+			// 不再因"层级不支持"跳过；不置 product_names_empty（该标志专属 product 级兜底场景）、
+			// 不记 failed_scopes，见 dimension 组支持方案 §4.2/§4.5。
+			groupLevels[group.GroupID] = resourceLevelDimension
+			result.Summary.DimensionGroupCount++
+			dimensionGroupIDs = append(dimensionGroupIDs, group.GroupID)
+			cesTotal += group.Total
+			enumProducts := dimensionServiceProducts()
+			for _, product := range enumProducts {
+				items = append(items, groupProduct{group: group, product: product})
+			}
+			logger.From(ctx).Info("huawei ces dimension resource group enumerated",
+				logger.String("region", req.Region),
+				logger.String("resource_group_name", group.GroupName),
+				logger.Int("declared_total", group.Total),
+				logger.Int("service_queries", len(enumProducts)),
+			)
+		default:
+			// 未知/空 resource_level：无法判定应按产品语义还是维度语义发现，不静默回退。
 			if !aggregate {
 				return nil, apperr.New(apperr.CodeFailedPrecondition,
-					fmt.Sprintf("CES resource group resource_level=%q is not supported (only \"product\" is supported in P0)", resourceLevel))
+					fmt.Sprintf("CES resource group resource_level=%q is not supported (only %q and %q are supported)",
+						resourceLevel, resourceLevelProduct, resourceLevelDimension))
 			}
 			result.Summary.FailedScopes = append(result.Summary.FailedScopes,
 				fmt.Sprintf("%s/%s: resource_level=%q is not supported, group skipped", req.Region, group.GroupName, resourceLevel))
@@ -194,17 +254,11 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 			skippedGroups++
 			continue
 		}
-		if productNamesEmpty {
-			result.Summary.ProductNamesEmpty = true
-		}
-		cesTotal += group.Total
-		for _, product := range products {
-			items = append(items, groupProduct{group: group, product: product})
-		}
 	}
-	// 聚合口径下若所有组都成功解析，scope 才是 product 级权威范围；
-	// 有组被跳过时 scope 不完整，禁止反向 stale，避免把未覆盖资源误标 stale，见 §13.1。
-	if aggregate && skippedGroups == 0 {
+	// 聚合口径下若所有组都成功解析且均为 product 级，scope 才是 product 级权威范围；
+	// 有组被跳过或含 dimension 组时 scope 不完整/非权威，禁止反向 stale，避免把未覆盖资源误标
+	// stale，见 §13.1 与 dimension 组支持方案 §4.5。
+	if aggregate && skippedGroups == 0 && result.Summary.DimensionGroupCount == 0 {
 		result.Summary.ResourceLevel = resourceLevelProduct
 	}
 	// 所有资源组都未能解析出可查询的产品：本次发现拿不到任何资源，
@@ -232,6 +286,8 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 		remaining := maxResources - result.Summary.RawFetchedCount
 		pageResources, _, remoteExhausted, truncated, pageErr := listResourcesForProduct(ctx, api, item.group.GroupID, item.product, req.Region, remaining)
 		result.Summary.RawFetchedCount += len(pageResources)
+		// 逐组累计实际拉取行数，供组级覆盖对账使用，见 dimension 组支持方案 §4.6。
+		groupFetched[item.group.GroupID] += len(pageResources)
 		if pageErr != nil {
 			result.Summary.FailedScopes = append(result.Summary.FailedScopes,
 				fmt.Sprintf("%s/%s: %s", req.Region, item.product.Service, apperr.FromError(pageErr).Message))
@@ -297,6 +353,46 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 		resourceType := resolveNamespaceMappingByDim(item.product.Service, item.product.DimNames).CloudResourceType
 		result.Summary.SuccessfulTypes = appendUniqueString(result.Summary.SuccessfulTypes, resourceType)
 	}
+	// 组级覆盖对账，见 dimension 组支持方案 §4.6：逐组比对声明的 resource_statistics.total
+	// 与实际拉取行数，差值必须可解释（invalid / unknown_namespace / 跨组去重都是已拉取资源的
+	// 子集，只有"未覆盖服务"能解释声明大于拉取的差额）。
+	// dimension 组的服务枚举白名单只覆盖已知 namespace；组内属于未知 namespace（如 SYS.GAUSSDB）
+	// 的服务不会被枚举查询，这些资源发现不了。此时必须置 scope_incomplete 禁止该 region 任何
+	// stale，并在摘要给出可操作的组名提示，不允许静默当作全覆盖。
+	// max_resources 截断时各组拉取数天然偏小，由 MaxResourcesReached 门控统一禁 stale，不重复判定。
+	if !result.Summary.MaxResourcesReached {
+		for _, group := range selection.Groups {
+			level, resolved := groupLevels[group.GroupID]
+			if !resolved {
+				continue // 解析失败的组已在跳过时记录 Warn 日志
+			}
+			declared := groupDeclared[group.GroupID]
+			fetched := groupFetched[group.GroupID]
+			if declared <= fetched {
+				logger.From(ctx).Warn("huawei ces resource group coverage reconciled",
+					logger.String("region", req.Region),
+					logger.String("resource_group_name", group.GroupName),
+					logger.String("resource_level", level),
+					logger.Int("declared_total", declared),
+					logger.Int("fetched_count", fetched),
+				)
+				continue
+			}
+			if level == resourceLevelDimension {
+				result.Summary.ScopeIncomplete = true
+				result.Summary.GroupCoverageMismatches = appendUniqueString(result.Summary.GroupCoverageMismatches, group.GroupName)
+			}
+			logger.From(ctx).Warn("huawei ces resource group coverage mismatch",
+				logger.String("region", req.Region),
+				logger.String("resource_group_name", group.GroupName),
+				logger.String("resource_level", level),
+				logger.Int("declared_total", declared),
+				logger.Int("fetched_count", fetched),
+				logger.Int("diff", declared-fetched),
+				logger.Bool("scope_incomplete", level == resourceLevelDimension),
+			)
+		}
+	}
 	// SuccessfulTypes 只保留所有 scope 都成功的类型：剔除存在 scope 查询失败的类型，见 §13.1。
 	// 例如 SYS.ELB/loadbalancer_id 成功但 SYS.ELB/l7policy_id 失败时，elb 不得计入 SuccessfulTypes。
 	result.Summary.SuccessfulTypes = subtractStringSet(result.Summary.SuccessfulTypes, result.Summary.QueryFailedTypes)
@@ -312,7 +408,12 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 		// 单组口径下资源组即 scope，资源组名/ID 直接落摘要。
 		result.Summary.ResourceGroupID = selection.Groups[0].GroupID
 		result.Summary.ResourceGroupName = selection.Groups[0].GroupName
-		result.Summary.ResourceLevel = resourceLevelProduct
+		// 单组口径的 resource_level 取该组实际层级：product 级是权威 scope，允许反向 stale；
+		// dimension 级不是权威 scope，sync_service 只按成功类型逐类型 stale，不做区域级反向
+		// 标记，见 dimension 组支持方案 §4.5。
+		if level, ok := groupLevels[selection.Groups[0].GroupID]; ok {
+			result.Summary.ResourceLevel = level
+		}
 	} else {
 		// 聚合口径覆盖多个资源组，没有单一 group_id；名称固定为"全部资源"，
 		// 具体覆盖了几个组由 ResourceGroupCount 与 message 里的组清单给出，见 §8.4。

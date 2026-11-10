@@ -31,6 +31,8 @@ export type SyncBatchMessageSummary = {
   writeback_failed?: string
   max_resources_reached?: string
   product_names_empty?: string
+  dimension_groups?: string
+  group_coverage_mismatch?: string
 }
 
 // 展示排序：已知关键字段在前，其余按字典序追加。
@@ -101,6 +103,7 @@ export function humanizeSyncPartialReason(reason?: string): string {
     .replaceAll('max_resources_reached=true', '查询上限截断')
     .replaceAll('query_failed_types=', '查询失败类型：')
     .replaceAll('conversion_failed_types=', '转换失败类型：')
+    .replaceAll('group_coverage_mismatch=', '维度组覆盖对账不符：')
 }
 
 export function formatSyncBatchSummary(summary?: SyncBatchSummary, message = ''): SyncBatchMessageSummary {
@@ -110,7 +113,9 @@ export function formatSyncBatchSummary(summary?: SyncBatchSummary, message = '')
       completed: summary.completed_count !== undefined ? String(summary.completed_count) : undefined,
       failed_scopes: summary.failed_scopes?.length ? summary.failed_scopes.join(', ') : undefined,
       enrichment_failed: summary.enrichment_failed_types?.length ? summary.enrichment_failed_types.join(', ') : undefined,
-      enrichment_warnings: summary.enrichment_warnings?.length ? summary.enrichment_warnings.join(', ') : undefined
+      enrichment_warnings: summary.enrichment_warnings?.length ? summary.enrichment_warnings.join(', ') : undefined,
+      dimension_groups: summary.dimension_group_count !== undefined && summary.dimension_group_count > 0 ? String(summary.dimension_group_count) : undefined,
+      group_coverage_mismatch: summary.group_coverage_mismatches?.length ? summary.group_coverage_mismatches.join(', ') : undefined
     }
   }
   return parseSyncBatchMessage(message)
@@ -135,6 +140,7 @@ export interface SyncBatchSignalTag { label: string; value: string; color: strin
 /**
  * 把批次摘要的结构化信号转成展示用标签。
  * 聚合口径（全部资源组并集）额外给出实际覆盖的资源组数量；
+ * dimension 级资源组给出覆盖组数（按资源实际维度发现）；
  * scope 不完整时明确提示本轮不标记 stale。
  */
 export function buildSyncBatchSignalTags(summary?: SyncBatchSummary): SyncBatchSignalTag[] {
@@ -144,6 +150,14 @@ export function buildSyncBatchSignalTags(summary?: SyncBatchSummary): SyncBatchS
   if (summary.product_names_empty) tags.push({ label: 'Product names empty', value: '是；仅为兜底白名单结果，不保证完整性', color: 'gold' })
   if ((summary.resource_group_count ?? 0) > 1) {
     tags.push({ label: 'Resource groups', value: `${summary.resource_group_count} 个分组（全部资源并集）`, color: 'blue' })
+  }
+  // dimension 级资源组按已知 namespace 服务枚举 + 资源实际维度发现，不是权威 scope，
+  // 见 dimension 组支持方案 §4.2/§4.7。
+  if ((summary.dimension_group_count ?? 0) > 0) {
+    tags.push({ label: 'Dimension groups', value: `${summary.dimension_group_count} 个（按资源实际维度发现）`, color: 'blue' })
+  }
+  if ((summary.group_coverage_mismatches?.length ?? 0) > 0) {
+    tags.push({ label: 'Coverage mismatch', value: `${summary.group_coverage_mismatches!.join(', ')}：声明总数大于实际发现，可能存在未覆盖服务`, color: 'orange' })
   }
   if (summary.scope_incomplete) {
     tags.push({ label: 'Scope incomplete', value: '有资源组未覆盖；本轮不标记 stale', color: 'orange' })
@@ -177,7 +191,9 @@ export function parseSyncBatchMessage(message: string): SyncBatchMessageSummary 
     'failed',
     'enriched',
     'enrichment_failed',
-    'writeback_failed'
+    'writeback_failed',
+    'dimension_groups',
+    'group_coverage_mismatch'
   ]
   const parts = message.split(';').map((part) => part.trim()).filter(Boolean)
   for (const field of fields) {

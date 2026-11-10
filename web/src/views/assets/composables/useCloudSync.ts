@@ -113,7 +113,9 @@ export function useCloudSync(options?: {
       { key: 'discovered', label: 'Discovered', value: scope.discovered_count ?? 0 },
       { key: 'persisted', label: 'Persisted', value: scope.persisted_count ?? 0 },
       { key: 'raw_fetched', label: 'Raw fetched', value: scope.raw_fetched_count ?? 0 },
-      { key: 'mapped', label: 'Mapped', value: scope.mapped_count ?? 0 }
+      { key: 'mapped', label: 'Mapped', value: scope.mapped_count ?? 0 },
+      // dimension 级资源组按服务枚举 + 资源实际维度发现，见 dimension 组支持方案 §4.2/§4.7。
+      { key: 'dimension_groups', label: 'Dimension groups', value: scope.dimension_group_count ?? 0 }
     ]
   })
 
@@ -135,6 +137,8 @@ export function useCloudSync(options?: {
         return { label: 'Writeback failed', value: String(scope.writeback_failed_count ?? 0) }
       case 'failed':
         return { label: 'Failed scopes', value: scope.failed_scopes?.join(', ') || '-' }
+      case 'coverage':
+        return { label: 'Coverage mismatch', value: scope.group_coverage_mismatches?.join(', ') || '-' }
       case 'max':
         return { label: 'Max reached', value: scope.max_resources_reached ? '是' : '否' }
       default:
@@ -149,6 +153,7 @@ export function useCloudSync(options?: {
     const alertLevel = (() => {
       if (scope.max_resources_reached) return 'warning'
       if ((scope.failed_scopes?.length ?? 0) > 0) return 'warning'
+      if ((scope.group_coverage_mismatches?.length ?? 0) > 0) return 'warning'
       if ((scope.query_failed_types?.length ?? 0) > 0 || (scope.conversion_failed_types?.length ?? 0) > 0 || (scope.enrichment_failed_types?.length ?? 0) > 0 || scope.enrichment_stage_error || (scope.writeback_failed_count ?? 0) > 0) return 'warning'
       return 'info'
     })()
@@ -160,6 +165,9 @@ export function useCloudSync(options?: {
       if (scope.enrichment_stage_error) return `增强阶段整体失败：${scope.enrichment_stage_error}`
       if ((scope.writeback_failed_count ?? 0) > 0) return `label 回写失败 ${scope.writeback_failed_count} 次`
       if ((scope.failed_scopes?.length ?? 0) > 0) return `失败 scope：${scope.failed_scopes!.join(', ')}`
+      // dimension 组声明总数大于实际发现：组内可能存在未被枚举的未知 namespace 服务，
+      // 见 dimension 组支持方案 §4.6。
+      if ((scope.group_coverage_mismatches?.length ?? 0) > 0) return `维度组覆盖对账不符：${scope.group_coverage_mismatches!.join(', ')}（声明总数大于实际发现，可能存在未覆盖服务）`
       if (scope.product_names_empty) return 'product_names 为空，走了兜底白名单，需人工复核'
       return '暂无明显异常信号，建议结合原始 message 继续排查'
     })()
@@ -186,7 +194,8 @@ export function useCloudSync(options?: {
       scope.persisted_count !== undefined ? `persisted_count=${scope.persisted_count}` : '',
       scope.persist_failed_count !== undefined ? `persist_failed_count=${scope.persist_failed_count}` : '',
       scope.raw_fetched_count !== undefined ? `raw_fetched_count=${scope.raw_fetched_count}` : '',
-      scope.mapped_count !== undefined ? `mapped_count=${scope.mapped_count}` : ''
+      scope.mapped_count !== undefined ? `mapped_count=${scope.mapped_count}` : '',
+      (scope.dimension_group_count ?? 0) > 0 ? `dimension_group_count=${scope.dimension_group_count}` : ''
     ].filter(Boolean)
     const signalLines = [
       '',
@@ -194,6 +203,7 @@ export function useCloudSync(options?: {
       `high_signal=${signal ? signal.label : '-'}`,
       `signal_value=${signal ? signal.value : '-'}`,
       `failed_scopes=${scope.failed_scopes?.length ? scope.failed_scopes.join(', ') : '-'}`,
+      `group_coverage_mismatch=${scope.group_coverage_mismatches?.length ? scope.group_coverage_mismatches.join(', ') : '-'}`,
       `query_failed_types=${scope.query_failed_types?.length ? scope.query_failed_types.join(', ') : '-'}`,
       `conversion_failed_types=${scope.conversion_failed_types?.length ? scope.conversion_failed_types.join(', ') : '-'}`,
       `enrichment_failed_types=${scope.enrichment_failed_types?.length ? scope.enrichment_failed_types.join(', ') : '-'}`,
@@ -226,6 +236,7 @@ export function useCloudSync(options?: {
     const tags: { label: string; value: string; color: string; key: string }[] = []
     if (scope.max_resources_reached) tags.push({ key: 'max', label: 'Max reached', value: '是', color: 'orange' })
     if ((scope.failed_scopes?.length ?? 0) > 0) tags.push({ key: 'failed', label: 'Failed scopes', value: scope.failed_scopes!.join(', '), color: 'gray' })
+    if ((scope.group_coverage_mismatches?.length ?? 0) > 0) tags.push({ key: 'coverage', label: 'Coverage mismatch', value: scope.group_coverage_mismatches!.join(', '), color: 'orange' })
     if ((scope.query_failed_types?.length ?? 0) > 0) tags.push({ key: 'query', label: 'Query failed', value: scope.query_failed_types!.join(', '), color: 'red' })
     if ((scope.conversion_failed_types?.length ?? 0) > 0) tags.push({ key: 'conversion', label: 'Conversion failed', value: scope.conversion_failed_types!.join(', '), color: 'red' })
     if ((scope.enrichment_failed_types?.length ?? 0) > 0) tags.push({ key: 'enrichment', label: 'Enrichment failed', value: scope.enrichment_failed_types!.join(', '), color: 'red' })

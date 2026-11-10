@@ -2028,6 +2028,155 @@ func TestSyncService_HuaweiCESAggregateScopeSkipsRegionWideStale(t *testing.T) {
 	}
 }
 
+// TestSyncService_HuaweiCESDimensionGroupSkipsRegionWideStale 验证显式指定 dimension 级
+// 资源组（单组口径）时不执行区域级反向 stale：dimension 组按服务枚举 + 资源实际维度发现，
+// 不是权威 scope，只有本轮成功查询的类型才逐类型标记，见 dimension 组支持方案 §4.5。
+// 反向 stale 会把 evs 等未查询类型一并标 stale，本测试用 old-evs 保持 active 作为守卫。
+func TestSyncService_HuaweiCESDimensionGroupSkipsRegionWideStale(t *testing.T) {
+	appID := cloudApplicationID("acc-fake")
+	apps := &fakeAppRepo{apps: map[string]domain.Application{
+		"cloud": {ID: appID, Name: "huawei_cloud-cloud", Environment: "cloud"},
+	}}
+	syncedAt := time.Now().UTC().Add(-time.Hour)
+	batches := &fakeSyncBatchRepo{}
+	resources := &fakeResRepo{leaseOwned: batches.isLeaseOwned, rows: []domain.Resource{
+		{
+			ID: "old-ecs", ApplicationID: appID, Name: "old-ecs",
+			Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+			CloudResourceType: "ecs", CloudResourceID: "gone-ecs", Region: "cn-north-4",
+			SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+		},
+		{
+			ID: "old-evs", ApplicationID: appID, Name: "old-evs",
+			Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+			CloudResourceType: "evs", CloudResourceID: "keep-evs", Region: "cn-north-4",
+			SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+		},
+	}}
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{
+			{ResourceID: "res-fake-ecs-2", Name: "ecs-demo-2", Type: "ecs", Region: "cn-north-4", Status: "running", ProviderRef: "ecs-demo-2"},
+		},
+		fullSummary: &obsapp.CloudSyncSummary{
+			Region: "cn-north-4", SyncMode: "ces", ResourceGroupName: "户用电站",
+			ResourceGroupID: "rg-dianzhan", ResourceGroupSelection: "specified_id",
+			ResourceLevel: obsapp.ResourceLevelDimension, DimensionGroupCount: 1,
+			CESTotal: 1, Discovered: 1, SuccessfulTypes: []string{"ecs"},
+		},
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	statusByID := map[string]string{}
+	for _, row := range resources.rows {
+		statusByID[row.ID] = row.SyncStatus
+	}
+	// ecs 本轮查询成功但本批没有 old-ecs → 逐类型 stale。
+	if statusByID["old-ecs"] != domain.SyncStatusStale {
+		t.Fatalf("expected ecs stale (queried type, absent this round), got %s", statusByID["old-ecs"])
+	}
+	// dimension 组不是权威 scope：未查询的 evs 不得被区域级反向 stale 误标。
+	if statusByID["old-evs"] != domain.SyncStatusActive {
+		t.Fatalf("dimension group must not trigger region-wide reverse stale, evs got %s", statusByID["old-evs"])
+	}
+	if final.StaleCount != 1 {
+		t.Fatalf("expected stale_count=1, got %d", final.StaleCount)
+	}
+	// 批次状态 success（无失败/无 partial 信号），dimension 组不再恒为 partial。
+	if final.Status != domain.SyncBatchStatusSuccess {
+		t.Fatalf("batch status = %q, want success (dimension groups no longer force partial)", final.Status)
+	}
+}
+
+// TestSyncService_HuaweiCESDimensionGroupCoverageMismatchSkipsStale 验证 dimension 组覆盖
+// 对账不符（GroupCoverageMismatches → ScopeIncomplete）时该 region 完全不标 stale：
+// 组内未知 namespace 服务的资源可能未被枚举到，误标 stale 会造成资产"消失"，
+// 见 dimension 组支持方案 §4.6。
+func TestSyncService_HuaweiCESDimensionGroupCoverageMismatchSkipsStale(t *testing.T) {
+	appID := cloudApplicationID("acc-fake")
+	apps := &fakeAppRepo{apps: map[string]domain.Application{
+		"cloud": {ID: appID, Name: "huawei_cloud-cloud", Environment: "cloud"},
+	}}
+	syncedAt := time.Now().UTC().Add(-time.Hour)
+	batches := &fakeSyncBatchRepo{}
+	resources := &fakeResRepo{leaseOwned: batches.isLeaseOwned, rows: []domain.Resource{
+		{
+			ID: "old-ecs", ApplicationID: appID, Name: "old-ecs",
+			Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+			CloudResourceType: "ecs", CloudResourceID: "gone-ecs", Region: "cn-north-4",
+			SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+		},
+	}}
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{
+			{ResourceID: "res-fake-ecs-2", Name: "ecs-demo-2", Type: "ecs", Region: "cn-north-4", Status: "running", ProviderRef: "ecs-demo-2"},
+		},
+		fullSummary: &obsapp.CloudSyncSummary{
+			Region: "cn-north-4", SyncMode: "ces", ResourceGroupName: "全部资源",
+			ResourceGroupSelection: obsapp.ResourceGroupSelectionAllGroups, ResourceGroupCount: 10,
+			DimensionGroupCount: 4, GroupCoverageMismatches: []string{"大数据", "商用电站"},
+			ScopeIncomplete: true,
+			CESTotal: 1, Discovered: 1, SuccessfulTypes: []string{"ecs"},
+		},
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	statusByID := map[string]string{}
+	for _, row := range resources.rows {
+		statusByID[row.ID] = row.SyncStatus
+	}
+	// 对账不符 → scope 不完整 → 一律不标 stale。
+	if statusByID["old-ecs"] != domain.SyncStatusActive {
+		t.Fatalf("coverage-mismatch region must not mark ecs stale, got %s", statusByID["old-ecs"])
+	}
+	if final.StaleCount != 0 {
+		t.Fatalf("expected stale_count=0, got %d", final.StaleCount)
+	}
+	// summary 必须带 dimension_group_count 与对账不符组名，便于运维定位。
+	batchSummary := unmarshalSyncBatchSummary(final.Summary)
+	if batchSummary == nil {
+		t.Fatalf("final summary is nil")
+	}
+	if batchSummary.DimensionGroupCount != 4 {
+		t.Fatalf("DimensionGroupCount = %d, want 4", batchSummary.DimensionGroupCount)
+	}
+	if len(batchSummary.GroupCoverageMismatches) != 2 {
+		t.Fatalf("GroupCoverageMismatches = %v, want 2 entries", batchSummary.GroupCoverageMismatches)
+	}
+	// message 需带 dimension_groups 与 group_coverage_mismatch，便于不从 summary 也能观察。
+	if !strings.Contains(final.Message, "dimension_groups=4") {
+		t.Fatalf("message missing dimension_groups=4: %s", final.Message)
+	}
+	if !strings.Contains(final.Message, "group_coverage_mismatch=大数据,商用电站") {
+		t.Fatalf("message missing group_coverage_mismatch: %s", final.Message)
+	}
+}
+
 // TestSyncService_HuaweiCESProductNamesEmptyMarksPartial 验证 product_names 为空时使用兜底白名单，
 // 批次至少标记 partial，提示同步可能不完整；同时禁止 CES/hybrid 反向 stale，
 // 只允许完整成功的类型逐类型 stale，白名单外历史资产保持 active，见 §8.5、§13.1。
