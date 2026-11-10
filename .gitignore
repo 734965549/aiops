@@ -51,3 +51,7 @@ Thumbs.db
 
 # Agent / Tooling Cache
 .codebase-memory/
+.workbuddy/
+
+# Local scratch (dev binaries, logs, ad-hoc SQL)
+tmp/

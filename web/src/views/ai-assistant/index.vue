@@ -495,6 +495,12 @@ onMounted(loadProviders)
   min-height: 0;
 }
 
+/* 两列卡片：列高已由全局 .equal-row 锁定为行高，
+   卡片允许收缩，卡片体内部滚动（表单内容超高时不再被裁切）。 */
+.ai-assistant .equal-row > .arco-col > .arco-card {
+  min-height: 0;
+}
+
 .ai-assistant :deep(.arco-card-header) {
   flex: 0 0 auto;
 }

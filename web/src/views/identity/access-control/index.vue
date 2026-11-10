@@ -708,6 +708,9 @@ onMounted(async () => {
 .check-list {
   display: grid;
   gap: var(--space-2);
+  /* grid 默认 align-content:stretch，行会被拉伸填满容器，
+     导致少量角色时每行被撑得很高、内容上下稀散。顶部对齐更自然。 */
+  align-content: start;
 }
 
 /* 面板内勾选列表撑满并滚动（角色绑定面板 + 授权 tab 的 compact 列表共用） */

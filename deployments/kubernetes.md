@@ -381,8 +381,12 @@ docker run --rm -it \
 
 ```text
 web/dist/index.html
-web/dist/assets/
+web/dist/static/
 ```
+
+> 产物目录为 `static/` 而非默认的 `assets/`：前端存在 SPA 路由 `/assets`（资源与应用），
+> 若产物目录同名，反向代理的 `try_files` 会优先命中静态目录，导致该路由直接访问被重定向。
+> 见 `web/vite.config.ts` 的 `build.assetsDir`。
 
 如果前端和后端走同源反代，`web/.env.production` 中 `VITE_API_BASE` 保持为空即可。若是分域部署，例如前端访问 `https://aiops.example.com`、后端访问 `https://api.example.com`，构建时需要注入 API 地址：
 

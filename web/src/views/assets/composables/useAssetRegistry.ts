@@ -31,6 +31,10 @@ export function useAssetRegistry(options: {
   const resourceSaving = ref(false)
 
   const resourceTableScroll = { x: 1880 }
+  // 应用表位于 span=10 的窄栏内，若不给 scroll.x，Arco 会压缩无固定宽度的
+  // 「描述」列（只剩 1~2 个字，显示为「描…」）。给出横向滚动下限后，
+  // 各列保持既定宽度，超出部分横向滚动，不再互相挤压。
+  const appTableScroll = { x: 560 }
 
   const appPagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
   const resourcePagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
@@ -61,7 +65,8 @@ export function useAssetRegistry(options: {
     { title: '应用名', dataIndex: 'name', ellipsis: true, tooltip: true, width: 120 },
     { title: '环境', slotName: 'environment', width: 80 },
     { title: 'Namespace', slotName: 'namespace', width: 110, ellipsis: true },
-    { title: '描述', dataIndex: 'description', ellipsis: true, tooltip: true },
+    // 描述必须有明确宽度：否则在窄栏中会被压缩成只剩一两个字。
+    { title: '描述', dataIndex: 'description', width: 160, ellipsis: true, tooltip: true },
     { title: '操作', slotName: 'actions', width: 100 }
   ]
 
@@ -378,6 +383,7 @@ export function useAssetRegistry(options: {
     appPagination,
     resourcePagination,
     resourceTableScroll,
+    appTableScroll,
     appColumns,
     resourceColumns,
     selectedApplication,

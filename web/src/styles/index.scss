@@ -142,7 +142,17 @@ a {
   margin-top: 10px;
 }
 
-/* 页签填充链：页签内容铺满容器，每个 pane 自成滚动区 */
+/* 页签填充链：页签内容铺满容器，每个 pane 自成滚动区
+
+   Arco 的真实 DOM 层级是：
+   .arco-tabs-content
+     └ .arco-tabs-content-list
+         └ .arco-tabs-content-item      ← 非激活项 height:0 + overflow:hidden
+             └ .arco-tabs-pane
+
+   content-item 与 pane 之间不能跳级：写成 content > content-list > pane
+   匹配不到任何元素，填充链在 pane 处断掉，pane 退回内容高度，
+   表现为「表格不撑满、表单底部被裁、面板内容溢出且无法滚动」。 */
 .page-tabs {
   flex: 1;
   min-height: 0;
@@ -155,19 +165,39 @@ a {
   min-height: 0;
 }
 
-.page-tabs > .arco-tabs-content > .arco-tabs-content-list,
-.page-tabs > .arco-tabs-content > .arco-tabs-content-item,
-.page-tabs > .arco-tabs-content > .arco-tabs-content-list > .arco-tabs-pane {
+.page-tabs > .arco-tabs-content > .arco-tabs-content-list {
   height: 100%;
 }
 
-.page-tabs > .arco-tabs-content > .arco-tabs-content-list > .arco-tabs-pane {
+/* 只放开激活项：Arco 用 height:0 + overflow:hidden 折叠未激活页签，
+   全局改写会让多个页签同时可见。 */
+.page-tabs > .arco-tabs-content > .arco-tabs-content-list > .arco-tabs-content-item-active {
+  height: 100%;
+}
+
+/* pane 作为滚动区：内部布局自行撑满，超高内容在 pane 内滚动而非溢出裁切 */
+.page-tabs > .arco-tabs-content > .arco-tabs-content-list > .arco-tabs-content-item-active > .arco-tabs-pane {
+  height: 100%;
   display: flex;
   flex-direction: column;
   overflow: auto;
 }
 
-/* 左右两列等高（覆盖 Arco Row 默认 align-items: flex-start） */
+/* 左右两列等高（覆盖 Arco Row 默认 align-items: flex-start）
+
+   Arco 的 .arco-row 是 `flex-flow: row wrap`，flex 容器在「多行」模式下，
+   align-items:stretch 拉伸的是「flex 行」的高度，而行高由内容撑开 ——
+   于是列会涨到内容高度（实测表单卡片 750px）并溢出所在容器（521px），
+   底部被裁切且没有可滚动祖先。
+
+   修复要点：
+   1. 在有确定高度的容器内（页签 pane），把列高锁定为行高（height:100%），
+      行高由父容器决定，不再由内容撑开；
+   2. 卡片补 min-height:0，允许其收缩到内容以下，把富余高度交给内部滚动区。
+
+   注意：height:100% 依赖父级有确定高度。dashboard 的 .equal-row 直接挂在
+   内容流页面里（行高由内容决定），套用 height:100% 会让列退回内容高度、
+   反而破坏两列等高，因此这里只在 .page-tabs 这类确定高度的容器内生效。 */
 .equal-row {
   align-items: stretch;
 }
@@ -182,6 +212,21 @@ a {
   flex-direction: column;
   flex: 1;
   width: 100%;
+  /* 允许卡片收缩到内容高度以下：否则 flex item 的 min-height:auto
+     会把卡片撑回内容高度，父级的 height:100% 失效。 */
+  min-height: 0;
+}
+
+/* 页签内容区内：行铺满 pane，列高等于行高，卡片内部滚动 */
+.page-tabs .equal-row > .arco-col {
+  height: 100%;
+}
+
+/* 窄屏（<992px，Arco lg 断点）两列改为堆叠，此时高度交回内容自然流 */
+@media (max-width: 991px) {
+  .page-tabs .equal-row > .arco-col {
+    height: auto;
+  }
 }
 
 /* 空状态：统一垂直居中、占满剩余高度 */

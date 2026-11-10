@@ -30,6 +30,7 @@
           :loading="appsLoading"
           row-key="id"
           :pagination="appPagination"
+          :scroll="appTableScroll"
           :bordered="false"
           :row-class="appRowClass"
           @page-change="(page: number) => emit('app-page-change', page)"
@@ -320,6 +321,7 @@ const props = defineProps<{
   appColumns: TableInstance['columns']
   appPagination: PaginationConfig
   appRowClass: (record: TableData) => string
+  appTableScroll: Record<string, unknown>
   selectedAppId: string
   resourceCardTitle: string
   resources: Resource[]

@@ -14,6 +14,7 @@
           :app-columns="registry.appColumns"
           :app-pagination="registry.appPagination"
           :app-row-class="registry.appRowClass"
+          :app-table-scroll="registry.appTableScroll"
           :selected-app-id="registry.selectedAppId"
           :resource-card-title="registry.resourceCardTitle"
           :resources="registry.resources"
@@ -466,6 +467,23 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* Arco 的 .arco-card-header 是固定 height:46px + overflow:hidden。
+   资源卡的工具条（云类型/Region/同步状态/筛选/刷新/新建资源）在窄栏下会折成两行，
+   固定高度会把第二行直接裁掉且无法滚动到。
+   这里改为按内容自适应高度，标题与工具条顶端对齐。 */
+:deep(.assets-card > .arco-card-header) {
+  height: auto;
+  min-height: 50px;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+:deep(.assets-card > .arco-card-header > .arco-card-header-extra) {
+  overflow: visible;
+  white-space: normal;
+  text-overflow: clip;
 }
 
 :deep(.assets-card > .arco-card-body) {

@@ -487,8 +487,21 @@ onBeforeUnmount(() => {
   gap: var(--space-4);
 }
 
+/* 连接表单卡片：flex-basis:auto 保留内容高度，但允许收缩（flex-shrink:1）。
+   视口偏矮时若固定不收缩，表单底部（Subject 属性、连接目录按钮）会被
+   .page-shell 的 overflow:hidden 裁掉且无法滚动到。 */
 .conn-card {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 表单内容超出卡片高度时在卡片内部滚动，而不是被裁切 */
+.conn-card :deep(.arco-card-body) {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
 .tip {

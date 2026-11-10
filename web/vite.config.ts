@@ -62,6 +62,10 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: 'dist',
+      // 产物目录不能叫 assets：前端存在 SPA 路由 /assets（资源与应用），
+      // 若构建产物同名，nginx 的 try_files 会优先命中静态目录，
+      // /assets 直接访问会被 301 重定向到 /assets/ 再 403（刷新即白屏）。
+      assetsDir: 'static',
       rollupOptions: {
         output: {
           manualChunks(id) {
