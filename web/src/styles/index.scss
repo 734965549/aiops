@@ -381,6 +381,38 @@ a {
   background: var(--aiops-paper);
 }
 
+/* ============================================================
+   弹窗高度约束（长表单 / 长表格弹窗）
+
+   Arco 的 .arco-modal-body 虽然写了 overflow:auto，但没有任何高度上限：
+   内容一多，弹窗整体被撑高到超出视口。此时真正在滚动的是铺满整个视口的
+   .arco-modal-wrapper（position:absolute; inset:0; overflow:auto），
+   滚动条因此被渲染到窗口最右侧 —— 表现为「滚动条跑到弹窗外面」，
+   同时弹窗底部（确定/取消）被挤出屏幕点不到。
+
+   这里给 body 加视口高度上限，把溢出收进弹窗内部：
+   标题栏与底部按钮固定可见，只有中间表单滚动。
+
+   高度预算：header 48px + footer ≈ 65px + 上下留白 48px ≈ 160px。
+   选择器比 Arco 的 .arco-modal-body 高一级，不依赖样式表加载顺序。
+   ============================================================ */
+.arco-modal:not(.arco-modal-fullscreen) .arco-modal-body {
+  max-height: calc(100vh - 160px);
+  overflow-y: auto;
+}
+
+/* 非 align-center 的弹窗带 top:100px 偏移，再多留 100px 高度预算 */
+.arco-modal-wrapper:not(.arco-modal-wrapper-align-center)
+  .arco-modal:not(.arco-modal-fullscreen)
+  .arco-modal-body {
+  max-height: calc(100vh - 260px);
+}
+
+/* 窄屏下弹窗不要溢出窗口 */
+.arco-modal:not(.arco-modal-fullscreen) {
+  max-width: calc(100vw - 32px);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
