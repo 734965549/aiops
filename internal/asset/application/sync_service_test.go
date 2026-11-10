@@ -1895,6 +1895,139 @@ func TestSyncService_HuaweiCESNegativeMarkingExcludesUncertainTypes(t *testing.T
 	}
 }
 
+// TestSyncService_HuaweiCESAggregateScopeIncompleteSkipsStale 验证聚合口径（全部资源组并集）下
+// 若存在未被覆盖的资源组（ScopeIncomplete），该 region 不执行任何 stale 标记：
+// 未覆盖组的资源可能仍存在于云端，误标 stale 会造成资产"消失"，见 §8.4/§13.1。
+func TestSyncService_HuaweiCESAggregateScopeIncompleteSkipsStale(t *testing.T) {
+	appID := cloudApplicationID("acc-fake")
+	apps := &fakeAppRepo{apps: map[string]domain.Application{
+		"cloud": {ID: appID, Name: "huawei_cloud-cloud", Environment: "cloud"},
+	}}
+	syncedAt := time.Now().UTC().Add(-time.Hour)
+	batches := &fakeSyncBatchRepo{}
+	resources := &fakeResRepo{leaseOwned: batches.isLeaseOwned, rows: []domain.Resource{
+		{
+			ID: "old-ecs", ApplicationID: appID, Name: "old-ecs",
+			Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+			CloudResourceType: "ecs", CloudResourceID: "gone-ecs", Region: "cn-north-4",
+			SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+		},
+		{
+			ID: "old-vpc", ApplicationID: appID, Name: "old-vpc",
+			Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+			CloudResourceType: "vpc", CloudResourceID: "gone-vpc", Region: "cn-north-4",
+			SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+		},
+	}}
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{
+			{ResourceID: "res-fake-ecs-2", Name: "ecs-demo-2", Type: "ecs", Region: "cn-north-4", Status: "running", ProviderRef: "ecs-demo-2"},
+		},
+		fullSummary: &obsapp.CloudSyncSummary{
+			Region: "cn-north-4", SyncMode: "ces", ResourceGroupName: "全部资源",
+			ResourceGroupSelection: "all_groups", ResourceGroupCount: 3,
+			ScopeIncomplete: true,
+			CESTotal:        1, Discovered: 1, SuccessfulTypes: []string{"ecs"},
+		},
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	statusByID := map[string]string{}
+	for _, row := range resources.rows {
+		statusByID[row.ID] = row.SyncStatus
+	}
+	// scope 不完整 → 一律不标 stale，避免误标未覆盖资源。
+	if statusByID["old-ecs"] != domain.SyncStatusActive {
+		t.Fatalf("scope-incomplete region must not mark ecs stale, got %s", statusByID["old-ecs"])
+	}
+	if statusByID["old-vpc"] != domain.SyncStatusActive {
+		t.Fatalf("scope-incomplete region must not mark vpc stale, got %s", statusByID["old-vpc"])
+	}
+	if final.StaleCount != 0 {
+		t.Fatalf("expected stale_count=0, got %d", final.StaleCount)
+	}
+}
+
+// TestSyncService_HuaweiCESAggregateScopeSkipsRegionWideStale 验证聚合口径
+// （全部资源组并集）不做区域级反向 stale：未归入任何资源组的资源（如 evs）
+// 不会被误标 stale 而"消失"，只有本轮成功查询的类型才逐类型标记。
+// 见 ops/huawei-ces-sync-contract.md §8.4/§13.1。
+func TestSyncService_HuaweiCESAggregateScopeSkipsRegionWideStale(t *testing.T) {
+	appID := cloudApplicationID("acc-fake")
+	apps := &fakeAppRepo{apps: map[string]domain.Application{
+		"cloud": {ID: appID, Name: "huawei_cloud-cloud", Environment: "cloud"},
+	}}
+	syncedAt := time.Now().UTC().Add(-time.Hour)
+	batches := &fakeSyncBatchRepo{}
+	resources := &fakeResRepo{leaseOwned: batches.isLeaseOwned, rows: []domain.Resource{
+		{
+			ID: "old-ecs", ApplicationID: appID, Name: "old-ecs",
+			Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+			CloudResourceType: "ecs", CloudResourceID: "gone-ecs", Region: "cn-north-4",
+			SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+		},
+		{
+			ID: "old-evs", ApplicationID: appID, Name: "old-evs",
+			Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-fake",
+			CloudResourceType: "evs", CloudResourceID: "ungrouped-evs", Region: "cn-north-4",
+			SyncStatus: domain.SyncStatusActive, SyncBatchID: "sync-old", LastSyncedAt: &syncedAt,
+		},
+	}}
+	discovery := &fakeDiscoveryPort{
+		resources: []obsdomain.CloudResource{
+			{ResourceID: "res-fake-ecs-2", Name: "ecs-demo-2", Type: "ecs", Region: "cn-north-4", Status: "running", ProviderRef: "ecs-demo-2"},
+		},
+		fullSummary: &obsapp.CloudSyncSummary{
+			Region: "cn-north-4", SyncMode: "ces", ResourceGroupName: "全部资源",
+			ResourceGroupSelection: obsapp.ResourceGroupSelectionAllGroups, ResourceGroupCount: 10,
+			CESTotal: 1, Discovered: 1, SuccessfulTypes: []string{"ecs"},
+		},
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "huawei_cloud", Regions: []string{"cn-north-4"}, Enabled: true,
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	statusByID := map[string]string{}
+	for _, row := range resources.rows {
+		statusByID[row.ID] = row.SyncStatus
+	}
+	// ecs 本轮查询成功但本批没有它 → 逐类型 stale。
+	if statusByID["old-ecs"] != domain.SyncStatusStale {
+		t.Fatalf("expected ecs stale (queried type, absent this round), got %s", statusByID["old-ecs"])
+	}
+	// evs 本轮完全没被查询到（不在任何资源组的 product_names 内）→ 不得标 stale。
+	if statusByID["old-evs"] != domain.SyncStatusActive {
+		t.Fatalf("unqueried evs must remain active in aggregate scope, got %s", statusByID["old-evs"])
+	}
+	if final.StaleCount != 1 {
+		t.Fatalf("expected stale_count=1, got %d", final.StaleCount)
+	}
+}
+
 // TestSyncService_HuaweiCESProductNamesEmptyMarksPartial 验证 product_names 为空时使用兜底白名单，
 // 批次至少标记 partial，提示同步可能不完整；同时禁止 CES/hybrid 反向 stale，
 // 只允许完整成功的类型逐类型 stale，白名单外历史资产保持 active，见 §8.5、§13.1。

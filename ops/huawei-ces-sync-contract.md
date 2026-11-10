@@ -332,31 +332,53 @@ sync_mode=native
 
 ### §8.4 资源组选择策略
 
-同步范围严格限定为“指定 CES 资源分组下资源”。不存在“CES 总览全量”的隐式口径；**不再提供“选择 total 最大的资源组”这类静默回退**。
-
-默认候选名“全部资源”并非 CES 系统内置分组，需要用户在 CES 控制台预先创建同名资源分组。
+同步范围限定为“指定 CES 资源分组下资源”。**不提供“选择 total 最大的资源组”这类静默回退**——单个业务分组不是全量，静默当成全量会造成资产缺失与误标 stale。
 
 选择顺序：
 
 1. 如果请求或账号配置指定 `resource_group_id`，使用该分组（仍经 `ShowResourceGroup` 校验存在）。
-2. 如果指定 `resource_group_name`，按名称精确匹配（大小写不敏感）。**任何名称未命中均直接失败**，不回退到其他分组。
-3. 未指定 `resource_group_name` 时，依次尝试默认候选名：`全部资源` / `All resources` / `All Resources`。
-4. 以上均未命中，批次失败，返回脱敏错误。
+2. 如果指定 `resource_group_name`（且不是默认候选名），按名称精确匹配（大小写不敏感）。**任何名称未命中均直接失败**，不回退到其他分组。
+3. 未指定 `resource_group_name`，或指定的名称本身是默认候选名（`全部资源` / `All resources` / `All Resources`）时，依次尝试默认候选名精确匹配。
+4. 默认候选名均未命中时进入**聚合口径**：按该 project/region 下**全部资源组的并集**发现资源，`resource_group_selection=all_groups`。
 
-**错误可操作性**：未命中错误除保留 `no CES resource group matched` 前缀外，还必须带上本次尝试的口径与云端实际存在的资源组，便于运维判断是"名称写错"还是"该 project/region 下没有资源组"：
+**关于默认候选名**：CES 不存在系统内置的“全部资源”分组，用户通常按业务线自建分组（生产ecs / EVS生产 / ELB生产 / obs生产 / 大数据 / …）。因此默认候选名表达的是“**全量意图**”，而不是“必须存在一个叫这个名字的分组”：
+
+- 候选名精确命中某个真实分组时，按单组口径处理（`resource_group_selection=default_name`）。
+- 候选名未命中时，**进入聚合口径**（`resource_group_selection=all_groups`），而不是直接失败。硬失败会让除自建同名分组外的账号全部无法全量同步，与前端“留空 = 全部资源”的占位语义冲突。
+
+**聚合口径语义**：
+
+| 项 | 口径 |
+| --- | --- |
+| 资源范围 | 该 project/region 下全部 CES 资源组的并集 |
+| `product_names` | 逐组解析（各组 `product_names` 不同，不能只解析一次） |
+| 资源去重 | 跨组按唯一键 `(cloud_resource_type, cloud_resource_id, region)` 去重，同一资源命中多组只入库一次 |
+| `max_resources` | 原始行预算在**全部资源组之间共享**，不因组数增加而放大（见 §11） |
+| `resource_group_id` | 空（无单一分组），`resource_group_name` 固定为 `全部资源` |
+| `resource_group_count` | 本轮实际覆盖的资源组数量 |
+| 单组失败 | 该组跳过并记入 `failed_scopes`，其余组继续；`scope_incomplete=true` |
+| 全部组不可解析 | 批次失败，返回 `no CES resource group could be resolved in region ...` |
+
+**聚合口径的 stale 门控**：并集并非 CES 的权威全量口径（资源可能未归入任何分组），因此：
+
+- 禁止区域级反向 stale，只对“本 region 查询成功且未失败”的类型逐类型标记（按 region 精确判定）；
+- `scope_incomplete=true`（有资源组被跳过）→ 该 region **禁止任何 stale 标记**，未覆盖资源可能仍存在于云端，误标 stale 会造成资产“消失”。
+
+**错误可操作性**：未命中错误除保留 `no CES resource group matched` 前缀外，还必须带上本次尝试的口径与云端实际存在的资源组，便于运维判断是“名称写错”还是“该 project/region 下没有资源组”：
 
 | 场景 | 错误内容 |
 | --- | --- |
 | 指定 `resource_group_id` 未命中 | `no CES resource group matched (specified_id="rg-xxx"); available groups: 名称(rg-yyy), ...` |
 | 指定 `resource_group_name` 未命中 | `no CES resource group matched (specified_name="名称"); available groups: ...` |
-| 默认候选名均未命中 | `no CES resource group matched (default_candidates=全部资源,All resources,All Resources); available groups: ...` |
 | 该 project/region 无任何资源组 | `no CES resource group matched (no groups listed); no resource group exists in this project/region; create one in the CES console or set resource_group_id explicitly` |
+| 聚合口径下所有资源组都不可解析 | `no CES resource group could be resolved in region cn-south-1: ...` |
 
 约束：
 
 - `available groups` 最多列出 10 个（名称 + ID），超出部分以 `(+N more)` 折叠，避免批次 `message` 过长。
 - 只输出资源组名称与 ID，**不含任何凭据或资源明细**。
-- 生产环境推荐显式填写 `resource_group_id`。
+- 生产环境推荐显式填写 `resource_group_id`，以获得确定的同步范围与可用的反向 stale 语义。
+- 批次 `message` 在聚合口径下额外输出 `resource_groups=<数量>`，便于确认本轮实际扫了几个分组。
 
 ### §8.5 product_names 解析
 
@@ -590,6 +612,14 @@ stale 标记按类型逐项判断，只有同时满足以下三项的类型才�
 - 查询失败/转换失败/持久化失败的类型 → 保持 active（保守，与逐类型一致）。
 
 `native`/通用/fake 路径 scope 非权威，仍用逐类型标记，不反向标记。
+
+**聚合口径（`resource_group_selection=all_groups`）的 stale 门控**：聚合口径覆盖全部资源组的并集，但并集仍不是 CES 的权威全量口径——资源可能未归入任何分组，因此：
+
+- **禁止区域级反向 stale**（不做 `MarkStaleByAccountRegionExceptTypes`）。未归入任何资源组的资源永远不会出现在本轮结果里，区域级反向标记会把它们误标 stale 而“消失”。
+- 只走**逐类型 stale**：本 region 查询成功（`SuccessfulTypes`）、且未发生转换失败/持久化失败的类型才允许标记。该判定按 **region 精确计算**，不使用跨 region 累积的快照。
+- `scope_incomplete=true`（有资源组被跳过，如 `ShowResourceGroup` 失败或 `resource_level` 非 `product`）→ 该 region **禁止任何 stale 标记**，包括逐类型 stale。
+
+见 §8.4。
 
 **`product_names` 为空时的批次状态**：回落到内置兜底白名单（见 §8.5），该白名单不完整。此场景批次至少标记 `partial`，batch message 含 `product_names_empty=true (fallback whitelist used, sync may be incomplete)`。
 

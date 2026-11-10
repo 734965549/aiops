@@ -130,6 +130,34 @@ export function formatSyncBatchSummaryDisplay(summary: SyncBatchSummaryDisplay):
   }
 }
 
+export interface SyncBatchSignalTag { label: string; value: string; color: string }
+
+/**
+ * 把批次摘要的结构化信号转成展示用标签。
+ * 聚合口径（全部资源组并集）额外给出实际覆盖的资源组数量；
+ * scope 不完整时明确提示本轮不标记 stale。
+ */
+export function buildSyncBatchSignalTags(summary?: SyncBatchSummary): SyncBatchSignalTag[] {
+  if (!summary) return []
+  const tags: SyncBatchSignalTag[] = []
+  if (summary.max_resources_reached) tags.push({ label: 'Max reached', value: '是', color: 'orange' })
+  if (summary.product_names_empty) tags.push({ label: 'Product names empty', value: '是；仅为兜底白名单结果，不保证完整性', color: 'gold' })
+  if ((summary.resource_group_count ?? 0) > 1) {
+    tags.push({ label: 'Resource groups', value: `${summary.resource_group_count} 个分组（全部资源并集）`, color: 'blue' })
+  }
+  if (summary.scope_incomplete) {
+    tags.push({ label: 'Scope incomplete', value: '有资源组未覆盖；本轮不标记 stale', color: 'orange' })
+  }
+  if ((summary.query_failed_types?.length ?? 0) > 0) tags.push({ label: 'Query failed types', value: summary.query_failed_types!.join(', '), color: 'red' })
+  if ((summary.conversion_failed_types?.length ?? 0) > 0) tags.push({ label: 'Conversion failed types', value: summary.conversion_failed_types!.join(', '), color: 'red' })
+  if ((summary.enrichment_failed_types?.length ?? 0) > 0) tags.push({ label: 'Enrichment failed types', value: summary.enrichment_failed_types!.join(', '), color: 'red' })
+  if ((summary.enrichment_warnings?.length ?? 0) > 0) tags.push({ label: 'Enrichment warnings', value: summary.enrichment_warnings!.join(', '), color: 'orange' })
+  if (summary.enrichment_stage_error) tags.push({ label: 'Enrichment stage error', value: summary.enrichment_stage_error, color: 'red' })
+  if ((summary.writeback_failed_count ?? 0) > 0) tags.push({ label: 'Writeback failed', value: String(summary.writeback_failed_count), color: 'red' })
+  if ((summary.failed_scopes?.length ?? 0) > 0) tags.push({ label: 'Failed scopes', value: summary.failed_scopes!.join(', '), color: 'gray' })
+  return tags
+}
+
 export function parseSyncBatchMessage(message: string): SyncBatchMessageSummary {
   const summary: SyncBatchMessageSummary = {}
   const fields: (keyof SyncBatchMessageSummary)[] = [

@@ -2,7 +2,7 @@ import { computed, onBeforeUnmount, reactive, ref } from 'vue'
 import Message from '@arco-design/web-vue/es/message'
 import type { TableInstance } from '@arco-design/web-vue/es/table'
 import * as assetApi from '@/api/asset'
-import { formatSyncBatchSummary } from './assetUtils'
+import { buildSyncBatchSignalTags, formatSyncBatchSummary } from './assetUtils'
 
 export function useCloudSync(options?: {
   onSyncComplete?: (batch: assetApi.SyncBatch) => Promise<void> | void
@@ -97,21 +97,7 @@ export function useCloudSync(options?: {
     }))
   })
 
-  const syncBatchSignalTags = computed(() => {
-    const summary = syncBatchDetail.value?.summary
-    if (!summary) return []
-    const tags: { label: string; value: string; color: string }[] = []
-    if (summary.max_resources_reached) tags.push({ label: 'Max reached', value: '是', color: 'orange' })
-    if (summary.product_names_empty) tags.push({ label: 'Product names empty', value: '是；仅为兜底白名单结果，不保证完整性', color: 'gold' })
-    if ((summary.query_failed_types?.length ?? 0) > 0) tags.push({ label: 'Query failed types', value: summary.query_failed_types!.join(', '), color: 'red' })
-    if ((summary.conversion_failed_types?.length ?? 0) > 0) tags.push({ label: 'Conversion failed types', value: summary.conversion_failed_types!.join(', '), color: 'red' })
-    if ((summary.enrichment_failed_types?.length ?? 0) > 0) tags.push({ label: 'Enrichment failed types', value: summary.enrichment_failed_types!.join(', '), color: 'red' })
-    if ((summary.enrichment_warnings?.length ?? 0) > 0) tags.push({ label: 'Enrichment warnings', value: summary.enrichment_warnings!.join(', '), color: 'orange' })
-    if (summary.enrichment_stage_error) tags.push({ label: 'Enrichment stage error', value: summary.enrichment_stage_error, color: 'red' })
-    if ((summary.writeback_failed_count ?? 0) > 0) tags.push({ label: 'Writeback failed', value: String(summary.writeback_failed_count), color: 'red' })
-    if ((summary.failed_scopes?.length ?? 0) > 0) tags.push({ label: 'Failed scopes', value: summary.failed_scopes!.join(', '), color: 'gray' })
-    return tags
-  })
+  const syncBatchSignalTags = computed(() => buildSyncBatchSignalTags(syncBatchDetail.value?.summary))
 
   const selectedScopeTrace = computed(() => {
     const summary = syncBatchDetail.value?.summary

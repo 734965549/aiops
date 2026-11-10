@@ -3,6 +3,7 @@ package huawei
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -305,6 +306,78 @@ func (m *mockResourceDiscovery) ListResources(_ context.Context, _ AKSKCredentia
 	return m.out, nil, nil
 }
 
+// TestAdapterListAllResourcesAggregateAllGroups 复现真实生产账号形态：
+// CES project 下按业务线自建了 10 个资源组，没有任何一组叫"全部资源"，
+// 账号 extra_config 也未配 resource_group_id/name。
+// 预期：走聚合口径，把全部资源组的资源并集同步回来，而不是整批失败。
+// 见 ops/huawei-ces-sync-contract.md §8.4 step 4。
+func TestAdapterListAllResourcesAggregateAllGroups(t *testing.T) {
+	provider, repo, vault := newTestCredentialProvider(t)
+	const accountID = "acc-aggregate"
+	seedAKSKCredential(t, provider, repo, vault, accountID)
+
+	groupNames := []string{
+		"生产分布式消息服务", "ELB生产资源分组", "obs生产资源分支", "EVS生产资源分组", "生产ecs",
+		"测试环境资源", "大数据", "户用电站", "商用电站", "极光系统",
+	}
+	groups := make([]cesv2model.OneResourceGroupResp, 0, len(groupNames))
+	showResps := map[string]*cesv2model.ShowResourceGroupResponse{}
+	listResps := map[string]map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{}
+	for i, name := range groupNames {
+		gid := fmt.Sprintf("rg-%02d", i)
+		groups = append(groups, cesv2model.OneResourceGroupResp{
+			GroupName: name, GroupId: gid,
+			ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)},
+		})
+		// 每个组各有自己的 product_names：ECS 组与 ELB 组覆盖不同服务。
+		product := "SYS.ECS,instance_id"
+		if i == 1 {
+			product = "SYS.ELB,loadbalancer_id"
+		}
+		showResps[gid] = buildShowResp(name, product, 1)
+		res := mkRes(fmt.Sprintf("res-%02d", i), "instance_id", fmt.Sprintf("id-%02d", i))
+		if i == 1 {
+			res = mkRes("res-01", "loadbalancer_id", "id-01")
+		}
+		listResps[gid] = map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			product[:strings.Index(product, ",")]: buildListResResp(res),
+		}
+	}
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp:   buildListGroupsResp(groups...),
+		showRespsByGroup: showResps,
+		listRespsByGroup: listResps,
+	}
+	adapter := NewAdapter(provider, nil, nil).WithCESResourceDiscovery(&cesDiscoveryWithAPI{api: api})
+	resources, summary, err := adapter.ListAllResources(context.Background(), domain.ProviderContext{
+		Account: domain.AccountSnapshot{
+			AccountID: accountID, AuthType: "ak_sk", ProjectID: "p1", Regions: []string{"cn-south-1"},
+			CredentialRefID: "ref-aggregate",
+			ExtraConfig:     []byte(`{"sync_mode":"ces","max_resources":20000}`),
+		},
+	}, obsapp.AssetFullSyncQuery{AccountID: accountID, Provider: "huawei_cloud", Region: "cn-south-1", MaxResources: 100})
+	if err != nil {
+		t.Fatalf("ListAllResources: %v", err)
+	}
+	if summary == nil {
+		t.Fatal("expected non-nil summary")
+	}
+	if summary.ResourceGroupSelection != resourceGroupModeAllGroups {
+		t.Fatalf("ResourceGroupSelection = %q, want %q", summary.ResourceGroupSelection, resourceGroupModeAllGroups)
+	}
+	if summary.ResourceGroupCount != len(groupNames) {
+		t.Fatalf("ResourceGroupCount = %d, want %d", summary.ResourceGroupCount, len(groupNames))
+	}
+	if summary.ResourceGroupName != aggregateResourceGroupName {
+		t.Fatalf("ResourceGroupName = %q, want %q", summary.ResourceGroupName, aggregateResourceGroupName)
+	}
+	// 10 个组的资源全部同步回来。
+	if len(resources) != len(groupNames) {
+		t.Fatalf("resources = %d, want %d (union of all groups)", len(resources), len(groupNames))
+	}
+}
+
+// TestAdapterListAllResourcesCESRoute 验证 ces 路径透传资源组聚合信息。
 func TestAdapterListAllResourcesCESRoute(t *testing.T) {
 	provider, repo, vault := newTestCredentialProvider(t)
 	const accountID = "acc-ces"

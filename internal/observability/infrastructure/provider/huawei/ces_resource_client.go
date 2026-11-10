@@ -20,6 +20,14 @@ import (
 
 const defaultCESResourceTimeout = 60 * time.Second
 
+// aggregateResourceGroupName 聚合口径（全部资源组并集）下写入摘要的资源组名。
+// 该口径没有单一 group_id，名称固定为"全部资源"，与前端占位提示一致，见 §8.4。
+const aggregateResourceGroupName = "全部资源"
+
+// resourceLevelProduct 是 CES ShowResourceGroup 返回的 product 级资源组标识，
+// 只有该层级的产品集合才完整定义 scope 内的类型集合，见 §8.5。
+const resourceLevelProduct = "product"
+
 var cesRetryDelays = []time.Duration{100 * time.Millisecond, 200 * time.Millisecond}
 
 // CESResourceDiscoveryRequest CES 资源全量发现请求，见 ops/huawei-ces-sync-contract.md §7.2。
@@ -65,6 +73,12 @@ type CESResourceDiscoverySummary struct {
 	// MaxResourcesReached 表示因达到 max_resources 上限而提前终止发现，
 	// 此时 SuccessfulTypes 不含被截断的类型，调用方必须禁止该 scope 执行 stale 标记，见 §13。
 	MaxResourcesReached bool
+	// ResourceGroupCount 记录本次发现实际覆盖的资源组数量。
+	// 聚合口径（"全部资源"= 账号下全部资源组的并集）下 > 1，见 §8.4。
+	ResourceGroupCount int
+	// ScopeIncomplete 表示聚合口径下存在未能覆盖的资源组（ShowResourceGroup 失败、
+	// resource_level 非 product 等），scope 不完整，调用方必须禁止该 scope 执行任何 stale 标记，见 §8.4/§13.1。
+	ScopeIncomplete bool
 }
 
 // CESResourceDiscoveryResult CES 资源发现结果。
@@ -125,31 +139,12 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 		maxResources = obsapp.DefaultRawRowBudget
 	}
 
-	group, err := selectResourceGroup(ctx, api, req)
+	selection, err := selectResourceGroups(ctx, api, req)
 	if err != nil {
 		return nil, err
 	}
-	summary.ResourceGroupID = group.GroupID
-	summary.ResourceGroupName = group.GroupName
-	summary.ResourceGroupSelection = group.Selection
-	if group.Total > 0 {
-		summary.CESTotal = group.Total
-	}
-
-	products, productNamesEmpty, resourceLevel, err := resolveProducts(ctx, api, group.GroupID, group.shown)
-	if err != nil {
-		return nil, err
-	}
-	summary.ProductNamesEmpty = productNamesEmpty
-	summary.ResourceLevel = resourceLevel
-
-	// P0 仅支持 resource_level == "product" 的资源组。dimension 级资源组 scope 语义不同
-	//（product_names 不含 dim_name），不能直接复用产品级反向 stale 逻辑；未知/空层级同理。
-	// 明确返回 FAILED_PRECONDITION，不静默回退，见 §8.5/§13.1。
-	if resourceLevel != "product" {
-		return nil, apperr.New(apperr.CodeFailedPrecondition,
-			fmt.Sprintf("CES resource group resource_level=%q is not supported (only \"product\" is supported in P0)", resourceLevel))
-	}
+	// 聚合口径（全部资源组并集）容忍单个组失败；单组口径下任一失败都直接失败，见 §8.4。
+	aggregate := selection.Mode == resourceGroupModeAllGroups
 
 	result := &CESResourceDiscoveryResult{Summary: summary}
 	resources := make([]domain.CloudResource, 0, min(maxResources, 1024))
@@ -157,28 +152,95 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 	// 唯一键为 (cloud_resource_type, cloud_resource_id, region)，integration_account_id 对同一批次恒定，
 	// 见 ops/huawei-ces-sync-contract.md §9.4。
 	seenKeys := make(map[string]struct{}, maxResources)
-	// max_resources 预算按"已从云端接收的原始行数"(RawFetchedCount) 维护，而非去重后的 unique 资源数。
-	// 重复资源和无效资源同样消耗预算，确保超大重复/异常返回不会绕开 max_resources 保护持续翻页，
-	// 见 ops/huawei-ces-sync-contract.md §7.2/§8.6。
-	for i, product := range products {
+
+	// 第一阶段：解析每个资源组的 product_names，构造 (资源组, 产品) 工作项。
+	// 聚合口径下各组 product_names 不同，必须逐组解析，不能只解析一次。
+	type groupProduct struct {
+		group   selectedResourceGroup
+		product cesProduct
+	}
+	var items []groupProduct
+	cesTotal := 0
+	skippedGroups := 0
+	for _, group := range selection.Groups {
+		if err := ctx.Err(); err != nil {
+			return nil, mapCESError(err)
+		}
+		products, productNamesEmpty, resourceLevel, err := resolveProducts(ctx, api, group.GroupID, group.shown)
+		if err != nil {
+			if !aggregate {
+				return nil, err
+			}
+			result.Summary.FailedScopes = append(result.Summary.FailedScopes,
+				fmt.Sprintf("%s/%s: %s", req.Region, group.GroupName, apperr.FromError(err).Message))
+			result.Summary.ScopeIncomplete = true
+			skippedGroups++
+			logger.From(ctx).Warn("huawei ces resource group skipped",
+				logger.String("region", req.Region),
+				logger.String("resource_group_name", group.GroupName),
+				logger.String("error_code", string(apperr.CodeOf(err))),
+			)
+			continue
+		}
+		if resourceLevel != "product" {
+			// P0 仅支持 resource_level=product 的资源组，见 §8.5。
+			if !aggregate {
+				return nil, apperr.New(apperr.CodeFailedPrecondition,
+					fmt.Sprintf("CES resource group resource_level=%q is not supported (only \"product\" is supported in P0)", resourceLevel))
+			}
+			result.Summary.FailedScopes = append(result.Summary.FailedScopes,
+				fmt.Sprintf("%s/%s: resource_level=%q is not supported, group skipped", req.Region, group.GroupName, resourceLevel))
+			result.Summary.ScopeIncomplete = true
+			skippedGroups++
+			continue
+		}
+		if productNamesEmpty {
+			result.Summary.ProductNamesEmpty = true
+		}
+		cesTotal += group.Total
+		for _, product := range products {
+			items = append(items, groupProduct{group: group, product: product})
+		}
+	}
+	// 聚合口径下若所有组都成功解析，scope 才是 product 级权威范围；
+	// 有组被跳过时 scope 不完整，禁止反向 stale，避免把未覆盖资源误标 stale，见 §13.1。
+	if aggregate && skippedGroups == 0 {
+		result.Summary.ResourceLevel = resourceLevelProduct
+	}
+	// 所有资源组都未能解析出可查询的产品：本次发现拿不到任何资源，
+	// 直接失败比返回空结果更可操作（空结果会被误当作"云端无资源"并触发 stale）。
+	if len(items) == 0 {
+		if len(result.Summary.FailedScopes) > 0 {
+			return nil, apperr.New(apperr.CodeNotFound,
+				fmt.Sprintf("no CES resource group could be resolved in region %s: %s",
+					req.Region, strings.Join(result.Summary.FailedScopes, "; ")))
+		}
+		return nil, apperr.New(apperr.CodeNotFound,
+			fmt.Sprintf("no CES resource group could be resolved in region %s", req.Region))
+	}
+
+	// 第二阶段：按 (资源组, 产品) 逐项分页拉取。max_resources 原始行预算在全部工作项之间共享，
+	// 保证单 region 预算不被放大，见 §11。
+	for i, item := range items {
 		if result.Summary.RawFetchedCount >= maxResources {
+			result.Summary.MaxResourcesReached = true
 			break
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, mapCESError(err)
 		}
 		remaining := maxResources - result.Summary.RawFetchedCount
-		pageResources, _, remoteExhausted, truncated, pageErr := listResourcesForProduct(ctx, api, group.GroupID, product, req.Region, remaining)
+		pageResources, _, remoteExhausted, truncated, pageErr := listResourcesForProduct(ctx, api, item.group.GroupID, item.product, req.Region, remaining)
 		result.Summary.RawFetchedCount += len(pageResources)
 		if pageErr != nil {
 			result.Summary.FailedScopes = append(result.Summary.FailedScopes,
-				fmt.Sprintf("%s/%s: %s", req.Region, product.Service, apperr.FromError(pageErr).Message))
+				fmt.Sprintf("%s/%s: %s", req.Region, item.product.Service, apperr.FromError(pageErr).Message))
 			result.Summary.QueryFailedTypes = appendUniqueString(
-				result.Summary.QueryFailedTypes, resolveNamespaceMappingByDim(product.Service, product.DimNames).CloudResourceType)
+				result.Summary.QueryFailedTypes, resolveNamespaceMappingByDim(item.product.Service, item.product.DimNames).CloudResourceType)
 			logger.From(ctx).Warn("huawei ces list resources failed",
 				logger.String("region", req.Region),
-				logger.String("namespace", product.Service),
-				logger.String("dim_name", strings.Join(product.DimNames, ",")),
+				logger.String("namespace", item.product.Service),
+				logger.String("dim_name", strings.Join(item.product.DimNames, ",")),
 				logger.String("error_code", string(apperr.CodeOf(pageErr))),
 			)
 			continue
@@ -186,14 +248,14 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 		mappedCount := 0
 		dupCount := 0
 		for _, in := range pageResources {
-			cloud, ok := mapCESResource(req.Region, product.Service, product.DimNames, in, group.GroupID, group.GroupName)
+			cloud, ok := mapCESResource(req.Region, item.product.Service, item.product.DimNames, in, item.group.GroupID, item.group.GroupName)
 			if !ok {
 				result.Summary.InvalidResourceCount++
 				result.Summary.ConversionFailedTypes = appendUniqueString(
-					result.Summary.ConversionFailedTypes, resolveNamespaceMappingByDim(product.Service, product.DimNames).CloudResourceType)
+					result.Summary.ConversionFailedTypes, resolveNamespaceMappingByDim(item.product.Service, item.product.DimNames).CloudResourceType)
 				continue
 			}
-			if isUnknownNamespace(product.Service) {
+			if isUnknownNamespace(item.product.Service) {
 				result.Summary.UnknownNamespaceCount++
 			}
 			// mapped_count 统计映射成功的资源（含重复），满足 raw = mapped + invalid，
@@ -202,6 +264,7 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 			// 按唯一键去重：重复资源计入 duplicate_count 且不进入待写入集合，
 			// 保证 mapped = unique + duplicate、unique = persisted + persist_failed 成立，
 			// 见 ops/huawei-ces-sync-contract.md §9.5、§9.4。
+			// 聚合口径下同一资源可能同时命中多个资源组，按唯一键去重保证不重复入库。
 			key := cloudResourceDedupKey(cloud)
 			if _, exists := seenKeys[key]; exists {
 				dupCount++
@@ -223,7 +286,7 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 			break
 		}
 		if result.Summary.RawFetchedCount >= maxResources {
-			if !remoteExhausted || i < len(products)-1 {
+			if !remoteExhausted || i < len(items)-1 {
 				result.Summary.MaxResourcesReached = true
 				break
 			}
@@ -231,7 +294,7 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 		// 查询成功且未截断即记录类型；0 资源也计入 SuccessfulTypes，
 		// 使旧资产可被标记 stale，与 native 路径 (adapter.go) 及 §13.1 "查询成功且本轮 0 资源的类型 → 旧资产 stale" 一致。
 		// 同类型任一 scope 失败时，由下方 subtractStringSet 从 QueryFailedTypes 剔除。
-		resourceType := resolveNamespaceMappingByDim(product.Service, product.DimNames).CloudResourceType
+		resourceType := resolveNamespaceMappingByDim(item.product.Service, item.product.DimNames).CloudResourceType
 		result.Summary.SuccessfulTypes = appendUniqueString(result.Summary.SuccessfulTypes, resourceType)
 	}
 	// SuccessfulTypes 只保留所有 scope 都成功的类型：剔除存在 scope 查询失败的类型，见 §13.1。
@@ -242,12 +305,20 @@ func discoverCESResources(ctx context.Context, api cesResourceGroupAPI, req CESR
 	// 见 ops/huawei-ces-sync-contract.md §9.5。Discovered 与之同义，保留以兼容既有字段语义。
 	result.Summary.Discovered = len(resources)
 	result.Summary.UniqueDiscoveredCount = len(resources)
-	result.Summary.ResourceGroupID = group.GroupID
-	result.Summary.ResourceGroupName = group.GroupName
-	result.Summary.ResourceGroupSelection = group.Selection
-	result.Summary.CESTotal = group.Total
-	result.Summary.ProductNamesEmpty = productNamesEmpty
-	result.Summary.ResourceLevel = resourceLevel
+	result.Summary.ResourceGroupCount = len(selection.Groups)
+	result.Summary.ResourceGroupSelection = selection.Mode
+	result.Summary.CESTotal = cesTotal
+	if !aggregate {
+		// 单组口径下资源组即 scope，资源组名/ID 直接落摘要。
+		result.Summary.ResourceGroupID = selection.Groups[0].GroupID
+		result.Summary.ResourceGroupName = selection.Groups[0].GroupName
+		result.Summary.ResourceLevel = resourceLevelProduct
+	} else {
+		// 聚合口径覆盖多个资源组，没有单一 group_id；名称固定为"全部资源"，
+		// 具体覆盖了几个组由 ResourceGroupCount 与 message 里的组清单给出，见 §8.4。
+		result.Summary.ResourceGroupName = aggregateResourceGroupName
+		result.Summary.ResourceGroupID = ""
+	}
 	return result, nil
 }
 
@@ -262,8 +333,29 @@ type selectedResourceGroup struct {
 	shown *shownResourceGroup
 }
 
+// 资源组选择口径，见 ops/huawei-ces-sync-contract.md §8.4。
+const (
+	// resourceGroupModeSpecifiedID 指定 resource_group_id 命中。
+	resourceGroupModeSpecifiedID = "specified_id"
+	// resourceGroupModeSpecifiedName 指定 resource_group_name 精确命中。
+	resourceGroupModeSpecifiedName = "specified_name"
+	// resourceGroupModeDefaultName 默认候选名（全部资源 / All resources / All Resources）命中。
+	resourceGroupModeDefaultName = "default_name"
+	// resourceGroupModeAllGroups 聚合口径：未指定资源组且默认候选名均未命中时，
+	// 按该 project/region 下全部资源组的并集发现资源，见 §8.4 step 4。
+	resourceGroupModeAllGroups = "all_groups"
+)
+
+// resourceGroupSelection 描述本次发现使用的资源组集合。
+// Groups 长度为 1 是单组口径（权威 scope，可反向 stale）；
+// 长度为多个是聚合口径（全部资源组的并集），需按 §13.1 额外门控 stale。
+type resourceGroupSelection struct {
+	Groups []selectedResourceGroup
+	Mode   string
+}
+
 // defaultResourceGroupCandidates 默认候选名，需用户在 CES 控制台预先创建同名资源分组，见 §8.4。
-// 注意：这些名称并非 CES 系统内置分组；未命中即失败，不回退到最大资源组。
+// 注意：这些名称并非 CES 系统内置分组；未命中即进入聚合口径（并集全部资源组），不回退到最大资源组。
 var defaultResourceGroupCandidates = []string{
 	"全部资源",
 	"All resources",
@@ -277,11 +369,13 @@ const maxListedResourceGroups = 10
 // maxResourceGroupOffset ListResourceGroups offset 上限（SDK 区间 [0,10000]），防止异常翻页。
 const maxResourceGroupOffset int32 = 10000
 
-// selectResourceGroup 按 §8.4 选择目标资源组：指定ID > 显式名称精确匹配 > 默认候选名。
+// selectResourceGroups 按 §8.4 选择目标资源组：指定ID > 显式名称精确匹配 > 默认候选名 > 聚合全部资源组。
 // 显式名称未命中时直接失败，不回退默认候选名；未指定名称时才尝试默认候选名。
-// 任何名称未命中均直接失败，不回退到 total 最大的资源组，避免把某个业务组误当作全量。
+// 默认候选名均未命中时进入聚合口径（全部资源组的并集），而不是直接失败——
+// CES 不存在系统内置的"全部资源"分组，用户通常按业务线自建分组，
+// 若直接失败则除自建同名分组的账号外全部无法同步，与前端"留空=全部资源"的占位语义冲突。
 // 分页拉全量后客户端匹配（不依赖服务端 GroupName 模糊过滤）。
-func selectResourceGroup(ctx context.Context, api cesResourceGroupAPI, req CESResourceDiscoveryRequest) (selectedResourceGroup, error) {
+func selectResourceGroups(ctx context.Context, api cesResourceGroupAPI, req CESResourceDiscoveryRequest) (resourceGroupSelection, error) {
 	if id := strings.TrimSpace(req.ResourceGroupID); id != "" {
 		// 指定 ID 时仍走 ShowResourceGroup 校验存在并取 total。
 		group, err := showGroup(ctx, api, id)
@@ -290,47 +384,74 @@ func selectResourceGroup(ctx context.Context, api cesResourceGroupAPI, req CESRe
 			if isCESNotFound(err) {
 				groups, listErr := listAllResourceGroups(ctx, api, req)
 				if listErr == nil {
-					return selectedResourceGroup{}, resourceGroupNotMatchedError(
+					return resourceGroupSelection{}, resourceGroupNotMatchedError(
 						fmt.Sprintf("specified_id=%q", id),
 						groups,
 					)
 				}
 			}
-			return selectedResourceGroup{}, err
+			return resourceGroupSelection{}, err
 		}
-		return selectedResourceGroup{GroupID: id, GroupName: group.GroupName, Total: group.Total, Selection: "specified_id", shown: &group}, nil
+		return resourceGroupSelection{
+			Groups: []selectedResourceGroup{{GroupID: id, GroupName: group.GroupName, Total: group.Total, Selection: resourceGroupModeSpecifiedID, shown: &group}},
+			Mode:   resourceGroupModeSpecifiedID,
+		}, nil
 	}
 
 	groups, err := listAllResourceGroups(ctx, api, req)
 	if err != nil {
-		return selectedResourceGroup{}, err
+		return resourceGroupSelection{}, err
 	}
 	if len(groups) == 0 {
-		return selectedResourceGroup{}, resourceGroupNotMatchedError("no groups listed", groups)
+		return resourceGroupSelection{}, resourceGroupNotMatchedError("no groups listed", groups)
 	}
 
-	if specifiedName := strings.TrimSpace(req.ResourceGroupName); specifiedName != "" {
-		if sel, ok := matchResourceGroupByName(groups, specifiedName, "specified_name"); ok {
-			return sel, nil
+	// 显式名称：精确匹配，未命中直接失败，不回退默认候选名，见 §8.4 step 2。
+	// 默认候选名本身（全部资源 / All resources / All Resources）视为"未指定"，
+	// 与 ParseSyncModeConfig 的 placeholder 语义保持一致：它们表达的是"全量"意图，
+	// 而不是"必须存在一个叫这个名字的分组"，见 §8.4 step 3/4。
+	specifiedName := strings.TrimSpace(req.ResourceGroupName)
+	if specifiedName != "" && !isDefaultResourceGroupCandidate(specifiedName) {
+		if sel, ok := matchResourceGroupByName(groups, specifiedName, resourceGroupModeSpecifiedName); ok {
+			return resourceGroupSelection{Groups: []selectedResourceGroup{sel}, Mode: resourceGroupModeSpecifiedName}, nil
 		}
-		return selectedResourceGroup{}, resourceGroupNotMatchedError(
+		return resourceGroupSelection{}, resourceGroupNotMatchedError(
 			fmt.Sprintf("specified_name=%q", specifiedName),
 			groups,
 		)
 	}
 
-	// 未指定名称时才依次尝试默认候选名，见 §8.4 step 3。
+	// 默认候选名精确命中优先（用户自建了同名分组），见 §8.4 step 3。
 	for _, wantName := range defaultResourceGroupCandidates {
-		if sel, ok := matchResourceGroupByName(groups, wantName, "default_name"); ok {
-			return sel, nil
+		if sel, ok := matchResourceGroupByName(groups, wantName, resourceGroupModeDefaultName); ok {
+			return resourceGroupSelection{Groups: []selectedResourceGroup{sel}, Mode: resourceGroupModeDefaultName}, nil
 		}
 	}
-	// 默认候选名均未命中，直接失败，不回退最大资源组，见 §8.4 step 4。
-	// CES 官方 ListResourceGroups 只返回用户创建的资源分组，不存在"总览全量"隐式口径。
-	return selectedResourceGroup{}, resourceGroupNotMatchedError(
-		fmt.Sprintf("default_candidates=%s", strings.Join(defaultResourceGroupCandidates, ",")),
-		groups,
-	)
+
+	// 默认候选名均未命中：进入聚合口径，按全部资源组的并集发现资源，见 §8.4 step 4。
+	// 不回退到 total 最大的资源组——单个业务组不是全量，静默当成全量会造成资产缺失与误标 stale。
+	out := make([]selectedResourceGroup, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, selectedResourceGroup{
+			GroupID:   g.GroupId,
+			GroupName: g.GroupName,
+			Total:     groupTotal(g.ResourceStatistics),
+			Selection: resourceGroupModeAllGroups,
+		})
+	}
+	return resourceGroupSelection{Groups: out, Mode: resourceGroupModeAllGroups}, nil
+}
+
+// isDefaultResourceGroupCandidate 判断名称是否为默认候选名之一（大小写不敏感）。
+// 默认候选名表达的是"全量"意图而非某个具体分组，见 §8.4 step 3/4。
+func isDefaultResourceGroupCandidate(name string) bool {
+	name = strings.TrimSpace(name)
+	for _, candidate := range defaultResourceGroupCandidates {
+		if strings.EqualFold(name, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 // isCESNotFound 判断错误是否为"资源不存在"语义。

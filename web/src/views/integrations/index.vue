@@ -279,7 +279,7 @@
           <a-form-item label="资源组名称">
             <a-input
               v-model="huaweiExtra.resource_group_name"
-              placeholder="全部资源（留空即未指定）"
+              placeholder="留空 = 同步全部资源组"
             />
           </a-form-item>
           <a-form-item label="资源组 ID">

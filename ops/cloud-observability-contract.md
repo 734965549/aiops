@@ -433,8 +433,10 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `sync_mode` | string | 同步模式（`ces`/`hybrid`/`native` 等） |
-| `resource_group_name` | string | 资源组名称 |
-| `resource_group_id` | string | 资源组 ID |
+| `resource_group_name` | string | 资源组名称（聚合口径下固定为 `全部资源`） |
+| `resource_group_id` | string | 资源组 ID（聚合口径下为空） |
+| `resource_group_count` | int | 本轮实际覆盖的资源组数量（聚合口径下 > 1） |
+| `scope_incomplete` | bool | 聚合口径下有资源组未被覆盖；该 scope 禁止 stale 标记 |
 | `projects` | string[] | 涉及 project 列表（兼容聚合，丢失归属关系） |
 | `regions` | string[] | 涉及 region 列表（兼容聚合，丢失归属关系） |
 | `ces_total` | int | CES 拉取的指标维度总数（各 scope 求和） |
@@ -472,7 +474,9 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 | `sync_mode` | string | 该 scope 同步模式 |
 | `resource_group_id` | string | 资源组 ID |
 | `resource_group_name` | string | 资源组名称 |
-| `resource_group_selection` | string | 资源组选择方式 |
+| `resource_group_selection` | string | 资源组选择方式（`specified_id`/`specified_name`/`default_name`/`all_groups`） |
+| `resource_group_count` | int | 该 scope 实际覆盖的资源组数量（聚合口径下 > 1） |
+| `scope_incomplete` | bool | 聚合口径下有资源组未被覆盖；该 scope 禁止 stale 标记 |
 | `ces_total` | int | 该 scope CES 指标维度总数 |
 | `raw_fetched_count` | int | **本轮预算内实际进入后续处理链路的原始行数**；只统计已被 `max_resources` 接住并进入映射/去重/落库流水线的行，不表示云端总返回数，尾部被 `max_resources` 裁掉的行不计入 |
 | `mapped_count` | int | 命名空间映射成功条目数 |

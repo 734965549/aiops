@@ -26,6 +26,18 @@ type mockCESResourceGroupAPI struct {
 	listResps      map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse // key: service
 	listResErr     error
 
+	// showRespsByGroup 按 group_id 返回不同的 ShowResourceGroup 响应，
+	// 用于模拟聚合口径下各资源组 product_names 不同的情况，见 §8.4。
+	showRespsByGroup map[string]*cesv2model.ShowResourceGroupResponse
+	// listRespsByGroup 按 group_id 返回不同的资源列表响应，key 为 service。
+	listRespsByGroup map[string]map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse
+	// showErrByGroup 按 group_id 返回错误，用于模拟单个资源组解析失败。
+	showErrByGroup map[string]error
+	// showCallsByGroup 记录每个 group_id 的 ShowResourceGroup 调用次数。
+	showCallsByGroup map[string]int
+	// listResGroups 记录 ListResourceGroupsServicesResources 被请求的 group_id 顺序。
+	listResGroups []string
+
 	listGroupsCalls int
 	showCalls       int
 	listResCalls    int
@@ -45,8 +57,22 @@ func (m *mockCESResourceGroupAPI) ListResourceGroups(_ *cesv2model.ListResourceG
 	return m.listGroupsResp, nil
 }
 
-func (m *mockCESResourceGroupAPI) ShowResourceGroup(_ *cesv2model.ShowResourceGroupRequest) (*cesv2model.ShowResourceGroupResponse, error) {
+func (m *mockCESResourceGroupAPI) ShowResourceGroup(req *cesv2model.ShowResourceGroupRequest) (*cesv2model.ShowResourceGroupResponse, error) {
 	m.showCalls++
+	groupID := ""
+	if req != nil {
+		groupID = req.GroupId
+	}
+	if m.showCallsByGroup == nil {
+		m.showCallsByGroup = map[string]int{}
+	}
+	m.showCallsByGroup[groupID]++
+	if err, ok := m.showErrByGroup[groupID]; ok && err != nil {
+		return nil, err
+	}
+	if resp, ok := m.showRespsByGroup[groupID]; ok {
+		return resp, nil
+	}
 	if m.showErr != nil {
 		return nil, m.showErr
 	}
@@ -56,13 +82,22 @@ func (m *mockCESResourceGroupAPI) ShowResourceGroup(_ *cesv2model.ShowResourceGr
 func (m *mockCESResourceGroupAPI) ListResourceGroupsServicesResources(req *cesv2model.ListResourceGroupsServicesResourcesRequest) (*cesv2model.ListResourceGroupsServicesResourcesResponse, error) {
 	m.listResCalls++
 	m.listResInputs = append(m.listResInputs, req.Service)
+	groupID := ""
+	if req != nil {
+		groupID = req.GroupId
+	}
+	m.listResGroups = append(m.listResGroups, groupID)
 	if m.listResErr != nil {
 		return nil, m.listResErr
 	}
-	if m.listResps == nil {
+	resps := m.listResps
+	if byGroup, ok := m.listRespsByGroup[groupID]; ok {
+		resps = byGroup
+	}
+	if resps == nil {
 		return nil, nil
 	}
-	resp := m.listResps[req.Service]
+	resp := resps[req.Service]
 	if resp == nil {
 		return nil, nil
 	}
@@ -179,8 +214,10 @@ func TestDiscoverCESResources_HappyPath(t *testing.T) {
 	if result.Summary.ResourceGroupID != "rg001" {
 		t.Fatalf("ResourceGroupID = %q, want rg001", result.Summary.ResourceGroupID)
 	}
-	if result.Summary.ResourceGroupSelection != "specified_name" {
-		t.Fatalf("ResourceGroupSelection = %q, want specified_name", result.Summary.ResourceGroupSelection)
+	// "全部资源"是默认候选名，表达的是"全量"意图而非某个具体分组，
+	// 因此命中后口径记为 default_name（与 ParseSyncModeConfig 的 placeholder 语义一致）。
+	if result.Summary.ResourceGroupSelection != resourceGroupModeDefaultName {
+		t.Fatalf("ResourceGroupSelection = %q, want %q", result.Summary.ResourceGroupSelection, resourceGroupModeDefaultName)
 	}
 	if result.Summary.ProductNamesEmpty {
 		t.Fatalf("ProductNamesEmpty should be false")
@@ -417,7 +454,12 @@ func TestDiscoverCESResources_CustomGroupNameNotFoundFails(t *testing.T) {
 	}
 }
 
-func TestDiscoverCESResources_DefaultNameNotMatchedFails(t *testing.T) {
+// 默认候选名"全部资源"未命中时（用户未预先创建同名分组），进入聚合口径：
+// 按该 project/region 下全部资源组的并集发现资源，而不是直接失败。
+// 这是真实生产账号的常见形态——资源按业务线自建分组（生产ecs/EVS生产/ELB生产/...），
+// 没有任何一个组叫"全部资源"，硬失败会让全量同步完全不可用。
+// 见 ops/huawei-ces-sync-contract.md §8.4 step 4。
+func TestDiscoverCESResources_DefaultNameNotMatchedAggregatesAllGroups(t *testing.T) {
 	api := &mockCESResourceGroupAPI{
 		listGroupsResp: buildListGroupsResp(
 			cesv2model.OneResourceGroupResp{GroupName: "prod-group", GroupId: "rg001", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(5)}},
@@ -428,13 +470,34 @@ func TestDiscoverCESResources_DefaultNameNotMatchedFails(t *testing.T) {
 			"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
 		},
 	}
-	// 默认候选名"全部资源"未命中时（用户未预先创建同名分组），应直接失败，
-	// 不回退到 total 最大的资源组，避免把业务组误当作全量，见 §8.4。
-	_, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
 		ProjectID: "proj", Region: "r", ResourceGroupName: "全部资源", MaxResources: 100,
 	})
-	if apperr.CodeOf(err) != apperr.CodeNotFound {
-		t.Fatalf("err code = %v, want NotFound for default name not matched", apperr.CodeOf(err))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if result.Summary.ResourceGroupSelection != resourceGroupModeAllGroups {
+		t.Fatalf("ResourceGroupSelection = %q, want %q", result.Summary.ResourceGroupSelection, resourceGroupModeAllGroups)
+	}
+	if result.Summary.ResourceGroupCount != 2 {
+		t.Fatalf("ResourceGroupCount = %d, want 2 (all groups aggregated)", result.Summary.ResourceGroupCount)
+	}
+	// 聚合口径没有单一 group_id，名称固定为"全部资源"；具体覆盖的组由 count 表达。
+	if result.Summary.ResourceGroupName != aggregateResourceGroupName {
+		t.Fatalf("ResourceGroupName = %q, want %q", result.Summary.ResourceGroupName, aggregateResourceGroupName)
+	}
+	if result.Summary.ResourceGroupID != "" {
+		t.Fatalf("ResourceGroupID = %q, want empty in aggregate mode", result.Summary.ResourceGroupID)
+	}
+	if len(result.Resources) != 1 {
+		t.Fatalf("resource count = %d, want 1 (union of both groups)", len(result.Resources))
+	}
+	// 两个组都成功解析 → scope 完整 → resource_level=product，允许反向 stale。
+	if result.Summary.ScopeIncomplete {
+		t.Fatalf("ScopeIncomplete should be false when all groups resolve")
+	}
+	if result.Summary.ResourceLevel != resourceLevelProduct {
+		t.Fatalf("ResourceLevel = %q, want %q", result.Summary.ResourceLevel, resourceLevelProduct)
 	}
 }
 
@@ -1010,6 +1073,239 @@ func TestValidateCESDiscoveryRequest(t *testing.T) {
 	}
 }
 
+// TestDiscoverCESResources_AggregateUnionsAllGroups 验证聚合口径下每个资源组都按自己的
+// product_names 独立查询，资源取并集。这是真实生产账号的形态：资源按业务线自建分组，
+// 没有任何一个组叫"全部资源"，见 ops/huawei-ces-sync-contract.md §8.4 step 4。
+func TestDiscoverCESResources_AggregateUnionsAllGroups(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(
+			cesv2model.OneResourceGroupResp{GroupName: "生产ecs", GroupId: "rg-ecs", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}},
+			cesv2model.OneResourceGroupResp{GroupName: "ELB生产资源分组", GroupId: "rg-elb", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}},
+		),
+		showRespsByGroup: map[string]*cesv2model.ShowResourceGroupResponse{
+			"rg-ecs": buildShowResp("生产ecs", "SYS.ECS,instance_id", 1),
+			"rg-elb": buildShowResp("ELB生产资源分组", "SYS.ELB,loadbalancer_id", 1),
+		},
+		listRespsByGroup: map[string]map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"rg-ecs": {
+				"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
+			},
+			"rg-elb": {
+				"SYS.ELB": buildListResResp(mkRes("elb-1", "loadbalancer_id", "lb-1")),
+			},
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "cn-south-1", MaxResources: 100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if result.Summary.ResourceGroupSelection != resourceGroupModeAllGroups {
+		t.Fatalf("ResourceGroupSelection = %q, want %q", result.Summary.ResourceGroupSelection, resourceGroupModeAllGroups)
+	}
+	if result.Summary.ResourceGroupCount != 2 {
+		t.Fatalf("ResourceGroupCount = %d, want 2", result.Summary.ResourceGroupCount)
+	}
+	// 两个组的资源都要入库，且各自带正确的资源组 label（可追溯到来源分组）。
+	if len(result.Resources) != 2 {
+		t.Fatalf("resource count = %d, want 2 (union of both groups)", len(result.Resources))
+	}
+	byID := map[string]domain.CloudResource{}
+	for _, r := range result.Resources {
+		byID[r.ProviderRef] = r
+	}
+	ecs, ok := byID["i-1"]
+	if !ok {
+		t.Fatalf("missing ecs resource: %+v", result.Resources)
+	}
+	if ecs.Labels["resource_group_id"] != "rg-ecs" || ecs.Labels["resource_group_name"] != "生产ecs" {
+		t.Fatalf("ecs labels = %+v, want rg-ecs/生产ecs", ecs.Labels)
+	}
+	elb, ok := byID["lb-1"]
+	if !ok {
+		t.Fatalf("missing elb resource: %+v", result.Resources)
+	}
+	if elb.Labels["resource_group_id"] != "rg-elb" {
+		t.Fatalf("elb labels = %+v, want rg-elb", elb.Labels)
+	}
+	if !reflect.DeepEqual(result.Summary.SuccessfulTypes, []string{"ecs", "elb"}) {
+		t.Fatalf("SuccessfulTypes = %v, want [ecs elb]", result.Summary.SuccessfulTypes)
+	}
+	// 所有组都解析成功 → scope 完整 → 允许反向 stale。
+	if result.Summary.ScopeIncomplete {
+		t.Fatalf("ScopeIncomplete should be false when every group resolves")
+	}
+	if result.Summary.ResourceLevel != resourceLevelProduct {
+		t.Fatalf("ResourceLevel = %q, want %q", result.Summary.ResourceLevel, resourceLevelProduct)
+	}
+}
+
+// TestDiscoverCESResources_AggregateDedupsAcrossGroups 验证聚合口径下同一资源同时命中
+// 多个资源组时按唯一键去重，不重复入库，见 ops/huawei-ces-sync-contract.md §9.4。
+func TestDiscoverCESResources_AggregateDedupsAcrossGroups(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(
+			cesv2model.OneResourceGroupResp{GroupName: "生产ecs", GroupId: "rg-ecs", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}},
+			cesv2model.OneResourceGroupResp{GroupName: "测试环境资源", GroupId: "rg-test", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}},
+		),
+		showRespsByGroup: map[string]*cesv2model.ShowResourceGroupResponse{
+			"rg-ecs":  buildShowResp("生产ecs", "SYS.ECS,instance_id", 1),
+			"rg-test": buildShowResp("测试环境资源", "SYS.ECS,instance_id", 1),
+		},
+		listRespsByGroup: map[string]map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"rg-ecs": {
+				"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
+			},
+			"rg-test": {
+				"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
+			},
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "cn-south-1", MaxResources: 100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(result.Resources) != 1 {
+		t.Fatalf("resource count = %d, want 1 (deduped across groups)", len(result.Resources))
+	}
+	if result.Summary.MappedCount != 2 {
+		t.Fatalf("MappedCount = %d, want 2 (includes duplicate)", result.Summary.MappedCount)
+	}
+	if result.Summary.DuplicateCount != 1 {
+		t.Fatalf("DuplicateCount = %d, want 1", result.Summary.DuplicateCount)
+	}
+	if result.Summary.Discovered != 1 {
+		t.Fatalf("Discovered = %d, want 1", result.Summary.Discovered)
+	}
+}
+
+// TestDiscoverCESResources_AggregateSkippedGroupMarksScopeIncomplete 验证聚合口径下
+// 单个资源组解析失败时：不影响其余组同步，但 scope 标记为不完整（禁止反向 stale），
+// 见 ops/huawei-ces-sync-contract.md §8.4/§13.1。
+func TestDiscoverCESResources_AggregateSkippedGroupMarksScopeIncomplete(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(
+			cesv2model.OneResourceGroupResp{GroupName: "生产ecs", GroupId: "rg-ecs", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}},
+			cesv2model.OneResourceGroupResp{GroupName: "坏组", GroupId: "rg-bad", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}},
+		),
+		showRespsByGroup: map[string]*cesv2model.ShowResourceGroupResponse{
+			"rg-ecs": buildShowResp("生产ecs", "SYS.ECS,instance_id", 1),
+		},
+		showErrByGroup: map[string]error{
+			"rg-bad": apperr.New(apperr.CodeUnavailable, "show failed"),
+		},
+		listRespsByGroup: map[string]map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"rg-ecs": {
+				"SYS.ECS": buildListResResp(mkRes("ecs-1", "instance_id", "i-1")),
+			},
+		},
+	}
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "cn-south-1", MaxResources: 100,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// 可解析的组仍要正常同步。
+	if len(result.Resources) != 1 {
+		t.Fatalf("resource count = %d, want 1 (healthy group still synced)", len(result.Resources))
+	}
+	// scope 不完整 → 禁止反向 stale。
+	if !result.Summary.ScopeIncomplete {
+		t.Fatalf("ScopeIncomplete should be true when a group is skipped")
+	}
+	if len(result.Summary.FailedScopes) != 1 {
+		t.Fatalf("FailedScopes = %v, want 1", result.Summary.FailedScopes)
+	}
+}
+
+// TestDiscoverCESResources_AggregateSharesMaxResourcesBudget 验证聚合口径下 max_resources
+// 原始行预算在所有资源组之间共享，不会因组数变多而被放大，见契约 §11。
+func TestDiscoverCESResources_AggregateSharesMaxResourcesBudget(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(
+			cesv2model.OneResourceGroupResp{GroupName: "g1", GroupId: "rg1", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(3)}},
+			cesv2model.OneResourceGroupResp{GroupName: "g2", GroupId: "rg2", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(3)}},
+		),
+		showRespsByGroup: map[string]*cesv2model.ShowResourceGroupResponse{
+			"rg1": buildShowResp("g1", "SYS.ECS,instance_id", 3),
+			"rg2": buildShowResp("g2", "SYS.ECS,instance_id", 3),
+		},
+		listRespsByGroup: map[string]map[string]*cesv2model.ListResourceGroupsServicesResourcesResponse{
+			"rg1": {
+				"SYS.ECS": buildListResResp(
+					mkRes("ecs-1", "instance_id", "i-1"),
+					mkRes("ecs-2", "instance_id", "i-2"),
+					mkRes("ecs-3", "instance_id", "i-3"),
+				),
+			},
+			"rg2": {
+				"SYS.ECS": buildListResResp(
+					mkRes("ecs-4", "instance_id", "i-4"),
+					mkRes("ecs-5", "instance_id", "i-5"),
+					mkRes("ecs-6", "instance_id", "i-6"),
+				),
+			},
+		},
+	}
+	// 预算 4：两个组共 6 条原始行，聚合后必须整体截断。
+	result, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "cn-south-1", MaxResources: 4,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if result.Summary.RawFetchedCount > 4 {
+		t.Fatalf("RawFetchedCount = %d, want <= 4 (shared budget)", result.Summary.RawFetchedCount)
+	}
+	if !result.Summary.MaxResourcesReached {
+		t.Fatalf("MaxResourcesReached should be true when budget exhausted across groups")
+	}
+}
+
+// TestDiscoverCESResources_AggregateAllGroupsUnresolvableFails 验证聚合口径下所有资源组
+// 都解析不出可查询产品时直接失败，而不是返回空结果（空结果会被误当作"云端无资源"）。
+func TestDiscoverCESResources_AggregateAllGroupsUnresolvableFails(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(
+			cesv2model.OneResourceGroupResp{GroupName: "g1", GroupId: "rg1", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}},
+			cesv2model.OneResourceGroupResp{GroupName: "g2", GroupId: "rg2", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}},
+		),
+		showErrByGroup: map[string]error{
+			"rg1": apperr.New(apperr.CodeUnavailable, "show failed"),
+			"rg2": apperr.New(apperr.CodeUnavailable, "show failed"),
+		},
+	}
+	_, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "cn-south-1", MaxResources: 100,
+	})
+	if apperr.CodeOf(err) != apperr.CodeNotFound {
+		t.Fatalf("err code = %v, want NotFound when no group resolves", apperr.CodeOf(err))
+	}
+	if !strings.Contains(err.Error(), "no CES resource group could be resolved") {
+		t.Fatalf("error message should explain no group resolved: %s", err.Error())
+	}
+}
+
+// TestDiscoverCESResources_ExplicitNameStillFailsWhenMissing 验证显式指定名称未命中时
+// 仍然直接失败——用户明确指定了业务口径，不能静默改成全量聚合，见契约 §8.4 step 2。
+func TestDiscoverCESResources_ExplicitNameStillFailsWhenMissing(t *testing.T) {
+	api := &mockCESResourceGroupAPI{
+		listGroupsResp: buildListGroupsResp(
+			cesv2model.OneResourceGroupResp{GroupName: "生产ecs", GroupId: "rg-ecs", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}},
+		),
+	}
+	_, err := discoverCESResources(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "proj", Region: "cn-south-1", ResourceGroupName: "生产ecs-typo", MaxResources: 100,
+	})
+	if apperr.CodeOf(err) != apperr.CodeNotFound {
+		t.Fatalf("err code = %v, want NotFound for explicit name mismatch", apperr.CodeOf(err))
+	}
+}
+
 // pagedGroupsAPI 按 offset/limit 切片返回资源组，模拟服务端分页。
 type pagedGroupsAPI struct {
 	groups   []cesv2model.OneResourceGroupResp
@@ -1069,15 +1365,18 @@ func TestSelectResourceGroup_PaginationCollectsAllGroups(t *testing.T) {
 	groups[150].ResourceStatistics = &cesv2model.OneResourceGroupRespResourceStatistics{Total: &bigTotal}
 
 	api := &pagedGroupsAPI{groups: groups}
-	sel, err := selectResourceGroup(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r"})
+	sel, err := selectResourceGroups(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r"})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if sel.GroupID != "rg150" {
-		t.Fatalf("GroupID = %q, want rg150 (全部资源 across all pages)", sel.GroupID)
+	if len(sel.Groups) != 1 {
+		t.Fatalf("Groups count = %d, want 1 (single group hit)", len(sel.Groups))
 	}
-	if sel.Total != 9999 {
-		t.Fatalf("Total = %d, want 9999", sel.Total)
+	if sel.Groups[0].GroupID != "rg150" {
+		t.Fatalf("GroupID = %q, want rg150 (全部资源 across all pages)", sel.Groups[0].GroupID)
+	}
+	if sel.Groups[0].Total != 9999 {
+		t.Fatalf("Total = %d, want 9999", sel.Groups[0].Total)
 	}
 	if api.calls < 3 {
 		t.Fatalf("ListResourceGroups calls = %d, want >=3 (paginated)", api.calls)
@@ -1092,26 +1391,44 @@ func TestSelectResourceGroup_FallsBackToEnglishName(t *testing.T) {
 		{GroupName: "small", GroupId: "rg-sm", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}},
 	}
 	api := &pagedGroupsAPI{groups: groups}
-	sel, err := selectResourceGroup(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r"})
+	sel, err := selectResourceGroups(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r"})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if sel.GroupID != "rg-en" {
-		t.Fatalf("GroupID = %q, want rg-en (english name fallback)", sel.GroupID)
+	if len(sel.Groups) != 1 || sel.Groups[0].GroupID != "rg-en" {
+		t.Fatalf("selection = %+v, want single group rg-en (english name fallback)", sel.Groups)
 	}
 }
 
-// 没有任何候选名命中，应直接失败，不回退到 total 最大的组。
-func TestSelectResourceGroup_NoMatchFails(t *testing.T) {
+// 没有任何候选名命中时进入聚合口径（全部资源组并集），不再直接失败，
+// 也不回退到 total 最大的组——单个业务组不是全量，静默当成全量会造成资产缺失与误标 stale。
+// 见 ops/huawei-ces-sync-contract.md §8.4 step 4。
+func TestSelectResourceGroup_NoMatchAggregatesAllGroups(t *testing.T) {
 	groups := []cesv2model.OneResourceGroupResp{
 		{GroupName: "team-a", GroupId: "rg1", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(3)}},
 		{GroupName: "team-b", GroupId: "rg2", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(7)}},
 		{GroupName: "team-c", GroupId: "rg3", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(2)}},
 	}
 	api := &pagedGroupsAPI{groups: groups}
-	_, err := selectResourceGroup(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r"})
-	if apperr.CodeOf(err) != apperr.CodeNotFound {
-		t.Fatalf("err code = %v, want NotFound for no match", apperr.CodeOf(err))
+	sel, err := selectResourceGroups(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if sel.Mode != resourceGroupModeAllGroups {
+		t.Fatalf("Mode = %q, want %q", sel.Mode, resourceGroupModeAllGroups)
+	}
+	if len(sel.Groups) != 3 {
+		t.Fatalf("Groups count = %d, want 3 (aggregate all groups)", len(sel.Groups))
+	}
+	// 聚合口径必须包含全部组，不能只取 total 最大的那个。
+	got := map[string]bool{}
+	for _, g := range sel.Groups {
+		got[g.GroupID] = true
+	}
+	for _, want := range []string{"rg1", "rg2", "rg3"} {
+		if !got[want] {
+			t.Fatalf("aggregate selection missing group %q: %+v", want, sel.Groups)
+		}
 	}
 }
 
@@ -1126,12 +1443,12 @@ func TestSelectResourceGroup_RetriesRateLimit(t *testing.T) {
 			GroupName: "全部资源", GroupId: "rg-retry", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)},
 		}),
 	}
-	sel, err := selectResourceGroup(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r"})
+	sel, err := selectResourceGroups(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r"})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if sel.GroupID != "rg-retry" || api.listGroupsCalls != 2 {
-		t.Fatalf("selection=%+v calls=%d, want retry success on second call", sel, api.listGroupsCalls)
+	if len(sel.Groups) != 1 || sel.Groups[0].GroupID != "rg-retry" || api.listGroupsCalls != 2 {
+		t.Fatalf("selection=%+v calls=%d, want retry success on second call", sel.Groups, api.listGroupsCalls)
 	}
 }
 
@@ -1142,15 +1459,15 @@ func TestSelectResourceGroup_SpecifiedNamePriority(t *testing.T) {
 		{GroupName: "my-custom", GroupId: "rg-custom", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(1)}},
 	}
 	api := &pagedGroupsAPI{groups: groups}
-	sel, err := selectResourceGroup(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r", ResourceGroupName: "my-custom"})
+	sel, err := selectResourceGroups(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r", ResourceGroupName: "my-custom"})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if sel.GroupID != "rg-custom" {
-		t.Fatalf("GroupID = %q, want rg-custom (specified name priority)", sel.GroupID)
+	if len(sel.Groups) != 1 || sel.Groups[0].GroupID != "rg-custom" {
+		t.Fatalf("selection = %+v, want rg-custom (specified name priority)", sel.Groups)
 	}
-	if sel.Selection != "specified_name" {
-		t.Fatalf("Selection = %q, want specified_name", sel.Selection)
+	if sel.Groups[0].Selection != resourceGroupModeSpecifiedName {
+		t.Fatalf("Selection = %q, want %q", sel.Groups[0].Selection, resourceGroupModeSpecifiedName)
 	}
 }
 
@@ -1159,13 +1476,13 @@ func TestSelectResourceGroup_SpecifiedNameNoFallbackToDefault(t *testing.T) {
 		{GroupName: "全部资源", GroupId: "rg-default", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(100)}},
 	}
 	api := &pagedGroupsAPI{groups: groups}
-	_, err := selectResourceGroup(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r", ResourceGroupName: "my-custom"})
+	_, err := selectResourceGroups(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r", ResourceGroupName: "my-custom"})
 	if apperr.CodeOf(err) != apperr.CodeNotFound {
 		t.Fatalf("err code = %v, want NotFound for unmatched specified name", apperr.CodeOf(err))
 	}
 }
 
-// 资源组未命中时，错误应带上可用资源组（名称+ID），让运维能自助定位，
+// 显式指定名称未命中时，错误应带上可用资源组（名称+ID），让运维能自助定位，
 // 见 ops/huawei-ces-sync-contract.md §8.4。
 func TestSelectResourceGroup_NoMatchErrorListsAvailableGroups(t *testing.T) {
 	groups := []cesv2model.OneResourceGroupResp{
@@ -1173,9 +1490,11 @@ func TestSelectResourceGroup_NoMatchErrorListsAvailableGroups(t *testing.T) {
 		{GroupName: "team-b", GroupId: "rg2", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(7)}},
 	}
 	api := &pagedGroupsAPI{groups: groups}
-	_, err := selectResourceGroup(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r"})
+	_, err := selectResourceGroups(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "p", Region: "r", ResourceGroupName: "team-typo",
+	})
 	if err == nil {
-		t.Fatalf("expected error when no group matches")
+		t.Fatalf("expected error when specified name misses")
 	}
 	msg := err.Error()
 	for _, want := range []string{"no CES resource group matched", "team-a", "rg1", "team-b", "rg2"} {
@@ -1191,7 +1510,7 @@ func TestSelectResourceGroup_SpecifiedNameMismatchErrorEchoesName(t *testing.T) 
 		{GroupName: "team-a", GroupId: "rg1", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(3)}},
 	}
 	api := &pagedGroupsAPI{groups: groups}
-	_, err := selectResourceGroup(context.Background(), api, CESResourceDiscoveryRequest{
+	_, err := selectResourceGroups(context.Background(), api, CESResourceDiscoveryRequest{
 		ProjectID: "p", Region: "r", ResourceGroupName: "my-typo",
 	})
 	if err == nil {
@@ -1209,7 +1528,7 @@ func TestSelectResourceGroup_SpecifiedNameMismatchErrorEchoesName(t *testing.T) 
 // 该 project/region 下完全没有资源组时，错误应提示去 CES 控制台创建或显式指定 resource_group_id。
 func TestSelectResourceGroup_NoGroupsErrorSuggestsCreate(t *testing.T) {
 	api := &pagedGroupsAPI{groups: []cesv2model.OneResourceGroupResp{}}
-	_, err := selectResourceGroup(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r"})
+	_, err := selectResourceGroups(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r"})
 	if err == nil {
 		t.Fatalf("expected error when no resource group exists")
 	}

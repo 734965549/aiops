@@ -143,6 +143,10 @@ type SyncBatchSummaryDTO struct {
 	PartialReason         string   `json:"partial_reason,omitempty"`
 	QueryFailedTypes      []string `json:"query_failed_types,omitempty"`
 	ConversionFailedTypes []string `json:"conversion_failed_types,omitempty"`
+	// ResourceGroupCount 记录本 scope 实际覆盖的资源组数量；聚合口径（全部资源组并集）下 > 1。
+	ResourceGroupCount int `json:"resource_group_count,omitempty"`
+	// ScopeIncomplete 表示聚合口径下有资源组未被覆盖，该 scope 禁止 stale 标记。
+	ScopeIncomplete bool `json:"scope_incomplete,omitempty"`
 	// Scopes 是逐 region/project/resource_group 的明细。多区域排查必须读取本字段，
 	// 顶层聚合字段会丢失归属关系，见 ops/huawei-ces-sync-contract.md §15.3。
 	Scopes []SyncBatchScopeSummaryDTO `json:"scopes,omitempty"`
@@ -181,6 +185,10 @@ type SyncBatchScopeSummaryDTO struct {
 	WritebackFailedCount   int      `json:"writeback_failed_count,omitempty"`
 	MaxResourcesReached    bool     `json:"max_resources_reached,omitempty"`
 	ProductNamesEmpty      bool     `json:"product_names_empty,omitempty"`
+	// ResourceGroupCount 记录本 scope 实际覆盖的资源组数量；聚合口径（全部资源组并集）下 > 1。
+	ResourceGroupCount int `json:"resource_group_count,omitempty"`
+	// ScopeIncomplete 表示聚合口径下有资源组未被覆盖，该 scope 禁止 stale 标记。
+	ScopeIncomplete bool `json:"scope_incomplete,omitempty"`
 }
 
 type SyncBatchDTO struct {
@@ -982,6 +990,14 @@ func (s *SyncService) syncCloudFullSync(
 		if summary.ResourceGroupSelection != "" {
 			line += fmt.Sprintf(" selected_resource_group=%s", summary.ResourceGroupSelection)
 		}
+		// 聚合口径（全部资源组并集）下 group 名称固定为"全部资源"，需额外给出覆盖的组数，
+		// 否则运维无法从 message 判断本轮到底扫了几个分组，见 §8.4。
+		if summary.ResourceGroupCount > 1 {
+			line += fmt.Sprintf(" resource_groups=%d", summary.ResourceGroupCount)
+		}
+		if summary.ScopeIncomplete {
+			line += " scope_incomplete=true"
+		}
 		if summary.ProductNamesEmpty {
 			line += " product_names_empty=true"
 		}
@@ -1015,6 +1031,21 @@ func (s *SyncService) syncCloudFullSync(
 		}
 		if summary.MaxResourcesReached {
 			collector.successfulTypes = map[string]struct{}{}
+			continue
+		}
+		// 聚合口径（全部资源组并集）下若存在未被覆盖的资源组，scope 不完整：
+		// 禁止该 region 的任何 stale 标记，避免把未覆盖资源误标 stale，见 §13.1。
+		if summary.ScopeIncomplete {
+			continue
+		}
+		// 聚合口径下资源组并集不等于账号全部资源——未归入任何资源组的资源
+		// 永远不会出现在本轮结果里。若执行区域级反向 stale，这些资源会被误标 stale
+		// 而"消失"，因此聚合口径只走逐类型 stale（成功查询的类型才标记），
+		// 不做区域级反向标记，见 §8.4/§13.1。
+		if summary.ResourceGroupSelection == obsapp.ResourceGroupSelectionAllGroups {
+			for _, t := range eligibleRegionTypes(summary, collector.persistFailedTypes) {
+				successScopes = append(successScopes, discoveredScope{Region: region, ResourceType: t})
+			}
 			continue
 		}
 		if isAuthoritativeScope(summary.SyncMode) && !summary.ProductNamesEmpty {
@@ -1107,6 +1138,28 @@ func lowerStringSet(values []string) map[string]struct{} {
 		if v = strings.ToLower(strings.TrimSpace(v)); v != "" {
 			out[v] = struct{}{}
 		}
+	}
+	return out
+}
+
+// eligibleRegionTypes 计算单个 region 内允许执行逐类型 stale 的类型集合。
+// 只包含本 region 查询成功（SuccessfulTypes）、且未发生转换失败/持久化失败的类型，
+// 避免用跨 region 累积的 collector 快照把其他 region 的类型算进来，
+// 聚合口径（全部资源组并集）必须按 region 精确判定，见 §13.1。
+func eligibleRegionTypes(summary obsapp.CloudSyncSummary, persistFailedTypes map[string]struct{}) []string {
+	out := make([]string, 0, len(summary.SuccessfulTypes))
+	for _, t := range summary.SuccessfulTypes {
+		t = strings.ToLower(strings.TrimSpace(t))
+		if t == "" {
+			continue
+		}
+		if sliceContainsString(summary.ConversionFailedTypes, t) {
+			continue
+		}
+		if _, failed := persistFailedTypes[t]; failed {
+			continue
+		}
+		out = append(out, t)
 	}
 	return out
 }
@@ -1349,6 +1402,8 @@ func buildSyncBatchSummaryDTO(summaries []obsapp.CloudSyncSummary) *SyncBatchSum
 		ProductNamesEmpty:     anySummaryBool(summaries, func(s obsapp.CloudSyncSummary) bool { return s.ProductNamesEmpty }),
 		QueryFailedTypes:      uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.QueryFailedTypes }),
 		ConversionFailedTypes: uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.ConversionFailedTypes }),
+		ResourceGroupCount:    sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.ResourceGroupCount }),
+		ScopeIncomplete:       anySummaryBool(summaries, func(s obsapp.CloudSyncSummary) bool { return s.ScopeIncomplete }),
 	}
 	// completed_count 等于 persisted_count（summary 汇总口径），见契约 §5.5。
 	dto.CompletedCount = dto.PersistedCount
@@ -1424,6 +1479,8 @@ func scopeSummaryFromProvider(s obsapp.CloudSyncSummary) SyncBatchScopeSummaryDT
 		WritebackFailedCount:   s.WritebackFailedCount,
 		MaxResourcesReached:    s.MaxResourcesReached,
 		ProductNamesEmpty:      s.ProductNamesEmpty,
+		ResourceGroupCount:     s.ResourceGroupCount,
+		ScopeIncomplete:        s.ScopeIncomplete,
 	}
 }
 
@@ -1452,6 +1509,8 @@ func mergeSyncBatchScopeSummary(dst *SyncBatchScopeSummaryDTO, s obsapp.CloudSyn
 	dst.WritebackFailedCount += s.WritebackFailedCount
 	dst.MaxResourcesReached = dst.MaxResourcesReached || s.MaxResourcesReached
 	dst.ProductNamesEmpty = dst.ProductNamesEmpty || s.ProductNamesEmpty
+	dst.ResourceGroupCount = dst.ResourceGroupCount + s.ResourceGroupCount
+	dst.ScopeIncomplete = dst.ScopeIncomplete || s.ScopeIncomplete
 	// scope 级 enrichment_failed_count 同样保持等于其失败类型数，见契约 §13.1。
 	dst.EnrichmentFailedCount = len(dst.EnrichmentFailedTypes)
 }

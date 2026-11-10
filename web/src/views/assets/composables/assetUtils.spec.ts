@@ -2,6 +2,7 @@
 import type { SyncBatchSummary } from '@/api/asset'
 import { describe, expect, it } from 'vitest'
 import {
+  buildSyncBatchSignalTags,
   formatSyncBatchSummary,
   humanizeSyncPartialReason,
   isSensitiveLabelKey,
@@ -231,5 +232,55 @@ describe('formatSyncBatchSummary', () => {
     expect(result.updated).toBe('2')
     expect(result.stale).toBe('1')
     expect(result.failed).toBe('0')
+  })
+})
+
+describe('buildSyncBatchSignalTags', () => {
+  it('shows aggregate resource group count when scope covers multiple groups', () => {
+    const summary: SyncBatchSummary = {
+      sync_mode: 'ces',
+      resource_group_name: '全部资源',
+      resource_group_count: 10,
+      ces_total: 100,
+      discovered_count: 90
+    }
+    const tags = buildSyncBatchSignalTags(summary)
+    const groups = tags.find((t) => t.label === 'Resource groups')
+    expect(groups).toBeTruthy()
+    expect(groups?.value).toContain('10')
+    expect(tags.some((t) => t.label === 'Scope incomplete')).toBe(false)
+  })
+
+  it('flags incomplete aggregate scope so operators know stale was skipped', () => {
+    const summary: SyncBatchSummary = {
+      sync_mode: 'ces',
+      resource_group_name: '全部资源',
+      resource_group_count: 10,
+      scope_incomplete: true,
+      ces_total: 100,
+      discovered_count: 90
+    }
+    const tags = buildSyncBatchSignalTags(summary)
+    const incomplete = tags.find((t) => t.label === 'Scope incomplete')
+    expect(incomplete).toBeTruthy()
+    expect(incomplete?.value).toContain('不标记 stale')
+  })
+
+  it('omits group count tag for single group scope', () => {
+    const summary: SyncBatchSummary = {
+      sync_mode: 'ces',
+      resource_group_name: '生产ecs',
+      resource_group_id: 'rg-001',
+      resource_group_count: 1,
+      ces_total: 5,
+      discovered_count: 5
+    }
+    const tags = buildSyncBatchSignalTags(summary)
+    expect(tags.some((t) => t.label === 'Resource groups')).toBe(false)
+    expect(tags.some((t) => t.label === 'Scope incomplete')).toBe(false)
+  })
+
+  it('returns empty array without summary', () => {
+    expect(buildSyncBatchSignalTags(undefined)).toEqual([])
   })
 })

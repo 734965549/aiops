@@ -278,6 +278,8 @@ func (a *Adapter) listAllResourcesCES(ctx context.Context, cred AKSKCredential, 
 		ConversionFailedTypes: append([]string(nil), result.Summary.ConversionFailedTypes...),
 		ProductNamesEmpty:     result.Summary.ProductNamesEmpty,
 		ResourceLevel:         result.Summary.ResourceLevel,
+		ResourceGroupCount:    result.Summary.ResourceGroupCount,
+		ScopeIncomplete:       result.Summary.ScopeIncomplete,
 		MaxResourcesReached:   result.Summary.MaxResourcesReached,
 	}
 	return result.Resources, summary, nil

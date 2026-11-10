@@ -53,6 +53,12 @@ type AssetFullSyncQuery struct {
 	Account *domain.AccountSnapshot `json:"-"`
 }
 
+// ResourceGroupSelectionAllGroups 是聚合口径的资源组选择方式标识：
+// 未指定资源组且默认候选名均未命中时，按该 project/region 下全部资源组的并集发现资源。
+// 该口径下资源组并集不等于账号全部资源（未归入任何分组的资源不在其中），
+// 因此禁止区域级反向 stale，只按成功查询的类型逐类型标记，见 §8.4/§13.1。
+const ResourceGroupSelectionAllGroups = "all_groups"
+
 // CloudSyncSummary 云资源全量同步摘要，用于回写 batch message，见 ops/huawei-ces-sync-contract.md §7.2。
 // 字段分层以契约 §3.3 为准：对账字段用于验收与归档，门控字段驱动 stale/partial/finalize，
 // 诊断字段用于排障，展示字段仅用于 UI 说明。
@@ -85,6 +91,12 @@ type CloudSyncSummary struct {
 	// ResourceLevel 记录 ShowResourceGroup 响应的 resource_level（product|dimension）。
 	// 仅 product 级且 product_names 非空时 scope 权威，允许反向 stale。见 §8.5/§13.1。
 	ResourceLevel string `json:"resource_level,omitempty"`
+	// ResourceGroupCount 记录本轮实际覆盖的资源组数量。
+	// 聚合口径（全部资源组并集）下 > 1，单组口径下为 1。见 §8.4。
+	ResourceGroupCount int `json:"resource_group_count,omitempty"`
+	// ScopeIncomplete 表示聚合口径下有资源组未能覆盖（ShowResourceGroup 失败、
+	// resource_level 非 product 等），scope 不完整，调用方必须禁止该 scope 的反向 stale。见 §8.4/§13.1。
+	ScopeIncomplete bool `json:"scope_incomplete,omitempty"`
 	// MaxResourcesReached 表示因达到上限而提前终止，调用方必须禁止该 scope 执行 stale，见 §13。
 	MaxResourcesReached bool `json:"max_resources_reached,omitempty"`
 	// PartialReason 固化本轮 partial 的显式原因，便于运维无需展开细节也能快速识别风险来源。

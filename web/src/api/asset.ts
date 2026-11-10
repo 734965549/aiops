@@ -239,6 +239,8 @@ export interface SyncBatchScopeSummary {
   writeback_failed_count?: number
   max_resources_reached?: boolean
   product_names_empty?: boolean
+  resource_group_count?: number
+  scope_incomplete?: boolean
   partial_reason?: string
 }
 
@@ -273,6 +275,8 @@ export interface SyncBatchSummary {
   invalid_resource_count?: number
   max_resources_reached?: boolean
   product_names_empty?: boolean
+  resource_group_count?: number
+  scope_incomplete?: boolean
   partial_reason?: string
   query_failed_types?: string[]
   conversion_failed_types?: string[]

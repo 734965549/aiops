@@ -39,8 +39,8 @@ go test ./internal/observability/infrastructure/provider/huawei/... ./internal/a
 region                   = cn-south-1
 project_id               = <对应 region 的 project_id>
 enterprise_project_id    = <资源分组所属企业项目 ID，或 all_granted_eps>
-resource_group_id        = <目标资源分组 ID>
-resource_group_name      = <目标资源分组名称，如“全部资源”>
+resource_group_id        = <目标资源分组 ID；未指定则同步该 region 下全部资源组的并集>
+resource_group_name      = <目标资源分组名称；留空 = 全部资源组并集>
 resource_group_total     = N
 各资源类型数量            = map[type]count
 ```
@@ -72,7 +72,7 @@ summary.scopes[] 明细（每个 region/project/resource_group 组合）展示�
   - resource_group_selection
 ```
 
-`resource_group_selection` 不在顶层 `summary`，而在 `summary.scopes[]` 每项中，取值为 `specified_id` / `specified_name` / `default_name`。顶层 `resource_group_name`/`resource_group_id`/`regions`/`projects` 仅为兼容聚合字段，多区域排查必须读 `summary.scopes[]`（见契约 §15.3）。`partial` 只是部分成功，不能在前端或验收文案中直接等同失败。最小 JSON 示例：
+`resource_group_selection` 不在顶层 `summary`，而在 `summary.scopes[]` 每项中，取值为 `specified_id` / `specified_name` / `default_name` / `all_groups`。顶层 `resource_group_name`/`resource_group_id`/`regions`/`projects` 仅为兼容聚合字段，多区域排查必须读 `summary.scopes[]`（见契约 §15.3）。`partial` 只是部分成功，不能在前端或验收文案中直接等同失败。最小 JSON 示例：
 
 ```json
 {
@@ -118,7 +118,8 @@ unique_discovered_count  = persisted_count + persist_failed_count
 - `duplicate_count` 统计同一批次内按唯一键去重折损的资源；
 - `persist_failed_count` 统计映射成功但批量落库失败的资源；
 - `product_names_empty=true` 时，应明确标出是依赖白名单兜底而非按资源组/产品名过滤；
-- `summary.scopes[].resource_group_selection` 需要说明实际采用的是 `specified_id`（按 resource_group_id）、`specified_name`（按显式 resource_group_name）还是 `default_name`（回落默认候选名）。
+- `summary.scopes[].resource_group_selection` 需要说明实际采用的是 `specified_id`（按 resource_group_id）、`specified_name`（按显式 resource_group_name）、`default_name`（命中默认候选名分组）还是 `all_groups`（聚合全部资源组并集）；
+- `summary.scopes[].resource_group_count` 在 `all_groups` 口径下给出本轮实际覆盖的资源组数量，`summary.scopes[].scope_incomplete=true` 表示有资源组未被覆盖（此时该 region 不标记 stale）。
 
 4. 检查数据库或资源列表：
 
