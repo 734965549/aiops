@@ -270,6 +270,10 @@ var defaultResourceGroupCandidates = []string{
 	"All Resources",
 }
 
+// maxListedResourceGroups 是资源组未命中错误中最多列出的可用资源组数量，
+// 避免错误消息过长影响批次 message 展示，见 §8.4。
+const maxListedResourceGroups = 10
+
 // maxResourceGroupOffset ListResourceGroups offset 上限（SDK 区间 [0,10000]），防止异常翻页。
 const maxResourceGroupOffset int32 = 10000
 
@@ -282,6 +286,16 @@ func selectResourceGroup(ctx context.Context, api cesResourceGroupAPI, req CESRe
 		// 指定 ID 时仍走 ShowResourceGroup 校验存在并取 total。
 		group, err := showGroup(ctx, api, id)
 		if err != nil {
+			// 指定 ID 不存在时补出可用资源组，避免运维只能看到原始云端错误，见 §8.4。
+			if isCESNotFound(err) {
+				groups, listErr := listAllResourceGroups(ctx, api, req)
+				if listErr == nil {
+					return selectedResourceGroup{}, resourceGroupNotMatchedError(
+						fmt.Sprintf("specified_id=%q", id),
+						groups,
+					)
+				}
+			}
 			return selectedResourceGroup{}, err
 		}
 		return selectedResourceGroup{GroupID: id, GroupName: group.GroupName, Total: group.Total, Selection: "specified_id", shown: &group}, nil
@@ -292,15 +306,17 @@ func selectResourceGroup(ctx context.Context, api cesResourceGroupAPI, req CESRe
 		return selectedResourceGroup{}, err
 	}
 	if len(groups) == 0 {
-		return selectedResourceGroup{}, apperr.New(apperr.CodeNotFound, "no CES resource group found for project/region")
+		return selectedResourceGroup{}, resourceGroupNotMatchedError("no groups listed", groups)
 	}
 
 	if specifiedName := strings.TrimSpace(req.ResourceGroupName); specifiedName != "" {
 		if sel, ok := matchResourceGroupByName(groups, specifiedName, "specified_name"); ok {
 			return sel, nil
 		}
-		return selectedResourceGroup{}, apperr.New(apperr.CodeNotFound,
-			"no CES resource group matched (specified id/name or default candidates)")
+		return selectedResourceGroup{}, resourceGroupNotMatchedError(
+			fmt.Sprintf("specified_name=%q", specifiedName),
+			groups,
+		)
 	}
 
 	// 未指定名称时才依次尝试默认候选名，见 §8.4 step 3。
@@ -311,8 +327,51 @@ func selectResourceGroup(ctx context.Context, api cesResourceGroupAPI, req CESRe
 	}
 	// 默认候选名均未命中，直接失败，不回退最大资源组，见 §8.4 step 4。
 	// CES 官方 ListResourceGroups 只返回用户创建的资源分组，不存在"总览全量"隐式口径。
-	return selectedResourceGroup{}, apperr.New(apperr.CodeNotFound,
-		"no CES resource group matched (specified id/name or default candidates)")
+	return selectedResourceGroup{}, resourceGroupNotMatchedError(
+		fmt.Sprintf("default_candidates=%s", strings.Join(defaultResourceGroupCandidates, ",")),
+		groups,
+	)
+}
+
+// isCESNotFound 判断错误是否为"资源不存在"语义。
+// CES 404 经 mapCESError 映射为 domain.ErrNotFound，apperr 体系下则是 CodeNotFound，
+// 两者都要识别，见 §8.4。
+func isCESNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	if apperr.CodeOf(err) == apperr.CodeNotFound {
+		return true
+	}
+	return errors.Is(err, domain.ErrNotFound)
+}
+
+// resourceGroupNotMatchedError 构造资源组未命中的可操作错误。
+// 除保留原有语义外，还带上本次尝试的口径与云端实际存在的资源组（名称+ID，封顶），
+// 让运维能直接判断是"名称写错"还是"该 project/region 下没有资源组"，见 §8.4。
+// 只输出资源组名称与 ID，不含任何凭据或资源明细。
+func resourceGroupNotMatchedError(attempt string, groups []cesv2model.OneResourceGroupResp) error {
+	msg := fmt.Sprintf("no CES resource group matched (%s)", attempt)
+	if len(groups) == 0 {
+		return apperr.New(apperr.CodeNotFound,
+			msg+"; no resource group exists in this project/region; create one in the CES console or set resource_group_id explicitly")
+	}
+	available := make([]string, 0, len(groups))
+	for _, g := range groups {
+		name := strings.TrimSpace(g.GroupName)
+		if name == "" {
+			name = "(unnamed)"
+		}
+		available = append(available, fmt.Sprintf("%s(%s)", name, strings.TrimSpace(g.GroupId)))
+		if len(available) >= maxListedResourceGroups {
+			break
+		}
+	}
+	suffix := "; available groups: " + strings.Join(available, ", ")
+	if len(groups) > maxListedResourceGroups {
+		suffix += fmt.Sprintf(" ... (+%d more)", len(groups)-maxListedResourceGroups)
+	}
+	return apperr.New(apperr.CodeNotFound, msg+suffix)
 }
 
 func matchResourceGroupByName(groups []cesv2model.OneResourceGroupResp, wantName, selection string) (selectedResourceGroup, bool) {

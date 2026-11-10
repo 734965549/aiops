@@ -2147,3 +2147,165 @@ func TestBuildSyncBatchFinalizationClassifiesTerminalState(t *testing.T) {
 		t.Fatalf("expected failed when no results were produced, got %s", failed.status)
 	}
 }
+
+// TestBuildSyncBatchSummaryDTO_FillsContractCountersAndScopes 验证 summary 补齐契约 §5.5
+// 要求的对账计数，并产出 scopes[] 逐 scope 明细。
+func TestBuildSyncBatchSummaryDTO_FillsContractCountersAndScopes(t *testing.T) {
+	dto := buildSyncBatchSummaryDTO([]obsapp.CloudSyncSummary{
+		{
+			Region: "cn-north-4", ProjectID: "pid-north", SyncMode: "ces",
+			ResourceGroupID: "rg-north", ResourceGroupName: "全部资源", ResourceGroupSelection: "default_name",
+			CESTotal: 100, RawFetchedCount: 90, MappedCount: 88, UniqueDiscoveredCount: 80,
+			PersistedCount: 78, DuplicateCount: 8, PersistFailedCount: 2, Discovered: 80,
+			SuccessfulTypes: []string{"ecs", "rds"},
+		},
+		{
+			Region: "cn-south-1", ProjectID: "pid-south", SyncMode: "ces",
+			ResourceGroupID: "rg-south", ResourceGroupName: "南方组", ResourceGroupSelection: "specified_id",
+			CESTotal: 50, RawFetchedCount: 40, MappedCount: 40, UniqueDiscoveredCount: 30,
+			PersistedCount: 30, DuplicateCount: 10, Discovered: 30,
+			FailedScopes: []string{"cn-south-1: rds query failed"},
+		},
+	})
+	if dto == nil {
+		t.Fatalf("expected summary dto, got nil")
+	}
+	// 顶层对账计数为各 scope 求和。
+	if dto.CESTotal != 150 || dto.RawFetchedCount != 130 || dto.MappedCount != 128 {
+		t.Fatalf("unexpected aggregate counters: %+v", dto)
+	}
+	if dto.UniqueDiscoveredCount != 110 || dto.PersistedCount != 108 || dto.DuplicateCount != 18 {
+		t.Fatalf("unexpected aggregate counters: %+v", dto)
+	}
+	// completed_count 在 summary 汇总口径下等于 persisted_count，见契约 §5.5。
+	if dto.CompletedCount != dto.PersistedCount {
+		t.Fatalf("completed_count = %d, want persisted_count = %d", dto.CompletedCount, dto.PersistedCount)
+	}
+	// scopes[] 必须逐 scope 输出 region/project/group 明细，见契约 §5.5。
+	if len(dto.Scopes) != 2 {
+		t.Fatalf("expected 2 scopes, got %d: %+v", len(dto.Scopes), dto.Scopes)
+	}
+	north := dto.Scopes[0]
+	if north.Region != "cn-north-4" || north.ProjectID != "pid-north" || north.ResourceGroupID != "rg-north" {
+		t.Fatalf("unexpected north scope: %+v", north)
+	}
+	if north.ResourceGroupSelection != "default_name" || north.PersistedCount != 78 {
+		t.Fatalf("unexpected north scope counters: %+v", north)
+	}
+	south := dto.Scopes[1]
+	if south.Region != "cn-south-1" || south.ProjectID != "pid-south" {
+		t.Fatalf("unexpected south scope: %+v", south)
+	}
+	if len(south.FailedScopes) != 1 {
+		t.Fatalf("expected failed scope retained, got %+v", south.FailedScopes)
+	}
+}
+
+// TestBuildSyncBatchSummaryDTO_EnrichmentFailedCountInvariant 验证
+// enrichment_failed_count == len(enrichment_failed_types) 不变式，见契约 §13.1。
+func TestBuildSyncBatchSummaryDTO_EnrichmentFailedCountInvariant(t *testing.T) {
+	dto := buildSyncBatchSummaryDTO([]obsapp.CloudSyncSummary{
+		{Region: "cn-north-4", EnrichmentFailedTypes: []string{"ecs", "rds", "ecs"}},
+	})
+	if dto == nil {
+		t.Fatalf("expected summary dto, got nil")
+	}
+	if dto.EnrichmentFailedCount != len(dto.EnrichmentFailedTypes) {
+		t.Fatalf("enrichment_failed_count = %d, want %d", dto.EnrichmentFailedCount, len(dto.EnrichmentFailedTypes))
+	}
+	if dto.EnrichmentFailedCount != 2 {
+		t.Fatalf("expected deduplicated types to keep count consistent, got %d", dto.EnrichmentFailedCount)
+	}
+}
+
+// TestToSyncBatchDTO_CompletedCountDerived 验证批次 DTO 输出 completed_count，
+// 前端提示不再出现 undefined，见契约 §5.5.1。
+func TestToSyncBatchDTO_CompletedCountDerived(t *testing.T) {
+	dto := toSyncBatchDTO(domain.SyncBatch{
+		BatchID: "sync-1", Status: domain.SyncBatchStatusSuccess,
+		CreatedCount: 7, UpdatedCount: 5, StaleCount: 2, FailedCount: 1,
+		StartedAt: time.Now().UTC(), CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	})
+	if dto.CompletedCount != 12 {
+		t.Fatalf("completed_count = %d, want 12", dto.CompletedCount)
+	}
+}
+
+// TestResolvePlannedSyncScopes_FillsFailedRegionContext 验证失败 region 能补齐
+// project_id/sync_mode/resource_group，便于定位"哪个 region 失败、用了哪个 project/group"。
+func TestResolvePlannedSyncScopes_FillsFailedRegionContext(t *testing.T) {
+	account := &SyncAccountSnapshot{
+		AccountID: "acc-1", Provider: "huawei_cloud", AuthType: "ak_sk",
+		Regions: []string{"cn-south-1"}, ProjectID: "pid-global",
+		ExtraConfig: []byte(`{"sync_mode":"ces","region_projects":[{"region":"cn-south-1","project_id":"pid-south","resource_group_id":"rg-south"}]}`),
+	}
+	scopes := resolvePlannedSyncScopes(account, []string{"cn-south-1"})
+	scope, ok := scopes["cn-south-1"]
+	if !ok {
+		t.Fatalf("expected planned scope for cn-south-1, got %+v", scopes)
+	}
+	if scope.ProjectID != "pid-south" || scope.ResourceGroupID != "rg-south" || scope.SyncMode != "ces" {
+		t.Fatalf("unexpected planned scope: %+v", scope)
+	}
+}
+
+// TestSyncService_FailedRegionScopeCarriesProjectContext 验证 region 失败时，
+// summary.scopes[] 仍带出该 region 的 project_id/sync_mode/resource_group，
+// 使运维能直接定位"哪个 region 失败、用了哪个 project/group"，见契约 §5.5。
+func TestSyncService_FailedRegionScopeCarriesProjectContext(t *testing.T) {
+	apps := &fakeAppRepo{apps: map[string]domain.Application{}}
+	resources := &fakeResRepo{}
+	batches := &fakeSyncBatchRepo{}
+	discovery := &fakeDiscoveryPort{
+		errors: map[string]error{
+			"cn-south-1/": apperr.New(apperr.CodeNotFound, "no CES resource group matched (default_candidates=全部资源)"),
+		},
+	}
+	accounts := &fakeIntegrationAccountPort{
+		account: &SyncAccountSnapshot{
+			AccountID: "acc-fake", Provider: "huawei_cloud", AuthType: "ak_sk",
+			Regions: []string{"cn-south-1"}, ProjectID: "pid-global", Enabled: true,
+			ExtraConfig: []byte(`{"sync_mode":"ces","region_projects":[{"region":"cn-south-1","project_id":"pid-south","resource_group_id":"rg-south"}]}`),
+		},
+	}
+	svc := NewSyncService(apps, resources, batches, discovery, accounts, nil)
+	out, err := svc.TriggerSync(context.Background(), Actor{UserID: "u1"}, TriggerSyncInput{AccountID: "acc-fake"})
+	if err != nil {
+		t.Fatalf("TriggerSync: %v", err)
+	}
+	svc.Wait()
+	final, err := batches.GetByID(context.Background(), out.BatchID)
+	if err != nil {
+		t.Fatalf("load final batch: %v", err)
+	}
+	if final.Status != domain.SyncBatchStatusFailed {
+		t.Fatalf("expected failed batch, got %s message=%q", final.Status, final.Message)
+	}
+	dto := toSyncBatchDTO(*final)
+	if dto.Summary == nil {
+		t.Fatalf("expected summary to cover failed regions, got nil")
+	}
+	if len(dto.Summary.Scopes) != 1 {
+		t.Fatalf("expected 1 scope, got %d: %+v", len(dto.Summary.Scopes), dto.Summary.Scopes)
+	}
+	scope := dto.Summary.Scopes[0]
+	if scope.Region != "cn-south-1" {
+		t.Fatalf("scope region = %q, want cn-south-1", scope.Region)
+	}
+	if scope.ProjectID != "pid-south" {
+		t.Fatalf("scope project_id = %q, want pid-south", scope.ProjectID)
+	}
+	if scope.ResourceGroupID != "rg-south" {
+		t.Fatalf("scope resource_group_id = %q, want rg-south", scope.ResourceGroupID)
+	}
+	if scope.SyncMode != "ces" {
+		t.Fatalf("scope sync_mode = %q, want ces", scope.SyncMode)
+	}
+	if len(scope.FailedScopes) == 0 || !strings.Contains(scope.FailedScopes[0], "no CES resource group matched") {
+		t.Fatalf("expected scope failed_scopes to carry the CES error, got %+v", scope.FailedScopes)
+	}
+	// 批次级 completed_count 必须存在且为数值，前端提示不应出现 undefined。
+	if dto.CompletedCount != 0 {
+		t.Fatalf("completed_count = %d, want 0 for a fully failed batch", dto.CompletedCount)
+	}
+}

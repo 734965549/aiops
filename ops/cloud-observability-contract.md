@@ -448,7 +448,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 | `discovered_count` | int | 发现资源数（兼容历史口径，取 provider 的 `discovered`） |
 | `failed_scopes` | string[] | 失败 scope 列表 |
 | `enriched_count` | int | 原生 API 增强成功资源数 |
-| `enrichment_failed_count` | int | 增强失败类型数 |
+| `enrichment_failed_count` | int | 增强失败类型数；恒等于去重后的 `enrichment_failed_types` 长度 |
 | `enrichment_failed_types` | string[] | 增强失败类型列表 |
 | `enrichment_warnings` | string[] | best-effort 增强缺失列表（如 `dms.kafka`、`dms.rocketmq`、`vpc.subnet_count`、`<type>.truncated`）；`<type>.truncated` 表示该类型原生 API 结果因达到 `max_resources` 上限被截断，增强数据可能不完整；不影响批次状态，独立于 `enrichment_failed_types`，不参与 partial 判定 |
 | `enrichment_stage_error` | string | 增强阶段整体致命错误描述（如端口不可用、装配错误）；非空时驱动 partial 判定，但不递增 `enrichment_failed_count` |

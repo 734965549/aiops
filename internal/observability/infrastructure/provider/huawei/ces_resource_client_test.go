@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -1161,5 +1162,59 @@ func TestSelectResourceGroup_SpecifiedNameNoFallbackToDefault(t *testing.T) {
 	_, err := selectResourceGroup(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r", ResourceGroupName: "my-custom"})
 	if apperr.CodeOf(err) != apperr.CodeNotFound {
 		t.Fatalf("err code = %v, want NotFound for unmatched specified name", apperr.CodeOf(err))
+	}
+}
+
+// 资源组未命中时，错误应带上可用资源组（名称+ID），让运维能自助定位，
+// 见 ops/huawei-ces-sync-contract.md §8.4。
+func TestSelectResourceGroup_NoMatchErrorListsAvailableGroups(t *testing.T) {
+	groups := []cesv2model.OneResourceGroupResp{
+		{GroupName: "team-a", GroupId: "rg1", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(3)}},
+		{GroupName: "team-b", GroupId: "rg2", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(7)}},
+	}
+	api := &pagedGroupsAPI{groups: groups}
+	_, err := selectResourceGroup(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r"})
+	if err == nil {
+		t.Fatalf("expected error when no group matches")
+	}
+	msg := err.Error()
+	for _, want := range []string{"no CES resource group matched", "team-a", "rg1", "team-b", "rg2"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("error message missing %q: %s", want, msg)
+		}
+	}
+}
+
+// 显式指定名称未命中时，错误应回显所指定的名称，便于判断是"名称写错"。
+func TestSelectResourceGroup_SpecifiedNameMismatchErrorEchoesName(t *testing.T) {
+	groups := []cesv2model.OneResourceGroupResp{
+		{GroupName: "team-a", GroupId: "rg1", ResourceStatistics: &cesv2model.OneResourceGroupRespResourceStatistics{Total: int32Ptr(3)}},
+	}
+	api := &pagedGroupsAPI{groups: groups}
+	_, err := selectResourceGroup(context.Background(), api, CESResourceDiscoveryRequest{
+		ProjectID: "p", Region: "r", ResourceGroupName: "my-typo",
+	})
+	if err == nil {
+		t.Fatalf("expected error when specified name misses")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "my-typo") {
+		t.Fatalf("error message should echo the specified name: %s", msg)
+	}
+	if !strings.Contains(msg, "team-a") {
+		t.Fatalf("error message should list available groups: %s", msg)
+	}
+}
+
+// 该 project/region 下完全没有资源组时，错误应提示去 CES 控制台创建或显式指定 resource_group_id。
+func TestSelectResourceGroup_NoGroupsErrorSuggestsCreate(t *testing.T) {
+	api := &pagedGroupsAPI{groups: []cesv2model.OneResourceGroupResp{}}
+	_, err := selectResourceGroup(context.Background(), api, CESResourceDiscoveryRequest{ProjectID: "p", Region: "r"})
+	if err == nil {
+		t.Fatalf("expected error when no resource group exists")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "resource_group_id") {
+		t.Fatalf("error message should suggest configuring resource_group_id: %s", msg)
 	}
 }

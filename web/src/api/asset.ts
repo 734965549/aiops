@@ -221,6 +221,7 @@ export interface SyncBatchScopeSummary {
   mapped_count?: number
   unique_discovered_count?: number
   persisted_count?: number
+  completed_count?: number
   duplicate_count?: number
   persist_failed_count?: number
   discovered_count?: number

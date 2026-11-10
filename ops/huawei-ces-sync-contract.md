@@ -341,9 +341,22 @@ sync_mode=native
 1. 如果请求或账号配置指定 `resource_group_id`，使用该分组（仍经 `ShowResourceGroup` 校验存在）。
 2. 如果指定 `resource_group_name`，按名称精确匹配（大小写不敏感）。**任何名称未命中均直接失败**，不回退到其他分组。
 3. 未指定 `resource_group_name` 时，依次尝试默认候选名：`全部资源` / `All resources` / `All Resources`。
-4. 以上均未命中，批次失败，返回脱敏错误：`no CES resource group matched (specified id/name or default candidates)`。
+4. 以上均未命中，批次失败，返回脱敏错误。
 
-生产环境推荐显式填写 `resource_group_id`。
+**错误可操作性**：未命中错误除保留 `no CES resource group matched` 前缀外，还必须带上本次尝试的口径与云端实际存在的资源组，便于运维判断是"名称写错"还是"该 project/region 下没有资源组"：
+
+| 场景 | 错误内容 |
+| --- | --- |
+| 指定 `resource_group_id` 未命中 | `no CES resource group matched (specified_id="rg-xxx"); available groups: 名称(rg-yyy), ...` |
+| 指定 `resource_group_name` 未命中 | `no CES resource group matched (specified_name="名称"); available groups: ...` |
+| 默认候选名均未命中 | `no CES resource group matched (default_candidates=全部资源,All resources,All Resources); available groups: ...` |
+| 该 project/region 无任何资源组 | `no CES resource group matched (no groups listed); no resource group exists in this project/region; create one in the CES console or set resource_group_id explicitly` |
+
+约束：
+
+- `available groups` 最多列出 10 个（名称 + ID），超出部分以 `(+N more)` 折叠，避免批次 `message` 过长。
+- 只输出资源组名称与 ID，**不含任何凭据或资源明细**。
+- 生产环境推荐显式填写 `resource_group_id`。
 
 ### §8.5 product_names 解析
 

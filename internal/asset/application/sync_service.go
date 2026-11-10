@@ -98,12 +98,20 @@ type TriggerSyncInput struct {
 // SyncBatchSummaryDTO 是同步批次的机器可读全量摘要。
 // 字段分组：
 // - 展示：sync_mode、resource_group_name、resource_group_id、projects、regions
-// - 对账：ces_total、discovered_count、enriched_count、unknown_namespace_count、invalid_resource_count
+// - 对账：ces_total、raw_fetched_count、mapped_count、unique_discovered_count、
+//   persisted_count、completed_count、duplicate_count、persist_failed_count、discovered_count
 // - 门控：max_resources_reached、product_names_empty、query_failed_types、conversion_failed_types
 // - 诊断：failed_scopes、enrichment_failed_types、partial_reason
+// - 逐 scope 明细：scopes[]（见 SyncBatchScopeSummaryDTO）
 //
 // 供审计、排障、验收与详情页使用；主列表应读取轻量展示层，不要展开全量字段。
 // 这里保留全量 summary，避免 message 再承担半结构化协议职责。
+//
+// 计数口径见 ops/cloud-observability-contract.md §5.5 与
+// ops/huawei-ces-sync-contract.md §9.5：
+//   raw_fetched_count        = mapped_count + invalid_resource_count
+//   mapped_count             = unique_discovered_count + duplicate_count
+//   unique_discovered_count  = persisted_count + persist_failed_count
 type SyncBatchSummaryDTO struct {
 	SyncMode              string   `json:"sync_mode,omitempty"`
 	ResourceGroupName     string   `json:"resource_group_name,omitempty"`
@@ -111,10 +119,23 @@ type SyncBatchSummaryDTO struct {
 	Projects              []string `json:"projects,omitempty"`
 	Regions               []string `json:"regions,omitempty"`
 	CESTotal              int      `json:"ces_total,omitempty"`
-	DiscoveredCount       int      `json:"discovered_count,omitempty"`
-	FailedScopes          []string `json:"failed_scopes,omitempty"`
-	EnrichedCount         int      `json:"enriched_count,omitempty"`
+	RawFetchedCount       int      `json:"raw_fetched_count,omitempty"`
+	MappedCount           int      `json:"mapped_count,omitempty"`
+	UniqueDiscoveredCount int      `json:"unique_discovered_count,omitempty"`
+	PersistedCount        int      `json:"persisted_count,omitempty"`
+	// CompletedCount 是完成数，在 summary 汇总口径下等于 PersistedCount，见契约 §5.5。
+	CompletedCount     int      `json:"completed_count,omitempty"`
+	DuplicateCount     int      `json:"duplicate_count,omitempty"`
+	PersistFailedCount int      `json:"persist_failed_count,omitempty"`
+	DiscoveredCount    int      `json:"discovered_count,omitempty"`
+	FailedScopes       []string `json:"failed_scopes,omitempty"`
+	EnrichedCount      int      `json:"enriched_count,omitempty"`
+	// EnrichmentFailedCount 必须等于 len(EnrichmentFailedTypes)，见契约 §13.1 不变式。
+	EnrichmentFailedCount int      `json:"enrichment_failed_count,omitempty"`
 	EnrichmentFailedTypes []string `json:"enrichment_failed_types,omitempty"`
+	EnrichmentWarnings    []string `json:"enrichment_warnings,omitempty"`
+	EnrichmentStageError  string   `json:"enrichment_stage_error,omitempty"`
+	WritebackFailedCount  int      `json:"writeback_failed_count,omitempty"`
 	UnknownNamespaceCount int      `json:"unknown_namespace_count,omitempty"`
 	InvalidResourceCount  int      `json:"invalid_resource_count,omitempty"`
 	MaxResourcesReached   bool     `json:"max_resources_reached,omitempty"`
@@ -122,24 +143,65 @@ type SyncBatchSummaryDTO struct {
 	PartialReason         string   `json:"partial_reason,omitempty"`
 	QueryFailedTypes      []string `json:"query_failed_types,omitempty"`
 	ConversionFailedTypes []string `json:"conversion_failed_types,omitempty"`
+	// Scopes 是逐 region/project/resource_group 的明细。多区域排查必须读取本字段，
+	// 顶层聚合字段会丢失归属关系，见 ops/huawei-ces-sync-contract.md §15.3。
+	Scopes []SyncBatchScopeSummaryDTO `json:"scopes,omitempty"`
+}
+
+// SyncBatchScopeSummaryDTO 是 summary.scopes[] 的逐 scope 明细，
+// 结构见 ops/cloud-observability-contract.md §5.5 与 ops/huawei-ces-sync-contract.md §15.3。
+// 失败 region 同样写入本明细，并补齐 project_id/sync_mode/resource_group_*，
+// 便于定位"哪个 region 失败、用了哪个 project/group"。
+type SyncBatchScopeSummaryDTO struct {
+	Region                 string   `json:"region"`
+	ProjectID              string   `json:"project_id,omitempty"`
+	SyncMode               string   `json:"sync_mode,omitempty"`
+	ResourceGroupID        string   `json:"resource_group_id,omitempty"`
+	ResourceGroupName      string   `json:"resource_group_name,omitempty"`
+	ResourceGroupSelection string   `json:"resource_group_selection,omitempty"`
+	CESTotal               int      `json:"ces_total,omitempty"`
+	RawFetchedCount        int      `json:"raw_fetched_count,omitempty"`
+	MappedCount            int      `json:"mapped_count,omitempty"`
+	UniqueDiscoveredCount  int      `json:"unique_discovered_count,omitempty"`
+	PersistedCount         int      `json:"persisted_count,omitempty"`
+	DuplicateCount         int      `json:"duplicate_count,omitempty"`
+	PersistFailedCount     int      `json:"persist_failed_count,omitempty"`
+	DiscoveredCount        int      `json:"discovered_count,omitempty"`
+	FailedScopes           []string `json:"failed_scopes,omitempty"`
+	SuccessfulTypes        []string `json:"successful_types,omitempty"`
+	QueryFailedTypes       []string `json:"query_failed_types,omitempty"`
+	ConversionFailedTypes  []string `json:"conversion_failed_types,omitempty"`
+	UnknownNamespaceCount  int      `json:"unknown_namespace_count,omitempty"`
+	InvalidResourceCount   int      `json:"invalid_resource_count,omitempty"`
+	EnrichedCount          int      `json:"enriched_count,omitempty"`
+	EnrichmentFailedCount  int      `json:"enrichment_failed_count,omitempty"`
+	EnrichmentFailedTypes  []string `json:"enrichment_failed_types,omitempty"`
+	EnrichmentWarnings     []string `json:"enrichment_warnings,omitempty"`
+	EnrichmentStageError   string   `json:"enrichment_stage_error,omitempty"`
+	WritebackFailedCount   int      `json:"writeback_failed_count,omitempty"`
+	MaxResourcesReached    bool     `json:"max_resources_reached,omitempty"`
+	ProductNamesEmpty      bool     `json:"product_names_empty,omitempty"`
 }
 
 type SyncBatchDTO struct {
-	BatchID              string               `json:"batch_id"`
-	IntegrationAccountID string               `json:"integration_account_id"`
-	Provider             string               `json:"provider"`
-	Status               string               `json:"status"`
-	CreatedCount         int                  `json:"created_count"`
-	UpdatedCount         int                  `json:"updated_count"`
-	StaleCount           int                  `json:"stale_count"`
-	FailedCount          int                  `json:"failed_count"`
-	Message              string               `json:"message,omitempty"`
-	Summary              *SyncBatchSummaryDTO `json:"summary,omitempty"`
-	ApplicationID        string               `json:"application_id,omitempty"`
-	StartedAt            int64                `json:"started_at"`
-	FinishedAt           int64                `json:"finished_at,omitempty"`
-	CreatedAt            int64                `json:"created_at"`
-	UpdatedAt            int64                `json:"updated_at"`
+	BatchID              string `json:"batch_id"`
+	IntegrationAccountID string `json:"integration_account_id"`
+	Provider             string `json:"provider"`
+	Status               string `json:"status"`
+	CreatedCount         int    `json:"created_count"`
+	UpdatedCount         int    `json:"updated_count"`
+	// CompletedCount 是本批次完成处理的资源数，等于 CreatedCount + UpdatedCount，
+	// 见 ops/cloud-observability-contract.md §5.5.1。批次表不单独存列，由 DTO 层推导。
+	CompletedCount int                  `json:"completed_count"`
+	StaleCount     int                  `json:"stale_count"`
+	FailedCount    int                  `json:"failed_count"`
+	Message        string               `json:"message,omitempty"`
+	Summary        *SyncBatchSummaryDTO `json:"summary,omitempty"`
+	ApplicationID  string               `json:"application_id,omitempty"`
+	StartedAt      int64                `json:"started_at"`
+	FinishedAt     int64                `json:"finished_at,omitempty"`
+	CreatedAt      int64                `json:"created_at"`
+	UpdatedAt      int64                `json:"updated_at"`
 }
 
 type ListSyncBatchesQuery struct {
@@ -485,10 +547,38 @@ func (s *SyncService) TriggerSync(ctx context.Context, actor Actor, in TriggerSy
 	// 先构造返回 DTO，再启动后台 goroutine，避免返回路径与后台同步同时读写 batch。
 	dto := toSyncBatchDTO(*batch)
 
+	// 预先解析本次同步各 region 的 scope 配置（project_id/sync_mode/resource_group），
+	// 供失败 region 补齐 summary.scopes[] 明细，见 ops/huawei-ces-sync-contract.md §5.5。
+	plannedScopes := resolvePlannedSyncScopes(account, regions)
+
 	s.wg.Add(1)
-	go s.runSync(runCtx, runCancel, actor, batch, appID, regions, provider)
+	go s.runSync(runCtx, runCancel, actor, batch, appID, regions, provider, plannedScopes)
 
 	return &dto, nil
+}
+
+// resolvePlannedSyncScopes 按账号配置快照解析每个 region 实际使用的 scope 信息，
+// 使失败 region 也能在 summary.scopes[] 中带上 project_id/sync_mode/resource_group，
+// 便于定位"哪个 region 失败、用了哪个 project/group"，见契约 §5.5 与
+// ops/huawei-ces-sync-contract.md §15.3。
+func resolvePlannedSyncScopes(account *SyncAccountSnapshot, regions []string) map[string]obsapp.CloudSyncSummary {
+	out := make(map[string]obsapp.CloudSyncSummary, len(regions))
+	if account == nil {
+		return out
+	}
+	snapshot := obsdomain.AccountSnapshot{
+		AccountID:   account.AccountID,
+		Provider:    account.Provider,
+		AuthType:    account.AuthType,
+		Regions:     account.Regions,
+		ProjectID:   account.ProjectID,
+		ExtraConfig: account.ExtraConfig,
+	}
+	scopes, _ := obsapp.ResolveSyncScopes(snapshot, regions)
+	for _, scope := range scopes {
+		out[scope.Region] = scope
+	}
+	return out
 }
 
 // runSync 后台执行同步主体：心跳续租 + discovery/upsert/stale + finalize 落终态。
@@ -501,6 +591,7 @@ func (s *SyncService) runSync(
 	appID string,
 	regions []string,
 	provider string,
+	plannedScopes map[string]obsapp.CloudSyncSummary,
 ) {
 	defer s.wg.Done()
 	defer runCancel()
@@ -532,7 +623,7 @@ func (s *SyncService) runSync(
 	var fsErr error
 	// 优先使用全量同步端口（CloudFullSyncPort）；provider 不支持时回退通用逐类型路径，
 	// 不在 Asset 层硬编码 provider 判断，见 docs/huawei-ces-asset-sync-plan.md §7.2。
-	successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries, fsErr = s.syncCloudFullSync(runCtx, obsActor, provider, regions, appID, accountID, batchID, fencingToken, now, batch, &collector)
+	successScopes, negativeScopes, summaryLines, partialErrs, maxResourcesReached, productNamesEmpty, syncSummaries, fsErr = s.syncCloudFullSync(runCtx, obsActor, provider, regions, appID, accountID, batchID, fencingToken, now, batch, &collector, plannedScopes)
 	partialState.Errors = append(partialState.Errors, partialErrs...)
 	if productNamesEmpty {
 		partialState.MarkSignal(syncBatchSignalProductNamesEmpty)
@@ -775,6 +866,24 @@ func isFullSyncUnsupported(err error) bool {
 	return errors.Is(err, obsdomain.ErrCapabilityUnsupported)
 }
 
+// failedScopeSummary 构造失败 region 的摘要条目：带 region、失败原因，
+// 以及该 region 预解析的 project_id/sync_mode/resource_group 配置，
+// 使 summary.scopes[] 能定位"哪个 region 失败、用了哪个 project/group"，见契约 §5.5。
+func failedScopeSummary(region, errMsg string, plannedScopes map[string]obsapp.CloudSyncSummary) obsapp.CloudSyncSummary {
+	summary := obsapp.CloudSyncSummary{
+		Region:       region,
+		FailedScopes: []string{errMsg},
+	}
+	if planned, ok := plannedScopes[region]; ok {
+		summary.ProjectID = planned.ProjectID
+		summary.SyncMode = planned.SyncMode
+		summary.ResourceGroupID = planned.ResourceGroupID
+		summary.ResourceGroupName = planned.ResourceGroupName
+		summary.ResourceGroupSelection = planned.ResourceGroupSelection
+	}
+	return summary
+}
+
 // syncCloudFullSync 全量同步路径：通过 CloudFullSyncPort 按 region 全量发现，不受交互查询 limit<=500 限制，
 // 见 docs/huawei-ces-asset-sync-plan.md §7.2/§8.1。对每个 region 调用全量同步端口，收集资源与摘要；
 // 返回逐类型成功 scope（native/generic/fake 用）、反向 stale scope（CES/hybrid 权威 scope 用，见 §13.1）、
@@ -789,6 +898,7 @@ func (s *SyncService) syncCloudFullSync(
 	now time.Time,
 	batch *domain.SyncBatch,
 	collector *staleScopeCollector,
+	plannedScopes map[string]obsapp.CloudSyncSummary,
 ) (successScopes []discoveredScope, negativeScopes []negativeStaleScope, summaryLines, partialErrs []string, maxResourcesReached, productNamesEmpty bool, syncSummaries []obsapp.CloudSyncSummary, fullSyncErr error) {
 	for i, region := range regions {
 		result, err := s.discovery.ListAllResources(ctx, obsActor, obsapp.AssetFullSyncQuery{
@@ -805,10 +915,9 @@ func (s *SyncService) syncCloudFullSync(
 			errMsg := apperr.FromError(err).Message
 			partialErrs = append(partialErrs, fmt.Sprintf("%s: %s", region, errMsg))
 			// 失败 region 也必须生成摘要，否则终态 summary 不覆盖该 region，违反契约。
-			syncSummaries = append(syncSummaries, obsapp.CloudSyncSummary{
-				Region:       region,
-				FailedScopes: []string{errMsg},
-			})
+			// 同时补齐该 region 预解析的 project_id/sync_mode/resource_group，
+			// 便于定位"哪个 region 失败、用了哪个 project/group"，见契约 §5.5。
+			syncSummaries = append(syncSummaries, failedScopeSummary(region, errMsg, plannedScopes))
 			continue
 		}
 		if result == nil {
@@ -818,10 +927,7 @@ func (s *SyncService) syncCloudFullSync(
 			errMsg := "provider returned nil discovery result without error"
 			partialErrs = append(partialErrs, fmt.Sprintf("%s: %s", region, errMsg))
 			// 失败 region 也必须生成摘要，否则终态 summary 不覆盖该 region，违反契约。
-			syncSummaries = append(syncSummaries, obsapp.CloudSyncSummary{
-				Region:       region,
-				FailedScopes: []string{errMsg},
-			})
+			syncSummaries = append(syncSummaries, failedScopeSummary(region, errMsg, plannedScopes))
 			continue
 		}
 		if collector == nil {
@@ -834,6 +940,7 @@ func (s *SyncService) syncCloudFullSync(
 			}
 		}
 		upserted := 0
+		persistFailed := 0
 		for _, cloud := range result.Resources {
 			created, upsertErr := s.upsertCloudResource(ctx, appID, accountID, batchID, fencingToken, now, cloud)
 			if upsertErr != nil {
@@ -842,6 +949,7 @@ func (s *SyncService) syncCloudFullSync(
 					return
 				}
 				batch.FailedCount++
+				persistFailed++
 				// 原始错误仅写日志，对外只保留脱敏摘要，避免表名/约束名等底层细节泄露，见 §13。
 				logger.From(ctx).Warn("upsert cloud resource failed",
 					logger.String("region", region), logger.String("cloud_resource_type", cloud.Type),
@@ -864,6 +972,10 @@ func (s *SyncService) syncCloudFullSync(
 		}
 		// 摘要行，见 §8.1。
 		summary := result.Summary
+		// persisted/persist_failed 由 Asset 层按真实 upsert 结果回填，
+		// 保证 unique_discovered_count = persisted_count + persist_failed_count 恒等式成立，见 §9.5。
+		summary.PersistedCount = upserted
+		summary.PersistFailedCount = persistFailed
 		syncSummaries = append(syncSummaries, summary)
 		line := fmt.Sprintf("region=%s project=%s group=%s group_id=%s ces_total=%d discovered=%d upserted=%d failed_scopes=%d",
 			region, summary.ProjectID, summary.ResourceGroupName, summary.ResourceGroupID, summary.CESTotal, summary.Discovered, upserted, len(summary.FailedScopes))
@@ -1218,10 +1330,19 @@ func buildSyncBatchSummaryDTO(summaries []obsapp.CloudSyncSummary) *SyncBatchSum
 		Projects:              uniqueSummaryStrings(summaries, func(s obsapp.CloudSyncSummary) string { return s.ProjectID }),
 		Regions:               uniqueSummaryStrings(summaries, func(s obsapp.CloudSyncSummary) string { return s.Region }),
 		CESTotal:              sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.CESTotal }),
+		RawFetchedCount:       sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.RawFetchedCount }),
+		MappedCount:           sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.MappedCount }),
+		UniqueDiscoveredCount: sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.UniqueDiscoveredCount }),
+		PersistedCount:        sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.PersistedCount }),
+		DuplicateCount:        sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.DuplicateCount }),
+		PersistFailedCount:    sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.PersistFailedCount }),
 		DiscoveredCount:       sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.Discovered }),
 		FailedScopes:          uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.FailedScopes }),
 		EnrichedCount:         sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.EnrichedCount }),
 		EnrichmentFailedTypes: uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.EnrichmentFailedTypes }),
+		EnrichmentWarnings:    uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.EnrichmentWarnings }),
+		EnrichmentStageError:  firstSummaryString(summaries, func(s obsapp.CloudSyncSummary) string { return s.EnrichmentStageError }),
+		WritebackFailedCount:  sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.WritebackFailedCount }),
 		UnknownNamespaceCount: sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.UnknownNamespaceCount }),
 		InvalidResourceCount:  sumSummaryInt(summaries, func(s obsapp.CloudSyncSummary) int { return s.InvalidResourceCount }),
 		MaxResourcesReached:   anySummaryBool(summaries, func(s obsapp.CloudSyncSummary) bool { return s.MaxResourcesReached }),
@@ -1229,6 +1350,11 @@ func buildSyncBatchSummaryDTO(summaries []obsapp.CloudSyncSummary) *SyncBatchSum
 		QueryFailedTypes:      uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.QueryFailedTypes }),
 		ConversionFailedTypes: uniqueSummaryStringSlices(summaries, func(s obsapp.CloudSyncSummary) []string { return s.ConversionFailedTypes }),
 	}
+	// completed_count 等于 persisted_count（summary 汇总口径），见契约 §5.5。
+	dto.CompletedCount = dto.PersistedCount
+	// enrichment_failed_count 必须等于去重后的 enrichment_failed_types 长度，见契约 §13.1 不变式。
+	dto.EnrichmentFailedCount = len(dto.EnrichmentFailedTypes)
+	dto.Scopes = buildSyncBatchScopeSummaries(summaries)
 	if dto.ProductNamesEmpty {
 		dto.PartialReason = appendReason(dto.PartialReason, "product_names_empty=true")
 	}
@@ -1242,6 +1368,117 @@ func buildSyncBatchSummaryDTO(summaries []obsapp.CloudSyncSummary) *SyncBatchSum
 		dto.PartialReason = appendReason(dto.PartialReason, "conversion_failed_types="+strings.Join(dto.ConversionFailedTypes, ","))
 	}
 	return dto
+}
+
+// buildSyncBatchScopeSummaries 把逐 region 的 provider 摘要转成 summary.scopes[] 明细，
+// 见 ops/huawei-ces-sync-contract.md §15.3。同一 scope 的多条摘要按
+// region/project/group 归并，避免同一 scope 出现多行导致前端 scope key 冲突。
+func buildSyncBatchScopeSummaries(summaries []obsapp.CloudSyncSummary) []SyncBatchScopeSummaryDTO {
+	out := make([]SyncBatchScopeSummaryDTO, 0, len(summaries))
+	index := make(map[string]int, len(summaries))
+	for _, s := range summaries {
+		key := strings.Join([]string{
+			strings.TrimSpace(s.Region),
+			strings.TrimSpace(s.ProjectID),
+			strings.TrimSpace(s.ResourceGroupID),
+			strings.TrimSpace(s.ResourceGroupName),
+		}, "|")
+		if pos, ok := index[key]; ok {
+			mergeSyncBatchScopeSummary(&out[pos], s)
+			continue
+		}
+		index[key] = len(out)
+		out = append(out, scopeSummaryFromProvider(s))
+	}
+	return out
+}
+
+// scopeSummaryFromProvider 把单条 provider 摘要转成 scope 明细。
+func scopeSummaryFromProvider(s obsapp.CloudSyncSummary) SyncBatchScopeSummaryDTO {
+	return SyncBatchScopeSummaryDTO{
+		Region:                 s.Region,
+		ProjectID:              s.ProjectID,
+		SyncMode:               s.SyncMode,
+		ResourceGroupID:        s.ResourceGroupID,
+		ResourceGroupName:      s.ResourceGroupName,
+		ResourceGroupSelection: s.ResourceGroupSelection,
+		CESTotal:               s.CESTotal,
+		RawFetchedCount:        s.RawFetchedCount,
+		MappedCount:            s.MappedCount,
+		UniqueDiscoveredCount:  s.UniqueDiscoveredCount,
+		PersistedCount:         s.PersistedCount,
+		DuplicateCount:         s.DuplicateCount,
+		PersistFailedCount:     s.PersistFailedCount,
+		DiscoveredCount:        s.Discovered,
+		FailedScopes:           append([]string(nil), s.FailedScopes...),
+		SuccessfulTypes:        append([]string(nil), s.SuccessfulTypes...),
+		QueryFailedTypes:       append([]string(nil), s.QueryFailedTypes...),
+		ConversionFailedTypes:  append([]string(nil), s.ConversionFailedTypes...),
+		UnknownNamespaceCount:  s.UnknownNamespaceCount,
+		InvalidResourceCount:   s.InvalidResourceCount,
+		EnrichedCount:          s.EnrichedCount,
+		EnrichmentFailedCount:  s.EnrichmentFailedCount,
+		EnrichmentFailedTypes:  append([]string(nil), s.EnrichmentFailedTypes...),
+		EnrichmentWarnings:     append([]string(nil), s.EnrichmentWarnings...),
+		EnrichmentStageError:   s.EnrichmentStageError,
+		WritebackFailedCount:   s.WritebackFailedCount,
+		MaxResourcesReached:    s.MaxResourcesReached,
+		ProductNamesEmpty:      s.ProductNamesEmpty,
+	}
+}
+
+// mergeSyncBatchScopeSummary 把同 scope 的后续摘要合并进已有明细。
+func mergeSyncBatchScopeSummary(dst *SyncBatchScopeSummaryDTO, s obsapp.CloudSyncSummary) {
+	dst.CESTotal += s.CESTotal
+	dst.RawFetchedCount += s.RawFetchedCount
+	dst.MappedCount += s.MappedCount
+	dst.UniqueDiscoveredCount += s.UniqueDiscoveredCount
+	dst.PersistedCount += s.PersistedCount
+	dst.DuplicateCount += s.DuplicateCount
+	dst.PersistFailedCount += s.PersistFailedCount
+	dst.DiscoveredCount += s.Discovered
+	dst.FailedScopes = append(dst.FailedScopes, s.FailedScopes...)
+	dst.SuccessfulTypes = appendUniqueStrings(dst.SuccessfulTypes, s.SuccessfulTypes...)
+	dst.QueryFailedTypes = appendUniqueStrings(dst.QueryFailedTypes, s.QueryFailedTypes...)
+	dst.ConversionFailedTypes = appendUniqueStrings(dst.ConversionFailedTypes, s.ConversionFailedTypes...)
+	dst.UnknownNamespaceCount += s.UnknownNamespaceCount
+	dst.InvalidResourceCount += s.InvalidResourceCount
+	dst.EnrichedCount += s.EnrichedCount
+	dst.EnrichmentFailedTypes = appendUniqueStrings(dst.EnrichmentFailedTypes, s.EnrichmentFailedTypes...)
+	dst.EnrichmentWarnings = appendUniqueStrings(dst.EnrichmentWarnings, s.EnrichmentWarnings...)
+	if dst.EnrichmentStageError == "" {
+		dst.EnrichmentStageError = s.EnrichmentStageError
+	}
+	dst.WritebackFailedCount += s.WritebackFailedCount
+	dst.MaxResourcesReached = dst.MaxResourcesReached || s.MaxResourcesReached
+	dst.ProductNamesEmpty = dst.ProductNamesEmpty || s.ProductNamesEmpty
+	// scope 级 enrichment_failed_count 同样保持等于其失败类型数，见契约 §13.1。
+	dst.EnrichmentFailedCount = len(dst.EnrichmentFailedTypes)
+}
+
+// appendUniqueStrings 把 src 中的字符串追加到 dst 并按大小写不敏感去重，保持输出稳定。
+func appendUniqueStrings(dst []string, src ...string) []string {
+	for _, v := range src {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if sliceContainsStringFold(dst, v) {
+			continue
+		}
+		dst = append(dst, v)
+	}
+	return dst
+}
+
+// sliceContainsStringFold 按大小写不敏感判断字符串是否已存在。
+func sliceContainsStringFold(values []string, target string) bool {
+	for _, v := range values {
+		if strings.EqualFold(strings.TrimSpace(v), target) {
+			return true
+		}
+	}
+	return false
 }
 
 func appendReason(existing, reason string) string {
@@ -1308,13 +1545,15 @@ func toSyncBatchDTO(batch domain.SyncBatch) SyncBatchDTO {
 		Status:               batch.Status,
 		CreatedCount:         batch.CreatedCount,
 		UpdatedCount:         batch.UpdatedCount,
-		StaleCount:           batch.StaleCount,
-		FailedCount:          batch.FailedCount,
-		Message:              batch.Message,
-		Summary:              unmarshalSyncBatchSummary(batch.Summary),
-		StartedAt:            batch.StartedAt.Unix(),
-		CreatedAt:            batch.CreatedAt.Unix(),
-		UpdatedAt:            batch.UpdatedAt.Unix(),
+		// completed_count 等于成功处理的资源数（新建 + 更新），见契约 §5.5.1。
+		CompletedCount: batch.CreatedCount + batch.UpdatedCount,
+		StaleCount:     batch.StaleCount,
+		FailedCount:    batch.FailedCount,
+		Message:        batch.Message,
+		Summary:        unmarshalSyncBatchSummary(batch.Summary),
+		StartedAt:      batch.StartedAt.Unix(),
+		CreatedAt:      batch.CreatedAt.Unix(),
+		UpdatedAt:      batch.UpdatedAt.Unix(),
 	}
 	if accountID := strings.TrimSpace(batch.IntegrationAccountID); accountID != "" {
 		dto.ApplicationID = cloudApplicationID(accountID)
