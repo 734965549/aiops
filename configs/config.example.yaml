@@ -216,5 +216,6 @@ execution:
 
 alert_sync:
   # CES 告警拉取后台调度；默认关闭。多实例部署时只应在一个 API 实例启用。
-  worker_enabled: false
+  # 203 演示环境已启用（fb8bf71）；生产保持 false，用环境变量按实例注入。
+  worker_enabled: true
   worker_scan_interval_s: 30
