@@ -1,334 +1,220 @@
 # 华为云 CES 告警拉取稳定契约
 
-> 本文档定义华为云 CES 告警拉取（Pull-based Alert Sync）的接入源配置、同步语义、API、权限、错误处理与验收契约（WHAT）。告警拉取相关 Go 代码注释中的 `§X` 引用指向本文档对应章节。
->
-> 相关文档：
-> - 告警主契约（状态机 / 去重 / Webhook 接入）：[alert-contract.md](alert-contract.md)
-> - 资产同步契约（region/project 解析先例）：[huawei-ces-sync-contract.md](huawei-ces-sync-contract.md)
-> - 可观测总契约（Provider Port 模式）：[cloud-observability-contract.md](cloud-observability-contract.md)
-> - 迁移契约：[migration-contract.md](migration-contract.md)
+本文定义 CES 告警记录拉取的配置、数据与权限边界、同步语义和验收口径。相关契约见 [告警主契约](alert-contract.md)、[CES 资产同步](huawei-ces-sync-contract.md)、[可观测接入](cloud-observability-contract.md) 和 [数据库迁移](migration-contract.md)。
 
 ## 实施状态
 
-本契约**契约先行**：文档落盘时代码尚未实现。实现范围与阶段划分见 §13.2；实现落地后本节同步更新为实际状态。
+契约先行。同步接口、worker、迁移和前端尚未实现。Phase A 开始前，须在目标区域用测试账号确认官方接口、时间过滤和分页行为，并留存脱敏响应样例。实施顺序见 §13。
 
-## §1 范围与非目标
+## §1 范围
 
-### 1.1 范围
+- 一期同步 **CES V2 告警记录**，一条云端告警流水对应一条平台告警。覆盖手动触发和可选定时拉取，复用 Alert 的状态转换、时间线与审计。
+- 云端调用限于只读查询。真实接入使用 AK/SK。§13 所述 fixture 仅供测试环境使用。
+- 一期暂不覆盖 agency、完整历史回填、写入 CES 规则及其他云厂商。平台无需调用规则列表来推断告警状态。
 
-- 为 `type=huawei_ces` 的告警接入源提供平台主动拉取 CES 告警实例的能力。
-- 拉取结果复用告警主契约的归一化管道：dedup_key、生命周期、状态机、资产匹配、时间线事件、审计，与 Webhook 接入逐字节一致。
-- 支持手动触发（API）与定时轮询（后台 worker）。
-- 只读接入：平台只调用 CES 查询类 API，不做任何写操作。
+## §2 流程
 
-### 1.2 非目标（本期不做）
+1. 读取接入源，校验绑定账号和 scope，获得该源的同步租约。
+2. 按 scope 分页拉取 CES 记录，使用流水号和真实状态变化归一化。
+3. 通过告警入库用例处理新触发、云端恢复与重复观察。成功完成的查询窗口推进自己的游标。
+4. 持久化本轮摘要所对应的源状态和审计，释放租约。
 
-- agency 委托认证（与现有 observability huawei adapter 一致，返回 unsupported）。
-- 告警历史精确对账 / `first_seen_at` 精化（快照式精度有限，见 §7.4）。
-- `insufficient_data` 的业务处理策略（仅计入 ignored 统计）。
-- 多实例分布式调度锁（当前仅单实例启用定时拉取，见 §9.3）。
-- SigNoz / Zabbix 等其余来源的拉取式接入（端口设计可复用，按需扩展）。
-- CES 告警规则的创建 / 修改 / 删除。
-
-## §2 最小心智模型
-
-主流程：**拉快照 → 归一化 → 复用 ingest 管道落库**。
-
-1. **拉快照**：按账号配置的 region/project 调 CES `ListAlarms`，拿到告警规则及当前状态（快照）。
-2. **归一化**：按 §6.2 映射为平台 `NormalizedAlert`（firing / resolved 两类动作）。
-3. **落库**：调用与 Webhook 接入相同的归一化管道（dedup、状态机、资产匹配、时间线、审计）。
-
-快照式**不记忆上一轮状态**：`alarm` 直接提交 firing，`ok` 直接提交 resolved；对无 active 记录的 `ok`，复用 §7.2 语义自然落入 `ignored`，天然幂等。
-
-## §3 架构与依赖
+## §3 架构与职责
 
 ```text
-cmd/api/main.go 装配
-        │
-        ▼
-alert/application.AlertSyncService            拉取编排（手动 API / 后台 ticker / 单飞锁 / 统计）
-        │  复用 alert/application.IngestService 归一化管道
-        │
-        ▼ port（alert/application 定义，自包含类型，不 import observability）
-alert/infrastructure/observability/           薄适配器（同 alert/infrastructure/asset 模式）
-        │
-        ▼
-observability/application                     账号解析 → capability 校验 → ProviderRegistry 路由
-        │
-        ▼
-observability/infrastructure/provider/huawei/
-  ├─ ces_alarm_client.go                      CES ListAlarms 客户端（只读）
-  └─ alarm_mapper.go                          CES payload → 统一 AlarmInstance 模型
+cmd/api/main.go
+  Alert HTTP handler / scheduler → Alert application 同步用例
+    → Alert application 记录去重、状态机与事务
+    → Alert 定义的拉取端口 → Alert infrastructure/observability 适配器
+      → Observability application 账号及能力解析、ProviderRegistry
+        → Huawei CES V2 客户端（分页、超时、错误分类）和 mapper（字段转换）
+    → Asset 匹配端口 → Asset application 精确匹配云资源键
 ```
 
-约束：
-
-- 依赖方向保持 `interfaces -> application -> domain <- infrastructure`；跨上下文只经 application 层端口，不 import 对方 infrastructure。
-- 凭据解析复用 integration 模块（`CredentialProvider.ResolveAKSK`），不新增凭据存储；凭据不进入日志、Prompt、审计。
-- region/project 解析复用 integration 账号 `extra_config` 的 `SyncModeConfig.region_projects`（单一事实来源），接入源侧不做第二套 region 配置。
-- CES 告警客户端与 mapper 属 observability infrastructure，遵循现有 `ces_client.go` / `ces_resource_client.go` 的目录与测试风格。
+- 编排、配置校验、调度、记录状态合并分别归于相应职责。业务端口由消费模块定义，跨模块适配通过对方 application 入口。接入源管理、现有 Webhook 鉴权和 CES 拉取分别保留独立入口。
+- 凭据复用现有 integration 仓储及 Huawei `CredentialProvider.ResolveAKSK`。账号与凭据在每轮重新解析。AK/SK、原始响应和签名头不得进入日志、审计或 API。
+- 云资源和告警拉取共用账号的区域及项目解析。CES 告警记录查询的项目范围由区域 `project_id` 和该凭据的云端 IAM 授权决定。接入源可以收窄区域。
 
 ## §4 接入源配置
 
-### 4.1 迁移
+### 4.1 迁移与存量兼容
 
-迁移版本 `0046_alert_source_pull`（up / down 成对）：
+计划新增 `0046_alert_source_pull`（up/down 成对，落地时复核最新编号）。`alert_source` 增加以下字段。
 
-```sql
-ALTER TABLE alert_source
-    ADD COLUMN IF NOT EXISTS account_id VARCHAR(64) NOT NULL DEFAULT '',
-    ADD COLUMN IF NOT EXISTS pull_config JSONB NOT NULL DEFAULT '{}',
-    ADD COLUMN IF NOT EXISTS last_sync_at TIMESTAMPTZ NULL,
-    ADD COLUMN IF NOT EXISTS last_sync_status VARCHAR(32) NOT NULL DEFAULT '';
-```
+| 列 | 类型与初值 | 说明 |
+| --- | --- | --- |
+| `delivery_mode` | `VARCHAR(16) NOT NULL DEFAULT 'webhook'` | `webhook` / `pull`，存量源保留 Webhook |
+| `account_id` | `VARCHAR(64) NOT NULL DEFAULT ''` | 拉取源绑定的 integration 账号业务 ID |
+| `pull_config` | `JSONB NOT NULL DEFAULT '{}'` | 接入源拉取配置 |
+| `last_sync_at` | `TIMESTAMPTZ NULL` | 最近一轮已记录结果的完成时间 |
+| `last_sync_status` | `VARCHAR(32) NOT NULL DEFAULT ''` | `success` / `partial` / `failed` / 空 |
+| `sync_state` | `JSONB NOT NULL DEFAULT '{}'` | 内部状态，按 `region/project_id` 保存已处理至的时间。API 不返回 |
 
-- 时间戳由 Go 程序维护（项目硬约束，无 DB DEFAULT、无触发器）。
-- `alert_source` 领域模型同步增加 `AccountID / PullConfig / LastSyncAt / LastSyncStatus`。
-- `pull_config` 落库为 JSONB，API 层输出结构化对象。
+本期还需持久化每源租约持有者、到期时间和防止过期持有者写入的令牌。迁移时同步更新 [迁移契约](migration-contract.md)，补充回退和 readiness 验收。时间戳由 Go 维护，无数据库时间默认值或触发器。回退前停用新入口及 worker，保留已导入的告警和审计。
 
-### 4.2 `pull_config` 结构
+### 4.2 `pull_config`
 
 ```json
 {
   "pull_interval_seconds": 300,
-  "severity_map": {
-    "critical": "p0",
-    "major": "p1",
-    "minor": "p2",
-    "info": "p3"
-  },
-  "region_filter": []
+  "severity_map": {"1": "p0", "2": "p1", "3": "p2", "4": "p3"},
+  "region_filter": ["cn-north-4"]
 }
 ```
 
-| 字段 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `pull_interval_seconds` | number | `300` | 定时拉取间隔秒数；下限 `60`，超过下限才启用后台轮询；`0` 或缺省表示按默认值启用 |
-| `severity_map` | object | critical→p0 / major→p1 / minor→p2 / info→p3 | CES severity 到平台级别的映射；key 为 CES 原值，value 必须是 `p0/p1/p2/p3/info` |
-| `region_filter` | array\<string\> | 空（全部） | 可选 region 收窄；为空时拉取账号全部配置 region |
+| 字段 | 默认值 | 校验 |
+| --- | --- | --- |
+| `pull_interval_seconds` | `300` | 整数 `60..86400`，`0` 表示只手动。负数、小数、`1..59` 或超上限返回 `INVALID_ARGUMENT` |
+| `severity_map` | `1→p0 / 2→p1 / 3→p2 / 4→p3` | 部分覆盖默认映射，键为 CES 整数级别的字符串形式。值限 `p0/p1/p2/p3/info`。未知云端级别归 `info` |
+| `region_filter` | `[]` | 空表示使用账号所有区域。去空白、大小写归一并去重。创建、更新时拒绝不在账号区域列表中的值 |
 
-### 4.3 校验规则
+### 4.3 创建、更新与失效
 
-创建 / 更新 `type=huawei_ces` 的接入源时：
-
-- `account_id` 必填，且对应 integration account 存在、`provider=huawei_cloud`、能力声明包含 `alerts`。
-- `secret` 改为可选（拉取源不需要 Webhook token；`secret_hash` 列保留兼容，Webhook 源仍必填）。
-- `pull_interval_seconds` 非法值（非正数）视为使用默认 `300`；`severity_map` 含非法目标值时返回 `INVALID_ARGUMENT`。
-- `region_filter` 中未出现在账号 region 集合的值不报错，按最终无告警处理（记入本轮 scope 摘要）。
+- 创建请求省略 `delivery_mode` 时默认为 `webhook`。Webhook 源创建时必传 `secret`，更新时省略则保留。Webhook 源拒绝拉取配置，原有 `huawei_ces` Webhook 继续可用。
+- `delivery_mode=pull` 要求 `type=huawei_ces`、`account_id` 及有效 scope。绑定账号须已启用、属于 `huawei_cloud`、声明 `alerts` 能力并使用 `ak_sk`（测试环境可显式允许 `none`）。请求不得提交 `secret`，`secret_hash` 存空。公开 Webhook 在校验 token 前拒绝拉取源，返回 `NOT_FOUND`。
+- `delivery_mode` 创建后不可修改。拉取源的 `type` 和 `account_id` 也不可修改。更换账号或接入方式时新建源，验证后停用旧源。更新 `pull_config` 传入对象时整体替换并应用默认值，省略则保留。删除、停用和区域变更不自动恢复已有告警。
+- scope 来自账号 `regions` 与 `region_filter` 的交集，`extra_config.region_projects` 按区域覆盖账号 `project_id`。保存时拒绝空 scope 或无项目 ID 的 scope。运行中若账号配置变化，已移除、无法解析或无项目 ID 的 scope 按失败报告，其他有效 scope 继续。零有效 scope 返回失败摘要。scope 的项目变更时使用新游标。
+- 源绑定的账号删除后，手动触发返回 `NOT_FOUND`。账号被停用或不再满足 provider、认证或能力要求时返回 `FAILED_PRECONDITION`。定时触发记录失败及原因，并按轮询间隔重新检查。
 
 ## §5 权限
 
-| 操作 | 权限 | 说明 |
-| --- | --- | --- |
-| 创建 / 修改 / 删除拉取源 | `app:alerts:ingest` | 沿用接入源管理权限，不新增权限码 |
-| 手动同步 `POST /api/alerts/sources/:source_id/sync` | `app:alerts:ingest` | 同上 |
-| 后台定时拉取 | 系统身份 | 不经用户 RBAC；审计 actor 见 §11 |
-| 前端展示 `last_sync_*` / 立即同步按钮 | `app:alerts:ingest` | 无权限时隐藏操作入口，列表只读 |
+| 操作 | 授权 |
+| --- | --- |
+| 列出、查看接入源 | Bearer + `app:alerts:ingest` |
+| 新建、修改、手动同步拉取源 | Bearer + `app:alerts:ingest` + `app:integrations:read`，服务端按绑定的 `account_id` 执行账号读取授权。接入账号有数据范围限制时沿用该限制 |
+| 删除拉取源 | Bearer + `app:alerts:ingest`，删除仅作用于平台接入源 |
+| 定时拉取 | 依据已授权保存的源与账号绑定执行，每轮校验账号和源仍启用，审计 actor 为系统 |
+
+云账号选择器和服务端绑定使用同一准入条件。直接提交 `account_id` 不得绕过账号授权。
 
 ## §6 CES API 与字段映射
 
-### 6.1 API 路径
+### 6.1 接口与分页
 
-- `ListAlarms`：CES v2 查询告警规则列表（含 `alarm_status` 快照状态）。
-- 告警历史接口（`alarm-histories`）本期不使用；仅作为 §14 后续精化方向的预留。
+使用华为云 [CES V2 ListAlarmHistories](https://support.huaweicloud.com/api-ces/ListAlarmHistories.html)，`GET /v2/{project_id}/alarm-histories`，云端 IAM 授权项为 `ces:alarmHistory:list`。仓库锁定的 Go SDK V2 提供 `ListAlarmHistoriesRequest` 和 `AlarmHistoryItemV2`。V1 `ListAlarms` 返回规则的 `alarm_state`，V2 `ListAlarmRules` 返回规则配置，二者均不参与本期同步。
 
-具体端点路径、分页参数与响应字段名以华为云 CES SDK 实际结构体为准；实现时以 fixture 驱动 mapper 单测固化契约。
+- 每个 scope 使用 `offset/limit` 分页，`limit` 最大 100，使用 `order_by=record_id`。增量查询使用 `from/to` 更新时间窗口。
+- 新 scope 先查询云端可见的 `alarm` 记录，再读取最近 24 小时的更新窗口。增量轮次固定本轮截止时间，从上次成功游标回退 5 分钟读重叠窗口。记录按 scope 和 `record_id` 去重。同一流水在同一轮被两个查询读到时优先采用明确的恢复状态，活动记录取较新的云端触发时间。历史覆盖受云端保留期及凭据权限限制。
+- 大窗口分段读取。页失败、分页重复或数据不完整时保留该段游标，已提交的记录可安全重放。只有完整处理的连续窗口才能推进该 scope 的游标。优先处理较久未推进的 scope。不得用 `last_sync_at` 代替分 scope 游标。
+- 已入库且仍待恢复的记录若持续未出现在增量窗口，可用 `record_id` 定向查询。查询失败、记录不可见或消失均不作为恢复证据。上线前核对目标区域的更新时间过滤、翻页结束条件及长时间活动告警的可见性。
 
 ### 6.2 字段映射
 
-| CES 字段（示意） | 平台字段 | 说明 |
-| --- | --- | --- |
-| `alarm_id` | `external_id` / `fingerprint` | dedup_key 基础；走 `ComputeDedupKey(source_id, fingerprint, ...)` 主路径 |
-| `alarm_name` | `name` / `rule_name` | |
-| severity | `severity` | 按 `pull_config.severity_map` 映射（§4.2）；未命中映射的值按 `info` 兜底并记 warning |
-| `alarm_status=alarm` | firing | 新建 / 更新 / recovered 重开，复用告警主契约 §7.2 |
-| `alarm_status=ok` | resolved | 复用 external_recover 分支；无 active 记录时 ignored |
-| `alarm_status=insufficient_data` | 忽略 | 仅计入 ignored 统计 |
-| 维度（dim）资源标识 | `resource_name` / `resource_type` | 供 AssetMatcher 自动关联；云资源已由资产同步覆盖，命中率应较高 |
-| 规则时间字段 | `first_seen_at` | 快照式精度有限，见 §7.4 |
-| `alarm_description` | `summary` / `description` | |
+| CES 字段 | 平台字段或语义 |
+| --- | --- |
+| `record_id` | `external_id`。`fingerprint` 使用 `account_id + region + project_id + record_id` 的无歧义编码，和 `source_id` 一起走 `ComputeDedupKey` |
+| `alarm_id` | 云规则 ID，保留在 labels。不同 `record_id` 独立处理 |
+| `name` / `level` | `name`、`rule_name` / 按 §4.2 映射到 `severity` |
+| `status` | 按 §7.1 处理 |
+| `first_alarm_time` / `begin_time` | `first_seen_at` 依次取第一个有效值，最后回退到首次观察时间 |
+| `last_alarm_time` / `alarm_recovery_time` | 区分同一流水的较新触发与重放，供外部恢复时间使用。恢复时间缺失则使用首次观察到恢复的时间 |
+| `metric.namespace` / `metric.dimensions` | 按已验证的云资源类型和主维度提取云资源 ID。保留必要的定位标签 |
 
-- 来源字段固定：`source=huawei_ces`、`source_id=<接入源 ID>`、`source_name=<接入源名>`。
-- `environment` / `business_line` 取接入源默认值（与 Webhook 源一致）。
+`source=huawei_ces`，环境与业务线使用接入源默认值。经 Asset 端口以 `account_id + region + cloud_resource_type + cloud_resource_id` 精确匹配云同步资产。缺少有效维度或匹配有歧义时保留告警并留空资产关联。
 
-## §7 同步语义
+## §7 去重与生命周期
 
-### 7.1 快照动作表
+### 7.1 状态映射
 
-| CES 快照状态 | 提交动作 | 预期结果（复用告警主契约 §7.2） |
-| --- | --- | --- |
-| `alarm` | firing | 无 active → created；有 active → updated（`occurrence_count` 递增）；recovered → 重开为 `new`；closed → 新 lifecycle |
-| `ok` | resolved | 有 active → `recovered`（external_recover，清 `silenced_until`）；无 active → ignored |
-| `insufficient_data` | 忽略 | ignored |
-| 规则缺失 / 无 name | 忽略 | ignored（同 Webhook 空 name 语义） |
+| CES 状态 | 平台动作 |
+| --- | --- |
+| `alarm`，首次观察此流水 | 创建平台告警，`occurrence_count=1` |
+| `alarm`，流水已存在且处于处理中的状态 | 仅当 `last_alarm_time` 比已记录的云端触发时间更新才记一次 `updated`。重复或旧观测计入 `ignored` |
+| `alarm`，流水对应记录已恢复或关闭 | `ignored`，保留人工处理和既有恢复结果。云端新触发的独立流水可创建新告警 |
+| `ok` / `ok_manual` | 对已存在且未恢复或关闭的记录执行外部恢复，清除静默并写一次恢复事件。时间线保留 CES 状态以区分两种恢复。其余情况计入 `ignored` |
+| `invalid` / `insufficient_data` / 未知状态 | `ignored`，按原因计数。现有平台告警状态保持，失效和缺失不推断健康恢复 |
+| 缺 `record_id` / 缺 `name` | 计入 `ignored` 并记录脱敏诊断 |
 
-### 7.2 幂等
+### 7.2 重放和持久化
 
-- 每轮快照重复拉取不产生重复告警：`dedup_key + lifecycle_seq` 兜底，重复 firing 走 updated。
-- 拉取不需要 `X-Request-ID` 幂等键（Webhook 专用机制）；`dedup_key` 已覆盖重复场景。
-- 同一轮内同一 `alarm_id` 只提交一次（客户端按 `alarm_id` 去重）。
-
-### 7.3 恢复语义
-
-- CES `ok` 视为外部恢复：与 Webhook resolved 完全一致（`external_recover` 允许 active 态直接进入 `recovered`，清 `silenced_until`）。
-- 用户仍可人工 `close` 关闭 `recovered` 告警，行为不变。
-
-### 7.4 已知精度取舍
-
-- 快照式无法还原两轮拉取之间的瞬时变化（如 firing→ok→firing），最终状态正确，中间恢复事件可能缺失。运维场景可接受，写入本契约作为已知取舍。
-- `first_seen_at` 取规则时间字段（若 CES 提供），否则为首次拉取到该告警的时间；不代表云端真实首触发时间。
+- 同一源和同一 scope 下的流水最多对应一条平台告警，查重范围包含已关闭记录。复用 `dedup_key + lifecycle_seq` 唯一约束，CES 单个流水固定生命周期序号。现有 Webhook 生命周期规则保持兼容。
+- 观察顺序按云端触发时间与终态处理，已观察到恢复的记录不会被旧 firing 覆盖。告警状态、最后处理的云端触发时间与时间线在同一事务提交。写入失败计入本轮失败记录，相关窗口可安全重放。告警行更新须和人工状态操作保持并发一致性。
+- 计数反映平台观察到的不同云端触发时间，不能还原云端触发总次数。历史窗口首次看到已恢复且此前未入库的流水只计 `ignored`。
 
 ## §8 手动同步 API
 
-- Method: `POST`
-- Path: `/api/alerts/sources/:source_id/sync`
-- 鉴权: 是（Bearer + `app:alerts:ingest`）
+`POST /api/alerts/sources/:source_id/sync`，权限见 §5。仅适用于已启用的拉取源。同步等待并返回本轮结果。工作截止 20 秒，另预留最多 5 秒写最终状态和审计，适配当前 30 秒 HTTP 写超时与前端超时。浏览器断开时停止云查询和新写入，已持久化的进度保留，本轮用有界收尾上下文记录结果。
 
-约束：
-
-- 仅拉取源（`type=huawei_ces` 且配置了 `account_id`）可用；Webhook 源返回 `INVALID_ARGUMENT`。
-- 同步执行完成才返回（第一阶段无批次表，不做异步任务）；执行摘要通过 `data` 返回。
-- 进行中重复触发返回 `CONFLICT`（409），见 §9.2。
-- 源不存在返回 `NOT_FOUND`；源被禁用返回 `INVALID_ARGUMENT`（提示启用后再同步）。
-
-#### 响应 `data`
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `source_id` | string | 接入源 ID |
-| `account_id` | string | 拉取账号 ID |
-| `regions` | array\<string\> | 本轮实际执行的 region 列表 |
-| `status` | string | `success` / `partial` / `failed`（§10.2） |
-| `accepted` | number | 归一化后提交条数 |
-| `created` / `updated` / `recovered` / `ignored` | number | 与告警主契约 §6.1 统计口径一致 |
-| `failed_scopes` | array\<string\> | 失败 scope（`region[:原因码]`），空数组表示无失败 |
-| `duration_ms` | number | 本轮总耗时（毫秒） |
-| `last_sync_at` | number | 本轮完成时间，Unix 秒 |
-
-响应示例：
+`data` 结构示例（相同格式覆盖 `success/partial/failed`）。
 
 ```json
 {
-  "code": "OK",
-  "message": "ok",
-  "trace_id": "abc123",
-  "data": {
-    "source_id": "huawei-prod",
-    "account_id": "acc-1",
-    "regions": ["cn-north-4"],
-    "status": "success",
-    "accepted": 10,
-    "created": 3,
-    "updated": 6,
-    "recovered": 1,
-    "ignored": 0,
-    "failed_scopes": [],
-    "duration_ms": 1234,
-    "last_sync_at": 1762830000
-  }
+  "source_id": "huawei-prod",
+  "account_id": "acc-1",
+  "regions": ["cn-north-4", "cn-south-1"],
+  "status": "partial",
+  "accepted": 4,
+  "created": 1,
+  "updated": 0,
+  "recovered": 1,
+  "ignored": 1,
+  "failed_records": 1,
+  "failed_scopes": [
+    {"region": "cn-south-1", "project_id": "proj-2", "reason": "RECORD_WRITE_FAILED"}
+  ],
+  "duration_ms": 1234,
+  "last_sync_at": 1762830000
 }
 ```
 
-- `status=failed`（全部 scope 失败）仍返回 `code=OK` + 执行摘要：调用方是操作员/前端，`status` 字段即结果语义；同时 `last_sync_status=failed` 落库并写审计。伪造成功指的是掩盖结果，这里结果通过 `status` 明确暴露。
-- 接入源列表 / 详情响应新增 `account_id`、`pull_config`、`last_sync_at`、`last_sync_status` 字段（§4.1），`pull_config` 结构化输出，凭据永不返回。
+- `accepted = created + updated + recovered + ignored + failed_records`，统计已处理的去重记录。失败页中尚未拿到的记录只反映在 `failed_scopes`。`regions` 是本轮计划处理的区域，包括因轮次超时未开始的区域。空 `failed_scopes` 输出数组 `[]`。
+- 已执行且结果已记录的轮次返回统一响应 `code=OK`，客户端以 `data.status` 判断结果。同步前的权限、配置、资源不存在或租约冲突返回对应业务错误。
+- 接入源响应新增 `delivery_mode`、`account_id`、`pull_config`、`last_sync_at`、`last_sync_status`。Webhook 源仅提供 `delivery_mode=webhook` 和原有 Webhook 字段。`last_sync_*` 为空表示尚无已记录轮次。
 
 ## §9 触发与并发
 
-### 9.1 手动触发
+- 手动与定时触发共享 **PostgreSQL 持久化的源级租约**。可参考资产同步的租约模式。租约竞争使用原子条件写，写入告警、游标、源状态和审计时在同一数据库事务内校验持有令牌，过期持有者不能写入。
+- 同源竞争时手动请求返回 `ABORTED`（409），定时请求跳过。不同源可并行。源的更新、停用和删除与租约获取互斥，同步在途时返回 `ABORTED`。账号禁用、删除或 scope 配置变化时应在后续写入前失效旧账号快照，终止受影响的同步并记录原因。
+- worker 可由部署配置显式启用，默认关闭。启用后按各源间隔调度，`pull_interval_seconds=0` 的源只允许手动触发。轮询跳过禁用源，优雅退出复用资产同步生命周期模式。部署仅启用一个定时 worker 以避免重复调度，手动请求可由任意 API 实例接收，互斥由共享租约保证。
 
-见 §8；同步等待，适合验收与运维补拉。
-
-### 9.2 并发单飞
-
-- 同一接入源同一时刻只允许一轮拉取（进程内单飞锁）；进行中重复触发返回 `CONFLICT`。
-- 不同接入源可并行拉取。
-
-### 9.3 定时拉取
-
-- main.go 装配后台 worker：单 goroutine，按各源 `pull_interval_seconds` 轮询启用的拉取源；生命周期复用资产同步的 `SetLifecycle / WaitContext` 优雅退出模式。
-- 间隔下限 `60` 秒；低于下限的配置按 `60` 执行。
-- 每轮定时拉取独立于手动触发的单飞锁判定：定时触发遇手动拉取进行中则跳过本轮（记 Warn 日志），不返回错误。
-- 多实例部署限制：当前仅支持单实例启用定时拉取 worker（进程内锁不跨实例）；分布式锁列为后续扩展（§14）。部署多个 API 实例时，须确保只有一个实例启用 worker。
-
-## §10 错误处理
-
-### 10.1 错误码
+## §10 错误与结果
 
 | code | HTTP | 场景 |
 | --- | --- | --- |
-| `INVALID_ARGUMENT` | 400 | Webhook 源调用 sync、源被禁用、`pull_config` 非法 |
+| `INVALID_ARGUMENT` | 400 | 非拉取源调 sync、源禁用、配置格式或绑定条件非法 |
 | `UNAUTHENTICATED` | 401 | Bearer 无效 |
-| `PERMISSION_DENIED` | 403 | 无 `app:alerts:ingest` |
-| `NOT_FOUND` | 404 | 接入源或绑定账号不存在 |
-| `CONFLICT` | 409 | 同源拉取进行中（§9.2） |
-| `UNAVAILABLE` | 503 | observability 拉取端口未配置（装配缺失） |
+| `PERMISSION_DENIED` | 403 | 操作权限或绑定账号授权不足 |
+| `NOT_FOUND` | 404 | 源或绑定账号不存在 |
+| `ABORTED` | 409 | 同源租约正在被持有 |
+| `FAILED_PRECONDITION` | 412 | 已绑定账号在运行前被停用，或 provider、认证、能力已不符合准入条件 |
+| `UNAVAILABLE` | 503 | 拉取端口未装配 |
+| `INTERNAL` | 500 | 本轮最终状态或审计无法持久化 |
 
-### 10.2 scope 隔离与 `status` 判定
+- `success` 表示全部计划 scope 均完整处理。`partial` 表示至少有一个 scope 完成或有记录已成功提交，同时有查询、写入或超时失败。`failed` 表示轮次开始后无 scope 完成且无成功提交，例如凭据解析失败、零有效 scope 或全部 scope 失败。
+- 失败只影响相关 scope。失败 scope 给出稳定原因码，例如 `PROJECT_ID_MISSING`、`REGION_UNAVAILABLE`、`UPSTREAM_TIMEOUT`、`PAGE_INCOMPLETE`、`RECORD_WRITE_FAILED`、`ROUND_TIMEOUT`。部分写入时报告已提交的条数，并保留失败窗口游标。
+- 最终状态和轮次审计使用同一事务提交。收尾失败返回 500，原 `last_sync_*` 保留，已提交的告警可在重试时安全重放。日志记录脱敏的轮次、scope 和原因码。
 
-- 单 region / 单 scope 失败不阻塞其他 region：失败记入 `failed_scopes`，成功 scope 的告警照常入库（与资产同步 native 路径策略一致）。
-- `status=success`：全部 scope 成功。
-- `status=partial`：部分 scope 成功、部分失败。
-- `status=failed`：全部 scope 失败（含凭据错误、账号不可用）；`last_sync_status=failed` 落库。
-- 账号级前置失败（凭据解析失败、capability 校验失败）视为全部 scope 失败。
+## §11 审计
 
-### 10.3 日志要求
-
-- 轮次完成：`Info`（source_id、regions、统计计数、耗时）。
-- 单 scope 失败：`Warn`（region、error_code，不输出云端原始报文）。
-- 全部失败 / worker 异常退出：`Error`。
-- 禁止记录 AK/SK、凭据、CES 响应原文。
-
-## §11 审计与日志
-
-| 动作 | 审计 | 说明 |
-| --- | --- | --- |
-| 每轮拉取完成 | `action=alert_source_sync`、`resource_type=alert_source`、`resource_id=<source_id>` | payload 含 regions、status、计数、failed_scopes、duration_ms；手动触发记录触发用户 ID，定时轮询记录 `user_id=system` |
-| 逐条告警落库 | 复用现有 `AuditIngest` | `user_id=source:<source_id>`，与 Webhook 接入一致 |
-| 时间线事件 | 复用现有 integration 事件 | `actor_type=integration`、`actor_id=<source_id>`；`payload.trace_id` 闭合本轮链路 |
-
-## §12 前端对接契约
-
-- 接入源管理（告警中心页面）：
-  - 类型选项增加 `huawei_ces`；选中后表单切换为「云账号下拉 + 拉取间隔（可选，默认 300s）」，隐藏 Webhook secret 输入（改为可选）。
-  - 云账号下拉数据源：`GET /api/integrations/accounts`，仅展示 `provider=huawei_cloud` 账号。
-  - 接入源列表增加 `last_sync_at`（相对时间）、`last_sync_status` Tag（success=绿 / partial=橙 / failed=红 / 空=灰）与「立即同步」按钮。
-  - 「立即同步」按 §8 调用；409 时提示「该源正在同步中」；`status=partial/failed` 时展示 `failed_scopes`。
-- 无 `app:alerts:ingest` 权限的账号：隐藏同步按钮与源管理入口（沿用现有权限判定模式）。
-- 告警列表 / 详情零改动：拉取告警与 Webhook 告警同表同链路，仅来源 Tag 显示 `huawei_ces`。
-- `web/src/api/alerts.ts` 新增 sync 方法时同步更新 `web/src/api/README.md`（实现阶段执行）。
-
-## §13 测试与验收
-
-### 13.1 测试要求
-
-| 层 | 内容 |
+| 动作 | 审计语义 |
 | --- | --- |
-| domain / application 单测 | severity 映射（含未命中兜底）、快照→NormalizedAlert、`ok` 无 active → ignored、`enabled=false` 跳过、单 scope 失败不阻塞、单飞锁 CONFLICT |
-| huawei 客户端单测 | fixture JSON 驱动 mapper；凭据缺失 / 超时错误映射；`alarm_id` 去重 |
-| HTTP 测试 | sync 接口 200 / 401 / 403 / 404 / 400 / 409 主路径 |
-| 迁移测试 | `go test ./pkg/database/...` 通过；`/readyz` migration 子项反映 latest |
-| E2E | 新增 `scripts/e2e-alert-sync.ps1`（§13.3） |
+| 轮次完成 | `action=alert_source_sync`，`resource_type=alert_source`，`resource_id=<source_id>`。payload 含 `trace_id`、scope、状态、计数、失败原因和耗时。手动记实际触发用户，定时记 `user_id=system` |
+| 单条告警实际变更 | 复用 `AuditIngest`，`user_id=source:<source_id>`。重复观测不追加逐条审计 |
+| 时间线 | `actor_type=integration`，`actor_id=<source_id>`。HTTP 沿用请求 trace，worker 为每轮生成 trace 并传到日志、审计和时间线 |
 
-### 13.2 实施阶段
+## §12 前端对接
 
-1. **Phase A**：迁移 0046 + domain/application（ingest 归一化管道公开化）+ CES 客户端 / mapper + 单测。
-2. **Phase B**：sync API + 审计 + 后台 worker + 前端。
-3. **Phase C**：E2E 脚本 + 本契约实施状态更新 + 验收清单勾验。
+- 源管理增加接入方式。选择 CES 拉取时展示账号、轮询间隔和区域配置，Webhook 源继续使用共享密钥表单。
+- 账号选择器读取分页 `GET /api/integrations/accounts?provider=huawei_cloud&enabled=true`，按 §4.3 过滤。无账号权限时展示明确的权限提示，并禁用依赖账号权限的操作。
+- 源列表展示同步时间与状态。立即同步处理 409、业务失败摘要和超时，按 scope 展示失败原因。
+- 更新 `web/src/api/alert.ts` 和 [前端 API 说明](../web/src/api/README.md)。告警列表和详情复用既有数据与状态流转。
 
-### 13.3 E2E 脚本
+## §13 测试与实施阶段
 
-- 脚本：`scripts/e2e-alert-sync.ps1`（风格对齐 `e2e-alert.ps1`，默认 `admin/admin123` → `http://127.0.0.1:8080`）。
-- 流程：创建 fake 云账号（`auth_type=none`，走 fake provider 样本）→ 创建 `huawei_ces` 接入源（绑定账号）→ 手动 sync → 断言 `created >= 1` → 重复 sync 断言 `updated` → 模拟快照恢复断言 `recovered` → 校验时间线与 `alert_source_sync` 审计。
-- fake 路径约束：与 observability adapter 现有 `requireFakeOnlyCapability` 模式一致——真实凭据账号不得返回 fake 样本，fake 仅用于测试链路。
+### 13.1 关键验收
 
-### 13.4 验收清单
+- **Provider** 使用符合 V2 响应结构的脱敏 fixture 验证字段、分页、相同 `alarm_id` 的多流水、多维度、权限错误和后续页失败。
+- **应用** 覆盖重复观测零变更、旧 firing 在恢复后到达、人工恢复或关闭后再拉取、新流水可触发、缺页/失效不推断恢复、游标不越过失败窗口、写入失败后重试。
+- **权限和兼容** 覆盖存量 CES Webhook 更新及接入、拉取源拒绝公开 Webhook、普通角色缺账号权限、账号禁用/删除，以及拉取期更新/停用冲突。
+- **集成** 两个 API 实例同源争抢，以及租约过期旧持有者写入失败。测试部分已落库、轮次超时和最终状态/审计事务失败。
+- **E2E** 采用仅测试装配可启用的 fake Provider。测试控制同一 scope 两次返回的 V2 fixture，从两条同规则、不同资源流水的 `alarm` 切到一条 `ok`、另一条仍为 `alarm`。核对资产关联、恢复时间线及 `alert_source_sync` 审计。已有凭据账号禁止降级到 fake。见 [验收清单 §1.4](../docs/acceptance-checklist.md#14-ces-拉取接入)。
 
-`docs/acceptance-checklist.md` §1.4（CES 拉取接入）为本模块验收入口，实现落地后按清单勾验。
+### 13.2 实施顺序
 
-## §14 已知缺口与后续扩展
+1. **Phase A** 确认目标区域官方 API 行为，落地迁移、客户端与 mapper、scope 游标、去重及事务单测。
+2. **Phase B** 接入共享租约、权限、手动 API、审计、调度和前端，验证两实例并发。
+3. **Phase C** 增加 `scripts/e2e-alert-sync.ps1`，验收后同步更新本节、主契约、迁移与可观测能力说明。
 
-- 多实例分布式调度锁（Redis 锁，复用 webhookidempotency RedisStore 基础）。
-- 告警历史接口精化 `first_seen_at` 与瞬时变化还原。
-- `insufficient_data` 可配置策略（忽略 / 恢复）。
-- SigNoz / Zabbix 拉取式接入（复用同一 alert 拉取端口）。
-- region_filter 命名空间 / 资源分组级过滤。
+## §14 后续扩展
+
+更长历史回填、事件类额外字段、资源分组范围和其他云厂商。若规模超出有界同步窗口，再评估异步批次 API。

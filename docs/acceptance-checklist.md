@@ -51,22 +51,21 @@
 | 1.3.2 | 告警详情抽屉 | 时间线、标签、状态操作按钮可用 |
 | 1.3.3 | 资源链接 | 已匹配资产时显示应用/资源链接 |
 
-### 1.4 CES 拉取接入（migration 0046，契约先行待实现）
+### 1.4 CES 拉取接入
 
-**权限**：`app:alerts:ingest`
-**脚本**：`scripts/e2e-alert-sync.ps1`（实现落地后执行）
-**契约**：`ops/huawei-ces-alert-sync-contract.md`
+契约先行，计划随迁移 0046 落地。手动同步需要 `app:alerts:ingest` 和绑定账号的 `app:integrations:read`。实现后执行 `scripts/e2e-alert-sync.ps1`。详见 [CES 告警拉取契约](../ops/huawei-ces-alert-sync-contract.md)。
 
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
-| 1.4.1 | 创建拉取源 | `POST /api/alerts/sources`（`type=huawei_ces` + 有效 `account_id`） | `code=OK`；缺账号 / 账号非 huawei_cloud 时 `INVALID_ARGUMENT` |
-| 1.4.2 | 手动同步 | `POST /api/alerts/sources/{source_id}/sync` | 返回 `status/created/updated/recovered/ignored` 摘要；告警中心出现 `huawei_ces` 来源告警 |
-| 1.4.3 | 幂等 | 重复 sync | 无重复新告警，`updated` 递增 |
-| 1.4.4 | 快照恢复 | 云端状态转 ok 后再 sync | 告警 `status=recovered`，时间线含 `recovered` 事件 |
-| 1.4.5 | Webhook 源拦截 | 对 alertmanager 源调 sync | `INVALID_ARGUMENT`（400） |
-| 1.4.6 | 并发单飞 | 同源拉取进行中再次触发 | `CONFLICT`（409） |
-| 1.4.7 | scope 隔离 | 单 region 失败 | 其他 region 告警照常入库，`failed_scopes` 非空，`status=partial` |
-| 1.4.8 | 审计 | 拉取完成后查 `GET /api/audits` | 存在 `action=alert_source_sync` 记录 |
+| 1.4.1 | 创建和校验 | 创建 `delivery_mode=pull`、`type=huawei_ces`、绑定合格账号的源 | 创建成功。遗漏账号、非华为云账号、无效区域和非法间隔返回 400 |
+| 1.4.2 | 多资源拉取 | 同一云规则下两个资源分别触发，调用手动 sync | 两条流水分别入库，使用正确的资产和区域。缺少唯一资产匹配时留空 |
+| 1.4.3 | 重复观测 | 同一 V2 响应再次 sync，另测人工恢复或关闭后的重放 | `created=updated=recovered=0`，触发计数和时间线保持一致，人工处理结果保留 |
+| 1.4.4 | 独立恢复 | 测试 fixture 仅让一个流水进入 `ok` | 对应告警恢复且只写一次恢复事件，另一个仍处理。旧 firing 不重开告警，缺页和 `invalid` 不触发恢复 |
+| 1.4.5 | 接入方式兼容 | 迁移前后的 `huawei_ces` Webhook、互调接入入口 | 存量 token 继续可用。Webhook 源调 sync 返回 400。公开 Webhook 调拉取源返回 404 |
+| 1.4.6 | 跨实例互斥 | 两实例同源手动争抢，另测手动与定时重叠、在途停用与租约过期 | 仅一轮获租约。竞争手动请求和在途停用返回 `ABORTED`（409），过期持有者无法写入 |
+| 1.4.7 | scope 隔离与重放 | 单 region 失败，另测后续页超时及部分记录入库后写失败 | 报告已提交计数与 `failed_scopes`，失败窗口不推进游标，重试无重复变更 |
+| 1.4.8 | 权限及账号状态 | 用只有告警 ingest 权限的用户绑定或同步，另测已停用和已删除账号 | 权限不足为 403，账号停用为 412，账号删除为 404 |
+| 1.4.9 | 审计与收尾 | 完成后查 `GET /api/audits`，另模拟摘要或审计写入失败 | 存在 `alert_source_sync` 记录，状态、计数与 trace 可关联。收尾失败返回 500，保留原最近同步状态 |
 
 ---
 

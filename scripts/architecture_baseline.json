@@ -1,0 +1,10 @@
+{
+  "internal/asset/application/sync_service.go": 1652,
+  "internal/execution/application/task_service.go": 830,
+  "internal/identity/infrastructure/persistence/access_control_repository.go": 984,
+  "internal/observability/infrastructure/provider/huawei/ces_resource_client.go": 987,
+  "internal/observability/infrastructure/provider/huawei/resource_client.go": 941,
+  "web/src/views/alerts/index.vue": 1473,
+  "web/src/views/audits/index.vue": 1094,
+  "web/src/views/login/index.vue": 1270
+}
