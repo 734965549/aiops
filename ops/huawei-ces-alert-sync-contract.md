@@ -109,8 +109,12 @@ cmd/api/main.go
 | `first_alarm_time` / `begin_time` | `first_seen_at` 依次取第一个有效值，最后回退到首次观察时间 |
 | `last_alarm_time` / `alarm_recovery_time` | 区分同一流水的较新触发与重放，供外部恢复时间使用。恢复时间缺失则使用首次观察到恢复的时间 |
 | `metric.namespace` / `metric.dimensions` | 按已验证的云资源类型和主维度提取云资源 ID。保留必要的定位标签 |
+| `metric.metric_name` | 写入 `labels.metric_name` 与 `annotations.ces_metric_name`，并参与 `description` 拼装，供 AI 分析直接引用 |
+| `condition` | 触发条件（聚合方式、比较符、阈值、单位、周期、连续次数、抑制间隔）归一化为 `annotations.ces_condition`，例如 `> 80% (average, 300s x3)`；空条件不构造 |
 
 `source=huawei_ces`，环境与业务线使用接入源默认值。经 Asset 端口以 `account_id + region + cloud_resource_type + cloud_resource_id` 精确匹配云同步资产。缺少有效维度或匹配有歧义时保留告警并留空资产关联。
+
+`description` 在有指标名时按 `<namespace> <metric_name> <condition> · <resource_name>` 拼装；`summary` 保持资源名不变。`annotations` 同时保留 `ces_namespace`、`ces_level`、`ces_metric_name`、`ces_condition`、`ces_status` 与 `ces_last_alarm_time`。
 
 ## §7 去重与生命周期
 

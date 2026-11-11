@@ -40,6 +40,11 @@ npm run build
 `vite.config.ts` 已通过 `root: realpathSync` + `preserveSymlinks` 规避。
 仍失败时请将仓库放到纯 ASCII 本地路径（如 `C:\dev\aiops`）再构建。
 
+在 WorkBuddy / 带批量删除保护的执行环境里，`npm run build` 可能在 Vite 清空旧
+`dist/static` 时被拦截并报 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`（属于环境策略，不是源码错误）。
+此时用 `npx vite build --no-emptyOutDir` 跳过清空即可完成构建；旧哈希资源会保留在 `dist` 中，
+不影响 `index.html` 指向的新产物。CI 与常规本地环境仍使用 `npm run build`。
+
 ## 容器化（前后端分离）
 
 前端是**独立镜像 `aiops-web`**，与后端 `aiops-api` 分开，不打包在一起：

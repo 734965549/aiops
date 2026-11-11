@@ -29,6 +29,7 @@ func mapAlarmHistory(item cesv2model.AlarmHistoryItemV2, scope domain.AlarmPullS
 	}
 	if item.Metric != nil {
 		rec.Namespace = strings.TrimSpace(valueOf(item.Metric.Namespace))
+		rec.MetricName = strings.TrimSpace(valueOf(item.Metric.MetricName))
 		rec.ResourceType = resourceTypeFromNamespace(rec.Namespace)
 		if item.Metric.Dimensions != nil {
 			for _, dim := range *item.Metric.Dimensions {
@@ -40,6 +41,9 @@ func mapAlarmHistory(item cesv2model.AlarmHistoryItemV2, scope domain.AlarmPullS
 				rec.Dimensions[name] = value
 			}
 		}
+	}
+	if item.Condition != nil {
+		rec.Condition = mapAlarmCondition(item.Condition)
 	}
 	if item.AdditionalInfo != nil {
 		rec.ResourceID = strings.TrimSpace(valueOf(item.AdditionalInfo.ResourceId))
@@ -53,6 +57,34 @@ func mapAlarmHistory(item cesv2model.AlarmHistoryItemV2, scope domain.AlarmPullS
 	}
 	_ = scope
 	return rec
+}
+
+// mapAlarmCondition 映射触发条件；字段缺失时返回 nil，不构造空对象。
+func mapAlarmCondition(in *cesv2model.AlarmHistoryItemV2Condition) *domain.AlarmCondition {
+	if in == nil {
+		return nil
+	}
+	out := &domain.AlarmCondition{
+		Filter:             strings.TrimSpace(valueOf(in.Filter)),
+		ComparisonOperator: strings.TrimSpace(valueOf(in.ComparisonOperator)),
+		Unit:               strings.TrimSpace(valueOf(in.Unit)),
+	}
+	if in.Value != nil {
+		out.Threshold = *in.Value
+	}
+	if in.Count != nil {
+		out.TriggerCount = int(*in.Count)
+	}
+	if in.Period != nil {
+		out.PeriodSeconds = int64(in.Period.Value())
+	}
+	if in.SuppressDuration != nil {
+		out.SuppressDurationS = int64(in.SuppressDuration.Value())
+	}
+	if out.ComparisonOperator == "" && out.Threshold == 0 {
+		return nil
+	}
+	return out
 }
 
 func statusOf(status *cesv2model.AlarmHistoryItemV2Status) string {

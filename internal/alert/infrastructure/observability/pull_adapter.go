@@ -5,6 +5,7 @@ import (
 
 	alertapp "github.com/734965549/aiops/internal/alert/application"
 	obsapp "github.com/734965549/aiops/internal/observability/application"
+	obsdomain "github.com/734965549/aiops/internal/observability/domain"
 )
 
 // PullAdapter 将 alert 定义的拉取端口桥接到 observability 应用服务。
@@ -60,6 +61,8 @@ func (a *PullAdapter) PullAlarms(ctx context.Context, req alertapp.AlertPullRequ
 				Status:       record.Status,
 				Level:        record.Level,
 				Namespace:    record.Namespace,
+				MetricName:   record.MetricName,
+				Condition:    mapAlarmCondition(record.Condition),
 				ResourceID:   record.ResourceID,
 				ResourceName: record.ResourceName,
 				ResourceType: record.ResourceType,
@@ -72,4 +75,19 @@ func (a *PullAdapter) PullAlarms(ctx context.Context, req alertapp.AlertPullRequ
 		out.Scopes = append(out.Scopes, item)
 	}
 	return out, nil
+}
+
+func mapAlarmCondition(in *obsdomain.AlarmCondition) *alertapp.AlarmCondition {
+	if in == nil {
+		return nil
+	}
+	return &alertapp.AlarmCondition{
+		Filter:             in.Filter,
+		ComparisonOperator: in.ComparisonOperator,
+		Threshold:          in.Threshold,
+		Unit:               in.Unit,
+		PeriodSeconds:      in.PeriodSeconds,
+		TriggerCount:       in.TriggerCount,
+		SuppressDurationS:  in.SuppressDurationS,
+	}
 }

@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
-import type { SyncBatchSummary } from '@/api/asset'
+import type { Resource, SyncBatchSummary } from '@/api/asset'
 import { describe, expect, it } from 'vitest'
 import {
   OPTIONAL_RESOURCE_COLUMNS,
+  buildResourceCsv,
   buildSyncBatchSignalTags,
+  csvCell,
+  sanitizeVisibleColumns,
   formatSyncBatchSummary,
   humanizeSyncPartialReason,
   isSensitiveLabelKey,
@@ -459,5 +462,46 @@ describe('resource filter/sort URL state', () => {
       { field: '', direction: '' }
     )
     expect(query).toEqual({ application_id: 'app-1' })
+  })
+})
+
+describe('sanitizeVisibleColumns', () => {
+  it('drops unknown keys, deduplicates and keeps definition order', () => {
+    expect(sanitizeVisibleColumns(['pod', 'labels', 'pod', 'gone', 'created_at']))
+      .toEqual(['labels', 'pod', 'created_at'])
+  })
+
+  it('tolerates corrupt localStorage values', () => {
+    expect(sanitizeVisibleColumns(null)).toEqual([])
+    expect(sanitizeVisibleColumns('labels')).toEqual([])
+    expect(sanitizeVisibleColumns([{ key: 'labels' }])).toEqual([])
+  })
+})
+
+describe('buildResourceCsv', () => {
+  const row = {
+    id: 'res-1',
+    application_id: 'app-1',
+    name: 'elb,prod"01',
+    cloud_resource_type: 'elb',
+    region: 'cn-south-1',
+    labels: { env: 'prod' },
+    created_at: 1700000000,
+    updated_at: 1700000000
+  } as Resource
+
+  it('quotes and escapes commas, quotes and JSON labels', () => {
+    expect(csvCell('a,b')).toBe('"a,b"')
+    expect(csvCell('a"b')).toBe('"a""b"')
+    expect(csvCell(undefined)).toBe('""')
+    const lines = buildResourceCsv([row]).split('\r\n')
+    expect(lines).toHaveLength(2)
+    expect(lines[1]).toContain('"elb,prod""01"')
+    expect(lines[1]).toContain('"{""env"":""prod""}"')
+  })
+
+  it('always emits a header even for an empty result', () => {
+    expect(buildResourceCsv([]).split('\r\n')).toHaveLength(1)
+    expect(buildResourceCsv([])).toContain('"资源 ID"')
   })
 })

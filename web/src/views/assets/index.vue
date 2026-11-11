@@ -25,6 +25,7 @@
           :resource-filters="registry.resourceFilters"
           :resource-filter-options="registry.resourceFilterOptions"
           :filter-options-loading="registry.filterOptionsLoading"
+          :exporting-resources="registry.exportingResources"
           :visible-extra-columns="registry.visibleExtraColumns"
           @update:resource-filters="(f) => Object.assign(registry.resourceFilters, f)"
           @column-visibility-change="registry.setVisibleExtraColumns"
@@ -38,6 +39,7 @@
           @delete-resource="registry.confirmDeleteResource"
           @apply-filters="registry.applyResourceFilters"
           @reset-filters="registry.resetResourceFilters"
+          @export-resources="registry.exportResourcesCsv"
           @resource-sorter-change="registry.onResourceSorterChange"
           @select-app="registry.onSelectApplication"
           @app-page-change="registry.onAppPageChange"
@@ -381,6 +383,7 @@ import SyncBatchDetailDrawer from './components/SyncBatchDetailDrawer.vue'
 import { useAssetRegistry } from './composables/useAssetRegistry'
 import { useCloudSync } from './composables/useCloudSync'
 import { useMatchRules } from './composables/useMatchRules'
+import { RESOURCE_FILTER_QUERY_KEYS } from './composables/assetUtils'
 
 const route = useRoute()
 
@@ -403,7 +406,9 @@ const sync = reactive(useCloudSync({
   }
 }))
 
-async function applyRouteSelection() {
+const RESOURCE_ROUTE_QUERY_KEYS = [...RESOURCE_FILTER_QUERY_KEYS, 'sort_by', 'sort_order'] as const
+
+async function applyRouteSelection(filtersChanged = false) {
   const q = typeof route.query.application_id === 'string' ? route.query.application_id : ''
   const resourceId = registry.routeResourceId()
   if (!q && selectedAppId.value) {
@@ -413,21 +418,29 @@ async function applyRouteSelection() {
     registry.resourcePagination.total = 0
     return
   }
+  // 应用切换本身会重新取数；筛选/排序变化与 resource_id 高亮共用同一个请求。
   if (q && q !== selectedAppId.value) {
     selectedAppId.value = q
     registry.resourcePagination.current = 1
     await registry.loadResources()
     return
   }
-  if (resourceId && resourceId !== registry.highlightedResourceId && selectedAppId.value) {
+  if (selectedAppId.value && (filtersChanged || (resourceId && resourceId !== registry.highlightedResourceId))) {
     await registry.loadResources()
   }
 }
 
+// 浏览器前进/后退、手工改地址栏时，筛选与排序也要跟着 URL 复原；
+// 自己刚写入的 query 与内存状态一致，syncFiltersFromRoute 返回 false，不会重复请求。
 watch(
-  () => [route.query.application_id, route.query.resource_id],
+  () => [
+    route.query.application_id,
+    route.query.resource_id,
+    ...RESOURCE_ROUTE_QUERY_KEYS.map((key) => route.query[key])
+  ],
   () => {
-    void applyRouteSelection()
+    const filtersChanged = registry.syncFiltersFromRoute()
+    void applyRouteSelection(filtersChanged)
   }
 )
 
@@ -544,6 +557,15 @@ onMounted(async () => {
 :deep(.registry-filter-chips-label) {
   color: var(--aiops-text-3);
   font-size: 12px;
+}
+
+/* 空结果态：区分「应用下没有资源」与「筛选后没有匹配」，并给出下一步动作 */
+:deep(.assets-table-empty) {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-5) 0;
 }
 
 /* 应用单元格：主名 + 环境/Namespace 副行，替代被压扁的多列 */

@@ -358,6 +358,30 @@ func (s *AlertSyncService) normalizeAlarms(src *domain.AlertSource, scope Pulled
 		if in.Namespace != "" {
 			annotations["ces_namespace"] = in.Namespace
 		}
+		if in.Level != "" {
+			annotations["ces_level"] = in.Level
+		}
+		conditionDesc := ""
+		if in.Condition != nil {
+			conditionDesc = in.Condition.Describe()
+			if conditionDesc != "" {
+				annotations["ces_condition"] = conditionDesc
+			}
+		}
+		if in.MetricName != "" {
+			annotations["ces_metric_name"] = in.MetricName
+			labels["metric_name"] = in.MetricName
+		}
+		description := strings.TrimSpace(in.ResourceName)
+		if in.MetricName != "" {
+			description = strings.TrimSpace(in.Namespace + " " + in.MetricName)
+			if conditionDesc != "" {
+				description += " " + conditionDesc
+			}
+			if resourceName := strings.TrimSpace(in.ResourceName); resourceName != "" {
+				description += " · " + resourceName
+			}
+		}
 		item := NormalizedAlert{
 			DedupKey:       domain.ComputeCESDedupKey(src.ID, src.AccountID, scope.Region, scope.ProjectID, recordID),
 			ExternalID:     recordID,
@@ -365,7 +389,7 @@ func (s *AlertSyncService) normalizeAlarms(src *domain.AlertSource, scope Pulled
 			Status:         status,
 			Name:           name,
 			Summary:        in.ResourceName,
-			Description:    in.ResourceName,
+			Description:    description,
 			Severity:       severity,
 			RuleName:       name,
 			BusinessLine:   src.BusinessLine,

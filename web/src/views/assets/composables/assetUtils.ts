@@ -1,4 +1,4 @@
-import type { SyncBatchSummary, SyncBatchSummaryDisplay } from '@/api/asset'
+import type { Resource, SyncBatchSummary, SyncBatchSummaryDisplay } from '@/api/asset'
 
 // 资产页面纯函数：label 掩码/排序、长 ID 短码、同步批次 message 兼容解析。
 // 抽离自 assets/index.vue 的 <script setup> 便于单测。
@@ -32,7 +32,10 @@ export const SORTABLE_RESOURCE_FIELDS = [
   'namespace',
   'pod',
   'instance',
-  'sync_batch_id'
+  'sync_batch_id',
+  'created_at'
+  // updated_at 暂不开放排序：203 部署版本的后端排序白名单未覆盖该字段（实测回退默认）。
+  // 后端补齐 "updated_at": "updated_at" 后再加入本白名单，避免表头出现点了没反应的箭头。
 ] as const
 
 export interface ResourceSortParams {
@@ -137,6 +140,8 @@ export type OptionalResourceColumnKey =
   | 'namespace'
   | 'pod'
   | 'instance'
+  | 'created_at'
+  | 'updated_at'
 
 export interface OptionalResourceColumn {
   key: OptionalResourceColumnKey
@@ -152,8 +157,58 @@ export const OPTIONAL_RESOURCE_COLUMNS: OptionalResourceColumn[] = [
   { key: 'labels', label: 'Labels', width: 220, slotName: 'labels' },
   { key: 'namespace', label: 'Namespace', width: 110, dataIndex: 'namespace' },
   { key: 'pod', label: 'Pod', width: 110, dataIndex: 'pod' },
-  { key: 'instance', label: 'Instance', width: 120, dataIndex: 'instance' }
+  { key: 'instance', label: 'Instance', width: 120, dataIndex: 'instance' },
+  { key: 'created_at', label: '创建时间', width: 160, slotName: 'created_at' },
+  { key: 'updated_at', label: '更新时间', width: 160, slotName: 'updated_at' }
 ]
+
+/** 列设置的本地持久化 key；读取时必须走白名单校验。 */
+export const ASSET_COLUMNS_STORAGE_KEY = 'aiops.asset.visible-extra-columns'
+
+/**
+ * localStorage 的值不可信（旧版本遗留 key、手工篡改、脏数据）：
+ * 只保留当前定义中存在的列，按定义顺序返回并去重。
+ */
+export function sanitizeVisibleColumns(value: unknown): OptionalResourceColumnKey[] {
+  if (!Array.isArray(value)) return []
+  return OPTIONAL_RESOURCE_COLUMNS
+    .map((col) => col.key)
+    .filter((key) => value.includes(key))
+}
+
+/** CSV 单元格统一加引号并转义内部双引号，避免逗号/换行/公式注入破坏表格结构。 */
+export function csvCell(value: unknown): string {
+  const text = value == null ? '' : String(value)
+  return `"${text.replace(/"/g, '""')}"`
+}
+
+const RESOURCE_CSV_COLUMNS: Array<[string, (row: Resource) => unknown]> = [
+  ['资源 ID', (r) => r.id],
+  ['资源名', (r) => r.name],
+  ['来源', (r) => r.source],
+  ['类型', (r) => r.resource_type],
+  ['云类型', (r) => r.cloud_resource_type],
+  ['云账号', (r) => r.integration_account_id],
+  ['云资源 ID', (r) => r.cloud_resource_id],
+  ['Region', (r) => r.region],
+  ['同步状态', (r) => r.sync_status],
+  ['Namespace', (r) => r.namespace],
+  ['Pod', (r) => r.pod],
+  ['Node', (r) => r.node],
+  ['Instance', (r) => r.instance],
+  ['最近同步', (r) => r.last_synced_at ? new Date(r.last_synced_at * 1000).toISOString() : ''],
+  ['最近成功批次', (r) => r.sync_batch_id],
+  ['Labels', (r) => r.labels ? JSON.stringify(r.labels) : ''],
+  ['创建时间', (r) => r.created_at ? new Date(r.created_at * 1000).toISOString() : ''],
+  ['更新时间', (r) => r.updated_at ? new Date(r.updated_at * 1000).toISOString() : '']
+]
+
+/** 生成带表头的 CSV 文本；时间戳统一 ISO，Excel 打开时由下载侧补 UTF-8 BOM。 */
+export function buildResourceCsv(rows: Resource[]): string {
+  const header = RESOURCE_CSV_COLUMNS.map(([label]) => csvCell(label)).join(',')
+  const lines = rows.map((row) => RESOURCE_CSV_COLUMNS.map(([, get]) => csvCell(get(row))).join(','))
+  return [header, ...lines].join('\r\n')
+}
 
 export type LabelEntry = {
   key: string

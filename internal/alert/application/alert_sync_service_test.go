@@ -302,3 +302,54 @@ func TestAlertSyncService_PullFailureReturnsFailedSummary(t *testing.T) {
 		t.Fatal("failed round should still commit last_sync_status")
 	}
 }
+
+func TestAlertSyncService_WritesCESConditionMetadata(t *testing.T) {
+	now := time.Now().UTC()
+	rec := pulled("r-cond", "alarm", "a", now)
+	rec.Namespace = "SYS.RDS"
+	rec.MetricName = "disk_usedPercent"
+	rec.ResourceName = "prod-db"
+	rec.Condition = &AlarmCondition{
+		Filter: "average", ComparisonOperator: ">", Threshold: 80, Unit: "%",
+		PeriodSeconds: 300, TriggerCount: 3,
+	}
+	pull := &syncTestPull{results: []*AlertPullResult{
+		oneScope([]PulledAlarm{rec}, true, 1000, ""),
+	}}
+	lease := &syncTestLease{acquire: true, renew: true, commit: true}
+	svc, alerts, _ := newSyncTestService(t, newPullSource(), pull, lease)
+
+	result, err := svc.Sync(context.Background(), "ces-src", Actor{})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if result.Created != 1 {
+		t.Fatalf("expected 1 created, got %+v", result)
+	}
+	if len(alerts.byID) != 1 {
+		t.Fatalf("expected 1 alert, got %d", len(alerts.byID))
+	}
+	var alert *domain.Alert
+	for _, item := range alerts.byID {
+		alert = item
+	}
+	if got := alert.Annotations["ces_condition"]; got != "> 80% (average, 300s x3)" {
+		t.Fatalf("ces_condition = %q", got)
+	}
+	if got := alert.Annotations["ces_metric_name"]; got != "disk_usedPercent" {
+		t.Fatalf("ces_metric_name = %q", got)
+	}
+	if got := alert.Annotations["ces_level"]; got != "2" {
+		t.Fatalf("ces_level = %q", got)
+	}
+	if got := alert.Labels["metric_name"]; got != "disk_usedPercent" {
+		t.Fatalf("labels.metric_name = %q", got)
+	}
+	wantDesc := "SYS.RDS disk_usedPercent > 80% (average, 300s x3) · prod-db"
+	if alert.Description != wantDesc {
+		t.Fatalf("description = %q, want %q", alert.Description, wantDesc)
+	}
+	if alert.Summary != "prod-db" {
+		t.Fatalf("summary should stay resource name, got %q", alert.Summary)
+	}
+}

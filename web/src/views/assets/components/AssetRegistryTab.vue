@@ -120,7 +120,7 @@
                     @change="onVisibleColumnsChange"
                   />
                   <div class="assets-column-settings-hint">
-                    勾选后表格转为横向滚动模式
+                    勾选后表格转为横向滚动模式；设置会保存在本机
                   </div>
                 </div>
               </template>
@@ -134,6 +134,17 @@
                 <IconRefresh />
               </template>
               刷新
+            </a-button>
+            <a-button
+              size="small"
+              :disabled="!selectedAppId"
+              :loading="exportingResources"
+              @click="emit('export-resources')"
+            >
+              <template #icon>
+                <IconDownload />
+              </template>
+              导出 CSV
             </a-button>
             <a-button
               type="primary"
@@ -312,6 +323,29 @@
           @page-size-change="(size: number) => emit('resource-page-size-change', size)"
           @sorter-change="(field: string, direction: string) => emit('resource-sorter-change', field, direction)"
         >
+          <template #empty>
+            <div
+              v-if="!resourcesLoading"
+              class="assets-table-empty"
+            >
+              <a-empty :description="activeFilterChips.length ? '没有符合当前筛选条件的资源' : '该应用下还没有资源'" />
+              <a-button
+                v-if="activeFilterChips.length"
+                size="small"
+                @click="emit('reset-filters')"
+              >
+                清空筛选条件
+              </a-button>
+              <a-button
+                v-else
+                type="primary"
+                size="small"
+                @click="emit('create-resource')"
+              >
+                新建资源
+              </a-button>
+            </div>
+          </template>
           <template #source="{ record }">
             <a-tag
               v-if="(record as Resource).source === 'cloud_sync'"
@@ -369,6 +403,12 @@
           </template>
           <template #last_synced_at="{ record }">
             {{ formatTs((record as Resource).last_synced_at) }}
+          </template>
+          <template #created_at="{ record }">
+            {{ formatTs((record as Resource).created_at) }}
+          </template>
+          <template #updated_at="{ record }">
+            {{ formatTs((record as Resource).updated_at) }}
           </template>
           <template #sync_batch_id="{ record }">
             <a-tooltip
@@ -448,6 +488,7 @@ import { computed } from 'vue'
 import type { CSSProperties } from 'vue'
 import {
   IconDelete,
+  IconDownload,
   IconEdit,
   IconRefresh,
   IconSearch,
@@ -490,6 +531,7 @@ const props = defineProps<{
   resourceFilters: ResourceFilterState
   resourceFilterOptions: ResourceFilterOptions
   filterOptionsLoading: boolean
+  exportingResources: boolean
   visibleExtraColumns: OptionalResourceColumnKey[]
 }>()
 
@@ -504,6 +546,7 @@ const emit = defineEmits<{
   'delete-resource': [res: Resource]
   'apply-filters': []
   'reset-filters': []
+  'export-resources': []
   'resource-sorter-change': [dataIndex: string, direction: string]
   'column-visibility-change': [keys: OptionalResourceColumnKey[]]
   'select-app': [record: TableData]

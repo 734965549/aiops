@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -34,6 +36,8 @@ type PulledAlarm struct {
 	Status       string // alarm / ok / ok_manual / invalid / insufficient_data
 	Level        string // CES level "1".."4"
 	Namespace    string
+	MetricName   string
+	Condition    *AlarmCondition
 	ResourceID   string
 	ResourceName string
 	ResourceType string
@@ -41,6 +45,45 @@ type PulledAlarm struct {
 	FirstSeenAt  *time.Time
 	LastAlarmAt  *time.Time
 	RecoveredAt  *time.Time
+}
+
+// AlarmCondition 是 Alert 端口自包含的触发条件快照，避免依赖 observability 内部类型。
+type AlarmCondition struct {
+	Filter             string
+	ComparisonOperator string
+	Threshold          float64
+	Unit               string
+	PeriodSeconds      int64
+	TriggerCount       int
+	SuppressDurationS  int64
+}
+
+// Describe 输出人类可读的触发条件，供 annotations/description 与 AI 分析使用。
+// 与 internal/observability/domain.AlarmCondition.Describe 保持同一输出格式（端口自包含）。
+func (c *AlarmCondition) Describe() string {
+	if c == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(c.ComparisonOperator)
+	if c.ComparisonOperator != "" {
+		b.WriteString(" ")
+	}
+	b.WriteString(strconv.FormatFloat(c.Threshold, 'f', -1, 64))
+	if c.Unit != "" {
+		b.WriteString(c.Unit)
+	}
+	if c.Filter != "" {
+		b.WriteString(" (" + c.Filter)
+		if c.PeriodSeconds > 0 {
+			b.WriteString(", " + strconv.FormatInt(c.PeriodSeconds, 10) + "s")
+		}
+		if c.TriggerCount > 0 {
+			b.WriteString(" x" + strconv.Itoa(c.TriggerCount))
+		}
+		b.WriteString(")")
+	}
+	return b.String()
 }
 
 // PulledScope 单个 region/project scope 的拉取结果。

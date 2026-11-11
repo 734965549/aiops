@@ -8,17 +8,41 @@ import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import * as assetApi from '@/api/asset'
 import type { Application, Resource } from '@/api/asset'
 import {
+  ASSET_COLUMNS_STORAGE_KEY,
   OPTIONAL_RESOURCE_COLUMNS,
+  RESOURCE_FILTER_QUERY_KEYS,
   SORTABLE_RESOURCE_FIELDS,
+  buildResourceCsv,
   labelEntries,
   resourceFiltersFromQuery,
   resourceSortFromQuery,
+  sanitizeVisibleColumns,
   toResourceSortParams,
   withResourceQuery
 } from './assetUtils'
 import type { OptionalResourceColumnKey, ResourceFilterState, ResourceSortState } from './assetUtils'
 
 type TableColumn = NonNullable<TableInstance['columns']>[number]
+
+// 导出上限：分页拉全量时避免一次请求把浏览器/后端拖垮。
+const MAX_EXPORT_ROWS = 2000
+
+function readVisibleColumns(): OptionalResourceColumnKey[] {
+  try {
+    const raw = localStorage.getItem(ASSET_COLUMNS_STORAGE_KEY)
+    return raw ? sanitizeVisibleColumns(JSON.parse(raw)) : []
+  } catch {
+    return []
+  }
+}
+
+function writeVisibleColumns(keys: OptionalResourceColumnKey[]) {
+  try {
+    localStorage.setItem(ASSET_COLUMNS_STORAGE_KEY, JSON.stringify(keys))
+  } catch {
+    // 无痕模式 / 存储配额不足：保持本次会话有效即可，不阻塞页面。
+  }
+}
 
 export function useAssetRegistry(options: {
   selectedAppId: Ref<string>
@@ -42,6 +66,7 @@ export function useAssetRegistry(options: {
   const editingResourceId = ref('')
   const appSaving = ref(false)
   const resourceSaving = ref(false)
+  const exportingResources = ref(false)
 
   const appPagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
   const resourcePagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
@@ -88,7 +113,8 @@ export function useAssetRegistry(options: {
 
   // 「附加列」默认全部关闭。验收要求可见的「来源 / 云资源 ID / Region / 同步状态」
   // 都在核心列里；勾选附加列后表格才切回横向滚动。
-  const visibleExtraColumns = ref<OptionalResourceColumnKey[]>([])
+  // 用户的列设置持久化到 localStorage，读取时按白名单过滤脏值。
+  const visibleExtraColumns = ref<OptionalResourceColumnKey[]>(readVisibleColumns())
 
   // 核心列宽度只用于「附加列开启」时的 scroll.x 计算；
   // 默认视图下由 .page-table-fit 的 !important 百分比列宽覆盖。
@@ -206,6 +232,71 @@ export function useAssetRegistry(options: {
     void router.replace({ query: query as LocationQueryRaw })
   }
 
+  /**
+   * 浏览器前进/后退或手工改 URL 时，把 query 同步回内存状态。
+   * 自己刚通过 syncFiltersToRoute 写入的 query 与状态一致，返回 false，不会重复请求。
+   */
+  function syncFiltersFromRoute(): boolean {
+    const filters = resourceFiltersFromQuery(route.query as Record<string, unknown>)
+    const sort = resourceSortFromQuery(route.query as Record<string, unknown>)
+    let changed = false
+    for (const key of RESOURCE_FILTER_QUERY_KEYS) {
+      if (resourceFilters[key] !== filters[key]) {
+        resourceFilters[key] = filters[key]
+        changed = true
+      }
+    }
+    if (resourceSorter.field !== sort.field || resourceSorter.direction !== sort.direction) {
+      resourceSorter.field = sort.field
+      resourceSorter.direction = sort.direction
+      changed = true
+    }
+    if (changed) resourcePagination.current = 1
+    return changed
+  }
+
+  /** 按当前筛选 + 排序跨页拉取全量结果导出 CSV（不是只导当前页）。 */
+  async function exportResourcesCsv() {
+    const appId = selectedAppId.value
+    if (!appId || exportingResources.value) return
+    exportingResources.value = true
+    try {
+      const pageSize = 100
+      const rows: Resource[] = []
+      let page = 1
+      let total = 0
+      do {
+        const res = await assetApi.listResources(appId, resourceQueryParams(page, pageSize))
+        const items = res.items ?? []
+        rows.push(...items)
+        total = res.total ?? rows.length
+        if (!items.length) break
+        page += 1
+      } while (rows.length < total && rows.length < MAX_EXPORT_ROWS)
+
+      if (!rows.length) {
+        Message.warning('当前筛选条件下没有可导出的资源')
+        return
+      }
+      const blob = new Blob(['\uFEFF', buildResourceCsv(rows)], { type: 'text/csv;charset=utf-8;' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `asset-resources-${new Date().toISOString().slice(0, 10)}.csv`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+      Message.success(rows.length < total
+        ? `已导出 ${rows.length} 条（共 ${total} 条，达到 ${MAX_EXPORT_ROWS} 条导出上限）`
+        : `已导出 ${rows.length} 条资源`)
+    } catch {
+      Message.error('导出失败，请稍后重试')
+    } finally {
+      exportingResources.value = false
+    }
+  }
+
   async function scrollToHighlightedResource() {
     if (!highlightedResourceId.value) return
     await nextTick()
@@ -260,21 +351,29 @@ export function useAssetRegistry(options: {
     }
   }
 
+  // 列表与导出共用同一组查询条件，避免两处参数漂移导致导出的不是屏幕上看到的结果。
+  function resourceQueryParams(page: number, pageSize: number): assetApi.ListResourcesParams {
+    return {
+      page,
+      page_size: pageSize,
+      keyword: resourceFilters.keyword.trim() || undefined,
+      source: resourceFilters.source || undefined,
+      cloud_resource_type: resourceFilters.cloud_resource_type.trim() || undefined,
+      region: resourceFilters.region.trim() || undefined,
+      sync_status: resourceFilters.sync_status || undefined,
+      ...toResourceSortParams(resourceSorter.field, resourceSorter.direction)
+    }
+  }
+
   async function loadResources() {
     if (!selectedAppId.value) return
     void loadResourceFilterOptions()
     resourcesLoading.value = true
     try {
-      const res = await assetApi.listResources(selectedAppId.value, {
-        page: resourcePagination.current,
-        page_size: resourcePagination.pageSize,
-        keyword: resourceFilters.keyword.trim() || undefined,
-        source: resourceFilters.source || undefined,
-        cloud_resource_type: resourceFilters.cloud_resource_type.trim() || undefined,
-        region: resourceFilters.region.trim() || undefined,
-        sync_status: resourceFilters.sync_status || undefined,
-        ...toResourceSortParams(resourceSorter.field, resourceSorter.direction)
-      })
+      const res = await assetApi.listResources(
+        selectedAppId.value,
+        resourceQueryParams(resourcePagination.current, resourcePagination.pageSize)
+      )
       resources.value = res.items ?? []
       resourcePagination.total = res.total ?? 0
       const resourceId = routeResourceId()
@@ -317,7 +416,8 @@ export function useAssetRegistry(options: {
   }
 
   function setVisibleExtraColumns(keys: OptionalResourceColumnKey[]) {
-    visibleExtraColumns.value = keys
+    visibleExtraColumns.value = sanitizeVisibleColumns(keys)
+    writeVisibleColumns(visibleExtraColumns.value)
   }
 
   function onSelectApplication(record: TableData) {
@@ -517,6 +617,7 @@ export function useAssetRegistry(options: {
     editingResourceId,
     appSaving,
     resourceSaving,
+    exportingResources,
     appForm,
     resourceForm,
     resourceFilters,
@@ -545,6 +646,8 @@ export function useAssetRegistry(options: {
     loadResourceFilterOptions,
     applyResourceFilters,
     resetResourceFilters,
+    syncFiltersFromRoute,
+    exportResourcesCsv,
     onResourceSorterChange,
     setVisibleExtraColumns,
     onSelectApplication,

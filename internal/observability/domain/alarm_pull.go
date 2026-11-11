@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strconv"
 	"strings"
 	"time"
 )
@@ -27,6 +28,8 @@ type AlarmRecord struct {
 	Status       string // alarm / ok / ok_manual / invalid / insufficient_data
 	Level        string // CES level "1".."4"
 	Namespace    string
+	MetricName   string
+	Condition    *AlarmCondition
 	ResourceID   string
 	ResourceName string
 	ResourceType string
@@ -34,6 +37,45 @@ type AlarmRecord struct {
 	FirstSeenAt  *time.Time
 	LastAlarmAt  *time.Time
 	RecoveredAt  *time.Time
+}
+
+// AlarmCondition 告警触发条件（华为 CES AlarmHistoryItemV2.condition，契约 §6.2）。
+type AlarmCondition struct {
+	Filter             string  // average / max / min / sum / variance
+	ComparisonOperator string  // > / >= / < / <= / = / != / cycle_*
+	Threshold          float64 // 阈值
+	Unit               string  // % / count / ms ...
+	PeriodSeconds      int64   // 指标聚合周期（秒）
+	TriggerCount       int     // 连续触发周期数
+	SuppressDurationS  int64   // 通知抑制间隔（秒）
+}
+
+// Describe 输出人类可读的触发条件，供 summary/annotations 与 AI 分析使用。
+// 与 internal/alert/application.AlarmCondition.Describe 保持同一输出格式（端口自包含）。
+func (c *AlarmCondition) Describe() string {
+	if c == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(c.ComparisonOperator)
+	if c.ComparisonOperator != "" {
+		b.WriteString(" ")
+	}
+	b.WriteString(strconv.FormatFloat(c.Threshold, 'f', -1, 64))
+	if c.Unit != "" {
+		b.WriteString(c.Unit)
+	}
+	if c.Filter != "" {
+		b.WriteString(" (" + c.Filter)
+		if c.PeriodSeconds > 0 {
+			b.WriteString(", " + strconv.FormatInt(c.PeriodSeconds, 10) + "s")
+		}
+		if c.TriggerCount > 0 {
+			b.WriteString(" x" + strconv.Itoa(c.TriggerCount))
+		}
+		b.WriteString(")")
+	}
+	return b.String()
 }
 
 // AlarmScopeResult 单个 scope 的拉取结果。
