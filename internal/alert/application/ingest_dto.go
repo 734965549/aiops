@@ -55,6 +55,9 @@ type EnvironmentDefaults struct {
 
 // NormalizedAlert 接入归一化后的中间结构，再由 IngestService 写入 domain.Alert。
 type NormalizedAlert struct {
+	// DedupKey 非空时优先使用（拉取式接入按 source/account/region/project/record_id 组装），
+	// 为空时由 IngestService 按契约 §7.1 计算。
+	DedupKey        string
 	ExternalID      string
 	Fingerprint     string
 	Status          string // firing / resolved

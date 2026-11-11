@@ -86,6 +86,22 @@ func (r *fakeAlertRepo) FindActiveByDedupKey(_ context.Context, sourceID, dedupK
 	return &cp, nil
 }
 
+func (r *fakeAlertRepo) FindLatestByDedupKey(_ context.Context, sourceID, dedupKey string) (*domain.Alert, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var latest *domain.Alert
+	for _, a := range r.byID {
+		if a.SourceID == sourceID && a.DedupKey == dedupKey && (latest == nil || a.LifecycleSeq > latest.LifecycleSeq || (a.LifecycleSeq == latest.LifecycleSeq && a.ID > latest.ID)) {
+			cp := *a
+			latest = &cp
+		}
+	}
+	if latest == nil {
+		return nil, domain.ErrNotFound
+	}
+	return latest, nil
+}
+
 func (r *fakeAlertRepo) MaxLifecycleSeq(_ context.Context, dedupKey string) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

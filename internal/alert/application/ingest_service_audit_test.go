@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/734965549/aiops/internal/alert/domain"
-	"github.com/734965549/aiops/internal/alert/infrastructure/ingest"
 )
 
 func TestIngestService_CreateWritesIngestAudit(t *testing.T) {
@@ -16,7 +15,7 @@ func TestIngestService_CreateWritesIngestAudit(t *testing.T) {
 	sources := &ingestTestSourceRepo{}
 	src := &domain.AlertSource{
 		ID: "src-1", Name: "AM", Type: domain.SourcePrometheusAlertmanager,
-		Enabled: true, SecretHash: ingest.HashWebhookSecret("secret"),
+		Enabled: true, SecretHash: domain.HashWebhookSecret("secret"),
 	}
 	_ = sources.Create(context.Background(), src)
 	svc := NewIngestService(alerts, events, sources, nil, nil, audit)
@@ -99,6 +98,15 @@ func (r *ingestTestAlertRepo) Create(_ context.Context, alert *domain.Alert) err
 }
 
 func (r *ingestTestAlertRepo) FindActiveByDedupKey(_ context.Context, _, dedupKey string) (*domain.Alert, error) {
+	a, ok := r.byDedup[dedupKey]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	cp := *a
+	return &cp, nil
+}
+
+func (r *ingestTestAlertRepo) FindLatestByDedupKey(_ context.Context, _, dedupKey string) (*domain.Alert, error) {
 	a, ok := r.byDedup[dedupKey]
 	if !ok {
 		return nil, domain.ErrNotFound

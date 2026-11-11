@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/734965549/aiops/internal/alert/infrastructure/webhookidempotency"
 	apperr "github.com/734965549/aiops/pkg/errors"
 	"golang.org/x/sync/singleflight"
 )
@@ -16,7 +15,7 @@ const webhookIdempotencyTTL = 5 * time.Minute
 
 // webhookIdempotencyExecutor 封装 Redis 跨 Pod 幂等 + 本 Pod singleflight 合并并发。
 type webhookIdempotencyExecutor struct {
-	store    webhookidempotency.Store
+	store    WebhookIdempotencyStore
 	inflight singleflight.Group
 }
 

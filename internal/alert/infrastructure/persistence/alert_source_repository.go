@@ -2,7 +2,9 @@ package persistence
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/734965549/aiops/internal/alert/domain"
 	"github.com/734965549/aiops/pkg/database"
@@ -20,6 +22,11 @@ type alertSourceModel struct {
 	Environment  string `gorm:"column:environment;type:varchar(64);not null;default:''"`
 	BusinessLine string `gorm:"column:business_line;type:varchar(128);not null;default:''"`
 	Description  string `gorm:"column:description;type:varchar(255);not null;default:''"`
+	// 拉取式接入扩展字段，见 ops/huawei-ces-alert-sync-contract.md §4.1。
+	AccountID      string     `gorm:"column:account_id;type:varchar(64);not null;default:''"`
+	PullConfig     []byte     `gorm:"column:pull_config;type:jsonb;not null;default:'{}'::jsonb"`
+	LastSyncAt     *time.Time `gorm:"column:last_sync_at"`
+	LastSyncStatus string     `gorm:"column:last_sync_status;type:varchar(32);not null;default:''"`
 }
 
 func (alertSourceModel) TableName() string { return "alert_source" }
@@ -41,15 +48,23 @@ func (r *AlertSourceRepository) Create(ctx context.Context, source *domain.Alert
 	if source == nil {
 		return errors.New("alert source is nil")
 	}
+	pullConfig, err := json.Marshal(source.PullConfig)
+	if err != nil {
+		return err
+	}
 	m := alertSourceModel{
-		SourceID:     source.ID,
-		Name:         source.Name,
-		Type:         string(source.Type),
-		Enabled:      source.Enabled,
-		SecretHash:   source.SecretHash,
-		Environment:  source.Environment,
-		BusinessLine: source.BusinessLine,
-		Description:  source.Description,
+		SourceID:       source.ID,
+		Name:           source.Name,
+		Type:           string(source.Type),
+		Enabled:        source.Enabled,
+		SecretHash:     source.SecretHash,
+		Environment:    source.Environment,
+		BusinessLine:   source.BusinessLine,
+		Description:    source.Description,
+		AccountID:      source.AccountID,
+		PullConfig:     pullConfig,
+		LastSyncAt:     source.LastSyncAt,
+		LastSyncStatus: source.LastSyncStatus,
 	}
 	if err := r.db.WithContext(ctx).Create(&m).Error; err != nil {
 		return database.MapUniqueViolation(err, domain.ErrAlreadyExists)
@@ -66,14 +81,22 @@ func (r *AlertSourceRepository) Update(ctx context.Context, source *domain.Alert
 	if source == nil {
 		return errors.New("alert source is nil")
 	}
+	pullConfig, err := json.Marshal(source.PullConfig)
+	if err != nil {
+		return err
+	}
 	res := r.db.WithContext(ctx).Model(&alertSourceModel{}).Where("source_id = ?", source.ID).Updates(map[string]any{
-		"name":          source.Name,
-		"type":          string(source.Type),
-		"enabled":       source.Enabled,
-		"secret_hash":   source.SecretHash,
-		"environment":   source.Environment,
-		"business_line": source.BusinessLine,
-		"description":   source.Description,
+		"name":             source.Name,
+		"type":             string(source.Type),
+		"enabled":          source.Enabled,
+		"secret_hash":      source.SecretHash,
+		"environment":      source.Environment,
+		"business_line":    source.BusinessLine,
+		"description":      source.Description,
+		"account_id":       source.AccountID,
+		"pull_config":      pullConfig,
+		"last_sync_at":     source.LastSyncAt,
+		"last_sync_status": source.LastSyncStatus,
 	})
 	if res.Error != nil {
 		return database.MapUniqueViolation(res.Error, domain.ErrAlreadyExists)
@@ -147,16 +170,24 @@ func toAlertSourceDomain(m *alertSourceModel) domain.AlertSource {
 	if m == nil {
 		return domain.AlertSource{}
 	}
+	var pullConfig domain.PullConfig
+	if len(m.PullConfig) > 0 {
+		_ = json.Unmarshal(m.PullConfig, &pullConfig)
+	}
 	return domain.AlertSource{
-		ID:           m.SourceID,
-		Name:         m.Name,
-		Type:         domain.AlertSourceType(m.Type),
-		Enabled:      m.Enabled,
-		SecretHash:   m.SecretHash,
-		Environment:  m.Environment,
-		BusinessLine: m.BusinessLine,
-		Description:  m.Description,
-		CreatedAt:    m.CreatedAt,
-		UpdatedAt:    m.UpdatedAt,
+		ID:             m.SourceID,
+		Name:           m.Name,
+		Type:           domain.AlertSourceType(m.Type),
+		Enabled:        m.Enabled,
+		SecretHash:     m.SecretHash,
+		Environment:    m.Environment,
+		BusinessLine:   m.BusinessLine,
+		Description:    m.Description,
+		AccountID:      m.AccountID,
+		PullConfig:     pullConfig,
+		LastSyncAt:     m.LastSyncAt,
+		LastSyncStatus: m.LastSyncStatus,
+		CreatedAt:      m.CreatedAt,
+		UpdatedAt:      m.UpdatedAt,
 	}
 }

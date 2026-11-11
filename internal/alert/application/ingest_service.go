@@ -7,8 +7,6 @@ import (
 	"time"
 
 	"github.com/734965549/aiops/internal/alert/domain"
-	"github.com/734965549/aiops/internal/alert/infrastructure/ingest"
-	"github.com/734965549/aiops/internal/alert/infrastructure/webhookidempotency"
 	apperr "github.com/734965549/aiops/pkg/errors"
 	"github.com/734965549/aiops/pkg/logger"
 	httpx "github.com/734965549/aiops/pkg/transport/http"
@@ -34,7 +32,7 @@ func NewIngestService(
 	events domain.AlertEventRepository,
 	sources domain.AlertSourceRepository,
 	assets AssetMatcher,
-	idempotency webhookidempotency.Store,
+	idempotency WebhookIdempotencyStore,
 	audit AuditRecorder,
 ) *IngestService {
 	if assets == nil {
@@ -75,7 +73,7 @@ func (s *IngestService) VerifySource(ctx context.Context, ingestCtx IngestContex
 	if !src.Enabled {
 		return nil, apperr.New(apperr.CodeNotFound, "alert source not found")
 	}
-	if !ingest.VerifyWebhookSecret(ingestCtx.Token, src.SecretHash) {
+	if !domain.VerifyWebhookSecret(ingestCtx.Token, src.SecretHash) {
 		return nil, apperr.New(apperr.CodeUnauthenticated, "invalid webhook token")
 	}
 	return src, nil
@@ -91,7 +89,7 @@ func (s *IngestService) IngestAlertmanager(ctx context.Context, ingestCtx Ingest
 	return s.idempotency.do(ctx, key, func() (*IngestResultDTO, error) {
 		defaults := EnvironmentDefaults{Environment: src.Environment, BusinessLine: src.BusinessLine}
 		normalized := ParseAlertmanagerWebhook(payload, defaults)
-		return s.ingestNormalized(ctx, src, ingestCtx, normalized)
+		return s.ingestNormalized(ctx, src, ingestCtx, normalized, IngestOptions{})
 	})
 }
 
@@ -105,11 +103,24 @@ func (s *IngestService) IngestGeneric(ctx context.Context, ingestCtx IngestConte
 	return s.idempotency.do(ctx, key, func() (*IngestResultDTO, error) {
 		defaults := EnvironmentDefaults{Environment: src.Environment, BusinessLine: src.BusinessLine}
 		normalized := []NormalizedAlert{ParseGenericWebhook(payload, defaults)}
-		return s.ingestNormalized(ctx, src, ingestCtx, normalized)
+		return s.ingestNormalized(ctx, src, ingestCtx, normalized, IngestOptions{})
 	})
 }
 
-func (s *IngestService) ingestNormalized(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, items []NormalizedAlert) (*IngestResultDTO, error) {
+// IngestOptions 控制接入归一化管道的生命周期语义。
+type IngestOptions struct {
+	// IgnoreTerminal 为 true 时（拉取式接入），同一 dedup_key 已 recovered/closed 后
+	// 再次观测到 firing 不重开，直接计入 ignored；Webhook 保持 false 以维持 §7.2 重开语义。
+	IgnoreTerminal bool
+}
+
+// IngestNormalized 复用 Webhook 归一化管道写入拉取式告警（CES 等），
+// 调用方已完成鉴权/账号校验，并显式提供 DedupKey。
+func (s *IngestService) IngestNormalized(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, items []NormalizedAlert, opts IngestOptions) (*IngestResultDTO, error) {
+	return s.ingestNormalized(ctx, src, ingestCtx, items, opts)
+}
+
+func (s *IngestService) ingestNormalized(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, items []NormalizedAlert, opts IngestOptions) (*IngestResultDTO, error) {
 	if s == nil || s.alerts == nil {
 		return nil, apperr.New(apperr.CodeUnavailable, "alert ingest is not enabled")
 	}
@@ -120,7 +131,7 @@ func (s *IngestService) ingestNormalized(ctx context.Context, src *domain.AlertS
 			result.Ignored++
 			continue
 		}
-		created, updated, recovered, ignored, err := s.processOne(ctx, src, ingestCtx, item)
+		created, updated, recovered, ignored, err := s.processOne(ctx, src, ingestCtx, item, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -142,10 +153,26 @@ func (s *IngestService) ingestNormalized(ctx context.Context, src *domain.AlertS
 }
 
 // processOne 处理单条归一化告警：firing 新建/更新，resolved 转 recovered，recovered 后 firing 重新打开当前 lifecycle，closed 后 firing 新建 lifecycle。
-func (s *IngestService) processOne(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, item NormalizedAlert) (created, updated, recovered, ignored int, err error) {
-	dedupKey := ingest.ComputeDedupKey(src.ID, firstNonEmpty(item.Fingerprint, item.ExternalID), item.RuleName, item.ResourceName, item.Labels)
+func (s *IngestService) processOne(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, item NormalizedAlert, opts IngestOptions) (created, updated, recovered, ignored int, err error) {
+	dedupKey := item.DedupKey
+	if strings.TrimSpace(dedupKey) == "" {
+		dedupKey = domain.ComputeDedupKey(src.ID, firstNonEmpty(item.Fingerprint, item.ExternalID), item.RuleName, item.ResourceName, item.Labels)
+	}
 	now := time.Now()
 	isResolved := strings.EqualFold(item.Status, "resolved")
+
+	if opts.IgnoreTerminal {
+		latest, findErr := s.alerts.FindLatestByDedupKey(ctx, src.ID, dedupKey)
+		if findErr != nil && !errors.Is(findErr, domain.ErrNotFound) {
+			return 0, 0, 0, 0, wrapAlertOpError(findErr, "find latest alert failed")
+		}
+		if findErr == nil && latest != nil &&
+			(latest.Status == domain.StatusRecovered || latest.Status == domain.StatusClosed) {
+			// 拉取式接入：同一 record 已恢复/关闭后，后续观测只可能是旧快照，不得重开。
+			ignored = 1
+			return
+		}
+	}
 
 	active, findErr := s.alerts.FindActiveByDedupKey(ctx, src.ID, dedupKey)
 	if findErr != nil && !errors.Is(findErr, domain.ErrNotFound) {

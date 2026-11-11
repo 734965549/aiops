@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // AlertSource 领域模型见 ops/alert-contract.md §5.3；Webhook 鉴权见 §3.2。
 
@@ -36,6 +39,23 @@ type AlertSource struct {
 	Environment  string          // 默认环境
 	BusinessLine string          // 默认业务线
 	Description  string          // 备注
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// 拉取式接入扩展字段，见 ops/huawei-ces-alert-sync-contract.md §4.1。
+	AccountID      string          // 绑定的 integration account ID
+	PullConfig     PullConfig      // 拉取配置（delivery_mode/interval/severity_map/region_filter）
+	LastSyncAt     *time.Time      // 最近一轮拉取完成时间
+	LastSyncStatus string          // success / partial / failed / 空
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
+
+// IsPullSource 判断是否为平台主动拉取接入源：
+// type=huawei_ces、绑定账号且 delivery_mode 不是 webhook。
+func (s AlertSource) IsPullSource() bool {
+	if s.Type != SourceHuaweiCES || strings.TrimSpace(s.AccountID) == "" {
+		return false
+	}
+	return s.PullConfig.DeliveryMode != DeliveryModeWebhook
+}
+
+// IsWebhookSource 判断是否为 Webhook 推送接入源。
+func (s AlertSource) IsWebhookSource() bool { return !s.IsPullSource() }

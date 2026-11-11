@@ -63,6 +63,9 @@ func (r *httpTestAlertRepo) GetByID(_ context.Context, alertID string) (*domain.
 func (r *httpTestAlertRepo) FindActiveByDedupKey(_ context.Context, _, _ string) (*domain.Alert, error) {
 	return nil, domain.ErrNotFound
 }
+func (r *httpTestAlertRepo) FindLatestByDedupKey(_ context.Context, _, _ string) (*domain.Alert, error) {
+	return nil, domain.ErrNotFound
+}
 func (r *httpTestAlertRepo) MaxLifecycleSeq(_ context.Context, _ string) (int, error) { return 0, nil }
 func (r *httpTestAlertRepo) List(_ context.Context, filter domain.AlertFilter) ([]domain.Alert, error) {
 	r.mu.Lock()

@@ -139,6 +139,27 @@ func (r *AlertRepository) FindActiveByDedupKey(ctx context.Context, sourceID, de
 	return &out, nil
 }
 
+// FindLatestByDedupKey 查找 dedup_key 下最新 lifecycle 记录（含 closed），
+// 供拉取式接入阻止旧 firing 重开已恢复/关闭的告警。
+func (r *AlertRepository) FindLatestByDedupKey(ctx context.Context, sourceID, dedupKey string) (*domain.Alert, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("alert repository is not configured")
+	}
+	var row alertModel
+	err := r.db.WithContext(ctx).
+		Where("source_id = ? AND dedup_key = ?", sourceID, dedupKey).
+		Order("lifecycle_seq DESC, id DESC").
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := toAlertDomain(&row)
+	return &out, nil
+}
+
 func (r *AlertRepository) MaxLifecycleSeq(ctx context.Context, dedupKey string) (int, error) {
 	if r == nil || r.db == nil {
 		return 0, errors.New("alert repository is not configured")

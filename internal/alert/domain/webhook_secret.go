@@ -1,4 +1,4 @@
-package ingest
+package domain
 
 import (
 	"crypto/sha256"
@@ -7,13 +7,14 @@ import (
 	"strings"
 )
 
-// HashWebhookSecret 将 §3.2 X-AIOPS-Webhook-Token 做 sha256 后 hex 落库，接口永不返回明文。
+// HashWebhookSecret 将 ops/alert-contract.md §3.2 的 X-AIOPS-Webhook-Token
+// 做 sha256 后 hex 落库，接口永不返回明文。
 func HashWebhookSecret(secret string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(secret)))
 	return hex.EncodeToString(sum[:])
 }
 
-// VerifyWebhookSecret 校验 §3.2 Webhook token；空 token 或 hash 视为无效。
+// VerifyWebhookSecret 校验 Webhook token；空 token 或 hash 视为无效。
 // 摘要比对使用 subtle.ConstantTimeCompare，降低时序侧信道风险。
 func VerifyWebhookSecret(secret, hash string) bool {
 	secret = strings.TrimSpace(secret)

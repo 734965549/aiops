@@ -66,16 +66,44 @@ type AlertDetailDTO struct {
 
 // AlertSourceDTO 接入源（不含明文密钥）。
 type AlertSourceDTO struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Type         string `json:"type"`
-	Enabled      bool   `json:"enabled"`
-	SecretMasked string `json:"secret_masked,omitempty"`
-	Environment  string `json:"environment,omitempty"`
-	BusinessLine string `json:"business_line,omitempty"`
-	Description  string `json:"description,omitempty"`
-	CreatedAt    int64  `json:"created_at"`
-	UpdatedAt    int64  `json:"updated_at"`
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	Type           string         `json:"type"`
+	Enabled        bool           `json:"enabled"`
+	SecretMasked   string         `json:"secret_masked,omitempty"`
+	Environment    string         `json:"environment,omitempty"`
+	BusinessLine   string         `json:"business_line,omitempty"`
+	Description    string         `json:"description,omitempty"`
+	AccountID      string         `json:"account_id,omitempty"`
+	PullConfig     *PullConfigDTO `json:"pull_config,omitempty"`
+	LastSyncAt     int64          `json:"last_sync_at"`
+	LastSyncStatus string         `json:"last_sync_status,omitempty"`
+	CreatedAt      int64          `json:"created_at"`
+	UpdatedAt      int64          `json:"updated_at"`
+}
+
+// PullConfigDTO 拉取配置对外结构；默认值始终展开，便于前端展示。
+type PullConfigDTO struct {
+	DeliveryMode        string            `json:"delivery_mode"`
+	PullIntervalSeconds int               `json:"pull_interval_seconds"`
+	SeverityMap         map[string]string `json:"severity_map"`
+	RegionFilter        []string          `json:"region_filter"`
+}
+
+// AlertSyncResultDTO 手动/定时拉取完成摘要（CES 契约 §8）。
+type AlertSyncResultDTO struct {
+	SourceID     string   `json:"source_id"`
+	AccountID    string   `json:"account_id"`
+	Regions      []string `json:"regions"`
+	Status       string   `json:"status"`
+	Accepted     int      `json:"accepted"`
+	Created      int      `json:"created"`
+	Updated      int      `json:"updated"`
+	Recovered    int      `json:"recovered"`
+	Ignored      int      `json:"ignored"`
+	FailedScopes []string `json:"failed_scopes"`
+	DurationMS   int64    `json:"duration_ms"`
+	LastSyncAt   int64    `json:"last_sync_at"`
 }
 
 // IngestResultDTO Webhook 接入结果（§6.1 / §6.2 响应 data）。
@@ -153,7 +181,7 @@ func ToAlertEventDTO(e domain.AlertEvent) AlertEventDTO {
 }
 
 func ToAlertSourceDTO(s domain.AlertSource, secretMasked string) AlertSourceDTO {
-	return AlertSourceDTO{
+	dto := AlertSourceDTO{
 		ID:           s.ID,
 		Name:         s.Name,
 		Type:         string(s.Type),
@@ -162,9 +190,30 @@ func ToAlertSourceDTO(s domain.AlertSource, secretMasked string) AlertSourceDTO 
 		Environment:  s.Environment,
 		BusinessLine: s.BusinessLine,
 		Description:  s.Description,
+		AccountID:    s.AccountID,
 		CreatedAt:    s.CreatedAt.Unix(),
 		UpdatedAt:    s.UpdatedAt.Unix(),
 	}
+	if s.Type == domain.SourceHuaweiCES {
+		cfg, err := domain.NormalizePullConfig(s.PullConfig)
+		if err != nil {
+			cfg = domain.PullConfig{DeliveryMode: s.PullConfig.DeliveryMode}
+		}
+		if s.PullConfig.DeliveryMode == "" && s.IsWebhookSource() {
+			cfg.DeliveryMode = domain.DeliveryModeWebhook
+		}
+		dto.PullConfig = &PullConfigDTO{
+			DeliveryMode:        string(cfg.DeliveryMode),
+			PullIntervalSeconds: cfg.PullIntervalSeconds,
+			SeverityMap:         cfg.SeverityMap,
+			RegionFilter:        cfg.RegionFilter,
+		}
+	}
+	if s.LastSyncAt != nil {
+		dto.LastSyncAt = s.LastSyncAt.Unix()
+	}
+	dto.LastSyncStatus = s.LastSyncStatus
+	return dto
 }
 
 func timePtrToUnix(t *time.Time) *int64 {

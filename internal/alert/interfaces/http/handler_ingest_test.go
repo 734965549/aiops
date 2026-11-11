@@ -13,7 +13,6 @@ import (
 
 	alertapp "github.com/734965549/aiops/internal/alert/application"
 	"github.com/734965549/aiops/internal/alert/domain"
-	"github.com/734965549/aiops/internal/alert/infrastructure/ingest"
 	"github.com/734965549/aiops/internal/alert/infrastructure/webhookidempotency"
 	"github.com/734965549/aiops/internal/server"
 	"github.com/734965549/aiops/pkg/config"
@@ -112,6 +111,10 @@ func (r *ingestHTTPAlertRepo) FindActiveByDedupKey(_ context.Context, sourceID, 
 	return &cp, nil
 }
 
+func (r *ingestHTTPAlertRepo) FindLatestByDedupKey(ctx context.Context, sourceID, dedupKey string) (*domain.Alert, error) {
+	return r.FindActiveByDedupKey(ctx, sourceID, dedupKey)
+}
+
 func (r *ingestHTTPAlertRepo) MaxLifecycleSeq(_ context.Context, dedupKey string) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -165,7 +168,7 @@ func newIngestHTTPEngine(t *testing.T, secret string) *gin.Engine {
 		Name:       "Prod AM",
 		Type:       domain.SourcePrometheusAlertmanager,
 		Enabled:    true,
-		SecretHash: ingest.HashWebhookSecret(secret),
+		SecretHash: domain.HashWebhookSecret(secret),
 	}
 	sources := &ingestHTTPSourceRepo{byID: map[string]*domain.AlertSource{src.ID: src}}
 	alerts := newIngestHTTPAlertRepo()
@@ -327,7 +330,7 @@ func TestIngestAlertmanager_DisabledSource(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	src := &domain.AlertSource{
 		ID: "disabled-am", Name: "Disabled", Type: domain.SourcePrometheusAlertmanager,
-		Enabled: false, SecretHash: ingest.HashWebhookSecret("webhook-secret"),
+		Enabled: false, SecretHash: domain.HashWebhookSecret("webhook-secret"),
 	}
 	sources := &ingestHTTPSourceRepo{byID: map[string]*domain.AlertSource{src.ID: src}}
 	svc := alertapp.NewIngestService(newIngestHTTPAlertRepo(), &ingestHTTPEventRepo{}, sources, nil, webhookidempotency.NewMemoryStore(), alertapp.NoopAuditRecorder{})

@@ -8,8 +8,7 @@ import (
 	"time"
 
 	"github.com/734965549/aiops/internal/alert/domain"
-	"github.com/734965549/aiops/internal/alert/infrastructure/ingest"
-	"github.com/734965549/aiops/internal/alert/infrastructure/webhookidempotency"
+
 	apperr "github.com/734965549/aiops/pkg/errors"
 	httpx "github.com/734965549/aiops/pkg/transport/http"
 )
@@ -35,7 +34,7 @@ func (r *fakeSourceRepo) List(_ context.Context) ([]domain.AlertSource, error) {
 func (r *fakeSourceRepo) Delete(_ context.Context, _ string) error             { return nil }
 
 func newTestIngestService(alerts domain.AlertRepository, events domain.AlertEventRepository, sources domain.AlertSourceRepository) *IngestService {
-	return NewIngestService(alerts, events, sources, nil, webhookidempotency.NewMemoryStore(), NoopAuditRecorder{})
+	return NewIngestService(alerts, events, sources, nil, newTestIdempotencyStore(), NoopAuditRecorder{})
 }
 
 func TestIngestService_FiringDedupAndRecover(t *testing.T) {
@@ -45,7 +44,7 @@ func TestIngestService_FiringDedupAndRecover(t *testing.T) {
 		Name:        "Prod AM",
 		Type:        domain.SourcePrometheusAlertmanager,
 		Enabled:     true,
-		SecretHash:  ingest.HashWebhookSecret(secret),
+		SecretHash:  domain.HashWebhookSecret(secret),
 		Environment: "prod",
 	}
 	sources := &fakeSourceRepo{byID: map[string]*domain.AlertSource{src.ID: src}}
@@ -98,7 +97,7 @@ func TestIngestService_ExternalRecoverFromSilenced(t *testing.T) {
 		Name:        "Prod AM",
 		Type:        domain.SourcePrometheusAlertmanager,
 		Enabled:     true,
-		SecretHash:  ingest.HashWebhookSecret(secret),
+		SecretHash:  domain.HashWebhookSecret(secret),
 		Environment: "prod",
 	}
 	sources := &fakeSourceRepo{byID: map[string]*domain.AlertSource{src.ID: src}}
@@ -109,7 +108,7 @@ func TestIngestService_ExternalRecoverFromSilenced(t *testing.T) {
 	bg := context.Background()
 
 	labels := map[string]string{"alertname": "HighMem"}
-	dedupKey := ingest.ComputeDedupKey(src.ID, "fp-silenced", "", "", labels)
+	dedupKey := domain.ComputeDedupKey(src.ID, "fp-silenced", "", "", labels)
 	until := time.Now().Add(time.Hour)
 	alert := &domain.Alert{
 		ID: "a-silenced", SourceID: src.ID, Fingerprint: "fp-silenced", DedupKey: dedupKey, Name: "HighMem",
@@ -160,7 +159,7 @@ func TestIngestService_RefireAfterRecoveredReopensLifecycle(t *testing.T) {
 		Name:        "Prod AM",
 		Type:        domain.SourcePrometheusAlertmanager,
 		Enabled:     true,
-		SecretHash:  ingest.HashWebhookSecret(secret),
+		SecretHash:  domain.HashWebhookSecret(secret),
 		Environment: "prod",
 	}
 	sources := &fakeSourceRepo{byID: map[string]*domain.AlertSource{src.ID: src}}
@@ -213,7 +212,7 @@ func TestIngestService_RefireAfterRecoveredReopensLifecycle(t *testing.T) {
 		t.Fatalf("expected no new lifecycle, got created=%d", res.Created)
 	}
 
-	dedupKey := ingest.ComputeDedupKey(src.ID, "fp-refire", "", "", firingPayload.Alerts[0].Labels)
+	dedupKey := domain.ComputeDedupKey(src.ID, "fp-refire", "", "", firingPayload.Alerts[0].Labels)
 	active, err := alerts.FindActiveByDedupKey(bg, src.ID, dedupKey)
 	if err != nil {
 		t.Fatalf("find active alert: %v", err)
@@ -275,11 +274,11 @@ func TestIngestService_CreateConflictRetriesAsUpdate(t *testing.T) {
 		Name:        "Prod AM",
 		Type:        domain.SourcePrometheusAlertmanager,
 		Enabled:     true,
-		SecretHash:  ingest.HashWebhookSecret(secret),
+		SecretHash:  domain.HashWebhookSecret(secret),
 		Environment: "prod",
 	}
 	now := time.Now()
-	dedupKey := ingest.ComputeDedupKey(src.ID, "fp-race", "", "", map[string]string{"alertname": "HighCPU"})
+	dedupKey := domain.ComputeDedupKey(src.ID, "fp-race", "", "", map[string]string{"alertname": "HighCPU"})
 	winner := &domain.Alert{
 		ID:              "winner-alert",
 		SourceID:        src.ID,
@@ -340,7 +339,7 @@ func TestIngestService_IntegrationEventIncludesTraceID(t *testing.T) {
 		Name:        "Prod AM",
 		Type:        domain.SourcePrometheusAlertmanager,
 		Enabled:     true,
-		SecretHash:  ingest.HashWebhookSecret(secret),
+		SecretHash:  domain.HashWebhookSecret(secret),
 		Environment: "prod",
 	}
 	sources := &fakeSourceRepo{byID: map[string]*domain.AlertSource{src.ID: src}}
@@ -363,7 +362,7 @@ func TestIngestService_IntegrationEventIncludesTraceID(t *testing.T) {
 		t.Fatalf("ingest: %v", err)
 	}
 
-	dedupKey := ingest.ComputeDedupKey(src.ID, "fp-trace", "", "", payload.Alerts[0].Labels)
+	dedupKey := domain.ComputeDedupKey(src.ID, "fp-trace", "", "", payload.Alerts[0].Labels)
 	active, err := alerts.FindActiveByDedupKey(bg, src.ID, dedupKey)
 	if err != nil {
 		t.Fatalf("find active: %v", err)
@@ -388,7 +387,7 @@ func TestIngestService_IntegrationEventIncludesRequestMetadata(t *testing.T) {
 		Name:       "Prod AM",
 		Type:       domain.SourcePrometheusAlertmanager,
 		Enabled:    true,
-		SecretHash: ingest.HashWebhookSecret(secret),
+		SecretHash: domain.HashWebhookSecret(secret),
 	}
 	sources := &fakeSourceRepo{byID: map[string]*domain.AlertSource{src.ID: src}}
 	alerts := newFakeAlertRepo()
@@ -413,7 +412,7 @@ func TestIngestService_IntegrationEventIncludesRequestMetadata(t *testing.T) {
 	if _, err := svc.IngestAlertmanager(context.Background(), ingestCtx, payload); err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
-	dedupKey := ingest.ComputeDedupKey(src.ID, "fp-meta", "", "", payload.Alerts[0].Labels)
+	dedupKey := domain.ComputeDedupKey(src.ID, "fp-meta", "", "", payload.Alerts[0].Labels)
 	active, err := alerts.FindActiveByDedupKey(context.Background(), src.ID, dedupKey)
 	if err != nil {
 		t.Fatalf("find active: %v", err)
@@ -436,7 +435,7 @@ func TestIngestService_RequestIdempotency(t *testing.T) {
 		Name:       "Prod AM",
 		Type:       domain.SourcePrometheusAlertmanager,
 		Enabled:    true,
-		SecretHash: ingest.HashWebhookSecret(secret),
+		SecretHash: domain.HashWebhookSecret(secret),
 	}
 	sources := &fakeSourceRepo{byID: map[string]*domain.AlertSource{src.ID: src}}
 	alerts := newFakeAlertRepo()
@@ -477,7 +476,7 @@ func TestIngestService_RequestIdempotencyConcurrent(t *testing.T) {
 		Name:       "Prod AM",
 		Type:       domain.SourcePrometheusAlertmanager,
 		Enabled:    true,
-		SecretHash: ingest.HashWebhookSecret(secret),
+		SecretHash: domain.HashWebhookSecret(secret),
 	}
 	sources := &fakeSourceRepo{byID: map[string]*domain.AlertSource{src.ID: src}}
 	alerts := newFakeAlertRepo()
@@ -522,10 +521,10 @@ func TestIngestService_RequestIdempotencyConcurrent(t *testing.T) {
 func TestVerifySource_InvalidAndDisabled(t *testing.T) {
 	secret := "test-webhook-secret-value"
 	enabled := &domain.AlertSource{
-		ID: "prod-am", Enabled: true, SecretHash: ingest.HashWebhookSecret(secret),
+		ID: "prod-am", Enabled: true, SecretHash: domain.HashWebhookSecret(secret),
 	}
 	disabled := &domain.AlertSource{
-		ID: "disabled", Enabled: false, SecretHash: ingest.HashWebhookSecret(secret),
+		ID: "disabled", Enabled: false, SecretHash: domain.HashWebhookSecret(secret),
 	}
 	sources := &fakeSourceRepo{byID: map[string]*domain.AlertSource{
 		enabled.ID:  enabled,
@@ -557,7 +556,7 @@ func TestIngestService_RefireAfterClosedCreatesNewLifecycle(t *testing.T) {
 		Name:        "Prod AM",
 		Type:        domain.SourcePrometheusAlertmanager,
 		Enabled:     true,
-		SecretHash:  ingest.HashWebhookSecret(secret),
+		SecretHash:  domain.HashWebhookSecret(secret),
 		Environment: "prod",
 	}
 	sources := &fakeSourceRepo{byID: map[string]*domain.AlertSource{src.ID: src}}
@@ -585,7 +584,7 @@ func TestIngestService_RefireAfterClosedCreatesNewLifecycle(t *testing.T) {
 		t.Fatalf("expected created=1, got %+v", res)
 	}
 
-	dedupKey := ingest.ComputeDedupKey(src.ID, "fp-closed-refire", "", "", payload.Alerts[0].Labels)
+	dedupKey := domain.ComputeDedupKey(src.ID, "fp-closed-refire", "", "", payload.Alerts[0].Labels)
 	first, err := alerts.FindActiveByDedupKey(bg, src.ID, dedupKey)
 	if err != nil {
 		t.Fatalf("find first active: %v", err)
@@ -641,4 +640,34 @@ func TestIngestService_RefireAfterClosedCreatesNewLifecycle(t *testing.T) {
 	if evs[0].Message != "告警再次触发（新生命周期）" {
 		t.Fatalf("unexpected event message: %q", evs[0].Message)
 	}
+}
+
+type testIdempotencyStore struct {
+	mu   sync.Mutex
+	data map[string][]byte
+}
+
+func newTestIdempotencyStore() *testIdempotencyStore {
+	return &testIdempotencyStore{data: map[string][]byte{}}
+}
+
+func (s *testIdempotencyStore) Do(ctx context.Context, key string, _ time.Duration, fn func() ([]byte, error)) ([]byte, error) {
+	if key == "" {
+		return fn()
+	}
+	s.mu.Lock()
+	if raw, ok := s.data[key]; ok {
+		cp := append([]byte(nil), raw...)
+		s.mu.Unlock()
+		return cp, nil
+	}
+	s.mu.Unlock()
+	raw, err := fn()
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.data[key] = append([]byte(nil), raw...)
+	s.mu.Unlock()
+	return raw, nil
 }
