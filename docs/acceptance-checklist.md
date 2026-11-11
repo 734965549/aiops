@@ -51,6 +51,23 @@
 | 1.3.2 | 告警详情抽屉 | 时间线、标签、状态操作按钮可用 |
 | 1.3.3 | 资源链接 | 已匹配资产时显示应用/资源链接 |
 
+### 1.4 CES 拉取接入（migration 0046，契约先行待实现）
+
+**权限**：`app:alerts:ingest`
+**脚本**：`scripts/e2e-alert-sync.ps1`（实现落地后执行）
+**契约**：`ops/huawei-ces-alert-sync-contract.md`
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 1.4.1 | 创建拉取源 | `POST /api/alerts/sources`（`type=huawei_ces` + 有效 `account_id`） | `code=OK`；缺账号 / 账号非 huawei_cloud 时 `INVALID_ARGUMENT` |
+| 1.4.2 | 手动同步 | `POST /api/alerts/sources/{source_id}/sync` | 返回 `status/created/updated/recovered/ignored` 摘要；告警中心出现 `huawei_ces` 来源告警 |
+| 1.4.3 | 幂等 | 重复 sync | 无重复新告警，`updated` 递增 |
+| 1.4.4 | 快照恢复 | 云端状态转 ok 后再 sync | 告警 `status=recovered`，时间线含 `recovered` 事件 |
+| 1.4.5 | Webhook 源拦截 | 对 alertmanager 源调 sync | `INVALID_ARGUMENT`（400） |
+| 1.4.6 | 并发单飞 | 同源拉取进行中再次触发 | `CONFLICT`（409） |
+| 1.4.7 | scope 隔离 | 单 region 失败 | 其他 region 告警照常入库，`failed_scopes` 非空，`status=partial` |
+| 1.4.8 | 审计 | 拉取完成后查 `GET /api/audits` | 存在 `action=alert_source_sync` 记录 |
+
 ---
 
 ## 2. 资产匹配

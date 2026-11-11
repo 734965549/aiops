@@ -14,6 +14,7 @@
 第一阶段 Alert 模块先覆盖：
 
 - 接收外部告警，优先支持 Prometheus Alertmanager Webhook。
+- 华为云 CES 告警拉取接入（平台主动拉取，扩展契约见 `ops/huawei-ces-alert-sync-contract.md`）。
 - 将不同来源告警标准化为平台内部 `Alert`。
 - 按稳定去重键生成或更新告警记录。
 - 支持告警列表、详情、时间线、基础状态流转。
@@ -26,7 +27,7 @@
 - 复杂降噪策略编排。
 - 多层事件聚合/Incident 自动生成。
 - 通知渠道模板管理。
-- 由平台主动调用云厂商 API 拉取告警。
+- 除华为云 CES 外的云厂商告警拉取（通用拉取框架后续再评估；CES 拉取见 `ops/huawei-ces-alert-sync-contract.md`）。
 
 ## 2. 统一响应格式
 
@@ -68,7 +69,7 @@ Authorization: Bearer <access_token>
 | `app:alerts:update` | `alerts` | `update` | 开始处理、恢复、备注等普通处理动作 |
 | `app:alerts:close` | `alerts` | `close` | 关闭告警 |
 | `app:alerts:silence` | `alerts` | `silence` | 静默与取消静默 |
-| `app:alerts:ingest` | `alerts` | `ingest` | 管理接入源，非 Webhook 调用权限 |
+| `app:alerts:ingest` | `alerts` | `ingest` | 管理接入源与手动同步拉取源，非 Webhook 调用权限 |
 
 授权失败返回 `PERMISSION_DENIED`（HTTP 403）。未登录或 token 无效返回 `UNAUTHENTICATED`（HTTP 401）。
 
@@ -263,8 +264,14 @@ stateDiagram-v2
 | `environment` | string | 否 | 默认环境 |
 | `business_line` | string | 否 | 默认业务线 |
 | `description` | string | 否 | 备注 |
+| `account_id` | string | 否 | 拉取源绑定的云账号 ID（integration account）；Webhook 源为空。见拉取契约 §4 |
+| `pull_config` | object | 否 | 拉取配置（interval、severity_map、region_filter），见拉取契约 §4.2 |
+| `last_sync_at` | number | 否 | 最近一次拉取完成时间，Unix 秒 |
+| `last_sync_status` | string | 否 | 最近一次拉取结果：`success` / `partial` / `failed` / 空 |
 | `created_at` | number | 是 | 创建时间，Unix 秒 |
 | `updated_at` | number | 是 | 更新时间，Unix 秒 |
+
+补充：`account_id` / `pull_config` / `last_sync_*` 由华为云 CES 拉取扩展引入，Webhook 源保持空值；详细校验与语义见 `ops/huawei-ces-alert-sync-contract.md` §4、§8。
 
 ### 5.4 `AlertSilence`
 
@@ -704,6 +711,19 @@ stateDiagram-v2
 
 响应 `data`：`{ "deleted": true }`。
 
+### 8.13 手动同步拉取源
+
+- Method: `POST`
+- Path: `/api/alerts/sources/:source_id/sync`
+- 鉴权: 是（Bearer + `app:alerts:ingest`）
+
+约束：
+
+- 仅拉取源（如 `type=huawei_ces` 且配置了 `account_id`）可用；Webhook 源返回 `INVALID_ARGUMENT`。
+- 同步执行完成才返回；响应 `data` 为拉取统计摘要（`status/created/updated/recovered/ignored/failed_scopes` 等）。
+- 进行中重复触发返回 `CONFLICT`（409）。
+- 完整语义、响应示例与错误码见 `ops/huawei-ces-alert-sync-contract.md` §8、§9、§10。
+
 ## 9. 与其它模块关系
 
 ### 9.1 Asset
@@ -828,6 +848,7 @@ Alert 时间线写 `execution_created` / `execution_started` / `execution_finish
 - 业务 ID 使用 `VARCHAR(36)` 并建唯一索引。
 - `dedup_key` 使用 `VARCHAR(128)` 或定长 hash。
 - 时间字段统一使用 `TIMESTAMPTZ`，API 输出 Unix 秒。
+- `alert_source` 拉取扩展列（`account_id` / `pull_config` / `last_sync_at` / `last_sync_status`）见 `ops/huawei-ces-alert-sync-contract.md` §4.1。
 
 ## 12. 第一阶段验收标准
 
@@ -866,11 +887,12 @@ Alert 时间线写 `execution_created` / `execution_started` / `execution_finish
 
 第二阶段可以继续补：
 
-- 华为云 CES 接入。
-- SigNoz / 日志告警接入。
+- SigNoz / 日志告警接入（Webhook 或拉取式，可复用 CES 拉取端口）。
 - Zabbix 接入。
 - 告警规则与静默规则管理。
 - 告警聚合成 Incident。
 - 通知策略与升级策略。
 - 告警降噪规则：时间窗口、标签聚合、维护窗口、重复压缩。
 - 与 Asset 自动关联的更强 matcher。
+
+华为云 CES 告警拉取已作为扩展立项（契约先行，实现状态见契约内「实施状态」节）：`ops/huawei-ces-alert-sync-contract.md`。
