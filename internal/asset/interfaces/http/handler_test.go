@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -156,6 +157,32 @@ func (r *assetHTTPTestResRepo) ListByApplicationID(_ context.Context, applicatio
 	return out, nil
 }
 
+func (r *assetHTTPTestResRepo) ListFilterOptions(_ context.Context, applicationID string) (assetdomain.ResourceFilterOptions, error) {
+	types := map[string]struct{}{}
+	regions := map[string]struct{}{}
+	for _, row := range r.rows {
+		if row.ApplicationID != applicationID {
+			continue
+		}
+		if v := strings.TrimSpace(row.CloudResourceType); v != "" {
+			types[v] = struct{}{}
+		}
+		if v := strings.TrimSpace(row.Region); v != "" {
+			regions[v] = struct{}{}
+		}
+	}
+	out := assetdomain.ResourceFilterOptions{CloudResourceTypes: make([]string, 0, len(types)), Regions: make([]string, 0, len(regions))}
+	for v := range types {
+		out.CloudResourceTypes = append(out.CloudResourceTypes, v)
+	}
+	for v := range regions {
+		out.Regions = append(out.Regions, v)
+	}
+	sort.Strings(out.CloudResourceTypes)
+	sort.Strings(out.Regions)
+	return out, nil
+}
+
 func (r *assetHTTPTestResRepo) ListByApplicationIDPaged(_ context.Context, applicationID string, filter assetdomain.ResourceFilter) ([]assetdomain.Resource, int64, error) {
 	matched := make([]assetdomain.Resource, 0)
 	for _, row := range r.rows {
@@ -171,7 +198,54 @@ func (r *assetHTTPTestResRepo) ListByApplicationIDPaged(_ context.Context, appli
 		if filter.SyncStatus != "" && row.SyncStatus != filter.SyncStatus {
 			continue
 		}
+		if filter.Source != "" && row.Source != filter.Source {
+			continue
+		}
+		if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
+			haystack := strings.ToLower(strings.Join([]string{
+				row.Name, row.ResourceType, row.Namespace, row.Pod, row.Instance,
+				row.IntegrationAccountID, row.CloudResourceID, row.CloudResourceType, row.Region,
+			}, "\x00"))
+			if !strings.Contains(haystack, strings.ToLower(keyword)) {
+				continue
+			}
+		}
 		matched = append(matched, row)
+	}
+	if sortBy := strings.ToLower(strings.TrimSpace(filter.SortBy)); sortBy != "" {
+		valueOf := func(row assetdomain.Resource) string {
+			switch sortBy {
+			case "name":
+				return row.Name
+			case "resource_type":
+				return row.ResourceType
+			case "source":
+				return row.Source
+			case "cloud_resource_type":
+				return row.CloudResourceType
+			case "integration_account_id":
+				return row.IntegrationAccountID
+			case "cloud_resource_id":
+				return row.CloudResourceID
+			case "region":
+				return row.Region
+			case "sync_status":
+				return row.SyncStatus
+			default:
+				return ""
+			}
+		}
+		descending := strings.HasPrefix(strings.ToLower(strings.TrimSpace(filter.SortOrder)), "desc")
+		sort.SliceStable(matched, func(i, j int) bool {
+			left, right := valueOf(matched[i]), valueOf(matched[j])
+			if left == right {
+				return matched[i].ID < matched[j].ID
+			}
+			if descending {
+				return left > right
+			}
+			return left < right
+		})
 	}
 	total := int64(len(matched))
 	limit := filter.Limit
@@ -756,6 +830,143 @@ func TestListResources_FiltersCloudSyncFields(t *testing.T) {
 	item := data.Items[0]
 	if item.ID != "res-ecs-active" || item.CloudResourceType != "ecs" || item.Region != "cn-north-4" || item.SyncStatus != "active" {
 		t.Fatalf("unexpected item: %+v", item)
+	}
+}
+
+func TestListResources_FiltersKeywordAndSource(t *testing.T) {
+	authz := &fakeAssetHTTPAuthorizer{allowed: true}
+	engine, token, appRepo, resRepo := newAssetHTTPEngine(t, authz)
+	_ = appRepo.Create(context.Background(), &assetdomain.Application{ID: "app-1", Name: "svc", Environment: "prod"})
+	_ = resRepo.Create(context.Background(), &assetdomain.Resource{
+		ID: "res-cloud-prod", ApplicationID: "app-1", Name: "prod-elb-001",
+		Source: assetdomain.ResourceSourceCloudSync, CloudResourceID: "elb-prod-001",
+	})
+	_ = resRepo.Create(context.Background(), &assetdomain.Resource{
+		ID: "res-manual-prod", ApplicationID: "app-1", Name: "prod-manual",
+		Source: assetdomain.ResourceSourceManual,
+	})
+	_ = resRepo.Create(context.Background(), &assetdomain.Resource{
+		ID: "res-cloud-test", ApplicationID: "app-1", Name: "test-elb",
+		Source: assetdomain.ResourceSourceCloudSync,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/assets/applications/app-1/resources?page=1&page_size=10&keyword=prod&source=cloud_sync", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := decodeAssetEnvelope(t, w.Body.Bytes())
+	var data struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		Total int64 `json:"total"`
+	}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Total != 1 || len(data.Items) != 1 || data.Items[0].ID != "res-cloud-prod" {
+		t.Fatalf("unexpected keyword/source result: total=%d items=%+v", data.Total, data.Items)
+	}
+}
+
+func TestListResources_SortsByColumn(t *testing.T) {
+	authz := &fakeAssetHTTPAuthorizer{allowed: true}
+	engine, token, appRepo, resRepo := newAssetHTTPEngine(t, authz)
+	_ = appRepo.Create(context.Background(), &assetdomain.Application{ID: "app-1", Name: "svc", Environment: "prod"})
+	for _, name := range []string{"charlie", "alpha", "bravo"} {
+		_ = resRepo.Create(context.Background(), &assetdomain.Resource{
+			ID: "res-" + name, ApplicationID: "app-1", Name: name,
+		})
+	}
+
+	fetchNames := func(query string) []string {
+		req := httptest.NewRequest(http.MethodGet, "/api/assets/applications/app-1/resources?page=1&page_size=10&"+query, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		resp := decodeAssetEnvelope(t, w.Body.Bytes())
+		var data struct {
+			Items []struct {
+				Name string `json:"name"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		names := make([]string, 0, len(data.Items))
+		for _, item := range data.Items {
+			names = append(names, item.Name)
+		}
+		return names
+	}
+
+	asc := fetchNames("sort_by=name&sort_order=asc")
+	if strings.Join(asc, ",") != "alpha,bravo,charlie" {
+		t.Fatalf("unexpected ascending order: %v", asc)
+	}
+	desc := fetchNames("sort_by=name&sort_order=desc")
+	if strings.Join(desc, ",") != "charlie,bravo,alpha" {
+		t.Fatalf("unexpected descending order: %v", desc)
+	}
+}
+
+func TestListResourceFilterOptions(t *testing.T) {
+	authz := &fakeAssetHTTPAuthorizer{allowed: true}
+	engine, token, appRepo, resRepo := newAssetHTTPEngine(t, authz)
+	_ = appRepo.Create(context.Background(), &assetdomain.Application{ID: "app-1", Name: "svc", Environment: "prod"})
+	_ = appRepo.Create(context.Background(), &assetdomain.Application{ID: "app-2", Name: "other", Environment: "prod"})
+	for _, row := range []assetdomain.Resource{
+		{ID: "res-1", ApplicationID: "app-1", Name: "a", CloudResourceType: "ecs", Region: "cn-north-4"},
+		{ID: "res-2", ApplicationID: "app-1", Name: "b", CloudResourceType: "elb", Region: "cn-east-3"},
+		{ID: "res-3", ApplicationID: "app-1", Name: "c", CloudResourceType: "ecs", Region: "cn-north-4"},
+		{ID: "res-4", ApplicationID: "app-1", Name: "d"},
+		{ID: "res-5", ApplicationID: "app-2", Name: "e", CloudResourceType: "rds", Region: "cn-south-1"},
+	} {
+		_ = resRepo.Create(context.Background(), &row)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/assets/applications/app-1/resource-facets", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := decodeAssetEnvelope(t, w.Body.Bytes())
+	var data struct {
+		CloudResourceTypes []string `json:"cloud_resource_types"`
+		Regions            []string `json:"regions"`
+	}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(data.CloudResourceTypes, ",") != "ecs,elb" {
+		t.Fatalf("unexpected cloud_resource_types: %v", data.CloudResourceTypes)
+	}
+	if strings.Join(data.Regions, ",") != "cn-east-3,cn-north-4" {
+		t.Fatalf("unexpected regions: %v", data.Regions)
+	}
+}
+
+func TestListResourceFilterOptions_RequiresApplication(t *testing.T) {
+	authz := &fakeAssetHTTPAuthorizer{allowed: true}
+	engine, token, _, _ := newAssetHTTPEngine(t, authz)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/assets/applications/%20/resource-facets", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 

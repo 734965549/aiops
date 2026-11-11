@@ -16,6 +16,7 @@ package http
 
 import (
 	alertapp "github.com/734965549/aiops/internal/alert/application"
+	"github.com/734965549/aiops/internal/alert/domain"
 	apperr "github.com/734965549/aiops/pkg/errors"
 	"github.com/734965549/aiops/pkg/pagination"
 	httpx "github.com/734965549/aiops/pkg/transport/http"
@@ -27,11 +28,19 @@ import (
 type Handler struct {
 	alerts  *alertapp.AlertService
 	sources *alertapp.SourceService
+	sync    *alertapp.AlertSyncService
 }
 
 // NewHandler 构造管理端 Handler。
 func NewHandler(alerts *alertapp.AlertService, sources *alertapp.SourceService) *Handler {
 	return &Handler{alerts: alerts, sources: sources}
+}
+
+// SetSyncService 注入 CES 拉取用例；装配完成后调用。
+func (h *Handler) SetSyncService(sync *alertapp.AlertSyncService) {
+	if h != nil {
+		h.sync = sync
+	}
 }
 
 // alertListQuery 告警列表查询参数，嵌入 pagination.Query 以复用 §2 分页字段 page/page_size/keyword。
@@ -296,25 +305,52 @@ func (h *Handler) RequestAIAnalysis(c *gin.Context) {
 	httpx.OK(c, out)
 }
 
+type pullConfigRequest struct {
+	PullIntervalSeconds *int              `json:"pull_interval_seconds"`
+	SeverityMap         map[string]string `json:"severity_map"`
+	RegionFilter        []string          `json:"region_filter"`
+}
+
+func (r *pullConfigRequest) toDomain() *domain.PullConfig {
+	if r == nil {
+		return nil
+	}
+	cfg := domain.PullConfig{
+		SeverityMap: r.SeverityMap, RegionFilter: r.RegionFilter,
+		// 省略间隔时应用默认 300；显式传 0 表示仅手动。
+		PullIntervalSeconds: domain.DefaultPullIntervalSeconds,
+	}
+	if r.PullIntervalSeconds != nil {
+		cfg.PullIntervalSeconds = *r.PullIntervalSeconds
+	}
+	return &cfg
+}
+
 type createSourceRequest struct {
-	ID           string `json:"id" binding:"required"`
-	Name         string `json:"name" binding:"required"`
-	Type         string `json:"type"`
-	Enabled      *bool  `json:"enabled"`
-	Secret       string `json:"secret" binding:"required"`
-	Environment  string `json:"environment"`
-	BusinessLine string `json:"business_line"`
-	Description  string `json:"description"`
+	ID           string             `json:"id" binding:"required"`
+	Name         string             `json:"name" binding:"required"`
+	Type         string             `json:"type"`
+	Enabled      *bool              `json:"enabled"`
+	Secret       string             `json:"secret"`
+	Environment  string             `json:"environment"`
+	BusinessLine string             `json:"business_line"`
+	Description  string             `json:"description"`
+	DeliveryMode string             `json:"delivery_mode"`
+	AccountID    string             `json:"account_id"`
+	PullConfig   *pullConfigRequest `json:"pull_config"`
 }
 
 type updateSourceRequest struct {
-	Name         *string `json:"name"`
-	Type         *string `json:"type"`
-	Enabled      *bool   `json:"enabled"`
-	Secret       string  `json:"secret"`
-	Environment  *string `json:"environment"`
-	BusinessLine *string `json:"business_line"`
-	Description  *string `json:"description"`
+	Name         *string             `json:"name"`
+	Type         *string             `json:"type"`
+	Enabled      *bool               `json:"enabled"`
+	Secret       string              `json:"secret"`
+	Environment  *string             `json:"environment"`
+	BusinessLine *string             `json:"business_line"`
+	Description  *string             `json:"description"`
+	DeliveryMode *string             `json:"delivery_mode"`
+	AccountID    *string             `json:"account_id"`
+	PullConfig   *pullConfigRequest  `json:"pull_config"`
 }
 
 // 接入源管理（§1 接入源配置）；ListSources 返回 data.items，其余返回单条 AlertSourceDTO（§2）。
@@ -352,7 +388,7 @@ func (h *Handler) CreateSource(c *gin.Context) {
 	}
 	var req createSourceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		httpx.FailWith(c, apperr.CodeInvalidArgument, "id, name and secret are required")
+		httpx.FailWith(c, apperr.CodeInvalidArgument, "id and name are required")
 		return
 	}
 	out, err := h.sources.Create(c.Request.Context(), actorFromContext(c), alertapp.CreateSourceInput{
@@ -364,6 +400,9 @@ func (h *Handler) CreateSource(c *gin.Context) {
 		Environment:  req.Environment,
 		BusinessLine: req.BusinessLine,
 		Description:  req.Description,
+		DeliveryMode: domain.AlertSourceDeliveryMode(req.DeliveryMode),
+		AccountID:    req.AccountID,
+		PullConfig:   req.PullConfig.toDomain(),
 	})
 	if err != nil {
 		httpx.Fail(c, err)
@@ -382,6 +421,11 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "invalid request body")
 		return
 	}
+	var mode *domain.AlertSourceDeliveryMode
+	if req.DeliveryMode != nil {
+		m := domain.AlertSourceDeliveryMode(*req.DeliveryMode)
+		mode = &m
+	}
 	out, err := h.sources.Update(c.Request.Context(), c.Param("source_id"), actorFromContext(c), alertapp.UpdateSourceInput{
 		Name:         req.Name,
 		Type:         req.Type,
@@ -390,7 +434,24 @@ func (h *Handler) UpdateSource(c *gin.Context) {
 		Environment:  req.Environment,
 		BusinessLine: req.BusinessLine,
 		Description:  req.Description,
+		DeliveryMode: mode,
+		AccountID:    req.AccountID,
+		PullConfig:   req.PullConfig.toDomain(),
 	})
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	httpx.OK(c, out)
+}
+
+// SyncSource POST /api/alerts/sources/:source_id/sync（CES 契约 §8）。
+func (h *Handler) SyncSource(c *gin.Context) {
+	if h.sync == nil {
+		httpx.FailWith(c, apperr.CodeUnavailable, "alert pull port is not configured")
+		return
+	}
+	out, err := h.sync.Sync(c.Request.Context(), c.Param("source_id"), actorFromContext(c))
 	if err != nil {
 		httpx.Fail(c, err)
 		return

@@ -23,6 +23,8 @@
           :resource-table-scroll="registry.resourceTableScroll"
           :resource-row-class="registry.resourceRowClass"
           :resource-filters="registry.resourceFilters"
+          :resource-filter-options="registry.resourceFilterOptions"
+          :filter-options-loading="registry.filterOptionsLoading"
           :visible-extra-columns="registry.visibleExtraColumns"
           @update:resource-filters="(f) => Object.assign(registry.resourceFilters, f)"
           @column-visibility-change="registry.setVisibleExtraColumns"
@@ -36,6 +38,7 @@
           @delete-resource="registry.confirmDeleteResource"
           @apply-filters="registry.applyResourceFilters"
           @reset-filters="registry.resetResourceFilters"
+          @resource-sorter-change="registry.onResourceSorterChange"
           @select-app="registry.onSelectApplication"
           @app-page-change="registry.onAppPageChange"
           @app-page-size-change="registry.onAppPageSizeChange"
@@ -507,13 +510,20 @@ onMounted(async () => {
 :deep(.registry-toolbar) {
   flex-shrink: 0;
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--space-3);
+  border-bottom: 1px solid var(--aiops-border-soft);
+}
+
+:deep(.registry-toolbar-row) {
+  display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: var(--space-2) var(--space-3);
-  padding-bottom: var(--space-3);
-  margin-bottom: var(--space-3);
-  border-bottom: 1px solid var(--aiops-border-soft);
 }
 
 :deep(.registry-toolbar-count) {
@@ -521,6 +531,19 @@ onMounted(async () => {
   color: var(--aiops-text-3);
   font-size: 12px;
   white-space: nowrap;
+}
+
+/* 已生效的筛选条件回显：让服务端筛选状态可见、可单独移除 */
+:deep(.registry-filter-chips) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+}
+
+:deep(.registry-filter-chips-label) {
+  color: var(--aiops-text-3);
+  font-size: 12px;
 }
 
 /* 应用单元格：主名 + 环境/Namespace 副行，替代被压扁的多列 */

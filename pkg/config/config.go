@@ -33,6 +33,7 @@ type Config struct {
 	AI          AIConfig          `mapstructure:"ai"`
 	Integration IntegrationConfig `mapstructure:"integration"`
 	Execution   ExecutionConfig   `mapstructure:"execution"`
+	AlertSync   AlertSyncConfig   `mapstructure:"alert_sync"`
 }
 
 // AppConfig 描述应用元数据。

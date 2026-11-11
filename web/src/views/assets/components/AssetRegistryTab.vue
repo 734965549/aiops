@@ -148,64 +148,146 @@
 
         <!-- 筛选独立成行：不再挤在 Arco 卡片 header（固定高度会裁掉换行内容） -->
         <div class="registry-toolbar">
-          <a-space
-            wrap
-            :size="8"
+          <div class="registry-toolbar-row">
+            <a-space
+              wrap
+              :size="8"
+            >
+              <a-input
+                v-model="filterKeyword"
+                :disabled="!selectedAppId"
+                allow-clear
+                placeholder="搜索资源名 / ID / 账号"
+                size="small"
+                style="width: 200px"
+                @press-enter="emit('apply-filters')"
+                @clear="emit('apply-filters')"
+              >
+                <template #prefix>
+                  <IconSearch />
+                </template>
+              </a-input>
+              <a-select
+                v-model="filterSource"
+                :disabled="!selectedAppId"
+                allow-clear
+                placeholder="来源"
+                size="small"
+                style="width: 108px"
+                @change="emit('apply-filters')"
+                @clear="emit('apply-filters')"
+              >
+                <a-option value="cloud_sync">
+                  云同步
+                </a-option>
+                <a-option value="manual">
+                  手工
+                </a-option>
+              </a-select>
+              <a-select
+                v-model="filterCloudResourceType"
+                :disabled="!selectedAppId"
+                :loading="filterOptionsLoading"
+                allow-clear
+                allow-search
+                allow-create
+                placeholder="云类型"
+                size="small"
+                style="width: 118px"
+                @change="emit('apply-filters')"
+                @clear="emit('apply-filters')"
+              >
+                <a-option
+                  v-for="item in resourceFilterOptions.cloud_resource_types"
+                  :key="item"
+                  :value="item"
+                >
+                  {{ item }}
+                </a-option>
+              </a-select>
+              <a-select
+                v-model="filterRegion"
+                :disabled="!selectedAppId"
+                :loading="filterOptionsLoading"
+                allow-clear
+                allow-search
+                allow-create
+                placeholder="Region"
+                size="small"
+                style="width: 138px"
+                @change="emit('apply-filters')"
+                @clear="emit('apply-filters')"
+              >
+                <a-option
+                  v-for="item in resourceFilterOptions.regions"
+                  :key="item"
+                  :value="item"
+                >
+                  {{ item }}
+                </a-option>
+              </a-select>
+              <a-select
+                v-model="filterSyncStatus"
+                :disabled="!selectedAppId"
+                allow-clear
+                placeholder="同步状态"
+                size="small"
+                style="width: 118px"
+                @change="emit('apply-filters')"
+                @clear="emit('apply-filters')"
+              >
+                <a-option value="active">
+                  active
+                </a-option>
+                <a-option value="stale">
+                  stale
+                </a-option>
+              </a-select>
+              <a-button
+                type="primary"
+                size="small"
+                :disabled="!selectedAppId"
+                @click="emit('apply-filters')"
+              >
+                筛选
+              </a-button>
+              <a-button
+                size="small"
+                :disabled="!selectedAppId"
+                @click="emit('reset-filters')"
+              >
+                重置
+              </a-button>
+            </a-space>
+            <span class="registry-toolbar-count">
+              共 {{ resourcePagination.total }} 条资源
+              <template v-if="activeFilterChips.length">
+                · {{ activeFilterChips.length }} 个筛选条件
+              </template>
+            </span>
+          </div>
+          <div
+            v-if="activeFilterChips.length"
+            class="registry-filter-chips"
           >
-            <a-input
-              v-model="filterCloudResourceType"
-              :disabled="!selectedAppId"
-              allow-clear
-              placeholder="云类型"
+            <span class="registry-filter-chips-label">已筛选</span>
+            <a-tag
+              v-for="chip in activeFilterChips"
+              :key="chip.key"
               size="small"
-              style="width: 106px"
-              @press-enter="emit('apply-filters')"
-              @clear="emit('apply-filters')"
-            />
-            <a-input
-              v-model="filterRegion"
-              :disabled="!selectedAppId"
-              allow-clear
-              placeholder="Region"
-              size="small"
-              style="width: 118px"
-              @press-enter="emit('apply-filters')"
-              @clear="emit('apply-filters')"
-            />
-            <a-select
-              v-model="filterSyncStatus"
-              :disabled="!selectedAppId"
-              allow-clear
-              placeholder="同步状态"
-              size="small"
-              style="width: 118px"
-              @change="emit('apply-filters')"
-              @clear="emit('apply-filters')"
+              closable
+              @close="removeFilter(chip.key)"
             >
-              <a-option value="active">
-                active
-              </a-option>
-              <a-option value="stale">
-                stale
-              </a-option>
-            </a-select>
+              {{ chip.label }}
+            </a-tag>
             <a-button
-              type="primary"
-              size="small"
-              :disabled="!selectedAppId"
-              @click="emit('apply-filters')"
-            >
-              筛选
-            </a-button>
-            <a-button
-              size="small"
-              :disabled="!selectedAppId"
+              type="text"
+              size="mini"
               @click="emit('reset-filters')"
             >
-              重置
+              清空
             </a-button>
-          </a-space>
-          <span class="registry-toolbar-count">共 {{ resourcePagination.total }} 条资源</span>
+          </div>
         </div>
 
         <a-empty
@@ -228,6 +310,7 @@
           :row-class="resourceRowClass"
           @page-change="(page: number) => emit('resource-page-change', page)"
           @page-size-change="(size: number) => emit('resource-page-size-change', size)"
+          @sorter-change="(field: string, direction: string) => emit('resource-sorter-change', field, direction)"
         >
           <template #source="{ record }">
             <a-tag
@@ -367,17 +450,18 @@ import {
   IconDelete,
   IconEdit,
   IconRefresh,
+  IconSearch,
   IconSettings
 } from '@arco-design/web-vue/es/icon'
 import type { TableInstance } from '@arco-design/web-vue/es/table'
 import type { TableData } from '@arco-design/web-vue/es/table/interface'
-import type { Application, Resource } from '@/api/asset'
+import type { Application, Resource, ResourceFilterOptions } from '@/api/asset'
 import {
   OPTIONAL_RESOURCE_COLUMNS,
   labelEntries,
   shortId
 } from '../composables/assetUtils'
-import type { OptionalResourceColumnKey } from '../composables/assetUtils'
+import type { OptionalResourceColumnKey, ResourceFilterState } from '../composables/assetUtils'
 
 interface PaginationConfig {
   current: number
@@ -387,11 +471,7 @@ interface PaginationConfig {
   showPageSize: boolean
 }
 
-interface ResourceFilters {
-  cloud_resource_type: string
-  region: string
-  sync_status: string
-}
+type ResourceFilterKey = keyof ResourceFilterState
 
 const props = defineProps<{
   applications: Application[]
@@ -407,7 +487,9 @@ const props = defineProps<{
   resourcePagination: PaginationConfig
   resourceTableScroll: Record<string, unknown>
   resourceRowClass: (record: TableData) => string
-  resourceFilters: ResourceFilters
+  resourceFilters: ResourceFilterState
+  resourceFilterOptions: ResourceFilterOptions
+  filterOptionsLoading: boolean
   visibleExtraColumns: OptionalResourceColumnKey[]
 }>()
 
@@ -422,14 +504,25 @@ const emit = defineEmits<{
   'delete-resource': [res: Resource]
   'apply-filters': []
   'reset-filters': []
+  'resource-sorter-change': [dataIndex: string, direction: string]
   'column-visibility-change': [keys: OptionalResourceColumnKey[]]
   'select-app': [record: TableData]
   'app-page-change': [page: number]
   'app-page-size-change': [size: number]
   'resource-page-change': [page: number]
   'resource-page-size-change': [size: number]
-  'update:resourceFilters': [filters: ResourceFilters]
+  'update:resourceFilters': [filters: ResourceFilterState]
 }>()
+
+const filterKeyword = computed({
+  get: () => props.resourceFilters.keyword,
+  set: (val: string) => emit('update:resourceFilters', { ...props.resourceFilters, keyword: val })
+})
+
+const filterSource = computed({
+  get: () => props.resourceFilters.source,
+  set: (val: string) => emit('update:resourceFilters', { ...props.resourceFilters, source: val })
+})
 
 const filterCloudResourceType = computed({
   get: () => props.resourceFilters.cloud_resource_type,
@@ -445,6 +538,36 @@ const filterSyncStatus = computed({
   get: () => props.resourceFilters.sync_status,
   set: (val: string) => emit('update:resourceFilters', { ...props.resourceFilters, sync_status: val })
 })
+
+const filterFieldLabels: Record<ResourceFilterKey, string> = {
+  keyword: '关键词',
+  source: '来源',
+  cloud_resource_type: '云类型',
+  region: 'Region',
+  sync_status: '同步状态'
+}
+
+const filterValueLabels: Partial<Record<ResourceFilterKey, Record<string, string>>> = {
+  source: { cloud_sync: '云同步', manual: '手工' }
+}
+
+// 已生效条件显式回显，避免「点了筛选但看不出有没有生效」。
+const activeFilterChips = computed(() =>
+  (Object.keys(filterFieldLabels) as ResourceFilterKey[])
+    .filter((key) => (props.resourceFilters[key] || '').trim())
+    .map((key) => {
+      const value = props.resourceFilters[key].trim()
+      return {
+        key,
+        label: `${filterFieldLabels[key]}：${filterValueLabels[key]?.[value] || value}`
+      }
+    })
+)
+
+function removeFilter(key: ResourceFilterKey) {
+  emit('update:resourceFilters', { ...props.resourceFilters, [key]: '' })
+  emit('apply-filters')
+}
 
 // 列宽按百分比交给 .page-table-fit，表格随容器缩放，始终 100% 铺满。
 // 顺序与 appColumns / 默认 resourceColumns 一一对应；勾选附加列后不再套用 fit。

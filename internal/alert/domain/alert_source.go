@@ -40,21 +40,30 @@ type AlertSource struct {
 	BusinessLine string          // 默认业务线
 	Description  string          // 备注
 	// 拉取式接入扩展字段，见 ops/huawei-ces-alert-sync-contract.md §4.1。
-	AccountID      string          // 绑定的 integration account ID
-	PullConfig     PullConfig      // 拉取配置（delivery_mode/interval/severity_map/region_filter）
-	LastSyncAt     *time.Time      // 最近一轮拉取完成时间
-	LastSyncStatus string          // success / partial / failed / 空
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	DeliveryMode   AlertSourceDeliveryMode // webhook / pull；存量源默认 webhook
+	AccountID      string                  // 绑定的 integration account ID
+	PullConfig     PullConfig              // 拉取配置（interval/severity_map/region_filter）
+	LastSyncAt     *time.Time              // 最近一轮拉取完成时间
+	LastSyncStatus string                  // success / partial / failed / 空
+	// SyncState 为内部游标状态，按 region/project_id 保存已处理至的时间；API 不返回。
+	SyncState map[string]ScopeCursor
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
-// IsPullSource 判断是否为平台主动拉取接入源：
-// type=huawei_ces、绑定账号且 delivery_mode 不是 webhook。
+// ScopeCursor 记录单个 region/project scope 已成功处理到的云端时间。
+type ScopeCursor struct {
+	CursorAt time.Time `json:"cursor_at"`
+}
+
+// ScopeKey 返回 region/project 规范化后的游标键。
+func ScopeKey(region, projectID string) string {
+	return strings.ToLower(strings.TrimSpace(region)) + "/" + strings.TrimSpace(projectID)
+}
+
+// IsPullSource 判断是否为平台主动拉取接入源。
 func (s AlertSource) IsPullSource() bool {
-	if s.Type != SourceHuaweiCES || strings.TrimSpace(s.AccountID) == "" {
-		return false
-	}
-	return s.PullConfig.DeliveryMode != DeliveryModeWebhook
+	return s.Type == SourceHuaweiCES && s.DeliveryMode == DeliveryModePull
 }
 
 // IsWebhookSource 判断是否为 Webhook 推送接入源。

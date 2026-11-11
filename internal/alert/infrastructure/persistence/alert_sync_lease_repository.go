@@ -2,9 +2,11 @@ package persistence
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
+	"github.com/734965549/aiops/internal/alert/domain"
 	"gorm.io/gorm"
 )
 
@@ -66,12 +68,30 @@ func (r *AlertSyncLeaseRepository) Release(ctx context.Context, sourceID, ownerI
 		sourceID, ownerID).Error
 }
 
-// CommitSyncState 在同一条件更新中校验租约，防止旧 worker 在租约过期后覆盖新一轮状态。
-func (r *AlertSyncLeaseRepository) CommitSyncState(ctx context.Context, sourceID, ownerID string, at time.Time, status string) (bool, error) {
+func (r *AlertSyncLeaseRepository) IsHeld(ctx context.Context, sourceID string) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, errors.New("alert sync lease repository is not configured")
+	}
+	var count int64
+	err := r.db.WithContext(ctx).Raw(
+		`SELECT COUNT(1) FROM alert_source_sync_lease WHERE source_id = ? AND lease_until > ?`,
+		sourceID, time.Now().UTC()).Scan(&count).Error
+	return count > 0, err
+}
+
+// CommitSyncState 在同一条件更新中校验租约，防止旧 worker 在租约过期后覆盖新一轮状态与游标。
+func (r *AlertSyncLeaseRepository) CommitSyncState(ctx context.Context, sourceID, ownerID string, at time.Time, status string, state map[string]domain.ScopeCursor) (bool, error) {
 	if r == nil || r.db == nil {
 		return false, errors.New("alert sync lease repository is not configured")
 	}
 	now := time.Now().UTC()
+	if state == nil {
+		state = map[string]domain.ScopeCursor{}
+	}
+	rawState, err := json.Marshal(state)
+	if err != nil {
+		return false, err
+	}
 	res := r.db.WithContext(ctx).Model(&alertSourceModel{}).
 		Where(`source_id = ? AND EXISTS (
 			SELECT 1 FROM alert_source_sync_lease
@@ -80,6 +100,7 @@ func (r *AlertSyncLeaseRepository) CommitSyncState(ctx context.Context, sourceID
 		Updates(map[string]any{
 			"last_sync_at":     at.UTC(),
 			"last_sync_status": status,
+			"sync_state":       rawState,
 			"updated_at":       now,
 		})
 	if res.Error != nil {

@@ -10,11 +10,18 @@ type IntegrationAccountReader interface {
 
 // IntegrationAccountInfo 是告警拉取所需的账号摘要，不含任何凭据。
 type IntegrationAccountInfo struct {
-	AccountID    string
-	Provider     string
-	AuthType     string
-	Regions      []string
-	ProjectID    string
-	Capabilities []string
-	Enabled      bool
+	AccountID      string
+	Provider       string
+	AuthType       string
+	Regions        []string
+	ProjectID      string
+	RegionProjects map[string]string
+	OwnerTeam      string
+	Capabilities   []string
+	Enabled        bool
+}
+
+// AccountAccessChecker 校验当前用户对绑定账号的数据范围权限。
+type AccountAccessChecker interface {
+	CheckAccountAccess(ctx context.Context, userID string, account *IntegrationAccountInfo) error
 }

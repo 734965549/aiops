@@ -23,10 +23,12 @@ type alertSourceModel struct {
 	BusinessLine string `gorm:"column:business_line;type:varchar(128);not null;default:''"`
 	Description  string `gorm:"column:description;type:varchar(255);not null;default:''"`
 	// 拉取式接入扩展字段，见 ops/huawei-ces-alert-sync-contract.md §4.1。
+	DeliveryMode   string     `gorm:"column:delivery_mode;type:varchar(16);not null;default:'webhook'"`
 	AccountID      string     `gorm:"column:account_id;type:varchar(64);not null;default:''"`
 	PullConfig     []byte     `gorm:"column:pull_config;type:jsonb;not null;default:'{}'::jsonb"`
 	LastSyncAt     *time.Time `gorm:"column:last_sync_at"`
 	LastSyncStatus string     `gorm:"column:last_sync_status;type:varchar(32);not null;default:''"`
+	SyncState      []byte     `gorm:"column:sync_state;type:jsonb;not null;default:'{}'::jsonb"`
 }
 
 func (alertSourceModel) TableName() string { return "alert_source" }
@@ -52,6 +54,14 @@ func (r *AlertSourceRepository) Create(ctx context.Context, source *domain.Alert
 	if err != nil {
 		return err
 	}
+	syncState, err := json.Marshal(source.SyncState)
+	if err != nil {
+		return err
+	}
+	deliveryMode := string(source.DeliveryMode)
+	if deliveryMode == "" {
+		deliveryMode = string(domain.DeliveryModeWebhook)
+	}
 	m := alertSourceModel{
 		SourceID:       source.ID,
 		Name:           source.Name,
@@ -61,10 +71,12 @@ func (r *AlertSourceRepository) Create(ctx context.Context, source *domain.Alert
 		Environment:    source.Environment,
 		BusinessLine:   source.BusinessLine,
 		Description:    source.Description,
+		DeliveryMode:   deliveryMode,
 		AccountID:      source.AccountID,
 		PullConfig:     pullConfig,
 		LastSyncAt:     source.LastSyncAt,
 		LastSyncStatus: source.LastSyncStatus,
+		SyncState:      syncState,
 	}
 	if err := r.db.WithContext(ctx).Create(&m).Error; err != nil {
 		return database.MapUniqueViolation(err, domain.ErrAlreadyExists)
@@ -85,6 +97,10 @@ func (r *AlertSourceRepository) Update(ctx context.Context, source *domain.Alert
 	if err != nil {
 		return err
 	}
+	syncState, err := json.Marshal(source.SyncState)
+	if err != nil {
+		return err
+	}
 	res := r.db.WithContext(ctx).Model(&alertSourceModel{}).Where("source_id = ?", source.ID).Updates(map[string]any{
 		"name":             source.Name,
 		"type":             string(source.Type),
@@ -93,10 +109,12 @@ func (r *AlertSourceRepository) Update(ctx context.Context, source *domain.Alert
 		"environment":      source.Environment,
 		"business_line":    source.BusinessLine,
 		"description":      source.Description,
+		"delivery_mode":    string(source.DeliveryMode),
 		"account_id":       source.AccountID,
 		"pull_config":      pullConfig,
 		"last_sync_at":     source.LastSyncAt,
 		"last_sync_status": source.LastSyncStatus,
+		"sync_state":       syncState,
 	})
 	if res.Error != nil {
 		return database.MapUniqueViolation(res.Error, domain.ErrAlreadyExists)
@@ -174,6 +192,14 @@ func toAlertSourceDomain(m *alertSourceModel) domain.AlertSource {
 	if len(m.PullConfig) > 0 {
 		_ = json.Unmarshal(m.PullConfig, &pullConfig)
 	}
+	var syncState map[string]domain.ScopeCursor
+	if len(m.SyncState) > 0 {
+		_ = json.Unmarshal(m.SyncState, &syncState)
+	}
+	deliveryMode := domain.AlertSourceDeliveryMode(m.DeliveryMode)
+	if deliveryMode == "" {
+		deliveryMode = domain.DeliveryModeWebhook
+	}
 	return domain.AlertSource{
 		ID:             m.SourceID,
 		Name:           m.Name,
@@ -183,10 +209,12 @@ func toAlertSourceDomain(m *alertSourceModel) domain.AlertSource {
 		Environment:    m.Environment,
 		BusinessLine:   m.BusinessLine,
 		Description:    m.Description,
+		DeliveryMode:   deliveryMode,
 		AccountID:      m.AccountID,
 		PullConfig:     pullConfig,
 		LastSyncAt:     m.LastSyncAt,
 		LastSyncStatus: m.LastSyncStatus,
+		SyncState:      syncState,
 		CreatedAt:      m.CreatedAt,
 		UpdatedAt:      m.UpdatedAt,
 	}

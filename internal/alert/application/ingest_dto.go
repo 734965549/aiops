@@ -75,4 +75,8 @@ type NormalizedAlert struct {
 	Annotations     map[string]string
 	FirstSeenAt     time.Time
 	RecoveredAt     *time.Time
+	// CloudTriggerAt 是 CES last_alarm_time，用于区分重复观测与新的云端触发。
+	CloudTriggerAt *time.Time
+	// SourceStatus 是 CES 原始状态（alarm/ok/ok_manual），写入时间线以区分恢复方式。
+	SourceStatus string
 }

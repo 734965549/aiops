@@ -52,7 +52,7 @@
     -MigrateMode local 时的 -config 参数，默认 configs/config.yaml。
 
 .PARAMETER ExpectedMigrationVersion
-    verify-post-migration.ps1 期望的最新迁移版本，默认 0045。
+    verify-post-migration.ps1 期望的最新迁移版本，默认 0047。
 
 .PARAMETER BackupDir
     备份目录，默认 ./backups。
@@ -104,7 +104,7 @@ param(
     [ValidateSet("container", "local")]
     [string]$MigrateMode = "container",
     [string]$MigrateConfig = "configs/config.yaml",
-    [string]$ExpectedMigrationVersion = "0045",
+    [string]$ExpectedMigrationVersion = "0047",
 
     [string]$BackupDir = "./backups",
 

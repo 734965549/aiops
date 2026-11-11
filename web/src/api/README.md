@@ -83,9 +83,10 @@
 | `commentAlert` | `POST /api/alerts/:alert_id/comments` | 追加时间线评论 |
 | `requestAlertAIAnalysis` | `POST /api/alerts/:alert_id/ai-analysis` | 请求 AI 分析，写时间线与审计 |
 | `listAlertSources` / `getAlertSource` | `GET /api/alerts/sources` | 告警源查询 |
-| `createAlertSource` / `updateAlertSource` / `deleteAlertSource` | `/api/alerts/sources` | 告警源维护；secret 只写入不回显 |
+| `createAlertSource` / `updateAlertSource` / `deleteAlertSource` | `/api/alerts/sources` | 告警源维护；secret 只写入不回显；`delivery_mode=pull` 时提交 `account_id`/`pull_config` |
+| `syncAlertSource` | `POST /api/alerts/sources/:source_id/sync` | 手动触发 CES 拉取；返回 `AlertSyncResult`，`status` 区分 `success/partial/failed` |
 
-页面：`views/alerts/index.vue`。契约：`ops/alert-contract.md`。
+页面：`views/alerts/index.vue`（接入源弹窗拆分为 `views/alerts/components/AlertSourceManager.vue` 与 `AlertSourceForm.vue`）。契约：`ops/alert-contract.md`、`ops/huawei-ces-alert-sync-contract.md`。
 
 调用链：Webhook / 页面操作 -> Alert Handler -> AlertService / IngestService -> Asset matcher -> Audit recorder。告警状态流转必须遵守 domain 状态机，不能在页面里模拟。
 
@@ -94,7 +95,8 @@
 | 函数 | 接口 | 说明 |
 | --- | --- | --- |
 | `listApplications` / `createApplication` / `updateApplication` / `deleteApplication` | `/api/assets/applications` | 应用注册表 CRUD；`listApplications` 返回 `PageResult<Application>`，支持 `page` / `page_size` |
-| `listResources` / `createResource` / `updateResource` / `deleteResource` | `/api/assets/applications/:application_id/resources`、`/api/assets/resources` | 资源注册表 CRUD，云同步字段只由后端同步链路写入；`listResources` 按 `application_id` 返回 `PageResult<Resource>`，支持 `page` / `page_size` / `cloud_resource_type` / `region` / `sync_status` 服务端筛选 |
+| `listResources` / `createResource` / `updateResource` / `deleteResource` | `/api/assets/applications/:application_id/resources`、`/api/assets/resources` | 资源注册表 CRUD，云同步字段只由后端同步链路写入；`listResources` 按 `application_id` 返回 `PageResult<Resource>`，支持 `page` / `page_size`、`cloud_resource_type` / `region` / `sync_status` / `source` 精确筛选、`keyword` 跨字段模糊筛选，以及 `sort_by` / `sort_order` 服务端排序（排序字段白名单见 `ops/cloud-observability-contract.md` §5.5.4）；筛选与排序均为服务端行为，前端不做跨页本地假筛选/假排序 |
+| `getResourceFilterOptions` | `GET /api/assets/applications/:application_id/resource-facets` | 资源页云类型/Region 下拉字典；仅返回当前应用下非空去重值，按字典序升序；只作候选值，实际过滤仍走 `listResources` 的精确参数（契约 §5.5.5） |
 | `listMatchRules` / `createMatchRule` / `updateMatchRule` / `deleteMatchRule` | `/api/assets/match-rules` | 匹配规则 CRUD；`listMatchRules` 返回 `PageResult<MatchRule>` |
 | `triggerAssetSync` | `POST /api/assets/sync` | 触发云资源同步，立即返回 `running` 批次 |
 | `pollSyncBatch` | 轮询 `GET /api/assets/sync/batches/:batch_id` | 触发后轮询到终态（`success`/`partial`/`failed`）或超时（默认 10 分钟）抛 `SyncStillRunningError`；`hybrid` 下只要任一增强失败就应落 `partial`；支持 `shouldStop` 取消（组件卸载） |

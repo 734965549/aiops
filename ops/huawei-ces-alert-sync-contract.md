@@ -4,7 +4,7 @@
 
 ## 实施状态
 
-契约先行。同步接口、worker、迁移和前端尚未实现。Phase A 开始前，须在目标区域用测试账号确认官方接口、时间过滤和分页行为，并留存脱敏响应样例。实施顺序见 §13。
+Phase A/B 已落地：迁移 `0046`/`0047`（`0047` 幂等补齐部分列）、CES V2 客户端与字段映射、scope 游标与去重、PostgreSQL 源级租约、手动同步 API、`alert_source_sync` 审计、可选 worker 以及前端拉取配置（含立即同步与同步状态展示）均已实现。worker 由 `alert_sync.worker_enabled` 显式启用，默认关闭，多实例部署只应在一个 API 实例开启；`auth_type=none` 的 fake 账号仅在非生产环境允许。Phase C 的验收脚本 `scripts/e2e-alert-sync.ps1` 已提供，但目标区域的官方接口、时间过滤、分页行为和脱敏响应样例仍须在真实测试账号上核对并留存。
 
 ## §1 范围
 
@@ -39,7 +39,7 @@ cmd/api/main.go
 
 ### 4.1 迁移与存量兼容
 
-计划新增 `0046_alert_source_pull`（up/down 成对，落地时复核最新编号）。`alert_source` 增加以下字段。
+迁移拆分为两个版本：`0046_alert_source_pull` 已发布并应用，新增 `account_id` / `pull_config` / `last_sync_at` / `last_sync_status` 与租约表；`0047_alert_source_pull_state` 补充 `delivery_mode` / `sync_state`。已发布版本不得改写，字段拆分以迁移表为准。`alert_source` 增加以下字段。
 
 | 列 | 类型与初值 | 说明 |
 | --- | --- | --- |
@@ -213,7 +213,7 @@ cmd/api/main.go
 
 1. **Phase A** 确认目标区域官方 API 行为，落地迁移、客户端与 mapper、scope 游标、去重及事务单测。
 2. **Phase B** 接入共享租约、权限、手动 API、审计、调度和前端，验证两实例并发。
-3. **Phase C** 增加 `scripts/e2e-alert-sync.ps1`，验收后同步更新本节、主契约、迁移与可观测能力说明。
+3. **Phase C** 已提供 `scripts/e2e-alert-sync.ps1`（覆盖创建拉取源、三轮拉取、恢复、重复观测与审计）；真实环境验收后继续同步本节、主契约、迁移与可观测能力说明。
 
 ## §14 后续扩展
 

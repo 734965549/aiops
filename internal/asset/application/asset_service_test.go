@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -145,6 +146,34 @@ func (r *fakeResRepo) Create(_ context.Context, res *domain.Resource) error {
 	defer r.mu.Unlock()
 	r.rows = append(r.rows, *res)
 	return nil
+}
+
+func (r *fakeResRepo) ListFilterOptions(_ context.Context, applicationID string) (domain.ResourceFilterOptions, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	types := map[string]struct{}{}
+	regions := map[string]struct{}{}
+	for _, row := range r.rows {
+		if row.ApplicationID != applicationID {
+			continue
+		}
+		if v := strings.TrimSpace(row.CloudResourceType); v != "" {
+			types[v] = struct{}{}
+		}
+		if v := strings.TrimSpace(row.Region); v != "" {
+			regions[v] = struct{}{}
+		}
+	}
+	out := domain.ResourceFilterOptions{CloudResourceTypes: make([]string, 0, len(types)), Regions: make([]string, 0, len(regions))}
+	for v := range types {
+		out.CloudResourceTypes = append(out.CloudResourceTypes, v)
+	}
+	for v := range regions {
+		out.Regions = append(out.Regions, v)
+	}
+	sort.Strings(out.CloudResourceTypes)
+	sort.Strings(out.Regions)
+	return out, nil
 }
 
 func (r *fakeResRepo) Count(_ context.Context) (int64, error) {

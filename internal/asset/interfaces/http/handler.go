@@ -147,12 +147,30 @@ func (h *Handler) ListResources(c *gin.Context) {
 		CloudResourceType: c.Query("cloud_resource_type"),
 		Region:            c.Query("region"),
 		SyncStatus:        c.Query("sync_status"),
+		Keyword:           c.Query("keyword"),
+		Source:            c.Query("source"),
+		SortBy:            c.Query("sort_by"),
+		SortOrder:         c.Query("sort_order"),
 	})
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
 	httpx.OK(c, pagination.NewResult(items, total, q))
+}
+
+// ListResourceFilterOptions GET /api/assets/applications/:application_id/resource-facets
+func (h *Handler) ListResourceFilterOptions(c *gin.Context) {
+	if h.assets == nil {
+		httpx.FailWith(c, apperr.CodeUnavailable, "asset service is not enabled")
+		return
+	}
+	out, err := h.assets.ListResourceFilterOptions(c.Request.Context(), c.Param("application_id"))
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	httpx.OK(c, out)
 }
 
 // CreateResource POST /api/assets/resources

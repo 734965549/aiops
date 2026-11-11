@@ -16,6 +16,116 @@ export function shortId(value?: string, head = 8, tail = 4): string {
 }
 
 /**
+ * 资源表可排序字段白名单，与后端 ops/cloud-observability-contract.md §5.5.4 一致。
+ * 表头排序必须走服务端，不能对当前页做本地假排序。
+ */
+export const SORTABLE_RESOURCE_FIELDS = [
+  'name',
+  'source',
+  'resource_type',
+  'cloud_resource_type',
+  'integration_account_id',
+  'cloud_resource_id',
+  'region',
+  'sync_status',
+  'last_synced_at',
+  'namespace',
+  'pod',
+  'instance',
+  'sync_batch_id'
+] as const
+
+export interface ResourceSortParams {
+  sort_by?: string
+  sort_order?: 'asc' | 'desc'
+}
+
+export interface ResourceFilterState {
+  keyword: string
+  source: string
+  cloud_resource_type: string
+  region: string
+  sync_status: string
+}
+
+export interface ResourceSortState {
+  field: string
+  direction: '' | 'ascend' | 'descend'
+}
+
+export const RESOURCE_FILTER_QUERY_KEYS = [
+  'keyword',
+  'source',
+  'cloud_resource_type',
+  'region',
+  'sync_status'
+] as const
+
+function queryText(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+/** URL query -> 筛选状态；非字符串或缺失值统一回落空字符串。 */
+export function resourceFiltersFromQuery(query: Record<string, unknown>): ResourceFilterState {
+  return {
+    keyword: queryText(query.keyword),
+    source: queryText(query.source),
+    cloud_resource_type: queryText(query.cloud_resource_type),
+    region: queryText(query.region),
+    sync_status: queryText(query.sync_status)
+  }
+}
+
+/** URL query -> 排序状态；非法字段或方向一律回落默认排序。 */
+export function resourceSortFromQuery(query: Record<string, unknown>): ResourceSortState {
+  const sortBy = queryText(query.sort_by)
+  if (!sortBy) {
+    return { field: '', direction: '' }
+  }
+  const params = toResourceSortParams(sortBy, queryText(query.sort_order) === 'desc' ? 'descend' : 'ascend')
+  if (!params.sort_by) {
+    return { field: '', direction: '' }
+  }
+  return {
+    field: params.sort_by,
+    direction: params.sort_order === 'desc' ? 'descend' : 'ascend'
+  }
+}
+
+/** 把筛选/排序写回 query；空值删除参数，保留 application_id / resource_id 等其它键。 */
+export function withResourceQuery(
+  base: Record<string, unknown>,
+  filters: ResourceFilterState,
+  sort: ResourceSortState
+): Record<string, unknown> {
+  const query = { ...base }
+  const put = (key: string, value: string) => {
+    if (value) {
+      query[key] = value
+    } else {
+      delete query[key]
+    }
+  }
+  for (const key of RESOURCE_FILTER_QUERY_KEYS) {
+    put(key, (filters[key] || '').trim())
+  }
+  put('sort_by', sort.field)
+  put('sort_order', sort.direction === 'descend' ? 'desc' : sort.direction === 'ascend' ? 'asc' : '')
+  return query
+}
+
+/** Arco 的 sorterChange(direction: '' | 'ascend' | 'descend') -> 服务端排序参数。 */
+export function toResourceSortParams(field: string, direction: string): ResourceSortParams {
+  if (!direction || !(SORTABLE_RESOURCE_FIELDS as readonly string[]).includes(field)) {
+    return {}
+  }
+  return {
+    sort_by: field,
+    sort_order: direction === 'descend' ? 'desc' : 'asc'
+  }
+}
+
+/**
  * 资源表的「附加列」元数据。
  * 默认视图只保留验收要求的核心列（来源、云资源 ID、Region、同步状态等），
  * 其余低频列由用户在「列设置」里按需勾选，避免 15 列同时挤在窄栏里。

@@ -86,12 +86,17 @@ type ListApplicationsQuery struct {
 }
 
 // ListResourcesQuery 资源列表分页查询参数（page 从 1 开始，PageSize 默认 20、最大 100）。
+// 排序与筛选参数原样下传，由持久层做字段白名单与 SQL 转义。
 type ListResourcesQuery struct {
 	Page              int
 	PageSize          int
 	CloudResourceType string
 	Region            string
 	SyncStatus        string
+	Keyword           string
+	Source            string
+	SortBy            string
+	SortOrder         string
 }
 
 type ApplicationDTO struct {
@@ -102,6 +107,12 @@ type ApplicationDTO struct {
 	Description string `json:"description,omitempty"`
 	CreatedAt   int64  `json:"created_at"`
 	UpdatedAt   int64  `json:"updated_at"`
+}
+
+// ResourceFilterOptionsDTO 资源筛选字典。前端只把它当候选值，最终过滤仍走服务端精确匹配。
+type ResourceFilterOptionsDTO struct {
+	CloudResourceTypes []string `json:"cloud_resource_types"`
+	Regions            []string `json:"regions"`
 }
 
 type ResourceDTO struct {
@@ -281,6 +292,10 @@ func (s *AssetService) ListResources(ctx context.Context, applicationID string, 
 		CloudResourceType: strings.TrimSpace(q.CloudResourceType),
 		Region:            strings.TrimSpace(q.Region),
 		SyncStatus:        strings.TrimSpace(q.SyncStatus),
+		Keyword:           strings.TrimSpace(q.Keyword),
+		Source:            strings.TrimSpace(q.Source),
+		SortBy:            strings.TrimSpace(q.SortBy),
+		SortOrder:         strings.TrimSpace(q.SortOrder),
 		Limit:             pageSize,
 		Offset:            (page - 1) * pageSize,
 	})
@@ -292,6 +307,31 @@ func (s *AssetService) ListResources(ctx context.Context, applicationID string, 
 		out = append(out, toResourceDTO(row))
 	}
 	return out, total, nil
+}
+
+// ListResourceFilterOptions 返回当前应用下可选的云类型/Region 字典。
+func (s *AssetService) ListResourceFilterOptions(ctx context.Context, applicationID string) (*ResourceFilterOptionsDTO, error) {
+	if s == nil || s.resources == nil {
+		return nil, apperr.New(apperr.CodeUnavailable, "asset service is not enabled")
+	}
+	applicationID = strings.TrimSpace(applicationID)
+	if applicationID == "" {
+		return nil, apperr.New(apperr.CodeInvalidArgument, "application_id is required")
+	}
+	opts, err := s.resources.ListFilterOptions(ctx, applicationID)
+	if err != nil {
+		return nil, wrapAssetError(err, "list resource filter options failed")
+	}
+	if opts.CloudResourceTypes == nil {
+		opts.CloudResourceTypes = []string{}
+	}
+	if opts.Regions == nil {
+		opts.Regions = []string{}
+	}
+	return &ResourceFilterOptionsDTO{
+		CloudResourceTypes: opts.CloudResourceTypes,
+		Regions:            opts.Regions,
+	}, nil
 }
 
 func (s *AssetService) CreateResource(ctx context.Context, actor Actor, in CreateResourceInput) (*ResourceDTO, error) {

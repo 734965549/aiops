@@ -15,6 +15,7 @@
           </a-button>
           <a-button
             v-if="canManageSources"
+            type="primary"
             @click="openSourceModal"
           >
             接入源管理
@@ -331,148 +332,10 @@
       />
     </a-drawer>
 
-    <!-- 接入源管理 -->
-    <a-modal
+    <AlertSourceManager
       v-model:visible="sourceModalVisible"
-      title="告警接入源"
-      :width="900"
-      :footer="false"
-      unmount-on-close
-      @open="loadSources"
-    >
-      <a-row :gutter="16">
-        <a-col :span="14">
-          <a-table
-            :columns="sourceColumns"
-            :data="sources"
-            :loading="loadingSources"
-            row-key="id"
-            :pagination="false"
-            @row-click="onSelectSource"
-          >
-            <template #enabled="{ record }">
-              <a-tag :color="record.enabled ? 'green' : 'gray'">
-                {{ record.enabled ? '启用' : '禁用' }}
-              </a-tag>
-            </template>
-            <template #secretMasked="{ record }">
-              <span v-if="record.secret_masked">{{ record.secret_masked }}</span>
-              <span
-                v-else
-                class="text-muted"
-              >未配置</span>
-            </template>
-            <template #webhook="{ record }">
-              <a-typography-text
-                copyable
-                :copy-text="webhookUrl(record)"
-              >
-                {{ webhookUrl(record) }}
-              </a-typography-text>
-            </template>
-            <template #sourceActions="{ record }">
-              <a-popconfirm
-                content="确认删除该接入源？"
-                @ok="onDeleteSource(record.id)"
-              >
-                <a-button
-                  type="text"
-                  status="danger"
-                  size="mini"
-                  @click.stop
-                >
-                  删除
-                </a-button>
-              </a-popconfirm>
-            </template>
-          </a-table>
-        </a-col>
-        <a-col :span="10">
-          <a-card :title="editingSourceId ? '编辑接入源' : '新增接入源'">
-            <a-form
-              :model="sourceForm"
-              layout="vertical"
-            >
-              <a-form-item
-                label="ID（Webhook URL 路径）"
-                required
-              >
-                <a-input
-                  v-model="sourceForm.id"
-                  :disabled="!!editingSourceId"
-                  placeholder="prod-am"
-                />
-              </a-form-item>
-              <a-form-item
-                label="名称"
-                required
-              >
-                <a-input
-                  v-model="sourceForm.name"
-                  placeholder="生产 Alertmanager"
-                />
-              </a-form-item>
-              <a-form-item label="类型">
-                <a-select
-                  v-model="sourceForm.type"
-                  :options="sourceTypeOptions"
-                />
-              </a-form-item>
-              <a-form-item
-                :label="editingSourceId ? '密钥（留空保留原值）' : 'Webhook 密钥'"
-                :required="!editingSourceId"
-              >
-                <a-input-password
-                  v-model="sourceForm.secret"
-                  placeholder="X-AIOPS-Webhook-Token"
-                />
-                <div
-                  v-if="editingSourceId && editingSourceSecretMasked"
-                  class="field-hint"
-                >
-                  当前已配置密钥：{{ editingSourceSecretMasked }}
-                </div>
-              </a-form-item>
-              <a-form-item label="环境">
-                <a-input
-                  v-model="sourceForm.environment"
-                  placeholder="prod"
-                />
-              </a-form-item>
-              <a-form-item label="业务线">
-                <a-input
-                  v-model="sourceForm.business_line"
-                  placeholder="payment"
-                />
-              </a-form-item>
-              <a-form-item label="备注">
-                <a-textarea
-                  v-model="sourceForm.description"
-                  :auto-size="{ minRows: 2, maxRows: 4 }"
-                />
-              </a-form-item>
-              <a-form-item>
-                <a-checkbox v-model="sourceForm.enabled">
-                  启用
-                </a-checkbox>
-              </a-form-item>
-              <a-space>
-                <a-button
-                  type="primary"
-                  :loading="savingSource"
-                  @click="onSaveSource"
-                >
-                  {{ editingSourceId ? '保存' : '创建' }}
-                </a-button>
-                <a-button @click="resetSourceForm">
-                  重置
-                </a-button>
-              </a-space>
-            </a-form>
-          </a-card>
-        </a-col>
-      </a-row>
-    </a-modal>
+      @changed="loadSources"
+    />
 
     <!-- 动作弹窗 -->
     <a-modal
@@ -726,6 +589,7 @@ import type { Alert, AlertDetail, AlertEvent, AlertSource } from '@/api/alert'
 import * as executionApi from '@/api/execution'
 import * as runbookApi from '@/api/runbook'
 import type { RunbookRecommendation } from '@/api/runbook'
+import AlertSourceManager from './components/AlertSourceManager.vue'
 
 const router = useRouter()
 
@@ -746,7 +610,6 @@ const aiLoading = ref(false)
 const executionLoading = ref(false)
 const runbookLoading = ref(false)
 const runbookRecommendations = ref<RunbookRecommendation[]>([])
-const savingSource = ref(false)
 const canManageSources = ref(false)
 
 const detailVisible = ref(false)
@@ -758,8 +621,6 @@ const showCommentModal = ref(false)
 const showAIModal = ref(false)
 const showExecutionModal = ref(false)
 
-const editingSourceId = ref('')
-const editingSourceSecretMasked = ref('')
 const aiResult = ref<AnalyzeAlertResult | null>(null)
 
 const filters = reactive({
@@ -796,17 +657,6 @@ const runbookForm = reactive({
   parameters_json: '{}'
 })
 
-const sourceForm = reactive({
-  id: '',
-  name: '',
-  type: 'prometheus_alertmanager',
-  secret: '',
-  environment: '',
-  business_line: '',
-  description: '',
-  enabled: true
-})
-
 const statusOptions = [
   { label: '新建', value: 'new' },
   { label: '已认领', value: 'acknowledged' },
@@ -824,11 +674,6 @@ const severityOptions = [
   { label: 'Info', value: 'info' }
 ]
 
-const sourceTypeOptions = [
-  { label: 'Prometheus Alertmanager', value: 'prometheus_alertmanager' },
-  { label: '通用 Webhook', value: 'custom_webhook' }
-]
-
 const columns = [
   { title: '告警名称', dataIndex: 'name', ellipsis: true },
   { title: '级别', slotName: 'severity', width: 80 },
@@ -838,16 +683,6 @@ const columns = [
   { title: '次数', dataIndex: 'occurrence_count', width: 80, align: 'right' as const },
   { title: '最近更新', slotName: 'last_seen_at', width: 170 },
   { title: '操作', slotName: 'actions', width: 80 }
-]
-
-const sourceColumns = [
-  { title: 'ID', dataIndex: 'id', width: 100 },
-  { title: '名称', dataIndex: 'name' },
-  { title: '类型', dataIndex: 'type', width: 160, ellipsis: true },
-  { title: '密钥', slotName: 'secretMasked', width: 80 },
-  { title: '状态', slotName: 'enabled', width: 80 },
-  { title: 'Webhook', slotName: 'webhook', ellipsis: true },
-  { title: '操作', slotName: 'sourceActions', width: 80 }
 ]
 
 const sourceFilterOptions = computed(() =>
@@ -972,15 +807,6 @@ function formatTime(ts?: number) {
 
 function sourceLabel(alert: Alert) {
   return alert.source_name || alert.source_id || alert.source || '—'
-}
-
-function webhookUrl(source: Pick<AlertSource, 'id' | 'type'>) {
-  const base = import.meta.env.VITE_API_BASE || window.location.origin
-  const ingestPath =
-    source.type === 'custom_webhook'
-      ? `/api/alerts/ingest/webhook/${source.id}`
-      : `/api/alerts/ingest/alertmanager/${source.id}`
-  return `${base.replace(/\/$/, '')}${ingestPath}`
 }
 
 async function loadAlerts() {
@@ -1310,84 +1136,6 @@ function openSourceModal() {
   sourceModalVisible.value = true
 }
 
-function resetSourceForm() {
-  editingSourceId.value = ''
-  editingSourceSecretMasked.value = ''
-  sourceForm.id = ''
-  sourceForm.name = ''
-  sourceForm.type = 'prometheus_alertmanager'
-  sourceForm.secret = ''
-  sourceForm.environment = ''
-  sourceForm.business_line = ''
-  sourceForm.description = ''
-  sourceForm.enabled = true
-}
-
-function onSelectSource(record: TableData) {
-  const src = record as AlertSource
-  editingSourceId.value = src.id
-  editingSourceSecretMasked.value = src.secret_masked || ''
-  sourceForm.id = src.id
-  sourceForm.name = src.name
-  sourceForm.type = src.type
-  sourceForm.secret = ''
-  sourceForm.environment = src.environment || ''
-  sourceForm.business_line = src.business_line || ''
-  sourceForm.description = src.description || ''
-  sourceForm.enabled = src.enabled
-}
-
-async function onSaveSource() {
-  if (!sourceForm.id.trim() || !sourceForm.name.trim()) {
-    Message.warning('请填写 ID 与名称')
-    return
-  }
-  if (!editingSourceId.value && !sourceForm.secret.trim()) {
-    Message.warning('请填写 Webhook 密钥')
-    return
-  }
-  savingSource.value = true
-  try {
-    if (editingSourceId.value) {
-      await alertApi.updateAlertSource(editingSourceId.value, {
-        name: sourceForm.name,
-        type: sourceForm.type,
-        enabled: sourceForm.enabled,
-        secret: sourceForm.secret || undefined,
-        environment: sourceForm.environment || undefined,
-        business_line: sourceForm.business_line || undefined,
-        description: sourceForm.description || undefined
-      })
-      Message.success('接入源已更新')
-    } else {
-      await alertApi.createAlertSource({
-        id: sourceForm.id.trim(),
-        name: sourceForm.name.trim(),
-        type: sourceForm.type,
-        enabled: sourceForm.enabled,
-        secret: sourceForm.secret.trim(),
-        environment: sourceForm.environment || undefined,
-        business_line: sourceForm.business_line || undefined,
-        description: sourceForm.description || undefined
-      })
-      Message.success('接入源已创建')
-    }
-    await loadSources()
-    resetSourceForm()
-  } finally {
-    savingSource.value = false
-  }
-}
-
-async function onDeleteSource(sourceId: string) {
-  await alertApi.deleteAlertSource(sourceId)
-  Message.success('已删除')
-  if (editingSourceId.value === sourceId) {
-    resetSourceForm()
-  }
-  await loadSources()
-}
-
 onMounted(async () => {
   assignForm.assignee_user_id = auth.user?.id || ''
   await Promise.allSettled([loadSources(), loadAlerts()])
@@ -1461,13 +1209,4 @@ onMounted(async () => {
   font-size: 12px;
 }
 
-.field-hint {
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--color-text-3);
-}
-
-.text-muted {
-  color: var(--color-text-3);
-}
 </style>

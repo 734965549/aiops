@@ -24,6 +24,9 @@ import (
 	alertapp "github.com/734965549/aiops/internal/alert/application"
 	alertasset "github.com/734965549/aiops/internal/alert/infrastructure/asset"
 	alertaudit "github.com/734965549/aiops/internal/alert/infrastructure/audit"
+	alertidentity "github.com/734965549/aiops/internal/alert/infrastructure/identity"
+	alertinteg "github.com/734965549/aiops/internal/alert/infrastructure/integration"
+	alertobs "github.com/734965549/aiops/internal/alert/infrastructure/observability"
 	alertpg "github.com/734965549/aiops/internal/alert/infrastructure/persistence"
 	alertidem "github.com/734965549/aiops/internal/alert/infrastructure/webhookidempotency"
 	alerthttp "github.com/734965549/aiops/internal/alert/interfaces/http"
@@ -336,6 +339,24 @@ func main() {
 	)
 	obsHandler := obshttp.NewHandler(obsQuerySvc)
 
+	// ---- 装配 CES 告警拉取（Alert 端口 -> Observability 适配 -> 共享租约）----
+	alertSyncLeaseRepo := alertpg.NewAlertSyncLeaseRepository(app.DB)
+	sourceSvc.SetAccountReader(alertinteg.NewAccountReader(integAccountSvc))
+	sourceSvc.SetAccountAccessChecker(alertidentity.NewAccountAccessChecker(authorizationSvc))
+	sourceSvc.SetLeaseStore(alertSyncLeaseRepo)
+	sourceSvc.SetAllowFakeAccounts(app.Cfg.App.Env != "prod")
+	alertPullAdapter := alertobs.NewPullAdapter(obsQuerySvc)
+	alertSyncSvc := alertapp.NewAlertSyncService(
+		alertSourceRepo,
+		alertPullAdapter,
+		ingestSvc,
+		alertSyncLeaseRepo,
+		sourceSvc,
+		alertAuditRecorder,
+		alertSyncInstanceID(),
+	)
+	alertHandler.SetSyncService(alertSyncSvc)
+
 	assetSyncBatchRepo := assetpg.NewSyncBatchRepository(app.DB)
 	assetDiscoveryAdapter := assetobs.NewDiscoveryAdapter(obsQuerySvc)
 	assetIntegAdapter := assetinteg.NewAccountAdapter(integAccountRepo, integCapabilityRepo)
@@ -352,6 +373,16 @@ func main() {
 	)
 	assetSyncSvc.SetLifecycle(rootCtx)
 	assetHandler := assethttp.NewHandler(assetSvc, assetRuleSvc, assetSyncSvc)
+
+	var alertSyncWorker *alertapp.AlertSyncWorker
+	if app.Cfg.AlertSync.WorkerEnabled {
+		alertSyncWorker = alertapp.NewAlertSyncWorker(alertSourceRepo, alertSyncSvc, app.Cfg.AlertSync.ScanInterval())
+		alertSyncWorker.Start(rootCtx)
+		logger.L().Info("alert sync worker started",
+			logger.String("owner_id", alertSyncInstanceID()),
+			logger.Int("scan_interval_s", int(app.Cfg.AlertSync.ScanInterval().Seconds())),
+		)
+	}
 
 	// ---- 装配 Inspection 限界上下文（巡检策略/运行/发现/建议 + 证据链分析）----
 	inspectionPolicyRepo := inspectionpg.NewPolicyRepository(app.DB)
@@ -433,7 +464,15 @@ func main() {
 	if !assetSyncSvc.WaitContext(syncShutdownCtx) {
 		logger.L().Warn("asset sync shutdown wait timed out")
 	}
+	if alertSyncWorker != nil && !alertSyncWorker.WaitContext(syncShutdownCtx) {
+		logger.L().Warn("alert sync worker shutdown wait timed out")
+	}
 	logger.L().Info("aiops-api stopped")
+}
+
+func alertSyncInstanceID() string {
+	host, _ := os.Hostname()
+	return fmt.Sprintf("api:%s:%d", strings.TrimSpace(host), os.Getpid())
 }
 
 func seedProvidersFromConfig(registry *toolgateway.ProviderRegistry, providers []config.AIProviderConfig) error {

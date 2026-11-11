@@ -1,6 +1,7 @@
 import { computed, nextTick, reactive, ref } from 'vue'
 import type { Ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import type { LocationQueryRaw } from 'vue-router'
 import Message from '@arco-design/web-vue/es/message'
 import type { TableInstance } from '@arco-design/web-vue/es/table'
 import type { TableData } from '@arco-design/web-vue/es/table/interface'
@@ -8,9 +9,14 @@ import * as assetApi from '@/api/asset'
 import type { Application, Resource } from '@/api/asset'
 import {
   OPTIONAL_RESOURCE_COLUMNS,
-  labelEntries
+  SORTABLE_RESOURCE_FIELDS,
+  labelEntries,
+  resourceFiltersFromQuery,
+  resourceSortFromQuery,
+  toResourceSortParams,
+  withResourceQuery
 } from './assetUtils'
-import type { OptionalResourceColumnKey } from './assetUtils'
+import type { OptionalResourceColumnKey, ResourceFilterState, ResourceSortState } from './assetUtils'
 
 type TableColumn = NonNullable<TableInstance['columns']>[number]
 
@@ -27,6 +33,7 @@ export function useAssetRegistry(options: {
   const highlightedResourceId = ref('')
   const appsLoading = ref(false)
   const resourcesLoading = ref(false)
+  const filterOptionsLoading = ref(false)
   const appModalVisible = ref(false)
   const resourceModalVisible = ref(false)
   const appModalMode = ref<'create' | 'edit'>('create')
@@ -39,11 +46,22 @@ export function useAssetRegistry(options: {
   const appPagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
   const resourcePagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
 
-  const resourceFilters = reactive({
-    cloud_resource_type: '',
-    region: '',
-    sync_status: ''
+  // 初始筛选/排序从 URL 还原，保证刷新与分享链接可复现同一视图。
+  const resourceFilters = reactive<ResourceFilterState>(
+    resourceFiltersFromQuery(route.query as Record<string, unknown>)
+  )
+
+  // 排序只记录状态，真正排序由后端按 sort_by / sort_order 完成，保证跨页正确。
+  const resourceSorter = reactive<ResourceSortState>(
+    resourceSortFromQuery(route.query as Record<string, unknown>)
+  )
+
+  // 云类型 / Region 的候选值来自后端字典接口，只用于下拉建议，不参与本地过滤。
+  const resourceFilterOptions = reactive<assetApi.ResourceFilterOptions>({
+    cloud_resource_types: [],
+    regions: []
   })
+  let filterOptionsAppId = ''
 
   const appForm = reactive({
     name: '',
@@ -74,30 +92,56 @@ export function useAssetRegistry(options: {
 
   // 核心列宽度只用于「附加列开启」时的 scroll.x 计算；
   // 默认视图下由 .page-table-fit 的 !important 百分比列宽覆盖。
-  const baseResourceColumns: TableInstance['columns'] = [
+  const baseResourceColumns: TableColumn[] = [
     { title: '资源名', dataIndex: 'name', width: 150, ellipsis: true, tooltip: true },
-    { title: '来源', slotName: 'source', width: 80 },
+    { title: '来源', dataIndex: 'source', slotName: 'source', width: 80 },
     { title: '类型', dataIndex: 'resource_type', width: 80 },
-    { title: '云类型', slotName: 'cloud_resource_type', width: 90 },
-    { title: '云账号', slotName: 'integration_account_id', width: 150 },
-    { title: '云资源 ID', slotName: 'cloud_resource_id', width: 150, ellipsis: true },
-    { title: 'Region', slotName: 'region', width: 100 },
-    { title: '同步状态', slotName: 'sync_status', width: 90 }
+    { title: '云类型', dataIndex: 'cloud_resource_type', slotName: 'cloud_resource_type', width: 90 },
+    { title: '云账号', dataIndex: 'integration_account_id', slotName: 'integration_account_id', width: 150 },
+    { title: '云资源 ID', dataIndex: 'cloud_resource_id', slotName: 'cloud_resource_id', width: 150, ellipsis: true },
+    { title: 'Region', dataIndex: 'region', slotName: 'region', width: 100 },
+    { title: '同步状态', dataIndex: 'sync_status', slotName: 'sync_status', width: 90 }
   ]
   const baseResourceWidth = baseResourceColumns.reduce((sum, col) => sum + (col.width || 0), 0) + 110
 
+  const sortableFields: readonly string[] = SORTABLE_RESOURCE_FIELDS
+
+  // sorter:true 让 Arco 只发出 sorterChange、不做本地排序（本地排序只对当前页生效）。
+  // defaultSortOrder 保证「列设置」改变列定义后表头箭头不丢。
+  function sortableFor(field: string): TableColumn['sortable'] {
+    const active = resourceSorter.field === field && resourceSorter.direction !== ''
+    return {
+      sortDirections: ['ascend', 'descend'] as ('ascend' | 'descend')[],
+      sorter: true,
+      ...(active ? { defaultSortOrder: resourceSorter.direction as 'ascend' | 'descend' } : {})
+    }
+  }
+
   const resourceColumns = computed<TableInstance['columns']>(() => {
+    const core: TableColumn[] = baseResourceColumns.map((col) => {
+      const field = typeof col.dataIndex === 'string' ? col.dataIndex : ''
+      return field && sortableFields.includes(field)
+        ? { ...col, sortable: sortableFor(field) }
+        : { ...col }
+    })
     const extras: TableColumn[] = OPTIONAL_RESOURCE_COLUMNS
       .filter((col) => visibleExtraColumns.value.includes(col.key))
-      .map((col) => ({
-        title: col.label,
-        width: col.width,
-        ...(col.slotName
-          ? { slotName: col.slotName }
-          : { dataIndex: col.dataIndex || col.key, ellipsis: true, tooltip: true })
-      }))
+      .map((col) => {
+        const field = col.dataIndex || col.slotName || ''
+        const column: TableColumn = {
+          title: col.label,
+          width: col.width,
+          ...(col.slotName
+            ? { slotName: col.slotName }
+            : { dataIndex: col.dataIndex || col.key, ellipsis: true, tooltip: true })
+        }
+        if (field && field !== 'labels' && sortableFields.includes(field)) {
+          return { ...column, dataIndex: field, sortable: sortableFor(field) }
+        }
+        return column
+      })
     return [
-      ...baseResourceColumns,
+      ...core,
       ...extras,
       {
         title: '操作',
@@ -152,6 +196,16 @@ export function useAssetRegistry(options: {
     return typeof route.query.resource_id === 'string' ? route.query.resource_id : ''
   }
 
+  // 筛选与排序进入 URL：刷新、复制链接、浏览器前进/后退都能复原同一组条件。
+  function syncFiltersToRoute() {
+    const query = withResourceQuery(
+      route.query as Record<string, unknown>,
+      resourceFilters,
+      resourceSorter
+    )
+    void router.replace({ query: query as LocationQueryRaw })
+  }
+
   async function scrollToHighlightedResource() {
     if (!highlightedResourceId.value) return
     await nextTick()
@@ -182,16 +236,44 @@ export function useAssetRegistry(options: {
     }
   }
 
+  async function loadResourceFilterOptions(force = false) {
+    const appId = selectedAppId.value
+    if (!appId) {
+      resourceFilterOptions.cloud_resource_types = []
+      resourceFilterOptions.regions = []
+      filterOptionsAppId = ''
+      return
+    }
+    if (!force && filterOptionsAppId === appId) return
+    filterOptionsLoading.value = true
+    try {
+      const options = await assetApi.getResourceFilterOptions(appId)
+      // 应用切换期间旧请求可能后返回，避免覆盖新应用的字典。
+      if (selectedAppId.value !== appId) return
+      resourceFilterOptions.cloud_resource_types = options.cloud_resource_types ?? []
+      resourceFilterOptions.regions = options.regions ?? []
+      filterOptionsAppId = appId
+    } catch {
+      // 字典失败不阻塞列表，保留已有候选值。
+    } finally {
+      filterOptionsLoading.value = false
+    }
+  }
+
   async function loadResources() {
     if (!selectedAppId.value) return
+    void loadResourceFilterOptions()
     resourcesLoading.value = true
     try {
       const res = await assetApi.listResources(selectedAppId.value, {
         page: resourcePagination.current,
         page_size: resourcePagination.pageSize,
+        keyword: resourceFilters.keyword.trim() || undefined,
+        source: resourceFilters.source || undefined,
         cloud_resource_type: resourceFilters.cloud_resource_type.trim() || undefined,
         region: resourceFilters.region.trim() || undefined,
-        sync_status: resourceFilters.sync_status || undefined
+        sync_status: resourceFilters.sync_status || undefined,
+        ...toResourceSortParams(resourceSorter.field, resourceSorter.direction)
       })
       resources.value = res.items ?? []
       resourcePagination.total = res.total ?? 0
@@ -209,14 +291,29 @@ export function useAssetRegistry(options: {
 
   function applyResourceFilters() {
     resourcePagination.current = 1
+    syncFiltersToRoute()
     loadResources()
   }
 
   function resetResourceFilters() {
+    resourceFilters.keyword = ''
+    resourceFilters.source = ''
     resourceFilters.cloud_resource_type = ''
     resourceFilters.region = ''
     resourceFilters.sync_status = ''
     applyResourceFilters()
+  }
+
+  function onResourceSorterChange(dataIndex: string, direction: string) {
+    const params = toResourceSortParams(dataIndex, direction)
+    resourceSorter.field = params.sort_by || ''
+    resourceSorter.direction = !params.sort_by
+      ? ''
+      : params.sort_order === 'desc' ? 'descend' : 'ascend'
+    // 排序是服务端行为，换排序后必须回到第 1 页，否则停留在越界页码。
+    resourcePagination.current = 1
+    syncFiltersToRoute()
+    loadResources()
   }
 
   function setVisibleExtraColumns(keys: OptionalResourceColumnKey[]) {
@@ -358,6 +455,8 @@ export function useAssetRegistry(options: {
       }
       resourceModalVisible.value = false
       resourcePagination.current = resourceModalMode.value === 'create' ? 1 : resourcePagination.current
+      // 资源变更可能产生新的云类型/Region，强制刷新字典。
+      filterOptionsAppId = ''
       await loadResources()
     } finally {
       resourceSaving.value = false
@@ -374,6 +473,7 @@ export function useAssetRegistry(options: {
         delete query.resource_id
         router.replace({ query })
       }
+      filterOptionsAppId = ''
       await loadResources()
     } catch (e: unknown) {
       Message.error(e instanceof Error ? e.message : '删除失败')
@@ -420,6 +520,9 @@ export function useAssetRegistry(options: {
     appForm,
     resourceForm,
     resourceFilters,
+    resourceSorter,
+    resourceFilterOptions,
+    filterOptionsLoading,
     visibleExtraColumns,
     appPagination,
     resourcePagination,
@@ -439,8 +542,10 @@ export function useAssetRegistry(options: {
     labelPreviewEntries,
     loadApplications,
     loadResources,
+    loadResourceFilterOptions,
     applyResourceFilters,
     resetResourceFilters,
+    onResourceSorterChange,
     setVisibleExtraColumns,
     onSelectApplication,
     openCreateApplication,

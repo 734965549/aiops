@@ -14,7 +14,7 @@
 第一阶段 Alert 模块先覆盖：
 
 - 接收外部告警，优先支持 Prometheus Alertmanager Webhook。
-- 华为云 CES 告警记录拉取接入（契约先行，实施状态见 [CES 告警拉取契约](huawei-ces-alert-sync-contract.md)）。
+- 华为云 CES 告警记录拉取接入（已实现，实施状态见 [CES 告警拉取契约](huawei-ces-alert-sync-contract.md)）。
 - 将不同来源告警标准化为平台内部 `Alert`。
 - 按稳定去重键生成或更新告警记录。
 - 支持告警列表、详情、时间线、基础状态流转。
@@ -272,7 +272,7 @@ stateDiagram-v2
 | `created_at` | number | 是 | 创建时间，Unix 秒 |
 | `updated_at` | number | 是 | 更新时间，Unix 秒 |
 
-上述拉取扩展字段随 CES 功能上线。Webhook 源输出 `delivery_mode=webhook`，省略拉取配置和同步结果字段。详细语义见 [CES 告警拉取契约](huawei-ces-alert-sync-contract.md) §4、§8。
+上述拉取扩展字段已随 CES 功能上线。Webhook 源输出 `delivery_mode=webhook`，省略拉取配置和同步结果字段。详细语义见 [CES 告警拉取契约](huawei-ces-alert-sync-contract.md) §4、§8。
 
 ### 5.4 `AlertSilence`
 
@@ -900,4 +900,4 @@ Alert 时间线写 `execution_created` / `execution_started` / `execution_finish
 - 告警降噪规则：时间窗口、标签聚合、维护窗口、重复压缩。
 - 与 Asset 自动关联的更强 matcher。
 
-华为云 CES 告警拉取已作为扩展立项（契约先行，实现状态见契约内「实施状态」节）：`ops/huawei-ces-alert-sync-contract.md`。
+华为云 CES 告警拉取已落地（实现状态见契约内「实施状态」节）：`ops/huawei-ces-alert-sync-contract.md`。

@@ -11,7 +11,11 @@ import {
   maskLabelValue,
   parseSyncBatchMessage,
   preferredLabelKeys,
-  shortId
+  resourceFiltersFromQuery,
+  resourceSortFromQuery,
+  shortId,
+  toResourceSortParams,
+  withResourceQuery
 } from './assetUtils'
 
 describe('shortId', () => {
@@ -375,5 +379,85 @@ describe('buildSyncBatchSignalTags', () => {
 
   it('returns empty array without summary', () => {
     expect(buildSyncBatchSignalTags(undefined)).toEqual([])
+  })
+})
+
+describe('toResourceSortParams', () => {
+  it('maps Arco directions to server-side sort params', () => {
+    expect(toResourceSortParams('name', 'ascend')).toEqual({ sort_by: 'name', sort_order: 'asc' })
+    expect(toResourceSortParams('region', 'descend')).toEqual({ sort_by: 'region', sort_order: 'desc' })
+  })
+
+  it('drops empty direction and unknown fields', () => {
+    expect(toResourceSortParams('name', '')).toEqual({})
+    expect(toResourceSortParams('id; DROP TABLE', 'ascend')).toEqual({})
+    expect(toResourceSortParams('labels', 'ascend')).toEqual({})
+  })
+})
+
+describe('resource filter/sort URL state', () => {
+  it('restores filters and sort from query', () => {
+    expect(resourceFiltersFromQuery({
+      keyword: 'elb',
+      source: 'cloud_sync',
+      cloud_resource_type: 'ecs',
+      region: 'cn-north-4',
+      sync_status: 'active'
+    })).toEqual({
+      keyword: 'elb',
+      source: 'cloud_sync',
+      cloud_resource_type: 'ecs',
+      region: 'cn-north-4',
+      sync_status: 'active'
+    })
+
+    expect(resourceSortFromQuery({ sort_by: 'name', sort_order: 'desc' })).toEqual({
+      field: 'name',
+      direction: 'descend'
+    })
+    expect(resourceSortFromQuery({ sort_by: 'region' })).toEqual({ field: 'region', direction: 'ascend' })
+  })
+
+  it('ignores malformed query values', () => {
+    expect(resourceFiltersFromQuery({ keyword: 42, source: null })).toEqual({
+      keyword: '',
+      source: '',
+      cloud_resource_type: '',
+      region: '',
+      sync_status: ''
+    })
+    expect(resourceSortFromQuery({ sort_by: 'labels', sort_order: 'desc' })).toEqual({ field: '', direction: '' })
+    expect(resourceSortFromQuery({})).toEqual({ field: '', direction: '' })
+  })
+
+  it('writes state back without dropping unrelated query keys', () => {
+    const query = withResourceQuery(
+      { application_id: 'app-1', resource_id: 'res-1', keyword: 'old' },
+      {
+        keyword: ' elb ',
+        source: '',
+        cloud_resource_type: 'ecs',
+        region: '',
+        sync_status: ''
+      },
+      { field: 'name', direction: 'descend' }
+    )
+    expect(query).toEqual({
+      application_id: 'app-1',
+      resource_id: 'res-1',
+      keyword: 'elb',
+      cloud_resource_type: 'ecs',
+      sort_by: 'name',
+      sort_order: 'desc'
+    })
+  })
+
+  it('removes filter keys when cleared', () => {
+    const query = withResourceQuery(
+      { application_id: 'app-1', keyword: 'elb', region: 'cn-north-4', sort_by: 'name', sort_order: 'asc' },
+      { keyword: '', source: '', cloud_resource_type: '', region: '', sync_status: '' },
+      { field: '', direction: '' }
+    )
+    expect(query).toEqual({ application_id: 'app-1' })
   })
 })

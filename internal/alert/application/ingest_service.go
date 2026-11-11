@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +71,10 @@ func (s *IngestService) VerifySource(ctx context.Context, ingestCtx IngestContex
 		}
 		return nil, wrapAlertOpError(err, "load alert source failed")
 	}
+	if src.IsPullSource() {
+		// 拉取源不提供公开 Webhook 入口；在校验 token 前按不存在处理（CES 契约 §4.3）。
+		return nil, apperr.New(apperr.CodeNotFound, "alert source not found")
+	}
 	if !src.Enabled {
 		return nil, apperr.New(apperr.CodeNotFound, "alert source not found")
 	}
@@ -112,6 +117,12 @@ type IngestOptions struct {
 	// IgnoreTerminal 为 true 时（拉取式接入），同一 dedup_key 已 recovered/closed 后
 	// 再次观测到 firing 不重开，直接计入 ignored；Webhook 保持 false 以维持 §7.2 重开语义。
 	IgnoreTerminal bool
+	// DedupeByCloudTrigger 为 true 时，仅当 last_alarm_time 比已记录值更新才记 updated，
+	// 重复/旧观测计入 ignored（CES 契约 §7.1）。
+	DedupeByCloudTrigger bool
+	// ContinueOnError 为 true 时单条写入失败不中断整轮，累计 Failed 并继续；
+	// 用于拉取式接入的部分落库语义。
+	ContinueOnError bool
 }
 
 // IngestNormalized 复用 Webhook 归一化管道写入拉取式告警（CES 等），
@@ -125,6 +136,7 @@ func (s *IngestService) ingestNormalized(ctx context.Context, src *domain.AlertS
 		return nil, apperr.New(apperr.CodeUnavailable, "alert ingest is not enabled")
 	}
 	result := &IngestResultDTO{}
+	var firstErr error
 	for _, item := range items {
 		result.Accepted++
 		if strings.TrimSpace(item.Name) == "" {
@@ -133,7 +145,14 @@ func (s *IngestService) ingestNormalized(ctx context.Context, src *domain.AlertS
 		}
 		created, updated, recovered, ignored, err := s.processOne(ctx, src, ingestCtx, item, opts)
 		if err != nil {
-			return nil, err
+			if !opts.ContinueOnError {
+				return nil, err
+			}
+			result.Failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		result.Created += created
 		result.Updated += updated
@@ -149,7 +168,7 @@ func (s *IngestService) ingestNormalized(ctx context.Context, src *domain.AlertS
 		logger.Int("recovered", result.Recovered),
 		logger.Int("ignored", result.Ignored),
 	)
-	return result, nil
+	return result, firstErr
 }
 
 // processOne 处理单条归一化告警：firing 新建/更新，resolved 转 recovered，recovered 后 firing 重新打开当前 lifecycle，closed 后 firing 新建 lifecycle。
@@ -192,13 +211,13 @@ func (s *IngestService) processOne(ctx context.Context, src *domain.AlertSource,
 		if maxSeq > 0 {
 			eventMessage = "告警再次触发（新生命周期）"
 		}
-		return s.createActiveAlert(ctx, src, ingestCtx, item, dedupKey, maxSeq+1, now, eventMessage)
+		return s.createActiveAlert(ctx, src, ingestCtx, item, dedupKey, maxSeq+1, now, eventMessage, opts)
 	}
 
-	return s.processExistingActive(ctx, src, ingestCtx, item, active, now, isResolved)
+	return s.processExistingActive(ctx, src, ingestCtx, item, active, now, isResolved, opts)
 }
 
-func (s *IngestService) createActiveAlert(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, item NormalizedAlert, dedupKey string, lifecycleSeq int, now time.Time, eventMessage string) (created, updated, recovered, ignored int, err error) {
+func (s *IngestService) createActiveAlert(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, item NormalizedAlert, dedupKey string, lifecycleSeq int, now time.Time, eventMessage string, opts IngestOptions) (created, updated, recovered, ignored int, err error) {
 	alert := s.newAlertFromNormalized(src, item, dedupKey, lifecycleSeq, now)
 	s.applyAssetLinks(ctx, alert, item)
 	if err := s.alerts.Create(ctx, alert); err != nil {
@@ -207,7 +226,7 @@ func (s *IngestService) createActiveAlert(ctx context.Context, src *domain.Alert
 			if findErr != nil {
 				return 0, 0, 0, 0, wrapAlertOpError(findErr, "find active alert after create conflict failed")
 			}
-			return s.processExistingActive(ctx, src, ingestCtx, item, active, now, false)
+			return s.processExistingActive(ctx, src, ingestCtx, item, active, now, false, opts)
 		}
 		return 0, 0, 0, 0, wrapAlertOpError(err, "create alert failed")
 	}
@@ -222,7 +241,14 @@ func (s *IngestService) createActiveAlert(ctx context.Context, src *domain.Alert
 	return
 }
 
-func (s *IngestService) processExistingActive(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, item NormalizedAlert, active *domain.Alert, now time.Time, isResolved bool) (created, updated, recovered, ignored int, err error) {
+func (s *IngestService) processExistingActive(ctx context.Context, src *domain.AlertSource, ingestCtx IngestContext, item NormalizedAlert, active *domain.Alert, now time.Time, isResolved bool, opts IngestOptions) (created, updated, recovered, ignored int, err error) {
+	if opts.DedupeByCloudTrigger && !isResolved && item.CloudTriggerAt != nil {
+		if prev, ok := parseCloudTrigger(active.Annotations); ok && item.CloudTriggerAt.Unix() <= prev {
+			// 同一 record 的重复或旧 firing 观测，不产生状态/时间线变更（CES 契约 §7.1）。
+			ignored = 1
+			return
+		}
+	}
 	if isResolved {
 		if active.Status == domain.StatusRecovered {
 			ignored = 1
@@ -240,6 +266,7 @@ func (s *IngestService) processExistingActive(ctx context.Context, src *domain.A
 		active.RecoveredAt = &recoveredAt
 		active.LastSeenAt = now
 		active.SilencedUntil = nil // 外部恢复结束静默，无需先 unsilence
+		applyCloudMetadata(active, item)
 		if err := s.alerts.Update(ctx, active); err != nil {
 			return 0, 0, 0, 0, wrapAlertOpError(err, "recover alert failed")
 		}
@@ -265,6 +292,7 @@ func (s *IngestService) processExistingActive(ctx context.Context, src *domain.A
 	active.LastSeenAt = now
 	active.Labels = cloneLabels(item.Labels)
 	active.Annotations = cloneLabels(item.Annotations)
+	applyCloudMetadata(active, item)
 	active.Severity = item.Severity
 	active.Summary = item.Summary
 	active.Description = item.Description
@@ -296,7 +324,7 @@ func (s *IngestService) newAlertFromNormalized(src *domain.AlertSource, item Nor
 	}
 	labels := cloneLabels(item.Labels)
 	annotations := cloneLabels(item.Annotations)
-	return &domain.Alert{
+	alert := &domain.Alert{
 		ID:              newAlertID(),
 		ExternalID:      item.ExternalID,
 		Source:          string(src.Type),
@@ -322,6 +350,38 @@ func (s *IngestService) newAlertFromNormalized(src *domain.AlertSource, item Nor
 		FirstSeenAt:     firstSeen,
 		LastSeenAt:      now,
 	}
+	applyCloudMetadata(alert, item)
+	return alert
+}
+
+// applyCloudMetadata 将 CES 原始状态与云端触发时间写入 annotations，
+// 供去重判断和后续 API 展示；不覆盖接入源提供的业务 annotation。
+func applyCloudMetadata(alert *domain.Alert, item NormalizedAlert) {
+	if alert == nil || item.SourceStatus == "" {
+		return
+	}
+	if alert.Annotations == nil {
+		alert.Annotations = map[string]string{}
+	}
+	alert.Annotations["ces_status"] = item.SourceStatus
+	if item.CloudTriggerAt != nil {
+		next := item.CloudTriggerAt.Unix()
+		if prev, ok := parseCloudTrigger(alert.Annotations); !ok || next > prev {
+			alert.Annotations["ces_last_alarm_time"] = strconv.FormatInt(next, 10)
+		}
+	}
+}
+
+func parseCloudTrigger(annotations map[string]string) (int64, bool) {
+	raw, ok := annotations["ces_last_alarm_time"]
+	if !ok {
+		return 0, false
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || v <= 0 {
+		return 0, false
+	}
+	return v, true
 }
 
 // applyAssetLinks 按 §9.1 尝试匹配 Asset 注册表，写入 application_id / resource_id；失败仍保留告警。
@@ -365,6 +425,12 @@ func (s *IngestService) recordIntegrationEvent(ctx context.Context, alertID stri
 		"user_agent":  ingestCtx.UserAgent,
 		"external_id": item.ExternalID,
 		"status":      item.Status,
+	}
+	if item.SourceStatus != "" {
+		payload["ces_status"] = item.SourceStatus
+	}
+	if item.CloudTriggerAt != nil {
+		payload["cloud_trigger_at"] = item.CloudTriggerAt.Unix()
 	}
 	ev := &domain.AlertEvent{
 		ID:        newEventID(),

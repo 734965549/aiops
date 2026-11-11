@@ -56,6 +56,12 @@ type AlertRuleQueryPort interface {
 	ListAlertRules(ctx context.Context, pctx domain.ProviderContext, q domain.AlertRuleQuery) ([]domain.AlertRule, error)
 }
 
+// AlarmRecordPullPort 告警记录按 scope 拉取端口（CES V2 alarm-histories）。
+// 新 scope 先查云端可见 alarm 记录，再读更新窗口；增量轮次读 cursor-5m..round_cutoff。
+type AlarmRecordPullPort interface {
+	PullAlarmRecords(ctx context.Context, pctx domain.ProviderContext, q domain.AlarmPullQuery) (*domain.AlarmPullResult, error)
+}
+
 // ProviderEntry 标识已注册的观测 Provider；具体能力通过小 Port 接口按需类型断言，避免强制实现全部方法。
 type ProviderEntry interface {
 	ProviderType() string

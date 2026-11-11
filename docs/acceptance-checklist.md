@@ -11,7 +11,7 @@
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
 | 0.1 | 依赖启动 | `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d` | Postgres 健康 |
-| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0001–0042，无报错；当前仓库未包含 `0021` Notification 迁移 |
+| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0001–0047，无报错；当前仓库未包含 `0021` Notification 迁移 |
 | 0.3 | API 启动 | `go run ./cmd/api` 或 compose 内 api 服务 | 登录接口可用 |
 | 0.4 | 前端（UI 验收） | `cd web && npm run dev` | 可登录并访问各页面 |
 | 0.5 | 自动化冒烟 | 见 [§7 推荐验收顺序](#7-推荐验收顺序自动化) | 全部输出 `PASS` |
@@ -53,7 +53,7 @@
 
 ### 1.4 CES 拉取接入
 
-契约先行，计划随迁移 0046 落地。手动同步需要 `app:alerts:ingest` 和绑定账号的 `app:integrations:read`。实现后执行 `scripts/e2e-alert-sync.ps1`。详见 [CES 告警拉取契约](../ops/huawei-ces-alert-sync-contract.md)。
+已随迁移 0046/0047 落地。手动同步需要 `app:alerts:ingest` 和绑定账号的 `app:integrations:read`。冒烟脚本：`scripts/e2e-alert-sync.ps1`。详见 [CES 告警拉取契约](../ops/huawei-ces-alert-sync-contract.md)。
 
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
@@ -84,6 +84,11 @@
 | 2.1.4 | 列表查询 | `GET /api/assets/applications`、`GET .../resources` | 与创建一致 |
 | 2.1.5 | 有规则时删应用 | 存在引用该 `application_id` 的匹配规则时删除应用 | `FAILED_PRECONDITION`（HTTP 412） |
 | 2.1.6 | 有规则时删资源 | 存在引用该 `resource_id` 的匹配规则时删除资源 | `FAILED_PRECONDITION`（HTTP 412） |
+| 2.1.7 | 资源列表筛选 | `GET .../resources?keyword=xxx&source=cloud_sync&cloud_resource_type=ecs&region=cn-north-4&sync_status=active` | 服务端过滤后 `total` 与 `items` 一致；`keyword` 跨字段模糊匹配，非法 `%` / `_` 按字面处理 |
+| 2.1.8 | 资源列表排序 | `GET .../resources?sort_by=name&sort_order=asc` / `desc` | 全页按字段升/降序；非法 `sort_by` 回退 `created_at ASC, id ASC` |
+| 2.1.9 | 前端表头排序与筛选 | `/assets` 点击列头、输入关键词并选择筛选条件 | 表头箭头与结果顺序一致；切换排序/筛选回到第 1 页；筛选条件以可移除标签回显 |
+| 2.1.10 | 资源筛选字典 | `GET .../resource-facets`；页面云类型/Region 下拉 | 仅返回当前应用下非空去重值且按字典序；无数据返回 `[]`；下拉选中后仍由服务端精确过滤 |
+| 2.1.11 | 筛选状态入 URL | 设置筛选/排序后复制或刷新 `/assets?application_id=...&keyword=...&sort_by=...` | 刷新后筛选、排序、页码（第 1 页）与列表结果一致；清空筛选同步移除 URL 参数 |
 
 ### 2.2 §9.1 标签匹配
 
@@ -277,6 +282,9 @@ go run ./cmd/migrate
 
 # 2. 告警主链路
 .\scripts\e2e-alert.ps1
+
+# 2.1 CES 告警拉取（fake provider，migration 0046；非生产环境才允许 auth_type=none）
+.\scripts\e2e-alert-sync.ps1
 
 # 3. 资产匹配（独立 RunId，可重复跑）
 .\scripts\e2e-asset.ps1

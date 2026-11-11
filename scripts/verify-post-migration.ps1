@@ -1,5 +1,5 @@
-﻿# 迁移后完整性验证（PowerShell 5.1+，依赖 psql）。默认期望最新迁移 0045。
-# 用法示例：./scripts/verify-post-migration.ps1 -ExpectedMigrationVersion 0045
+﻿# 迁移后完整性验证（PowerShell 5.1+，依赖 psql）。默认期望最新迁移 0047。
+# 用法示例：./scripts/verify-post-migration.ps1 -ExpectedMigrationVersion 0047
 
 param(
     [string]$PgHost = "127.0.0.1",
@@ -7,7 +7,7 @@ param(
     [string]$PgDbName = "aiops",
     [string]$PgUser = "aiops",
     [string]$PgPassword = "aiops",
-    [string]$ExpectedMigrationVersion = "0045"
+    [string]$ExpectedMigrationVersion = "0047"
 )
 
 $ErrorActionPreference = "Stop"

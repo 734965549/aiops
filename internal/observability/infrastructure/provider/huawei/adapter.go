@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	integdomain "github.com/734965549/aiops/internal/integration/domain"
 	obsapp "github.com/734965549/aiops/internal/observability/application"
@@ -20,6 +21,7 @@ type Adapter struct {
 	ces         MetricDataClient
 	resources   ResourceDiscoveryClient
 	cesFullSync CESResourceDiscoveryClient
+	alarmPull   AlarmHistoryPullClient
 }
 
 func NewAdapter(credentials *CredentialProvider, ces MetricDataClient, resources ResourceDiscoveryClient) *Adapter {
@@ -35,7 +37,16 @@ func NewAdapter(credentials *CredentialProvider, ces MetricDataClient, resources
 		ces:         ces,
 		resources:   resources,
 		cesFullSync: NewCESResourceClient(),
+		alarmPull:   NewCESAlarmHistoryClient(),
 	}
+}
+
+// WithAlarmHistoryPull 注入告警记录拉取客户端，主要用于测试。
+func (a *Adapter) WithAlarmHistoryPull(client AlarmHistoryPullClient) *Adapter {
+	if client != nil {
+		a.alarmPull = client
+	}
+	return a
 }
 
 // WithCESResourceDiscovery 注入自定义 CES 资源发现客户端，主要用于测试。
@@ -538,13 +549,82 @@ func (a *Adapter) requireFakeOnlyCapability(pctx domain.ProviderContext, capabil
 	}
 }
 
+// PullAlarmRecords 按 scope 拉取 CES V2 告警记录；auth_type=none 走仅测试 fake，
+// 真实凭据账号禁止降级到 fake，见 CES 拉取契约 §13.1。
+func (a *Adapter) PullAlarmRecords(ctx context.Context, pctx domain.ProviderContext, q domain.AlarmPullQuery) (*domain.AlarmPullResult, error) {
+	authType := integdomain.AuthType(strings.TrimSpace(pctx.Account.AuthType))
+	switch authType {
+	case integdomain.AuthNone:
+		return pullFakeAlarmRecords(pctx, q)
+	case integdomain.AuthAKSK:
+		return a.pullAlarmRecordsReal(ctx, pctx, q)
+	case integdomain.AuthAgency:
+		return nil, apperr.Wrap(domain.ErrCapabilityUnsupported, apperr.CodeFailedPrecondition, "huawei alarm pull with agency auth is not implemented yet")
+	default:
+		return nil, apperr.New(apperr.CodeFailedPrecondition, "unsupported auth type for huawei alarm pull")
+	}
+}
+
+func (a *Adapter) pullAlarmRecordsReal(ctx context.Context, pctx domain.ProviderContext, q domain.AlarmPullQuery) (*domain.AlarmPullResult, error) {
+	if a == nil || a.credentials == nil || a.alarmPull == nil {
+		return nil, apperr.New(apperr.CodeUnavailable, "huawei alarm pull adapter is not configured")
+	}
+	cred, err := a.credentials.ResolveAKSK(ctx, pctx.Account)
+	if err != nil {
+		return nil, err
+	}
+	result := &domain.AlarmPullResult{}
+	for _, scope := range q.Scopes {
+		if err := ctx.Err(); err != nil {
+			result.Scopes = append(result.Scopes, domain.AlarmScopeResult{
+				Region: scope.Region, ProjectID: scope.ProjectID, FailureCode: "ROUND_TIMEOUT",
+			})
+			continue
+		}
+		if !q.Deadline.IsZero() && time.Now().After(q.Deadline) {
+			result.Scopes = append(result.Scopes, domain.AlarmScopeResult{
+				Region: scope.Region, ProjectID: scope.ProjectID, FailureCode: "ROUND_TIMEOUT",
+			})
+			continue
+		}
+		cursor := q.Cursors[domain.AlarmScopeKey(scope.Region, scope.ProjectID)]
+		page, err := a.alarmPull.PullScope(ctx, cred, scope, cursor, q.RoundCutoff, q.Deadline)
+		if err != nil {
+			code := "UPSTREAM_ERROR"
+			if isTimeoutError(ctx, err) {
+				code = "UPSTREAM_TIMEOUT"
+			}
+			logger.From(ctx).Warn("huawei ces alarm pull scope failed",
+				logger.String("region", scope.Region),
+				logger.String("project_id", scope.ProjectID),
+				logger.String("reason", code),
+			)
+			result.Scopes = append(result.Scopes, domain.AlarmScopeResult{
+				Region: scope.Region, ProjectID: scope.ProjectID, FailureCode: code,
+			})
+			continue
+		}
+		scopeResult := domain.AlarmScopeResult{
+			Region: scope.Region, ProjectID: scope.ProjectID, Records: page.Records,
+			WindowEnd: page.WindowEnd, Complete: page.Complete,
+			FailureCode: page.FailureCode, FailureReason: page.FailureReason,
+		}
+		if !page.Complete && scopeResult.FailureCode == "" {
+			scopeResult.FailureCode = "PAGE_INCOMPLETE"
+		}
+		result.Scopes = append(result.Scopes, scopeResult)
+	}
+	return result, nil
+}
+
 var (
-	_ obsapp.ProviderEntry      = (*Adapter)(nil)
-	_ obsapp.MetricQueryPort    = (*Adapter)(nil)
-	_ obsapp.LogSearchPort      = (*Adapter)(nil)
-	_ obsapp.TraceQueryPort     = (*Adapter)(nil)
-	_ obsapp.TopologyQueryPort  = (*Adapter)(nil)
-	_ obsapp.AssetDiscoveryPort = (*Adapter)(nil)
-	_ obsapp.CloudFullSyncPort  = (*Adapter)(nil)
-	_ obsapp.AlertRuleQueryPort = (*Adapter)(nil)
+	_ obsapp.ProviderEntry       = (*Adapter)(nil)
+	_ obsapp.MetricQueryPort     = (*Adapter)(nil)
+	_ obsapp.LogSearchPort       = (*Adapter)(nil)
+	_ obsapp.TraceQueryPort      = (*Adapter)(nil)
+	_ obsapp.TopologyQueryPort   = (*Adapter)(nil)
+	_ obsapp.AssetDiscoveryPort  = (*Adapter)(nil)
+	_ obsapp.CloudFullSyncPort   = (*Adapter)(nil)
+	_ obsapp.AlertRuleQueryPort  = (*Adapter)(nil)
+	_ obsapp.AlarmRecordPullPort = (*Adapter)(nil)
 )

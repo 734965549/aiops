@@ -75,8 +75,18 @@ func (r *Registrar) RegisterRoutes(groups server.RouteGroups) {
 		authz := authorizationMiddlewareAdapter{authorizer: r.authorizer}
 		authed.GET("/sources", middleware.AuthorizeStatic(authz, alertAuthResource, "ingest"), r.handler.ListSources)
 		authed.GET("/sources/:source_id", middleware.AuthorizeStatic(authz, alertAuthResource, "ingest"), r.handler.GetSource)
-		authed.POST("/sources", middleware.AuthorizeStatic(authz, alertAuthResource, "ingest"), r.handler.CreateSource)
-		authed.PUT("/sources/:source_id", middleware.AuthorizeStatic(authz, alertAuthResource, "ingest"), r.handler.UpdateSource)
+		authed.POST("/sources",
+			middleware.AuthorizeStatic(authz, alertAuthResource, "ingest"),
+			middleware.AuthorizeStatic(authz, integrationAuthResource, "read"),
+			r.handler.CreateSource)
+		authed.PUT("/sources/:source_id",
+			middleware.AuthorizeStatic(authz, alertAuthResource, "ingest"),
+			middleware.AuthorizeStatic(authz, integrationAuthResource, "read"),
+			r.handler.UpdateSource)
+		authed.POST("/sources/:source_id/sync",
+			middleware.AuthorizeStatic(authz, alertAuthResource, "ingest"),
+			middleware.AuthorizeStatic(authz, integrationAuthResource, "read"),
+			r.handler.SyncSource)
 		authed.DELETE("/sources/:source_id", middleware.AuthorizeStatic(authz, alertAuthResource, "ingest"), r.handler.DeleteSource)
 		authed.GET("", middleware.AuthorizeStatic(authz, alertAuthResource, "read"), r.handler.ListAlerts)
 		authed.GET("/:alert_id", middleware.AuthorizeStatic(authz, alertAuthResource, "read"), r.handler.GetAlert)

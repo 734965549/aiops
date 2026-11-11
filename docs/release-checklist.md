@@ -21,7 +21,7 @@
 
 | # | 检查项 | 操作 | 通过标准 |
 |---|--------|------|----------|
-| 2.1 | 迁移脚本齐全 | 检查 `migrations/` 至最新版本 | 当前最高 `0045_inspection_policy_deleted_scope_cleanup`；当前仓库未包含 `0021` Notification 迁移，按实际文件顺序执行 |
+| 2.1 | 迁移脚本齐全 | 检查 `migrations/` 至最新版本 | 当前最高 `0047_alert_source_pull_state`；当前仓库未包含 `0021` Notification 迁移，按实际文件顺序执行 |
 | 2.2 | **生产**关闭 auto_migrate | `database.auto_migrate=false` | API 启动不自动改表 |
 | 2.3 | 发布前执行迁移 | `go run ./cmd/migrate -config <prod-config>` | 无报错，`schema_migrations` 记录最新版本 |
 | 2.4 | 回滚预案 | 阅读对应 `.down.sql` | 明确回滚步骤与数据影响 |
@@ -155,7 +155,7 @@ $env:API_BASE = "https://staging-api.example.com"   # 如需要
 .\scripts\provision-prod-admin.ps1 -PgPassword '<db-password>' -GeneratePassword
 
 # staging 演练：生成随机密码并完成全链路
-.\scripts\deploy-prod.ps1 -PgPassword '<db-password>' -GenerateAdminPassword -ExpectedMigrationVersion 0045
+.\scripts\deploy-prod.ps1 -PgPassword '<db-password>' -GenerateAdminPassword -ExpectedMigrationVersion 0047
 
 # CI dry-run：仅解析 env + 校验 AIOPS_IMAGE
 .\scripts\deploy-prod.ps1 -SkipUp

@@ -3,6 +3,9 @@ package http
 // ops/alert-contract.md §3.1 权限资源域；AuthorizeStatic(resource, action) 对应 app:{resource}:{action}。
 const alertAuthResource = "alerts"
 
+// CES 拉取源创建/修改/手动同步额外要求账号读取权限（CES 契约 §5）。
+const integrationAuthResource = "integrations"
+
 // §3.1 建议权限种子与路由 action 映射：
 //
 //	app:alerts:read         → GET  /api/alerts、GET /api/alerts/:id

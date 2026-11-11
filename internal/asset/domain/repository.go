@@ -36,13 +36,25 @@ type ApplicationRepository interface {
 	Count(ctx context.Context) (int64, error)
 }
 
-// ResourceFilter 资源注册表列表分页过滤（对应 ops/cloud-observability-contract.md §5.5 标准分页查询）。
+// ResourceFilter 资源注册表列表分页过滤（对应 ops/cloud-observability-contract.md §5.5.4）。
+// Keyword 为跨字段模糊匹配，Source 为精确匹配；SortBy/SortOrder 由持久层按白名单校验，
+// 非法值一律回退到 created_at ASC, id ASC，避免把外部输入拼进 ORDER BY。
 type ResourceFilter struct {
 	CloudResourceType string
 	Region            string
 	SyncStatus        string
+	Keyword           string
+	Source            string
+	SortBy            string
+	SortOrder         string
 	Limit             int
 	Offset            int
+}
+
+// ResourceFilterOptions 资源注册表筛选字典：只统计当前应用下实际出现的非空值。
+type ResourceFilterOptions struct {
+	CloudResourceTypes []string
+	Regions            []string
 }
 
 // ResourceRepository 资源注册表持久化接口。
@@ -51,6 +63,8 @@ type ResourceRepository interface {
 	ListByApplicationID(ctx context.Context, applicationID string) ([]Resource, error)
 	// ListByApplicationIDPaged 按应用 + 分页过滤返回资源列表与总数。
 	ListByApplicationIDPaged(ctx context.Context, applicationID string, filter ResourceFilter) ([]Resource, int64, error)
+	// ListFilterOptions 返回当前应用下 cloud_resource_type / region 的去重字典值，按字典序升序。
+	ListFilterOptions(ctx context.Context, applicationID string) (ResourceFilterOptions, error)
 	GetByID(ctx context.Context, id string) (*Resource, error)
 	Update(ctx context.Context, res *Resource) error
 	Delete(ctx context.Context, id string) error

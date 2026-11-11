@@ -560,12 +560,22 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 
 应用、资源、匹配规则三个列表接口统一采用标准分页（与 §5.5.2 同一 `pagination.PageData` 形态）。`page` 从 1 开始，默认 `page_size=20`，最大 `page_size=100`；HTTP 层通过 `pagination.Query.Normalize` 修正，application 层也会兜底归一化，避免非 HTTP 调用绕过分页上限。
 
-资源列表额外支持服务端筛选参数：`cloud_resource_type`、`region`、`sync_status`，均为精确匹配；参数为空时不生效。前端不得对这些字段做跨页本地假筛选。
+资源列表支持服务端筛选与排序；前端不得做跨页本地假筛选或假排序（列表只返回当前页）。
+
+| 参数 | 语义 | 匹配方式 |
+| --- | --- | --- |
+| `cloud_resource_type` / `region` / `sync_status` | 云类型 / Region / 同步状态 | 精确匹配，空值不生效 |
+| `source` | `manual` / `cloud_sync` | 精确匹配，空值不生效 |
+| `keyword` | 资源名、资源类型、namespace、pod、instance、云账号、云资源 ID、云类型、Region | `ILIKE '%keyword%'` 跨字段模糊匹配；输入中的 `%` / `_` / `\` 转义为字面量 |
+| `sort_by` | 排序字段，取值见下方白名单 | 未命中白名单时回退默认排序 |
+| `sort_order` | `asc` / `desc`（兼容 `descend` / `descending`） | 非法值按 `asc` 处理 |
+
+排序白名单：`name`、`resource_type`、`source`、`cloud_resource_type`、`integration_account_id`、`cloud_resource_id`、`region`、`sync_status`、`last_synced_at`、`namespace`、`pod`、`instance`、`sync_batch_id`、`created_at`、`updated_at`。默认 `created_at ASC, id ASC`；指定排序时固定追加 `id ASC` 作为稳定 tie-breaker。`ORDER BY` 只作用于取数查询，不进入 `COUNT(*)`。表头排序由 `sorterChange` 触发一次带 `sort_by` / `sort_order` 的重新查询，并重置到第 1 页。
 
 | 接口 | Method | Path | Auth | 排序 |
 | --- | --- | --- | --- | --- |
 | 应用列表 | `GET` | `/api/assets/applications?page=1&page_size=10` | Bearer + `app:assets:read` | `created_at ASC, id ASC` |
-| 资源列表 | `GET` | `/api/assets/applications/:application_id/resources?page=1&page_size=10&cloud_resource_type=ecs&region=cn-north-4&sync_status=active` | Bearer + `app:assets:read` | `created_at ASC, id ASC` |
+| 资源列表 | `GET` | `/api/assets/applications/:application_id/resources?page=1&page_size=10&cloud_resource_type=ecs&region=cn-north-4&sync_status=active&keyword=elb&source=cloud_sync&sort_by=name&sort_order=asc` | Bearer + `app:assets:read` | 默认 `created_at ASC, id ASC`，可按 `sort_by` / `sort_order` 覆盖 |
 | 匹配规则列表 | `GET` | `/api/assets/match-rules?page=1&page_size=10` | Bearer + `app:assets:read` | `priority DESC, created_at ASC, id ASC` |
 
 响应使用统一 envelope，`data` 为 `pagination.PageData<T>`：
@@ -589,6 +599,27 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 - 未传 `page` / `page_size` 时分别回退为 `1` / `20`；`page_size > 100` 时按 `100` 返回。
 - 列表接口只承诺返回当前页数据，不是完整字典接口。前端用于下拉选择、按 URL 业务 ID 回显或跨页定位时，不能假设当前页包含目标应用/资源；如需完整选择能力，应使用搜索型选择接口或补充按业务 ID 查询接口。
 - 当前阶段尚未提供 `GET /api/assets/applications/:application_id` 或 `GET /api/assets/resources/:resource_id` 的公开详情接口；新增这类接口时必须同步更新本节、`web/src/api/README.md` 和对应权限/测试。
+
+#### 5.5.5 资源筛选字典
+
+列表接口不是字典接口（§5.5.4），资源页的云类型 / Region 下拉使用独立字典接口：
+
+| 接口 | Method | Path | Auth |
+| --- | --- | --- | --- |
+| 资源筛选字典 | `GET` | `/api/assets/applications/:application_id/resource-facets` | Bearer + `app:assets:read` |
+
+响应 `data`：
+
+```json
+{
+  "cloud_resource_types": ["ecs", "elb"],
+  "regions": ["cn-east-3", "cn-north-4"]
+}
+```
+
+- 只统计该 `application_id` 下实际出现的非空值，按字典序升序去重；无数据时返回空数组，不返回 `null`。
+- 字典仅作为下拉候选值，最终过滤仍必须通过 §5.5.4 的 `cloud_resource_type` / `region` 精确匹配参数下传，禁止前端用字典做本地筛选。
+- `application_id` 为空白时返回 `INVALID_ARGUMENT`。
 
 ## 6. Inspection API
 

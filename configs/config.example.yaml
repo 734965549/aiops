@@ -213,3 +213,8 @@ integration:
 execution:
   agent_register_token: "dev-agent-register-token"
   lease_ttl_seconds: 300
+
+alert_sync:
+  # CES 告警拉取后台调度；默认关闭。多实例部署时只应在一个 API 实例启用。
+  worker_enabled: false
+  worker_scan_interval_s: 30

@@ -124,6 +124,67 @@ if ($listRes.items.Count -lt 1) {
     throw "resource list should contain at least one item"
 }
 
+Write-Host "==> seed extra resources for filter/sort assertions"
+$extraIds = @()
+foreach ($suffix in @("zz", "aa")) {
+    $extra = Invoke-Api -Method POST -Path "/api/assets/resources" -Headers $auth -Body @{
+        application_id = $appId
+        name = "sort-$suffix-$RunId"
+        resource_type = "pod"
+        namespace = "payment"
+    }
+    $extraIds += $extra.id
+}
+
+$resourcesPath = "/api/assets/applications/" + $appId + "/resources?page=1&page_size=100"
+
+Write-Host "==> assert keyword/source/region filters"
+$filtered = Invoke-Api -Method GET -Path ($resourcesPath + "&keyword=" + $RunId) -Headers $auth
+if ($filtered.total -ne 3) {
+    throw ("keyword filter should match 3 resources, got " + $filtered.total)
+}
+$wildcard = Invoke-Api -Method GET -Path ($resourcesPath + "&keyword=%25") -Headers $auth
+if ($wildcard.total -ne 0) {
+    throw ("literal %% must not act as LIKE wildcard, got " + $wildcard.total)
+}
+$manual = Invoke-Api -Method GET -Path ($resourcesPath + "&source=manual") -Headers $auth
+if ($manual.total -ne 3) {
+    throw ("source=manual should match 3 resources, got " + $manual.total)
+}
+$cloud = Invoke-Api -Method GET -Path ($resourcesPath + "&source=cloud_sync") -Headers $auth
+if ($cloud.total -ne 0) {
+    throw ("source=cloud_sync should match 0 resources, got " + $cloud.total)
+}
+$region = Invoke-Api -Method GET -Path ($resourcesPath + "&region=cn-north-4") -Headers $auth
+if ($region.total -ne 0) {
+    throw ("region filter on manual resources should match 0, got " + $region.total)
+}
+
+Write-Host "==> assert server-side sorting"
+$asc = Invoke-Api -Method GET -Path ($resourcesPath + "&sort_by=name&sort_order=asc") -Headers $auth
+$ascNames = @($asc.items | ForEach-Object { $_.name })
+if ($asc.total -ne 3 -or $ascNames[0] -ne $ResourceName -or $ascNames[1] -ne ("sort-aa-" + $RunId) -or $ascNames[2] -ne ("sort-zz-" + $RunId)) {
+    throw ("unexpected ascending order: " + ($ascNames -join ","))
+}
+$desc = Invoke-Api -Method GET -Path ($resourcesPath + "&sort_by=name&sort_order=desc") -Headers $auth
+$descNames = @($desc.items | ForEach-Object { $_.name })
+if ($descNames[0] -ne ("sort-zz-" + $RunId) -or $descNames[2] -ne $ResourceName) {
+    throw ("unexpected descending order: " + ($descNames -join ","))
+}
+$invalidSort = Invoke-Api -Method GET -Path ($resourcesPath + "&sort_by=id%3Bdrop&sort_order=asc") -Headers $auth
+if ($invalidSort.total -ne 3 -or $invalidSort.items[0].name -ne $ResourceName) {
+    throw "invalid sort_by must fall back to created_at ASC"
+}
+
+Write-Host "==> assert resource filter facets"
+$facets = Invoke-Api -Method GET -Path ("/api/assets/applications/" + $appId + "/resource-facets") -Headers $auth
+if ($null -eq $facets.cloud_resource_types -or $null -eq $facets.regions) {
+    throw "resource-facets must return cloud_resource_types and regions arrays"
+}
+if ($facets.cloud_resource_types.Count -ne 0 -or $facets.regions.Count -ne 0) {
+    throw ("manual-only application should have empty facets, got " + ($facets | ConvertTo-Json -Compress))
+}
+
 Write-Host ("==> create alert source " + $SourceId)
 try {
     Invoke-Api -Method POST -Path "/api/alerts/sources" -Headers $auth -Body @{
@@ -228,11 +289,14 @@ if (-not $deleteResBlocked) {
 }
 Write-Host "    blocked as expected"
 
-Write-Host "==> delete match rule then resource and application"
+Write-Host "==> delete match rule then resources and application"
 Invoke-Api -Method POST -Path ("/api/alerts/" + $alertId + "/close") -Headers $auth -Body @{
     resolution = "E2E asset cleanup"
 } | Out-Null
 Invoke-Api -Method DELETE -Path ("/api/assets/match-rules/" + $rule.id) -Headers $auth | Out-Null
+foreach ($extraId in $extraIds) {
+    Invoke-Api -Method DELETE -Path ("/api/assets/resources/" + $extraId) -Headers $auth | Out-Null
+}
 Invoke-Api -Method DELETE -Path ("/api/assets/resources/" + $resId) -Headers $auth | Out-Null
 Invoke-Api -Method DELETE -Path ("/api/assets/applications/" + $appId) -Headers $auth | Out-Null
 Write-Host "    cleanup completed"

@@ -130,6 +130,10 @@ export interface ListResourcesParams {
   cloud_resource_type?: string
   region?: string
   sync_status?: string
+  source?: string
+  keyword?: string
+  sort_by?: string
+  sort_order?: 'asc' | 'desc'
 }
 
 export function listResources(applicationId: string, params?: ListResourcesParams) {
@@ -137,6 +141,18 @@ export function listResources(applicationId: string, params?: ListResourcesParam
     url: `/api/assets/applications/${encodeURIComponent(applicationId)}/resources`,
     method: 'get',
     params
+  })
+}
+
+export interface ResourceFilterOptions {
+  cloud_resource_types: string[]
+  regions: string[]
+}
+
+export function getResourceFilterOptions(applicationId: string) {
+  return http<ResourceFilterOptions>({
+    url: `/api/assets/applications/${encodeURIComponent(applicationId)}/resource-facets`,
+    method: 'get'
   })
 }
 

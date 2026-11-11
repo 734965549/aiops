@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -597,5 +598,121 @@ func TestResourceRepository_PatchCloudSyncLabelsBatchWithLease(t *testing.T) {
 	// 租约丢失：错误 fencingToken。
 	if _, err := resRepo.PatchCloudSyncLabelsBatchWithLease(ctx, patches, batchID, "wrong-token"); !errors.Is(err, domain.ErrLeaseLost) {
 		t.Fatalf("expected ErrLeaseLost, got %v", err)
+	}
+}
+
+func TestResourceOrderClause(t *testing.T) {
+	cases := []struct {
+		name   string
+		filter domain.ResourceFilter
+		want   string
+	}{
+		{name: "default", filter: domain.ResourceFilter{}, want: "created_at ASC, id ASC"},
+		{name: "unknown field falls back", filter: domain.ResourceFilter{SortBy: "id; DROP TABLE asset_resource", SortOrder: "asc"}, want: "created_at ASC, id ASC"},
+		{name: "ascending", filter: domain.ResourceFilter{SortBy: "name", SortOrder: "asc"}, want: "name ASC, id ASC"},
+		{name: "descending", filter: domain.ResourceFilter{SortBy: "cloud_resource_type", SortOrder: "desc"}, want: "cloud_resource_type DESC, id ASC"},
+		{name: "case insensitive", filter: domain.ResourceFilter{SortBy: "  Region ", SortOrder: "DESC"}, want: "region DESC, id ASC"},
+		{name: "invalid direction defaults to asc", filter: domain.ResourceFilter{SortBy: "sync_status", SortOrder: "sideways"}, want: "sync_status ASC, id ASC"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resourceOrderClause(tc.filter); got != tc.want {
+				t.Fatalf("order=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEscapeLikePattern(t *testing.T) {
+	if got := escapeLikePattern("a%b_c\\d"); got != `a\%b\_c\\d` {
+		t.Fatalf("unexpected escaped pattern: %q", got)
+	}
+	if got := escapeLikePattern("cn-north-4"); got != "cn-north-4" {
+		t.Fatalf("plain text must stay unchanged: %q", got)
+	}
+}
+
+func TestResourceRepository_IntegrationListFilterOptions(t *testing.T) {
+	db := openAssetTestPostgres(t)
+	appRepo := NewApplicationRepository(db)
+	resRepo := NewResourceRepository(db)
+	ctx := context.Background()
+
+	appID := uniqueAssetAppID(t)
+	t.Cleanup(func() { deleteTestApplications(t, db, appID) })
+	if err := appRepo.Create(ctx, &domain.Application{ID: appID, Name: "facets-app", Environment: "prod"}); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	rows := []*domain.Resource{
+		{ID: uniqueAssetResourceID(t), ApplicationID: appID, Name: "ecs-1", CloudResourceType: "ecs", Region: "cn-north-4", CloudResourceID: "i-1"},
+		{ID: uniqueAssetResourceID(t), ApplicationID: appID, Name: "ecs-2", CloudResourceType: "ecs", Region: "cn-north-4", CloudResourceID: "i-2"},
+		{ID: uniqueAssetResourceID(t), ApplicationID: appID, Name: "elb-1", CloudResourceType: "elb", Region: "cn-east-3", CloudResourceID: "e-1"},
+		{ID: uniqueAssetResourceID(t), ApplicationID: appID, Name: "manual-1"},
+	}
+	for _, row := range rows {
+		if row.CloudResourceType == "" {
+			if err := resRepo.Create(ctx, row); err != nil {
+				t.Fatalf("create manual resource: %v", err)
+			}
+			continue
+		}
+		if err := resRepo.createCloudSync(ctx, db, row); err != nil {
+			t.Fatalf("create cloud resource: %v", err)
+		}
+	}
+
+	opts, err := resRepo.ListFilterOptions(ctx, appID)
+	if err != nil {
+		t.Fatalf("list filter options: %v", err)
+	}
+	if got := strings.Join(opts.CloudResourceTypes, ","); got != "ecs,elb" {
+		t.Fatalf("cloud_resource_types=%q want=ecs,elb", got)
+	}
+	if got := strings.Join(opts.Regions, ","); got != "cn-east-3,cn-north-4" {
+		t.Fatalf("regions=%q want=cn-east-3,cn-north-4", got)
+	}
+}
+
+func TestResourceRepository_IntegrationKeywordEscapesWildcardsAndSorts(t *testing.T) {
+	db := openAssetTestPostgres(t)
+	appRepo := NewApplicationRepository(db)
+	resRepo := NewResourceRepository(db)
+	ctx := context.Background()
+
+	appID := uniqueAssetAppID(t)
+	t.Cleanup(func() { deleteTestApplications(t, db, appID) })
+	if err := appRepo.Create(ctx, &domain.Application{ID: appID, Name: "keyword-app", Environment: "prod"}); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	for _, name := range []string{"alpha-1", "a%b-1", "a_b-1"} {
+		if err := resRepo.Create(ctx, &domain.Resource{ID: uniqueAssetResourceID(t), ApplicationID: appID, Name: name}); err != nil {
+			t.Fatalf("create resource %s: %v", name, err)
+		}
+	}
+
+	query := func(filter domain.ResourceFilter) ([]string, int64) {
+		filter.Limit = 10
+		rows, total, err := resRepo.ListByApplicationIDPaged(ctx, appID, filter)
+		if err != nil {
+			t.Fatalf("list resources: %v", err)
+		}
+		names := make([]string, 0, len(rows))
+		for _, row := range rows {
+			names = append(names, row.Name)
+		}
+		return names, total
+	}
+
+	if names, total := query(domain.ResourceFilter{Keyword: "%"}); total != 1 || names[0] != "a%b-1" {
+		t.Fatalf("literal %%%% must match only a%%b-1: total=%d names=%v", total, names)
+	}
+	if names, total := query(domain.ResourceFilter{Keyword: "_"}); total != 1 || names[0] != "a_b-1" {
+		t.Fatalf("literal _ must match only a_b-1: total=%d names=%v", total, names)
+	}
+	if _, total := query(domain.ResourceFilter{Keyword: "ALPHA"}); total != 1 {
+		t.Fatalf("keyword must be case-insensitive via ILIKE, total=%d", total)
+	}
+	if names, _ := query(domain.ResourceFilter{SortBy: "name", SortOrder: "desc"}); strings.Join(names, ",") != "alpha-1,a_b-1,a%b-1" {
+		t.Fatalf("unexpected desc order: %v", names)
 	}
 }

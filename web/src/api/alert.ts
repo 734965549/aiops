@@ -105,6 +105,20 @@ export interface AlertListQuery {
   to?: number
 }
 
+export type AlertDeliveryMode = 'webhook' | 'pull'
+
+export interface AlertPullConfig {
+  pull_interval_seconds: number
+  severity_map: Record<string, string>
+  region_filter: string[]
+}
+
+export interface AlertPullConfigInput {
+  pull_interval_seconds?: number
+  severity_map?: Record<string, string>
+  region_filter?: string[]
+}
+
 export interface AlertSource {
   id: string
   name: string
@@ -114,6 +128,11 @@ export interface AlertSource {
   environment?: string
   business_line?: string
   description?: string
+  delivery_mode: AlertDeliveryMode | string
+  account_id?: string
+  pull_config?: AlertPullConfig
+  last_sync_at?: number
+  last_sync_status?: string
   created_at: number
   updated_at: number
 }
@@ -123,10 +142,13 @@ export interface CreateAlertSourceInput {
   name: string
   type?: string
   enabled?: boolean
-  secret: string
+  secret?: string
   environment?: string
   business_line?: string
   description?: string
+  delivery_mode?: AlertDeliveryMode
+  account_id?: string
+  pull_config?: AlertPullConfigInput
 }
 
 export interface UpdateAlertSourceInput {
@@ -137,6 +159,31 @@ export interface UpdateAlertSourceInput {
   environment?: string
   business_line?: string
   description?: string
+  delivery_mode?: AlertDeliveryMode
+  account_id?: string
+  pull_config?: AlertPullConfigInput
+}
+
+export interface AlertSyncScopeFailure {
+  region: string
+  project_id: string
+  reason: string
+}
+
+export interface AlertSyncResult {
+  source_id: string
+  account_id: string
+  regions: string[]
+  status: string
+  accepted: number
+  created: number
+  updated: number
+  recovered: number
+  ignored: number
+  failed_records: number
+  failed_scopes: AlertSyncScopeFailure[]
+  duration_ms: number
+  last_sync_at: number
 }
 
 export interface AIAnalysisInput {
@@ -267,5 +314,13 @@ export function deleteAlertSource(sourceId: string) {
   return http<{ deleted: boolean }>({
     url: `/api/alerts/sources/${encodeURIComponent(sourceId)}`,
     method: 'delete'
+  })
+}
+
+export function syncAlertSource(sourceId: string) {
+  return http<AlertSyncResult>({
+    url: `/api/alerts/sources/${encodeURIComponent(sourceId)}/sync`,
+    method: 'post',
+    data: {}
   })
 }

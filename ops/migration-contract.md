@@ -60,6 +60,8 @@
 0043_fix_orphaned_alert_app_refs.up.sql              -> Asset：修复 DeleteApplication 缺失跨上下文引用检查导致的孤儿告警引用（alert_alert.application_id 指向不存在的应用）；将孤儿引用置空并清理 inspection_policy.scope.application_ids 中的孤儿元素；CHECK(n=0) 硬验收确保修复后视图返回 0 行；幂等
 0044_lock_default_admin_account.up.sql               -> Identity：锁定 username=admin 且 password_hash 仍为已知 admin123 哈希的默认管理员（status=locked、清空 password_hash），按用户名匹配而非固定种子 user_id，避免 0017 重置密码后旧库非种子 user_id 仍可登录；不覆盖 DBA 已设置的强密码；账号行保留不删除以维持引用完整性；dev/test 由 EnsureBootstrapUser 重新激活，生产 bootstrap 关闭则保持锁定、不可登录，须由 DBA 创建安全管理员；幂等；down 为不可逆 no-op
 0045_inspection_policy_deleted_scope_cleanup.up.sql  -> Asset：回填清空已软删除 inspection_policy.scope.application_ids；重建 v_asset_app_ref_integrity 仅检查 deleted=false 策略；与 ApplicationReferenceChecker 及运行时 SoftDelete 契约一致；幂等
+0046_alert_source_pull.up.sql                        -> Alert：alert_source 增加 delivery_mode/account_id/pull_config/last_sync_at/last_sync_status/sync_state；新增 alert_source_sync_lease 跨实例源级租约；存量源默认 webhook
+0047_alert_source_pull_state.up.sql                  -> Alert：幂等补齐 alert_source.delivery_mode 与 sync_state（不改写已发布的 0046）；时间戳仍由 Go 维护
 ```
 
 | 职责 | 0001 / 0002 / 0016 迁移 | 启动期 bootstrap（`cmd/api`） |
@@ -296,6 +298,8 @@ Integration 上下文第一阶段迁移，建表：
 | `0043` | `0043_fix_orphaned_alert_app_refs.up.sql` | Asset | 修复 `DeleteApplication` 缺失跨上下文引用检查导致的孤儿告警引用：将 `alert_alert` 中指向不存在应用的 `application_id`/`application_name` 置空，移除 `inspection_policy.scope.application_ids` 中的孤儿元素；`CHECK(n=0)` 硬验收确保修复后 `v_asset_app_ref_integrity` 返回 0 行；幂等（仅处理孤儿行）；`down.sql` 为人工回滚参考（需从备份恢复原始值） | 已落地 |
 | `0044` | `0044_lock_default_admin_account.up.sql` | Identity | 锁定 `username='admin'` 且 `password_hash` 仍为已知 admin123 哈希的默认管理员：`status='locked'`、`password_hash=''`（按用户名匹配，非仅固定种子 `user_id`，避免 0017 重置密码后旧库非种子 user_id 仍可登录）；不覆盖 DBA 已设置的强密码；账号行保留以维持审计/告警/执行记录引用完整性；dev/test 由 `EnsureBootstrapUser` 在 bootstrap 启用时重新激活为配置密码，生产 bootstrap 关闭则保持锁定不可登录，须由 DBA 创建安全管理员；幂等；`down.sql` 为不可逆 no-op（禁止恢复 admin/admin123） | 已落地 |
 | `0045` | `0045_inspection_policy_deleted_scope_cleanup.up.sql` | Asset | 与 `ApplicationReferenceChecker` 对齐：回填清空已软删除 `inspection_policy.scope.application_ids`；重建 `v_asset_app_ref_integrity` 仅检查 `deleted=false` 策略；运行时 `SoftDelete` 同步清空 `application_ids`；幂等；`down.sql` 恢复 0040 视图定义（已清空的 scope 需从备份还原） | 已落地 |
+| `0046` | `0046_alert_source_pull.up.sql` | Alert | `alert_source` 增加 `delivery_mode`（默认 `webhook`）、`account_id`、`pull_config`、`last_sync_at`、`last_sync_status`、`sync_state`；新增 `alert_source_sync_lease`（`source_id` 唯一、`owner_id`、`lease_until`）作为跨实例源级同步租约；时间戳由 Go 维护；`down.sql` 删除租约表并移除新增字段（人工回滚参考，已导入告警与审计保留） | 已落地 |
+| `0047` | `0047_alert_source_pull_state.up.sql` | Alert | 幂等补齐 `alert_source.delivery_mode` 与 `sync_state`（`ADD COLUMN IF NOT EXISTS`）；用于兼容已应用早期 0046 的环境，遵守“不改写已发布迁移”的规则；时间戳仍由 Go 维护；`down.sql` 仅删除这两列（人工回滚参考） | 已落地 |
 
 这些迁移必须同步种子化权限和 AI 工具权限，并把 admin 角色绑定到新增权限：
 
