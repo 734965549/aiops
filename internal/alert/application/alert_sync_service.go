@@ -350,6 +350,16 @@ func (s *AlertSyncService) normalizeAlarms(src *domain.AlertSource, scope Pulled
 		if in.ResourceID != "" {
 			labels["cloud_resource_id"] = in.ResourceID
 		}
+		if in.ResourceType != "" {
+			labels["resource_type"] = in.ResourceType
+		}
+		ruleName := strings.TrimSpace(in.RuleName)
+		if ruleName == "" {
+			ruleName = name
+		}
+		if ruleName != "" {
+			labels["rule_name"] = ruleName
+		}
 		firstSeen := now
 		if in.FirstSeenAt != nil {
 			firstSeen = *in.FirstSeenAt
@@ -360,6 +370,15 @@ func (s *AlertSyncService) normalizeAlarms(src *domain.AlertSource, scope Pulled
 		}
 		if in.Level != "" {
 			annotations["ces_level"] = in.Level
+		}
+		if in.RuleDescription != "" {
+			annotations["ces_rule_description"] = in.RuleDescription
+		}
+		if in.RuleType != "" {
+			annotations["ces_rule_type"] = in.RuleType
+		}
+		if in.RuleLookup != "" {
+			annotations["ces_rule_lookup"] = in.RuleLookup
 		}
 		conditionDesc := ""
 		if in.Condition != nil {
@@ -372,23 +391,16 @@ func (s *AlertSyncService) normalizeAlarms(src *domain.AlertSource, scope Pulled
 			annotations["ces_metric_name"] = in.MetricName
 			labels["metric_name"] = in.MetricName
 		}
-		description := strings.TrimSpace(in.ResourceName)
-		if in.MetricName != "" {
-			description = strings.TrimSpace(in.Namespace + " " + in.MetricName)
-			if conditionDesc != "" {
-				description += " " + conditionDesc
-			}
-			if resourceName := strings.TrimSpace(in.ResourceName); resourceName != "" {
-				description += " · " + resourceName
-			}
-		}
+		resourceName := firstNonEmpty(in.ResourceName, in.ResourceID)
+		description := buildCESDescription(in.Namespace, in.MetricName, conditionDesc, resourceName)
+		summary := resourceName
 		item := NormalizedAlert{
 			DedupKey:       domain.ComputeCESDedupKey(src.ID, src.AccountID, scope.Region, scope.ProjectID, recordID),
 			ExternalID:     recordID,
 			Fingerprint:    strings.Join([]string{src.AccountID, scope.Region, scope.ProjectID, recordID}, "|"),
 			Status:         status,
 			Name:           name,
-			Summary:        in.ResourceName,
+			Summary:        summary,
 			Description:    description,
 			Severity:       severity,
 			RuleName:       name,
@@ -406,6 +418,28 @@ func (s *AlertSyncService) normalizeAlarms(src *domain.AlertSource, scope Pulled
 		items = append(items, item)
 	}
 	return items, ignored
+}
+
+// buildCESDescription 按既有契约拼装描述：<namespace> <metric> <condition> · <resource>。
+// 指标或条件缺失时只拼接可用部分，避免富化失败时丢失资源名。
+func buildCESDescription(namespace, metricName, conditionDesc, resourceName string) string {
+	head := strings.TrimSpace(strings.TrimSpace(namespace) + " " + strings.TrimSpace(metricName))
+	parts := make([]string, 0, 2)
+	if head != "" {
+		parts = append(parts, head)
+	}
+	if conditionDesc = strings.TrimSpace(conditionDesc); conditionDesc != "" {
+		parts = append(parts, conditionDesc)
+	}
+	description := strings.Join(parts, " ")
+	resourceName = strings.TrimSpace(resourceName)
+	if resourceName == "" {
+		return description
+	}
+	if description == "" {
+		return resourceName
+	}
+	return description + " · " + resourceName
 }
 
 func cursorUnix(state map[string]domain.ScopeCursor) map[string]int64 {

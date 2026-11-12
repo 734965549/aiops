@@ -134,12 +134,28 @@
 
     <a-drawer
       v-model:visible="detailVisible"
-      :width="720"
+      :width="isNarrow ? '100%' : 720"
       :title="detail?.alert.name || '告警详情'"
       unmount-on-close
       @cancel="closeDetail"
     >
-      <template v-if="detail">
+      <!-- 请求失败态：允许 error 色；字段降级态一律 info/中性，二者不得互相回归。 -->
+      <template v-if="detailError">
+        <a-alert
+          type="error"
+          class="detail-error"
+        >
+          <div>{{ detailError }}</div>
+          <a-button
+            size="mini"
+            class="detail-retry"
+            @click="openDetail(selectedAlertId)"
+          >
+            重试
+          </a-button>
+        </a-alert>
+      </template>
+      <template v-else-if="detail">
         <a-descriptions
           :column="2"
           bordered
@@ -202,6 +218,8 @@
             {{ formatTime(detail.alert.last_seen_at) }}
           </a-descriptions-item>
         </a-descriptions>
+
+        <AlertDetailEnhancement :alert="detail.alert" />
 
         <div class="action-bar">
           <a-space wrap>
@@ -577,7 +595,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import Message from '@arco-design/web-vue/es/message'
 import type { TableData } from '@arco-design/web-vue/es/table/interface'
@@ -590,6 +608,8 @@ import * as executionApi from '@/api/execution'
 import * as runbookApi from '@/api/runbook'
 import type { RunbookRecommendation } from '@/api/runbook'
 import AlertSourceManager from './components/AlertSourceManager.vue'
+import AlertDetailEnhancement from './components/AlertDetailEnhancement.vue'
+import { statusOptions, severityOptions, columns, eventTypeLabel } from './composables/alertPresentation'
 
 const router = useRouter()
 
@@ -613,6 +633,7 @@ const runbookRecommendations = ref<RunbookRecommendation[]>([])
 const canManageSources = ref(false)
 
 const detailVisible = ref(false)
+const detailError = ref('')
 const sourceModalVisible = ref(false)
 const showCloseModal = ref(false)
 const showSilenceModal = ref(false)
@@ -622,6 +643,13 @@ const showAIModal = ref(false)
 const showExecutionModal = ref(false)
 
 const aiResult = ref<AnalyzeAlertResult | null>(null)
+
+// 窄视口抽屉改全宽，避免固定 720px 溢出；matchMedia 缺失（SSR/jsdom）时安全跳过。
+const isNarrow = ref(false)
+let narrowMql: MediaQueryList | null = null
+function onNarrowChange(e: MediaQueryListEvent | MediaQueryList) {
+  isNarrow.value = e.matches
+}
 
 const filters = reactive({
   keyword: '',
@@ -656,34 +684,6 @@ const runbookForm = reactive({
   dry_run: true,
   parameters_json: '{}'
 })
-
-const statusOptions = [
-  { label: '新建', value: 'new' },
-  { label: '已认领', value: 'acknowledged' },
-  { label: '处理中', value: 'processing' },
-  { label: '已恢复', value: 'recovered' },
-  { label: '已关闭', value: 'closed' },
-  { label: '已静默', value: 'silenced' }
-]
-
-const severityOptions = [
-  { label: 'P0', value: 'p0' },
-  { label: 'P1', value: 'p1' },
-  { label: 'P2', value: 'p2' },
-  { label: 'P3', value: 'p3' },
-  { label: 'Info', value: 'info' }
-]
-
-const columns = [
-  { title: '告警名称', dataIndex: 'name', ellipsis: true },
-  { title: '级别', slotName: 'severity', width: 80 },
-  { title: '状态', slotName: 'status', width: 100 },
-  { title: '来源', slotName: 'source', width: 140, ellipsis: true },
-  { title: '环境', dataIndex: 'environment', width: 80 },
-  { title: '次数', dataIndex: 'occurrence_count', width: 80, align: 'right' as const },
-  { title: '最近更新', slotName: 'last_seen_at', width: 170 },
-  { title: '操作', slotName: 'actions', width: 80 }
-]
 
 const sourceFilterOptions = computed(() =>
   sources.value.map((s) => ({ label: s.name, value: s.id }))
@@ -764,26 +764,6 @@ function statusColor(s: string) {
   return map[s] || 'gray'
 }
 
-function eventTypeLabel(t: string) {
-  const map: Record<string, string> = {
-    triggered: '首次触发',
-    updated: '重复触发',
-    recovered: '已恢复',
-    acknowledged: '认领',
-    assigned: '转派',
-    processing_started: '开始处理',
-    closed: '关闭',
-    silenced: '静默',
-    unsilenced: '取消静默',
-    commented: '备注',
-    ai_analysis_requested: 'AI 分析',
-    execution_created: '创建执行任务',
-    execution_started: '开始执行',
-    execution_finished: '执行完成'
-  }
-  return map[t] || t
-}
-
 function executionIdFromEvent(ev: AlertEvent): string | null {
   const id = ev.payload?.execution_id
   return typeof id === 'string' && id ? id : null
@@ -858,9 +838,16 @@ async function openDetail(alertId: string) {
   selectedAlertId.value = alertId
   detailVisible.value = true
   detail.value = null
+  detailError.value = ''
   loadingDetail.value = true
   try {
     detail.value = await alertApi.getAlert(alertId)
+  } catch (err) {
+    // 请求失败态允许 error 色；规则字段降级态一律 info/中性，二者不得互相回归。
+    const apiErr = getApiError(err)
+    detailError.value = apiErr?.status === 403
+      ? '无权限查看该告警详情'
+      : apiErr?.message || '加载告警详情失败'
   } finally {
     loadingDetail.value = false
   }
@@ -869,6 +856,7 @@ async function openDetail(alertId: string) {
 function closeDetail() {
   detailVisible.value = false
   detail.value = null
+  detailError.value = ''
   selectedAlertId.value = ''
 }
 
@@ -1137,9 +1125,16 @@ function openSourceModal() {
 }
 
 onMounted(async () => {
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    narrowMql = window.matchMedia('(max-width: 900px)')
+    onNarrowChange(narrowMql)
+    narrowMql.addEventListener?.('change', onNarrowChange)
+  }
   assignForm.assignee_user_id = auth.user?.id || ''
   await Promise.allSettled([loadSources(), loadAlerts()])
 })
+
+onUnmounted(() => narrowMql?.removeEventListener?.('change', onNarrowChange))
 </script>
 
 <style scoped lang="scss">

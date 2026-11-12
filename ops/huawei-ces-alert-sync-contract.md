@@ -4,13 +4,13 @@
 
 ## 实施状态
 
-Phase A/B 已落地：迁移 `0046`/`0047`（`0047` 幂等补齐部分列）、CES V2 客户端与字段映射、scope 游标与去重、PostgreSQL 源级租约、手动同步 API、`alert_source_sync` 审计、可选 worker 以及前端拉取配置（含立即同步与同步状态展示）均已实现。worker 由 `alert_sync.worker_enabled` 显式启用，默认关闭，多实例部署只应在一个 API 实例开启；`auth_type=none` 的 fake 账号仅在非生产环境允许。Phase C 的验收脚本 `scripts/e2e-alert-sync.ps1` 已提供，但目标区域的官方接口、时间过滤、分页行为和脱敏响应样例仍须在真实测试账号上核对并留存。
+Phase A/B 已落地：迁移 `0046`/`0047`（`0047` 幂等补齐部分列）、CES V2 客户端与字段映射、scope 游标与去重、PostgreSQL 源级租约、手动同步 API、`alert_source_sync` 审计、可选 worker 以及前端拉取配置（含立即同步与同步状态展示）均已实现。worker 由 `alert_sync.worker_enabled` 显式启用，默认关闭，多实例部署只应在一个 API 实例开启；`auth_type=none` 的 fake 账号仅在非生产环境允许。告警规则富化（`ListAlarmRules`）已落地：历史记录缺少指标/条件时按 `alarm_id` 查询规则并写入 labels/annotations，规则查询失败按降级语义入库，不影响游标。Phase C 的验收脚本 `scripts/e2e-alert-sync.ps1` 已提供，但目标区域的官方接口、时间过滤、分页行为和脱敏响应样例仍须在真实测试账号上核对并留存。
 
 ## §1 范围
 
 - 一期同步 **CES V2 告警记录**，一条云端告警流水对应一条平台告警。覆盖手动触发和可选定时拉取，复用 Alert 的状态转换、时间线与审计。
 - 云端调用限于只读查询。真实接入使用 AK/SK。§13 所述 fixture 仅供测试环境使用。
-- 一期暂不覆盖 agency、完整历史回填、写入 CES 规则及其他云厂商。平台无需调用规则列表来推断告警状态。
+- 一期暂不覆盖 agency、完整历史回填、写入 CES 规则及其他云厂商。平台不依赖规则列表推断告警状态；仅在历史记录缺少指标或触发条件时调用 `ListAlarmRules` 做只读富化，且富化失败可降级。
 
 ## §2 流程
 
@@ -91,30 +91,41 @@ cmd/api/main.go
 
 ### 6.1 接口与分页
 
-使用华为云 [CES V2 ListAlarmHistories](https://support.huaweicloud.com/api-ces/ListAlarmHistories.html)，`GET /v2/{project_id}/alarm-histories`，云端 IAM 授权项为 `ces:alarmHistory:list`。仓库锁定的 Go SDK V2 提供 `ListAlarmHistoriesRequest` 和 `AlarmHistoryItemV2`。V1 `ListAlarms` 返回规则的 `alarm_state`，V2 `ListAlarmRules` 返回规则配置，二者均不参与本期同步。
+使用华为云 [CES V2 ListAlarmHistories](https://support.huaweicloud.com/api-ces/ListAlarmHistories.html)，`GET /v2/{project_id}/alarm-histories`，云端 IAM 授权项为 `ces:alarmHistory:list`。仓库锁定的 Go SDK V2 提供 `ListAlarmHistoriesRequest` 和 `AlarmHistoryItemV2`。告警状态、去重和游标仍只由 `ListAlarmHistories` 决定；`ListAlarmRules` 仅在历史记录缺少指标名或触发条件时用于字段富化，不参与状态推断。
 
 - 每个 scope 使用 `offset/limit` 分页，`limit` 最大 100，使用 `order_by=record_id`。增量查询使用 `from/to` 更新时间窗口。
 - 新 scope 先查询云端可见的 `alarm` 记录，再读取最近 24 小时的更新窗口。增量轮次固定本轮截止时间，从上次成功游标回退 5 分钟读重叠窗口。记录按 scope 和 `record_id` 去重。同一流水在同一轮被两个查询读到时优先采用明确的恢复状态，活动记录取较新的云端触发时间。历史覆盖受云端保留期及凭据权限限制。
 - 大窗口分段读取。页失败、分页重复或数据不完整时保留该段游标，已提交的记录可安全重放。只有完整处理的连续窗口才能推进该 scope 的游标。优先处理较久未推进的 scope。不得用 `last_sync_at` 代替分 scope 游标。
 - 已入库且仍待恢复的记录若持续未出现在增量窗口，可用 `record_id` 定向查询。查询失败、记录不可见或消失均不作为恢复证据。上线前核对目标区域的更新时间过滤、翻页结束条件及长时间活动告警的可见性。
 
+告警规则富化使用 CES V2 [`ListAlarmRules`](https://support.huaweicloud.com/api-ces/ListAlarmRules.html)，`GET /v2/{project_id}/alarms`，按 `alarm_id` 过滤：
+
+- 账号 AK/SK 需具备 CES 告警规则只读权限（`ListAlarmRules` 对应 IAM 授权项，具体名称以云侧文档为准）。平台只读查询，不创建、修改或删除规则。
+- 同一轮内按 `(project_id, alarm_id)` 去重后查询。规则详情进程内缓存 24 小时；`not_found` 结果缓存 10 分钟，避免对已删除规则反复查询。
+- 单轮规则查询上限 50 次，每次查询前检查 context 与轮次 `deadline`。预算不足时停止富化，未富化记录按历史字段原样入库。
+- 富化是增强而非数据本体：规则不存在（404）或查询失败/超时都不改变 scope 的 `Complete`、`FailureCode` 和游标推进。404 在告警上标记 `annotations.ces_rule_lookup=not_found`；其他失败标记 `error` 并记 Warn 日志（只含 region/project_id/alarm_id/云端 status/error_code，不含凭据）。
+- 事件类规则（`type` 以 `EVENT` 开头）不补指标和阈值，只补规则名、描述与类型。
+- 规则关联多个资源时无法判断当前流水对应哪个实例，不猜测维度；仅当规则恰好关联单个资源时，才用其 `resources[].dimensions` 补齐历史缺失的维度。
+
 ### 6.2 字段映射
 
 | CES 字段 | 平台字段或语义 |
 | --- | --- |
 | `record_id` | `external_id`。`fingerprint` 使用 `account_id + region + project_id + record_id` 的无歧义编码，和 `source_id` 一起走 `ComputeDedupKey` |
-| `alarm_id` | 云规则 ID，保留在 labels。不同 `record_id` 独立处理 |
-| `name` / `level` | `name`、`rule_name` / 按 §4.2 映射到 `severity` |
+| `alarm_id` | 云规则 ID，保留在 labels，并作为 `ListAlarmRules` 富化键。不同 `record_id` 独立处理 |
+| `name` / `level` | `name`、`rule_name` / 按 §4.2 映射到 `severity`；历史缺失时级别可由规则策略补齐 |
 | `status` | 按 §7.1 处理 |
 | `first_alarm_time` / `begin_time` | `first_seen_at` 依次取第一个有效值，最后回退到首次观察时间 |
 | `last_alarm_time` / `alarm_recovery_time` | 区分同一流水的较新触发与重放，供外部恢复时间使用。恢复时间缺失则使用首次观察到恢复的时间 |
-| `metric.namespace` / `metric.dimensions` | 按已验证的云资源类型和主维度提取云资源 ID。保留必要的定位标签 |
-| `metric.metric_name` | 写入 `labels.metric_name` 与 `annotations.ces_metric_name`，并参与 `description` 拼装，供 AI 分析直接引用 |
-| `condition` | 触发条件（聚合方式、比较符、阈值、单位、周期、连续次数、抑制间隔）归一化为 `annotations.ces_condition`，例如 `> 80% (average, 300s x3)`；空条件不构造 |
+| `metric.namespace` / `metric.dimensions` | 优先取历史字段，按已验证的云资源类型和主维度提取云资源 ID；缺失时可由单资源规则的 `resources[].dimensions` 补齐。保留必要的定位标签 |
+| `metric.metric_name` | 优先取历史 `metric.metric_name`，缺失时取 `ListAlarmRules.policies[].metric_name`。写入 `labels.metric_name` 与 `annotations.ces_metric_name`，并参与 `description` 拼装，供 AI 分析直接引用 |
+| `condition` | 优先取历史 `condition`，缺失时取 `ListAlarmRules.policies[]`（聚合方式、比较符、阈值、单位、周期、连续次数、抑制间隔），归一化为 `annotations.ces_condition`，例如 `> 80% (average, 300s x3)`；空条件与事件规则不构造 |
+| 规则 `name` / `description` / `type` | `labels.rule_name`（缺失时回落告警名称）、`annotations.ces_rule_description`、`annotations.ces_rule_type` |
+| 规则查询结果 | 仅失败时写入 `annotations.ces_rule_lookup`：`not_found`（规则已删除或不可见）、`error`（查询失败/超时后降级入库）；成功不写 |
 
 `source=huawei_ces`，环境与业务线使用接入源默认值。经 Asset 端口以 `account_id + region + cloud_resource_type + cloud_resource_id` 精确匹配云同步资产。缺少有效维度或匹配有歧义时保留告警并留空资产关联。
 
-`description` 在有指标名时按 `<namespace> <metric_name> <condition> · <resource_name>` 拼装；`summary` 保持资源名不变。`annotations` 同时保留 `ces_namespace`、`ces_level`、`ces_metric_name`、`ces_condition`、`ces_status` 与 `ces_last_alarm_time`。
+`description` 按可用字段拼装为 `<namespace> <metric_name> <condition> · <resource_name>`；指标或条件缺失时不丢资源名。`summary` 为资源名，缺失时回退云资源/实例 ID。`labels` 同时保留 `rule_name`、`resource_type`、`metric_name` 与维度。`annotations` 同时保留 `ces_namespace`、`ces_level`、`ces_metric_name`、`ces_condition`、`ces_rule_description`、`ces_rule_type`、`ces_status` 与 `ces_last_alarm_time`；规则富化失败时额外保留 `ces_rule_lookup`。
 
 ## §7 去重与生命周期
 
@@ -201,13 +212,14 @@ cmd/api/main.go
 - 源管理增加接入方式。选择 CES 拉取时展示账号、轮询间隔和区域配置，Webhook 源继续使用共享密钥表单。
 - 账号选择器读取分页 `GET /api/integrations/accounts?provider=huawei_cloud&enabled=true`，按 §4.3 过滤。无账号权限时展示明确的权限提示，并禁用依赖账号权限的操作。
 - 源列表展示同步时间与状态。立即同步处理 409、业务失败摘要和超时，按 scope 展示失败原因。
+- 告警详情抽屉展示「触发条件」卡片（资源/实例、指标、阈值条件、命名空间、区域、账号）以及标签/注解键值；规则富化失败时显示降级提示（规则不存在/查询失败），不隐藏已有告警数据。
 - 更新 `web/src/api/alert.ts` 和 [前端 API 说明](../web/src/api/README.md)。告警列表和详情复用既有数据与状态流转。
 
 ## §13 测试与实施阶段
 
 ### 13.1 关键验收
 
-- **Provider** 使用符合 V2 响应结构的脱敏 fixture 验证字段、分页、相同 `alarm_id` 的多流水、多维度、权限错误和后续页失败。
+- **Provider** 使用符合 V2 响应结构的脱敏 fixture 验证字段、分页、相同 `alarm_id` 的多流水、多维度、权限错误和后续页失败。另需覆盖：历史记录无 `metric`/`condition` 时由 `ListAlarmRules` 富化、同一 `alarm_id` 缓存命中、规则 404/查询失败降级且不改变 scope `Complete`、事件规则不补指标、产品级多资源规则不猜测实例。
 - **应用** 覆盖重复观测零变更、旧 firing 在恢复后到达、人工恢复或关闭后再拉取、新流水可触发、缺页/失效不推断恢复、游标不越过失败窗口、写入失败后重试。
 - **权限和兼容** 覆盖存量 CES Webhook 更新及接入、拉取源拒绝公开 Webhook、普通角色缺账号权限、账号禁用/删除，以及拉取期更新/停用冲突。
 - **集成** 两个 API 实例同源争抢，以及租约过期旧持有者写入失败。测试部分已落库、轮次超时和最终状态/审计事务失败。

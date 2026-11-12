@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	aiapp "github.com/734965549/aiops/internal/ai/application"
 	alertdomain "github.com/734965549/aiops/internal/alert/domain"
@@ -47,12 +48,27 @@ func (a *ReaderAdapter) GetForAnalysis(ctx context.Context, alertID string) (*ai
 		Description:     alert.Description,
 		Severity:        string(alert.Severity),
 		Status:          string(alert.Status),
+		Source:          alert.Source,
+		RuleName:        alert.RuleName,
+		BusinessLine:    alert.BusinessLine,
 		Environment:     alert.Environment,
 		ApplicationID:   alert.ApplicationID,
 		ApplicationName: alert.ApplicationName,
 		ResourceID:      alert.ResourceID,
 		ResourceName:    alert.ResourceName,
+		ResourceType:    alert.ResourceType,
+		OccurrenceCount: alert.OccurrenceCount,
+		FirstSeenAt:     alert.FirstSeenAt.Unix(),
+		LastSeenAt:      alert.LastSeenAt.Unix(),
+		RecoveredAt:     unixOrZero(alert.RecoveredAt),
 		Labels:          labels,
 		Annotations:     annotations,
 	}, nil
+}
+
+func unixOrZero(t *time.Time) int64 {
+	if t == nil || t.IsZero() {
+		return 0
+	}
+	return t.Unix()
 }

@@ -42,9 +42,15 @@ type PulledAlarm struct {
 	ResourceName string
 	ResourceType string
 	Dimensions   map[string]string
-	FirstSeenAt  *time.Time
-	LastAlarmAt  *time.Time
-	RecoveredAt  *time.Time
+	// RuleName / RuleDescription / RuleType 和 RuleLookup 来自 provider 规则富化；
+	// RuleLookup 为 not_found / error 时仅做注释标记，不影响入库。
+	RuleName        string
+	RuleDescription string
+	RuleType        string
+	RuleLookup      string
+	FirstSeenAt     *time.Time
+	LastAlarmAt     *time.Time
+	RecoveredAt     *time.Time
 }
 
 // AlarmCondition 是 Alert 端口自包含的触发条件快照，避免依赖 observability 内部类型。

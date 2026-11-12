@@ -3,6 +3,7 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -79,11 +80,14 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 	var toolError string
 	if s.tools != nil && s.providerID != "" {
 		payload := map[string]any{
-			"alert_id":         alertID,
-			"time_range":       timeRange,
-			"include_logs":     in.IncludeLogs,
-			"include_metrics":  in.IncludeMetrics,
-			"include_changes":  in.IncludeChanges,
+			"alert_id":        alertID,
+			"time_range":      timeRange,
+			"include_logs":    in.IncludeLogs,
+			"include_metrics": in.IncludeMetrics,
+			"include_changes": in.IncludeChanges,
+			// alert 为完整告警快照（含 description/annotations/状态/时间/来源）；
+			// 其余平铺字段保留给既有 provider 兼容。
+			"alert":            alertSnapshot(alert),
 			"alert_name":       alert.Name,
 			"alert_summary":    alert.Summary,
 			"alert_severity":   alert.Severity,
@@ -131,12 +135,31 @@ func (s *AnalyzeService) recordAnalyzeAudit(ctx context.Context, alertID, userID
 	})
 }
 
+// alertSnapshot 将告警上下文整体序列化为 provider 可读快照，避免逐字段挑选再次漏掉新字段。
+func alertSnapshot(alert *AlertContext) map[string]any {
+	if alert == nil {
+		return map[string]any{}
+	}
+	raw, err := json.Marshal(alert)
+	if err != nil {
+		return map[string]any{"id": alert.ID, "name": alert.Name}
+	}
+	out := map[string]any{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return map[string]any{"id": alert.ID, "name": alert.Name}
+	}
+	return out
+}
+
+// buildLocalSummary 无 provider 时也给出资源/指标/阈值级别摘要，优先使用更完整的 description。
 func buildLocalSummary(alert *AlertContext) string {
 	if alert == nil {
 		return ""
 	}
-	if strings.TrimSpace(alert.Summary) != "" {
-		return fmt.Sprintf("%s: %s", alert.Name, alert.Summary)
+	for _, detail := range []string{alert.Description, alert.Summary} {
+		if detail = strings.TrimSpace(detail); detail != "" {
+			return fmt.Sprintf("%s: %s", alert.Name, detail)
+		}
 	}
 	return fmt.Sprintf("告警 %s（级别 %s）待进一步分析", alert.Name, alert.Severity)
 }

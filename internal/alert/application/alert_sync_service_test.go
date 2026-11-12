@@ -309,10 +309,14 @@ func TestAlertSyncService_WritesCESConditionMetadata(t *testing.T) {
 	rec.Namespace = "SYS.RDS"
 	rec.MetricName = "disk_usedPercent"
 	rec.ResourceName = "prod-db"
+	rec.ResourceType = "rds"
 	rec.Condition = &AlarmCondition{
 		Filter: "average", ComparisonOperator: ">", Threshold: 80, Unit: "%",
 		PeriodSeconds: 300, TriggerCount: 3,
 	}
+	rec.RuleName = "RDS 磁盘使用率告警"
+	rec.RuleDescription = "RDS disk usage exceeds 80%"
+	rec.RuleType = "MULTI_INSTANCE"
 	pull := &syncTestPull{results: []*AlertPullResult{
 		oneScope([]PulledAlarm{rec}, true, 1000, ""),
 	}}
@@ -345,11 +349,57 @@ func TestAlertSyncService_WritesCESConditionMetadata(t *testing.T) {
 	if got := alert.Labels["metric_name"]; got != "disk_usedPercent" {
 		t.Fatalf("labels.metric_name = %q", got)
 	}
+	if got := alert.Labels["rule_name"]; got != "RDS 磁盘使用率告警" {
+		t.Fatalf("labels.rule_name = %q", got)
+	}
+	if got := alert.Labels["resource_type"]; got != "rds" {
+		t.Fatalf("labels.resource_type = %q", got)
+	}
+	if got := alert.Annotations["ces_rule_description"]; got != "RDS disk usage exceeds 80%" {
+		t.Fatalf("ces_rule_description = %q", got)
+	}
+	if got := alert.Annotations["ces_rule_type"]; got != "MULTI_INSTANCE" {
+		t.Fatalf("ces_rule_type = %q", got)
+	}
 	wantDesc := "SYS.RDS disk_usedPercent > 80% (average, 300s x3) · prod-db"
 	if alert.Description != wantDesc {
 		t.Fatalf("description = %q, want %q", alert.Description, wantDesc)
 	}
 	if alert.Summary != "prod-db" {
 		t.Fatalf("summary should stay resource name, got %q", alert.Summary)
+	}
+}
+
+func TestAlertSyncService_RuleLookupMissKeepsAlertAndMarksAnnotation(t *testing.T) {
+	now := time.Now().UTC()
+	rec := pulled("r-rule-miss", "alarm", "a", now)
+	rec.Namespace = ""
+	rec.MetricName = ""
+	rec.ResourceName = ""
+	rec.RuleLookup = "not_found"
+	pull := &syncTestPull{results: []*AlertPullResult{
+		oneScope([]PulledAlarm{rec}, true, 1000, ""),
+	}}
+	lease := &syncTestLease{acquire: true, renew: true, commit: true}
+	svc, alerts, _ := newSyncTestService(t, newPullSource(), pull, lease)
+
+	if _, err := svc.Sync(context.Background(), "ces-src", Actor{}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	var alert *domain.Alert
+	for _, item := range alerts.byID {
+		alert = item
+	}
+	if alert == nil {
+		t.Fatal("expected alert to be created")
+	}
+	if got := alert.Annotations["ces_rule_lookup"]; got != "not_found" {
+		t.Fatalf("ces_rule_lookup = %q", got)
+	}
+	if alert.Summary != "i-a" {
+		t.Fatalf("summary should fall back to resource id, got %q", alert.Summary)
+	}
+	if alert.Description != "i-a" {
+		t.Fatalf("description should fall back to resource id, got %q", alert.Description)
 	}
 }

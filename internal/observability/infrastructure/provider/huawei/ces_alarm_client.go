@@ -36,21 +36,26 @@ type AlarmHistoryPullClient interface {
 // alarmHistoryAPI 抽象 SDK 调用，便于 fixture 单测。
 type alarmHistoryAPI interface {
 	ListAlarmHistories(request *cesv2model.ListAlarmHistoriesRequest) (*cesv2model.ListAlarmHistoriesResponse, error)
+	ListAlarmRules(request *cesv2model.ListAlarmRulesRequest) (*cesv2model.ListAlarmRulesResponse, error)
 }
 
 // CESAlarmHistoryClient 生产实现，独立于资源发现客户端。
 type CESAlarmHistoryClient struct {
 	newAPI func(cred AKSKCredential, projectID, region string) (alarmHistoryAPI, error)
+	rules  *alarmRuleCache
 }
 
 func NewCESAlarmHistoryClient() *CESAlarmHistoryClient {
-	return &CESAlarmHistoryClient{newAPI: func(cred AKSKCredential, projectID, region string) (alarmHistoryAPI, error) {
-		client, err := newCESv2Client(cred, projectID, region)
-		if err != nil {
-			return nil, err
-		}
-		return client, nil
-	}}
+	return &CESAlarmHistoryClient{
+		newAPI: func(cred AKSKCredential, projectID, region string) (alarmHistoryAPI, error) {
+			client, err := newCESv2Client(cred, projectID, region)
+			if err != nil {
+				return nil, err
+			}
+			return client, nil
+		},
+		rules: &alarmRuleCache{},
+	}
 }
 
 var _ AlarmHistoryPullClient = (*CESAlarmHistoryClient)(nil)
@@ -59,6 +64,7 @@ var _ AlarmHistoryPullClient = (*CESAlarmHistoryClient)(nil)
 //   - 新 scope：先查云端可见 alarm 记录，再读最近 24 小时更新窗口，按 record_id 合并
 //   - 增量：读 [cursor-5m, roundCutoff] 窗口
 //   - 任一分页失败/不完整返回已读取记录并置 Complete=false，调用方保留旧游标
+//   - 记录合并后按 alarm_id 查询 ListAlarmRules 富化缺失的指标/阈值；富化失败不影响 Complete
 func (c *CESAlarmHistoryClient) PullScope(ctx context.Context, cred AKSKCredential, scope domain.AlarmPullScope, cursor, roundCutoff int64, deadline time.Time) (AlarmScopePage, error) {
 	if c == nil || c.newAPI == nil {
 		return AlarmScopePage{}, fmt.Errorf("alarm history client is not configured")
@@ -71,30 +77,37 @@ func (c *CESAlarmHistoryClient) PullScope(ctx context.Context, cred AKSKCredenti
 		return AlarmScopePage{}, err
 	}
 	byID := map[string]domain.AlarmRecord{}
+	var page AlarmScopePage
 	if cursor <= 0 {
 		active, complete, code := c.listWindow(ctx, api, scope, nil, 0, 0, deadline)
 		mergeAlarmRecords(byID, active)
 		if !complete {
-			return AlarmScopePage{Records: alarmRecords(byID), Complete: false, FailureCode: code}, nil
+			page = AlarmScopePage{Records: alarmRecords(byID), Complete: false, FailureCode: code}
+		} else {
+			from := time.Unix(roundCutoff, 0).UTC().Add(-alarmHistoryActiveHours * time.Hour).Unix()
+			recent, recentComplete, recentCode := c.listWindow(ctx, api, scope, nil, from, roundCutoff, deadline)
+			mergeAlarmRecords(byID, recent)
+			if !recentComplete {
+				page = AlarmScopePage{Records: alarmRecords(byID), Complete: false, FailureCode: recentCode}
+			} else {
+				page = AlarmScopePage{Records: alarmRecords(byID), WindowEnd: roundCutoff, Complete: true}
+			}
 		}
-		from := time.Unix(roundCutoff, 0).UTC().Add(-alarmHistoryActiveHours * time.Hour).Unix()
-		recent, recentComplete, recentCode := c.listWindow(ctx, api, scope, nil, from, roundCutoff, deadline)
-		mergeAlarmRecords(byID, recent)
-		if !recentComplete {
-			return AlarmScopePage{Records: alarmRecords(byID), Complete: false, FailureCode: recentCode}, nil
+	} else {
+		from := cursor - int64(alarmHistoryOverlap.Seconds())
+		if from < 0 {
+			from = 0
 		}
-		return AlarmScopePage{Records: alarmRecords(byID), WindowEnd: roundCutoff, Complete: true}, nil
+		records, complete, code := c.listWindow(ctx, api, scope, nil, from, roundCutoff, deadline)
+		mergeAlarmRecords(byID, records)
+		if !complete {
+			page = AlarmScopePage{Records: alarmRecords(byID), Complete: false, FailureCode: code}
+		} else {
+			page = AlarmScopePage{Records: alarmRecords(byID), WindowEnd: roundCutoff, Complete: true}
+		}
 	}
-	from := cursor - int64(alarmHistoryOverlap.Seconds())
-	if from < 0 {
-		from = 0
-	}
-	records, complete, code := c.listWindow(ctx, api, scope, nil, from, roundCutoff, deadline)
-	mergeAlarmRecords(byID, records)
-	if !complete {
-		return AlarmScopePage{Records: alarmRecords(byID), Complete: false, FailureCode: code}, nil
-	}
-	return AlarmScopePage{Records: alarmRecords(byID), WindowEnd: roundCutoff, Complete: true}, nil
+	c.enrichRecords(ctx, api, scope, page.Records, deadline)
+	return page, nil
 }
 
 // listWindow 分页读取一个时间窗口；status 为 nil 表示不过滤状态。

@@ -34,9 +34,15 @@ type AlarmRecord struct {
 	ResourceName string
 	ResourceType string
 	Dimensions   map[string]string
-	FirstSeenAt  *time.Time
-	LastAlarmAt  *time.Time
-	RecoveredAt  *time.Time
+	// RuleName / RuleDescription / RuleType 来自 ListAlarmRules 富化；
+	// RuleLookup 记录富化结果（not_found / error），成功时为空。
+	RuleName        string
+	RuleDescription string
+	RuleType        string
+	RuleLookup      string
+	FirstSeenAt     *time.Time
+	LastAlarmAt     *time.Time
+	RecoveredAt     *time.Time
 }
 
 // AlarmCondition 告警触发条件（华为 CES AlarmHistoryItemV2.condition，契约 §6.2）。
