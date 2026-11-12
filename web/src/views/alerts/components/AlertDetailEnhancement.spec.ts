@@ -463,12 +463,147 @@ describe('static SCSS contract', () => {
     expect(scss).toMatch(/:deep\(\.arco-alert-content\)\s*\{[^}]*color:\s*var\(--color-text-2\)/s)
   })
 
-  it('has the required responsive and touch rules', () => {
-    expect(scss).toMatch(/@media\s*\(max-width:\s*900px\)/)
-    expect(scss).toMatch(/@media\s*\(max-width:\s*480px\)/)
-    expect(scss).toMatch(/@media\s*\(hover:\s*none\)/)
-    expect(scss).toMatch(/grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(280px,\s*1fr\)\)/)
+  // 把 @media 块与基础作用域分离，用于「40px 仅存在于 hover:none」的双向断言。
+  function splitMedia(source: string) {
+    const media: string[] = []
+    let base = ''
+    const re = /@media[^{]*\{/g
+    let last = 0
+    let match: RegExpExecArray | null
+    while ((match = re.exec(source)) !== null) {
+      base += source.slice(last, match.index)
+      let depth = 1
+      let cursor = match.index + match[0].length
+      while (cursor < source.length && depth > 0) {
+        if (source[cursor] === '{') depth += 1
+        else if (source[cursor] === '}') depth -= 1
+        cursor += 1
+      }
+      media.push(source.slice(match.index, cursor))
+      last = cursor
+      re.lastIndex = cursor
+    }
+    base += source.slice(last)
+    return { base, media }
+  }
+
+  const { base, media } = splitMedia(scss)
+  const hoverNone = media
+    .filter((block) => /@media\s*\(hover:\s*none\)/.test(block))
+    .join('\n')
+
+  it('single-column grid replaces the two-column auto-fit layout', () => {
+    expect(scss).toMatch(/\.alert-labels-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s)
+    expect(scss).not.toMatch(/repeat\(auto-fit,\s*minmax\(280px,\s*1fr\)\)/)
+    expect(scss).not.toMatch(/gap:\s*8px\s+16px/)
     expect(scss).toMatch(/outline:\s*2px solid rgb\(var\(--primary-6\)\)/)
-    expect(scss).toContain('min-height: 40px')
+  })
+
+  it('40px touch target exists only inside @media (hover:none)', () => {
+    expect(base).not.toMatch(/min-height:\s*40px/)
+    expect(base).not.toMatch(/min-width:\s*40px/)
+    expect(base).toMatch(/min-height:\s*24px/)
+    expect(hoverNone).toMatch(/min-width:\s*40px/)
+    expect(hoverNone).toMatch(/min-height:\s*40px/)
+  })
+
+  it('keeps all three responsive media blocks', () => {
+    expect(media.some((block) => /@media\s*\(max-width:\s*900px\)/.test(block))).toBe(true)
+    expect(media.some((block) => /@media\s*\(max-width:\s*480px\)/.test(block))).toBe(true)
+    expect(hoverNone.length).toBeGreaterThan(0)
+  })
+
+  it('28px row grid and the 2x dim-key variant', () => {
+    expect(scss).toMatch(/--alert-row-h:\s*28px/)
+    expect(scss).toMatch(/calc\(var\(--alert-row-h\)\s*\*\s*2\)/)
+    expect(scss).toMatch(/\.alert-kv\.is-dim-key\s*\{[^}]*calc\(var\(--alert-row-h\)/s)
+    expect(hoverNone).toMatch(/min-height:\s*44px/)
+    expect(hoverNone).toMatch(/min-height:\s*88px/)
+  })
+
+  it('96px label column via $label-col token and separated grid rows', () => {
+    expect(scss).toMatch(/\$label-col:\s*96px/)
+    const kvRule = /\.alert-kv\s*\{([^}]*)\}/s.exec(scss)?.[1] ?? ''
+    expect(kvRule).toMatch(/display:\s*grid/)
+    expect(kvRule).toMatch(/grid-template-columns:\s*\$label-col\s+minmax\(0,\s*1fr\)/)
+    expect(kvRule).toMatch(/column-gap:\s*12px/)
+    expect(kvRule).toMatch(/border-bottom:\s*1px solid var\(--color-border-2\)/)
+    expect(scss).toMatch(/\.alert-kv:last-child\s*\{[^}]*border-bottom:\s*0/s)
+  })
+
+  it('removes the legacy typography that caused ragged row heights', () => {
+    expect(scss).not.toContain('display:contents')
+    expect(scss).not.toMatch(/flex:\s*0\s+0\s+128px/)
+    expect(scss).not.toMatch(/font-size:\s*15px/)
+    expect(scss).not.toMatch(/line-height:\s*22px/)
+    expect(scss).not.toMatch(/flex-direction:\s*column/)
+  })
+
+  it('is-mono carries no font-size; dd reserves the copy button gutter', () => {
+    const monoRule = /(?:^|\n)\.is-mono\s*\{([^}]*)\}/s.exec(scss)?.[1] ?? ''
+    expect(monoRule).not.toMatch(/font-size/)
+    const ddRule = /(?:^|\n)\.alert-kv-value\s*\{([^}]*)\}/s.exec(scss)?.[1] ?? ''
+    expect(ddRule).toMatch(/position:\s*relative/)
+    expect(ddRule).toMatch(/padding-right:\s*28px/)
+    expect(scss).toMatch(/:deep\(\.alert-copy-wrap\)\s*\{[^}]*position:\s*absolute/s)
+    expect(scss).toMatch(/:deep\(\.alert-copy-wrap\.is-fallback\)\s*\{[^}]*position:\s*static/s)
+  })
+
+  it('.cond-op is 13px/600 and the condition row uses 28px line-height', () => {
+    const opRule = /\.cond-op\s*\{([^}]*)\}/s.exec(scss)?.[1] ?? ''
+    expect(opRule).toMatch(/font-size:\s*13px/)
+    expect(opRule).toMatch(/font-weight:\s*600/)
+    expect(scss).toMatch(/\.alert-condition-body\s*\{[^}]*line-height:\s*28px/s)
+  })
+
+  it('text-4 only as a decorative background, never as a text colour', () => {
+    expect(scss).not.toMatch(/color:\s*var\(--color-text-4\)/)
+    expect(scss).toMatch(/background:\s*var\(--color-text-4\)/)
+    expect(scss).not.toContain('--color-text-3')
+  })
+})
+
+describe('Phase 3 typography DOM contract', () => {
+  it('A1. mapped dimension keys expose Chinese name + raw key + · 维度', () => {
+    const wrapper = render(makeAlert({
+      'lbaas_instance_id,loadbalancer_id': 'id-a,id-b',
+      future_dim: 'v'
+    }))
+    const composite = wrapper.find('[data-key="lbaas_instance_id,loadbalancer_id"]')
+    expect(composite.classes()).toContain('is-dim-key')
+    const dt = composite.find('dt')
+    expect(dt.text()).toContain('LB 实例 ID / 负载均衡器 ID')
+    expect(dt.text()).toContain('lbaas_instance_id,loadbalancer_id')
+    expect(dt.text()).toContain('· 维度')
+    expect(dt.find('code.alert-kv-hint.is-mono').exists()).toBe(true)
+    expect(composite.find('dd').text()).toContain('id-a,id-b')
+
+    const unknown = wrapper.find('[data-key="future_dim"]')
+    expect(unknown.find('dt').text()).toContain('future_dim')
+    expect(unknown.find('dt code.alert-kv-hint.is-mono').exists()).toBe(false)
+    expect(unknown.classes()).toContain('is-dim-key')
+  })
+
+  it('A1. known mapped keys show the raw key once without is-dim-key', () => {
+    const wrapper = render(makeAlert({ instance_id: 'i-001' }))
+    const row = wrapper.find('[data-key="instance_id"]')
+    expect(row.classes()).not.toContain('is-dim-key')
+    expect(row.find('dt').text()).toContain('实例 ID')
+    expect(row.find('dt code.alert-kv-hint.is-mono').text()).toBe('instance_id')
+    expect(row.find('dt .alert-kv-hint:not(.is-mono)').exists()).toBe(false)
+  })
+
+  it('fallback keeps the complete value inside a static (non-absolute) wrapper', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      value: undefined,
+      configurable: true
+    })
+    const wrapper = render(makeAlert({ cloud_resource_id: 'raw-id-001' }))
+    await wrapper.find('.alert-copy-btn').trigger('click')
+    expect(wrapper.find('.alert-copy-wrap').classes()).toContain('is-fallback')
+    const fallback = wrapper.find('.alert-copy-fallback')
+    expect(fallback.exists()).toBe(true)
+    expect(fallback.text()).toBe('raw-id-001')
+    expect(wrapper.find('dd').text()).toContain('raw-id-001')
   })
 })

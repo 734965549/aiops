@@ -137,6 +137,7 @@
       :width="isNarrow ? '100%' : 720"
       :title="detail?.alert.name || '告警详情'"
       unmount-on-close
+      :footer="false"
       @cancel="closeDetail"
     >
       <!-- 请求失败态：允许 error 色；字段降级态一律 info/中性，二者不得互相回归。 -->
@@ -1203,5 +1204,4 @@ onUnmounted(() => narrowMql?.removeEventListener?.('change', onNarrowChange))
   color: var(--color-text-3);
   font-size: 12px;
 }
-
 </style>

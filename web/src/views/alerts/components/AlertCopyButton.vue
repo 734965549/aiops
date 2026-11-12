@@ -1,5 +1,8 @@
 <template>
-  <span class="alert-copy-wrap">
+  <span
+    class="alert-copy-wrap"
+    :class="{ 'is-fallback': fallback }"
+  >
     <button
       type="button"
       class="alert-copy-btn"
@@ -67,17 +70,20 @@ async function onCopy() {
 <style scoped lang="scss">
 .alert-copy-wrap {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
   vertical-align: middle;
+  max-width: 100%;
 }
 
 .alert-copy-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 40px;
-  min-height: 40px;
+  min-width: 24px;
+  min-height: 24px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -103,6 +109,11 @@ async function onCopy() {
 }
 
 .alert-copy-fallback {
+  display: block;
+  flex: 1 1 100%;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
   line-height: 20px;
@@ -119,6 +130,8 @@ async function onCopy() {
 @media (hover: none) {
   .alert-copy-btn {
     opacity: 1;
+    min-width: 40px;
+    min-height: 40px;
   }
 }
 </style>

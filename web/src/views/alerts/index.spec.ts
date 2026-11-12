@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AlertsView from './index.vue'
@@ -59,12 +61,16 @@ vi.mock('@arco-design/web-vue', () => {
       '</div>'
   }
   const drawerStub = {
-    props: ['title', 'width'],
+    props: ['title', 'width', 'footer'],
     emits: ['cancel'],
     template:
-      '<div class="drawer-root" :data-width="String(width)">' +
+      '<div class="drawer-root" :data-width="String(width)" :data-footer="String(footer)">' +
       '<header class="drawer-title">{{ title }}</header>' +
       '<button class="drawer-cancel" @click="$emit(\'cancel\')">close</button>' +
+      '<template v-if="footer !== false">' +
+      '<button class="drawer-footer-cancel">取消</button>' +
+      '<button class="drawer-footer-ok">确定</button>' +
+      '</template>' +
       '<slot /></div>'
   }
   return {
@@ -374,5 +380,50 @@ describe('alert detail: responsive drawer width', () => {
     const wrapper = mountView()
     await flushPromises()
     expect(wrapper.find('.drawer-root').attributes('data-width')).toBe('720')
+  })
+})
+
+describe('Phase 3 drawer footer removal', () => {
+  it('disables the drawer footer and renders no cancel/ok buttons', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const drawer = wrapper.find('.drawer-root')
+    expect(drawer.attributes('data-footer')).toBe('false')
+    expect(wrapper.findAll('.drawer-footer-cancel')).toHaveLength(0)
+    expect(wrapper.findAll('.drawer-footer-ok')).toHaveLength(0)
+    // @cancel 仍是唯一关闭入口，Esc / 遮罩 / × 不受影响
+    expect(wrapper.find('.drawer-cancel').exists()).toBe(true)
+    await wrapper.find('.drawer-cancel').trigger('click')
+    expect(wrapper.find('.detail-error').exists()).toBe(false)
+  })
+
+  it('keeps the footer disabled across detail / error / retry states', async () => {
+    vi.mocked(getAlert).mockRejectedValue(new Error('boom'))
+    vi.mocked(getApiError).mockReturnValue({ status: 500, message: '服务异常' } as never)
+    const wrapper = mountView()
+    await flushPromises()
+    await openRow(wrapper)
+    expect(wrapper.find('.drawer-root').attributes('data-footer')).toBe('false')
+    expect(wrapper.findAll('.drawer-footer-ok')).toHaveLength(0)
+    expect(wrapper.find('.detail-retry').exists()).toBe(true)
+  })
+
+  it('static source: :footer="false" on a-drawer, @cancel kept, no @ok', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/views/alerts/index.vue'), 'utf-8')
+    const drawerTag = /<a-drawer[\s\S]*?>/.exec(source)?.[0] ?? ''
+    expect(drawerTag).toContain(':footer="false"')
+    expect(drawerTag).toContain('@cancel="closeDetail"')
+    expect(drawerTag).not.toContain('@ok')
+    expect(source).not.toMatch(/@ok[\s=]/)
+  })
+
+  it('static source: index.vue stays at 1207 lines and the baseline is untouched', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/views/alerts/index.vue'), 'utf-8')
+    expect((source.match(/\n/g) ?? []).length).toBe(1207)
+    const baseline = JSON.parse(
+      readFileSync(resolve(process.cwd(), '../scripts/architecture_baseline.json'), 'utf-8')
+    ) as Record<string, number>
+    expect(Object.keys(baseline)).toHaveLength(8)
+    expect(baseline['web/src/views/alerts/index.vue']).toBe(1207)
   })
 })
