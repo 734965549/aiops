@@ -780,7 +780,7 @@ POST /api/ai/analyze-alert
 }
 ```
 
-AI 模块加载告警后，向 provider 传入的 `payload.alert` 为完整告警快照，包含 `id/name/summary/description/severity/status/source/rule_name/business_line/environment/application_id/application_name/resource_id/resource_name/resource_type/occurrence_count/first_seen_at/last_seen_at/recovered_at/labels/annotations`，时间字段为 Unix 秒。为兼容既有 provider，payload 同时保留 `alert_name`、`alert_summary`、`alert_severity`、`application_name`、`resource_name`、`labels` 平铺字段。无可用 provider 时，本地摘要优先使用 `description`，其次 `summary`。
+AI 模块加载告警后，向 provider 传入的 `payload.alert` 为完整告警快照，包含 `id/name/summary/description/severity/status/source/rule_name/business_line/environment/application_id/application_name/resource_id/resource_name/resource_type/occurrence_count/first_seen_at/last_seen_at/recovered_at/labels/annotations`，时间字段为 Unix 秒。为兼容既有 provider，payload 同时保留 `alert_name`、`alert_summary`、`alert_severity`、`application_name`、`resource_name`、`labels` 平铺字段。`include_metrics=true` 时 payload 还包含只读指标证据 `evidence`（含状态、统计摘要、破限点数与证据 ID），语义与降级枚举见 [AI 契约 §9](ai-contract.md#9-告警分析-evidence-语义)。无可用 provider 时，本地摘要优先使用 `description`，其次 `summary`。
 
 ### 9.3 Execution
 

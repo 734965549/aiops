@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -385,6 +386,23 @@ func (s *AlertSyncService) normalizeAlarms(src *domain.AlertSource, scope Pulled
 			conditionDesc = in.Condition.Describe()
 			if conditionDesc != "" {
 				annotations["ces_condition"] = conditionDesc
+			}
+			// 结构化条件供 AI 指标取数计算阈值参考线与破限点；ces_condition 仍用于展示。
+			annotations["ces_threshold"] = strconv.FormatFloat(in.Condition.Threshold, 'f', -1, 64)
+			if in.Condition.ComparisonOperator != "" {
+				annotations["ces_operator"] = in.Condition.ComparisonOperator
+			}
+			if in.Condition.Filter != "" {
+				annotations["ces_filter"] = in.Condition.Filter
+			}
+			if in.Condition.Unit != "" {
+				annotations["ces_unit"] = in.Condition.Unit
+			}
+			if in.Condition.PeriodSeconds > 0 {
+				annotations["ces_period_s"] = strconv.FormatInt(in.Condition.PeriodSeconds, 10)
+			}
+			if in.Condition.TriggerCount > 0 {
+				annotations["ces_trigger_count"] = strconv.Itoa(in.Condition.TriggerCount)
 			}
 		}
 		if in.MetricName != "" {

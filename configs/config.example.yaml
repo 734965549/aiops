@@ -175,6 +175,8 @@ cors:
 ai:
   outbound_allowed_hosts: []
   outbound_allow_loopback: false
+  # 告警分析注入指标证据的取数预算（毫秒），0 使用默认 5000。
+  evidence_timeout_ms: 5000
   providers:
     - id: "demo-http-a"
       name: "Demo HTTP Provider A"

@@ -120,12 +120,13 @@ cmd/api/main.go
 | `metric.namespace` / `metric.dimensions` | 优先取历史字段，按已验证的云资源类型和主维度提取云资源 ID；缺失时可由单资源规则的 `resources[].dimensions` 补齐。保留必要的定位标签 |
 | `metric.metric_name` | 优先取历史 `metric.metric_name`，缺失时取 `ListAlarmRules.policies[].metric_name`。写入 `labels.metric_name` 与 `annotations.ces_metric_name`，并参与 `description` 拼装，供 AI 分析直接引用 |
 | `condition` | 优先取历史 `condition`，缺失时取 `ListAlarmRules.policies[]`（聚合方式、比较符、阈值、单位、周期、连续次数、抑制间隔），归一化为 `annotations.ces_condition`，例如 `> 80% (average, 300s x3)`；空条件与事件规则不构造 |
+| 结构化条件 | `condition` 非空时同时写入 `annotations.ces_threshold`（阈值原文）、`ces_operator`、`ces_filter`、`ces_unit`、`ces_period_s`、`ces_trigger_count`；后两者为 0 时不写，供 AI 指标取数绘制阈值参考线并统计破限点 |
 | 规则 `name` / `description` / `type` | `labels.rule_name`（缺失时回落告警名称）、`annotations.ces_rule_description`、`annotations.ces_rule_type` |
 | 规则查询结果 | 仅失败时写入 `annotations.ces_rule_lookup`：`not_found`（规则已删除或不可见）、`error`（查询失败/超时后降级入库）；成功不写 |
 
 `source=huawei_ces`，环境与业务线使用接入源默认值。经 Asset 端口以 `account_id + region + cloud_resource_type + cloud_resource_id` 精确匹配云同步资产。缺少有效维度或匹配有歧义时保留告警并留空资产关联。
 
-`description` 按可用字段拼装为 `<namespace> <metric_name> <condition> · <resource_name>`；指标或条件缺失时不丢资源名。`summary` 为资源名，缺失时回退云资源/实例 ID。`labels` 同时保留 `rule_name`、`resource_type`、`metric_name` 与维度。`annotations` 同时保留 `ces_namespace`、`ces_level`、`ces_metric_name`、`ces_condition`、`ces_rule_description`、`ces_rule_type`、`ces_status` 与 `ces_last_alarm_time`；规则富化失败时额外保留 `ces_rule_lookup`。
+`description` 按可用字段拼装为 `<namespace> <metric_name> <condition> · <resource_name>`；指标或条件缺失时不丢资源名。`summary` 为资源名，缺失时回退云资源/实例 ID。`labels` 同时保留 `account_id`、`region`、`project_id`、`rule_name`、`resource_type`、`metric_name` 与维度，供资产匹配和 AI 指标取数定位 project。`annotations` 同时保留 `ces_namespace`、`ces_level`、`ces_metric_name`、`ces_condition`、`ces_threshold`、`ces_operator`、`ces_filter`、`ces_unit`、`ces_period_s`、`ces_trigger_count`、`ces_rule_description`、`ces_rule_type`、`ces_status` 与 `ces_last_alarm_time`；规则富化失败时额外保留 `ces_rule_lookup`。
 
 ## §7 去重与生命周期
 

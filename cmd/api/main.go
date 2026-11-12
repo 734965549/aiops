@@ -19,6 +19,8 @@ import (
 	aiapp "github.com/734965549/aiops/internal/ai/application"
 	aialert "github.com/734965549/aiops/internal/ai/infrastructure/alert"
 	aiaudit "github.com/734965549/aiops/internal/ai/infrastructure/audit"
+	aiidentity "github.com/734965549/aiops/internal/ai/infrastructure/identity"
+	aiobs "github.com/734965549/aiops/internal/ai/infrastructure/observability"
 	aihttp "github.com/734965549/aiops/internal/ai/interfaces/http"
 	"github.com/734965549/aiops/internal/ai/toolgateway"
 	alertapp "github.com/734965549/aiops/internal/alert/application"
@@ -338,6 +340,15 @@ func main() {
 		obsAuditRecorder,
 	)
 	obsHandler := obshttp.NewHandler(obsQuerySvc)
+
+	// AnalyzeService 早于 Observability 构造，用 setter 注入只读指标证据端口。
+	aiEvidenceCollector := aiobs.NewCollectorAdapter(
+		obsQuerySvc,
+		obsAccountAdapter,
+		aiidentity.NewAccountAccessAuthorizer(authorizationSvc),
+		app.Cfg.AI.EvidenceTimeout(),
+	)
+	analyzeSvc.SetMetricEvidence(aiEvidenceCollector)
 
 	// ---- 装配 CES 告警拉取（Alert 端口 -> Observability 适配 -> 共享租约）----
 	alertSyncLeaseRepo := alertpg.NewAlertSyncLeaseRepository(app.DB)

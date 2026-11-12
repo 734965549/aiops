@@ -400,6 +400,17 @@ go run ./cmd/migrate
 .\scripts\e2e-execution-agent-permission.ps1
 ```
 
+### 9.6 AI 告警分析指标证据
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 9.6.1 | 证据采集成功 | AKSK CES 账号（含 `metrics` 能力）触发带结构化条件的告警，调用 `POST /api/ai/analyze-alert` 且 `include_metrics=true` | provider payload 含 `evidence.status=ok`、指标统计与 `evidence_id`；审计含 `evidence_status=ok` 和 `evidence_ids` |
+| 9.6.2 | 无指标自然跳过 | 事件类告警或无维度/指标告警勾选包含指标 | `evidence.status=skipped`，`reason` 为 `no_metric`/`no_dimensions` 等，分析仍返回 |
+| 9.6.3 | 数据权限降级 | 无绑定账号数据范围的用户发起分析 | `evidence.status=permission_denied`，分析不中断，审计记录该状态 |
+| 9.6.4 | 上游/配置降级 | 停用 provider 或使用 agency 账号 | 分析仍返回本地摘要；`evidence.status=error/unsupported`，无凭据或底层原始错误泄露 |
+
+> 9.6.1 需已配置并启用 AI provider；无 provider 时 `include_metrics` 不会发起取数，仅返回本地摘要。
+
 ## 附录 A：仅 UI 手工步骤（精简表）
 
 > 适用场景：前端联调、演示、无脚本环境。

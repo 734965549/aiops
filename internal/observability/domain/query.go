@@ -2,9 +2,11 @@ package domain
 
 // MetricQuery 指标查询条件，见 ops/cloud-observability-contract.md §5.1。
 type MetricQuery struct {
-	AccountID  string
-	Provider   string
-	Region     string
+	AccountID string
+	Provider  string
+	Region    string
+	// ProjectID 可选；多项目账号显式指定，缺省时由 provider 按账号/region 配置解析。
+	ProjectID  string
 	Namespace  string
 	Metric     string
 	Dimensions map[string]string

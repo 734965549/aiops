@@ -4,7 +4,7 @@
   "internal/identity/infrastructure/persistence/access_control_repository.go": 984,
   "internal/observability/infrastructure/provider/huawei/ces_resource_client.go": 987,
   "internal/observability/infrastructure/provider/huawei/resource_client.go": 941,
-  "web/src/views/alerts/index.vue": 1207,
+  "web/src/views/alerts/index.vue": 1189,
   "web/src/views/audits/index.vue": 1094,
   "web/src/views/login/index.vue": 1270
 }

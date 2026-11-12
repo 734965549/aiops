@@ -93,7 +93,13 @@ func (a *Adapter) queryMetricsCES(ctx context.Context, pctx domain.ProviderConte
 	}
 	region := strings.TrimSpace(q.Region)
 	cfg := obsapp.ParseSyncModeConfig(pctx.Account.ExtraConfig)
-	projectID := cfg.ResolveProjectID(region, strings.TrimSpace(pctx.Account.ProjectID))
+	projectID := strings.TrimSpace(q.ProjectID)
+	if projectID == "" {
+		projectID = cfg.ResolveProjectID(region, strings.TrimSpace(pctx.Account.ProjectID))
+	}
+	if projectID == "" {
+		return nil, apperr.New(apperr.CodeInvalidArgument, "project_id is required")
+	}
 	result, err := a.ces.QueryMetricData(ctx, cred, projectID, region, cesQuery)
 	if err != nil {
 		return nil, err

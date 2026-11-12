@@ -155,7 +155,7 @@
 | `upsertProvider` | `POST /api/ai/providers` | 新增或更新 |
 | `deleteProvider` | `DELETE /api/ai/providers/:id` | 删除 |
 | `invokeTool` | `POST /api/ai/tools/invoke` | 工具调用；成功响应内须检查 `allowed` |
-| `analyzeAlert` | `POST /api/ai/analyze-alert` | 告警上下文 AI 分析；返回 summary、risk_level、recommendations 等 |
+| `analyzeAlert` | `POST /api/ai/analyze-alert` | 告警上下文 AI 分析；返回 summary、risk_level、recommendations、references（证据来源）等 |
 
 页面：`views/ai-assistant/index.vue`、`views/alerts/index.vue`（告警详情先 `requestAlertAIAnalysis` 写时间线，再 `analyzeAlert` 取结果展示）。契约：`ops/ai-contract.md`。
 

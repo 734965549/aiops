@@ -277,6 +277,16 @@ type AIConfig struct {
 	Providers             []AIProviderConfig `mapstructure:"providers"`
 	OutboundAllowedHosts  []string           `mapstructure:"outbound_allowed_hosts"`
 	OutboundAllowLoopback bool               `mapstructure:"outbound_allow_loopback"`
+	// EvidenceTimeoutMS 控制告警分析注入指标证据的取数预算（毫秒），0 使用默认 5000ms。
+	EvidenceTimeoutMS int64 `mapstructure:"evidence_timeout_ms"`
+}
+
+// EvidenceTimeout 返回指标证据取数预算。
+func (c AIConfig) EvidenceTimeout() time.Duration {
+	if c.EvidenceTimeoutMS <= 0 {
+		return 5 * time.Second
+	}
+	return time.Duration(c.EvidenceTimeoutMS) * time.Millisecond
 }
 
 // AIProviderConfig 描述单个 provider 的配置。
@@ -511,8 +521,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.read_header_timeout_s", 5)
 	v.SetDefault("server.write_timeout_s", 30)
 	v.SetDefault("server.shutdown_timeout_s", 10)
-	v.SetDefault("server.max_header_bytes", 1<<20)          // 1MB
-	v.SetDefault("server.max_request_body_bytes", 10<<20)   // 10MB
+	v.SetDefault("server.max_header_bytes", 1<<20)        // 1MB
+	v.SetDefault("server.max_request_body_bytes", 10<<20) // 10MB
 	v.SetDefault("server.trusted_proxies", []string{})
 
 	v.SetDefault("logger.level", "info")
@@ -562,6 +572,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.login_rate_limit.ip_failures_before_lockout", 20)
 	v.SetDefault("auth.login_rate_limit.username_failures_before_lockout", 5)
 	v.SetDefault("auth.login_rate_limit.lockout_s", 900)
+
+	v.SetDefault("ai.evidence_timeout_ms", 5000)
 
 	v.SetDefault("cors.allow_credentials", true)
 }

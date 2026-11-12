@@ -340,6 +340,18 @@ func TestAlertSyncService_WritesCESConditionMetadata(t *testing.T) {
 	if got := alert.Annotations["ces_condition"]; got != "> 80% (average, 300s x3)" {
 		t.Fatalf("ces_condition = %q", got)
 	}
+	for key, want := range map[string]string{
+		"ces_threshold":     "80",
+		"ces_operator":      ">",
+		"ces_filter":        "average",
+		"ces_unit":          "%",
+		"ces_period_s":      "300",
+		"ces_trigger_count": "3",
+	} {
+		if got := alert.Annotations[key]; got != want {
+			t.Fatalf("%s = %q, want %q", key, got, want)
+		}
+	}
 	if got := alert.Annotations["ces_metric_name"]; got != "disk_usedPercent" {
 		t.Fatalf("ces_metric_name = %q", got)
 	}
@@ -367,6 +379,35 @@ func TestAlertSyncService_WritesCESConditionMetadata(t *testing.T) {
 	}
 	if alert.Summary != "prod-db" {
 		t.Fatalf("summary should stay resource name, got %q", alert.Summary)
+	}
+}
+
+func TestAlertSyncService_NoStructuredConditionWhenConditionMissing(t *testing.T) {
+	now := time.Now().UTC()
+	rec := pulled("r-no-condition", "alarm", "a", now)
+	rec.Condition = nil
+	pull := &syncTestPull{results: []*AlertPullResult{
+		oneScope([]PulledAlarm{rec}, true, 1000, ""),
+	}}
+	lease := &syncTestLease{acquire: true, renew: true, commit: true}
+	svc, alerts, _ := newSyncTestService(t, newPullSource(), pull, lease)
+
+	if _, err := svc.Sync(context.Background(), "ces-src", Actor{}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	var alert *domain.Alert
+	for _, item := range alerts.byID {
+		alert = item
+	}
+	if alert == nil {
+		t.Fatal("expected alert to be created")
+	}
+	for _, key := range []string{
+		"ces_threshold", "ces_operator", "ces_filter", "ces_unit", "ces_period_s", "ces_trigger_count",
+	} {
+		if _, ok := alert.Annotations[key]; ok {
+			t.Fatalf("annotation %s must be absent when condition is nil", key)
+		}
 	}
 }
 

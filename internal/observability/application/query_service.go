@@ -454,6 +454,7 @@ func normalizeMetricQuery(q domain.MetricQuery) (domain.MetricQuery, error) {
 	q.AccountID = strings.TrimSpace(q.AccountID)
 	q.Provider = strings.TrimSpace(q.Provider)
 	q.Region = strings.TrimSpace(q.Region)
+	q.ProjectID = strings.TrimSpace(q.ProjectID)
 	q.Namespace = strings.TrimSpace(q.Namespace)
 	q.Metric = strings.TrimSpace(q.Metric)
 	q.Aggregator = strings.TrimSpace(q.Aggregator)

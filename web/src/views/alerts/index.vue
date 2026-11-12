@@ -486,25 +486,10 @@
           </a-space>
         </a-form-item>
       </a-form>
-      <a-alert
+      <AlertAIAnalysisResult
         v-if="aiResult"
-        type="success"
-        class="ai-result"
-      >
-        <div><strong>风险等级：</strong>{{ aiResult.risk_level }}</div>
-        <div><strong>摘要：</strong>{{ aiResult.summary }}</div>
-        <div v-if="aiResult.recommendations?.length">
-          <strong>建议：</strong>
-          <ul>
-            <li
-              v-for="(r, i) in aiResult.recommendations"
-              :key="i"
-            >
-              {{ r }}
-            </li>
-          </ul>
-        </div>
-      </a-alert>
+        :result="aiResult"
+      />
     </a-modal>
 
     <a-modal
@@ -610,6 +595,7 @@ import * as runbookApi from '@/api/runbook'
 import type { RunbookRecommendation } from '@/api/runbook'
 import AlertSourceManager from './components/AlertSourceManager.vue'
 import AlertDetailEnhancement from './components/AlertDetailEnhancement.vue'
+import AlertAIAnalysisResult from './components/AlertAIAnalysisResult.vue'
 import { statusOptions, severityOptions, columns, eventTypeLabel } from './composables/alertPresentation'
 
 const router = useRouter()
@@ -1171,10 +1157,6 @@ onUnmounted(() => narrowMql?.removeEventListener?.('change', onNarrowChange))
   margin-top: 2px;
   color: var(--color-text-3);
   font-size: 12px;
-}
-
-.ai-result {
-  margin-top: 12px;
 }
 
 .runbook-list {

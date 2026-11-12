@@ -288,6 +288,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
   "account_id": "acc_xxx",
   "provider": "huawei_cloud",
   "region": "cn-north-4",
+  "project_id": "project-xxx",
   "namespace": "SYS.ECS",
   "metric": "cpu_util",
   "dimensions": {
@@ -300,7 +301,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 }
 ```
 
-`period` 默认 60 秒，最小 10 秒；单次时间窗口最大 7 天，最多返回 1440 个点，超过限制返回 `INVALID_ARGUMENT`。
+`period` 默认 60 秒，最小 10 秒；单次时间窗口最大 7 天，最多返回 1440 个点，超过限制返回 `INVALID_ARGUMENT`。`project_id` 可选；缺省时按账号或 `extra_config.region_projects` 的 region 映射解析。多项目账号建议显式传入，避免查询到错误项目导致空序列。
 
 响应：
 

@@ -40,6 +40,7 @@ type AnalyzeService struct {
 	alerts     AlertReader
 	tools      ToolInvoker
 	providerID string // 默认工具 provider；空则仅返回本地摘要
+	evidence   MetricEvidencePort
 	audit      AuditRecorder
 }
 
@@ -49,6 +50,14 @@ func NewAnalyzeService(alerts AlertReader, tools ToolInvoker, providerID string,
 		audit = NoopAuditRecorder{}
 	}
 	return &AnalyzeService{alerts: alerts, tools: tools, providerID: strings.TrimSpace(providerID), audit: audit}
+}
+
+// SetMetricEvidence 注入只读指标证据端口；nil 表示关闭指标证据（灰度开关）。
+func (s *AnalyzeService) SetMetricEvidence(port MetricEvidencePort) {
+	if s == nil {
+		return
+	}
+	s.evidence = port
 }
 
 // AnalyzeAlert 加载告警上下文并尝试经 toolgateway 调用 alarm.analyze；失败时回落本地摘要。
@@ -78,6 +87,7 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 	}
 	toolFailed := false
 	var toolError string
+	var evidence *MetricEvidenceResult
 	if s.tools != nil && s.providerID != "" {
 		payload := map[string]any{
 			"alert_id":        alertID,
@@ -95,6 +105,10 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 			"resource_name":    alert.ResourceName,
 			"labels":           alert.Labels,
 		}
+		if in.IncludeMetrics {
+			evidence = s.collectMetricEvidence(ctx, userID, alert)
+			payload["evidence"] = evidence
+		}
 		resp, invokeErr := s.tools.Invoke(ctx, s.providerID, toolgateway.ToolRequest{
 			UserID:   userID,
 			ToolCode: "alarm.analyze",
@@ -108,12 +122,36 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 		} else if resp != nil && resp.Data != nil {
 			mergeToolResponse(result, resp.Data)
 		}
+		if len(result.References) == 0 {
+			if refs := evidenceReferences(evidence); len(refs) > 0 {
+				result.References = refs
+			}
+		}
 	}
-	s.recordAnalyzeAudit(ctx, alertID, userID, convID, toolFailed, toolError, result.RiskLevel)
+	s.recordAnalyzeAudit(ctx, alertID, userID, convID, toolFailed, toolError, result.RiskLevel, evidence)
 	return result, nil
 }
 
-func (s *AnalyzeService) recordAnalyzeAudit(ctx context.Context, alertID, userID, convID string, toolFailed bool, toolError, riskLevel string) {
+// collectMetricEvidence 在预算内收集指标证据；任何失败都降级为 evidence status，不中断分析。
+func (s *AnalyzeService) collectMetricEvidence(ctx context.Context, userID string, alert *AlertContext) *MetricEvidenceResult {
+	if s == nil || s.evidence == nil {
+		return &MetricEvidenceResult{Status: EvidenceStatusSkipped, Reason: "collector_disabled"}
+	}
+	query, skip := deriveMetricEvidenceQuery(alert)
+	if skip != "" {
+		return &MetricEvidenceResult{Status: EvidenceStatusSkipped, Reason: skip}
+	}
+	result, err := s.evidence.Collect(ctx, userID, query)
+	if err != nil {
+		return &MetricEvidenceResult{Status: EvidenceStatusError, Reason: "evidence collector failed"}
+	}
+	if result == nil {
+		return &MetricEvidenceResult{Status: EvidenceStatusError, Reason: "empty evidence result"}
+	}
+	return capEvidencePayload(result)
+}
+
+func (s *AnalyzeService) recordAnalyzeAudit(ctx context.Context, alertID, userID, convID string, toolFailed bool, toolError, riskLevel string, evidence *MetricEvidenceResult) {
 	if s == nil || s.audit == nil {
 		return
 	}
@@ -125,6 +163,12 @@ func (s *AnalyzeService) recordAnalyzeAudit(ctx context.Context, alertID, userID
 	if toolFailed {
 		payload["result"] = "partial"
 		payload["tool_error"] = toolError
+	}
+	if evidence != nil {
+		payload["evidence_status"] = evidence.Status
+		if ids := evidenceIDs(evidence); len(ids) > 0 {
+			payload["evidence_ids"] = ids
+		}
 	}
 	_ = s.audit.Record(ctx, AuditRecord{
 		ResourceType: "ai",

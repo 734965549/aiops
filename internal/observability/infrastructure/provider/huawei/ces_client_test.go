@@ -143,6 +143,32 @@ func TestAdapterQueryMetricsWithMockCESClient(t *testing.T) {
 	}
 }
 
+func TestAdapterQueryMetricsUsesExplicitProjectID(t *testing.T) {
+	mockCES := &mockCESClient{result: MetricDataResult{MetricName: "cpu_util", Unit: "%"}}
+	provider, repo, vault := newTestCredentialProvider(t)
+	const accountID = "acc-ces-project"
+	seedAKSKCredential(t, provider, repo, vault, accountID)
+
+	adapter := NewAdapter(provider, mockCES, nil)
+	_, err := adapter.QueryMetrics(context.Background(), domain.ProviderContext{
+		Account: domain.AccountSnapshot{
+			AccountID: accountID, AuthType: "ak_sk", ProjectID: "proj-account",
+			Regions: []string{"cn-north-4"}, CredentialRefID: "cref-1",
+		},
+	}, domain.MetricQuery{
+		Region: "cn-north-4", ProjectID: "proj-override",
+		Namespace: "SYS.ECS", Metric: "cpu_util",
+		Dimensions: map[string]string{"instance_id": "ecs-1"},
+		From:       1710000000, To: 1710003600, Period: 60, Aggregator: "avg",
+	})
+	if err != nil {
+		t.Fatalf("QueryMetrics: %v", err)
+	}
+	if mockCES.last.projectID != "proj-override" {
+		t.Fatalf("project_id = %q, want proj-override", mockCES.last.projectID)
+	}
+}
+
 func TestAdapterQueryMetricsMockCESErrorPropagates(t *testing.T) {
 	mockCES := &mockCESClient{err: domain.ErrProviderUnavailable}
 	provider, repo, vault := newTestCredentialProvider(t)

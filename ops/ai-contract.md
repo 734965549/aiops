@@ -214,3 +214,93 @@ HTTP 200 且 `code` 为 `"OK"` 时，`data` 内仍可能 `allowed = false`（业
 | `INTERNAL` | 500 | provider 调用失败或内部错误 |
 
 前端判断成功应使用 `code === "OK"`，勿使用数字 `0`。
+
+## 9. 告警分析 evidence 语义
+
+`POST /api/ai/analyze-alert` 在 `include_metrics=true` 时，AI 模块会根据告警快照（账号、区域、命名空间、指标、维度、结构化阈值）调用只读指标查询，并把压缩后的证据注入 provider payload 的 `evidence` 字段。collector 未装配时该能力关闭，不影响既有分析链路。
+
+### 9.1 payload.evidence
+
+```json
+{
+  "status": "ok",
+  "reason": "",
+  "metrics": [
+    {
+      "namespace": "SYS.ECS",
+      "metric": "cpu_util",
+      "unit": "%",
+      "threshold": 90,
+      "operator": ">",
+      "first": 62.1,
+      "peak": 97.4,
+      "last": 95.2,
+      "breach_points": 4,
+      "points": [[1762830000, 62.1], [1762830300, 97.4]],
+      "labels": {"instance_id": "i-001"},
+      "evidence_id": "ev-..."
+    }
+  ]
+}
+```
+
+`status` 取值：
+
+| status | 含义 |
+| --- | --- |
+| `ok` | 取数成功；可能包含 metrics，也可能为空序列 |
+| `skipped` | 证据不可取，`reason` 为 `no_account` / `no_region` / `no_namespace` / `no_metric` / `no_dimensions` / `collector_disabled` |
+| `permission_denied` | 用户无该账号数据权限，未发起云查询 |
+| `unsupported` | 账号认证方式（如 agency）暂不支持指标查询 |
+| `error` | 账号解析或指标查询失败，已降级；`reason` 不包含凭据或底层原始错误 |
+
+`points` 为 `[Unix 秒, 值]`；证据总大小超过 32KB 时先丢弃 `points` 仅保留统计摘要并置 `reason=truncated`，仍超限时只保留 `status/reason`。
+
+### 9.2 边界
+
+- 只读：仅调用指标查询，不触发执行、不写业务数据；证据引用和查询审计由 Observability `QueryService` 落库。
+- 能力：绑定账号需声明 `metrics` 能力；未声明或 provider 不支持时降级为 `error`，不中断分析。
+- 项目：优先使用告警 `labels.project_id` 指定 project；缺失时回落账号 project_id。多项目账号应确保告警来自 CES 拉取（已写入 `project_id`），避免静默查到空序列。
+- 窗口：按告警首次触发前 30 分钟到最近触发后 10 分钟推导；最长 6.5 天，超长告警优先保留最近数据，避免超过查询接口 7 天上限。
+- 身份：取数继承当前分析用户身份与账号数据范围；权限不足返回 `permission_denied`，不中断分析。
+- 凭据：AK/SK 只在 provider 适配层使用，不进入 payload、Prompt、日志或审计明文。
+- 事件类告警没有指标维度时自然返回 `skipped`，分析结果仍可返回本地摘要。
+
+### 9.3 对 provider 的要求
+
+provider 应同时消费 `payload.alert` 与 `payload.evidence`，在无证据或证据降级时明确说明不确定性。`references` 建议引用证据 `evidence_id`（如 `observability evidence ev-...`），便于平台回放与审计。
+
+### 9.4 type c 编排服务参考协议
+
+类型 `c` 的内部 AI 编排服务可作为参考实现：平台按现有 `POST /api/ai/tools/invoke` 调用，`tool_code=alarm.analyze`，`payload` 包含 `alert` 与 `evidence`。参考实现位于 `cmd/ai-orchestrator`，监听 `POST /api/tool/invoke`（兼容 `/v1/tools/invoke`），使用 `X-API-Key` 鉴权（平台发送 `Bearer <api_key>`，服务同时兼容裸 key）；模型侧通过 `AIOPS_AI_ORCH_MODEL_BASE_URL`、`AIOPS_AI_ORCH_MODEL_API_KEY`、`AIOPS_AI_ORCH_MODEL_NAME` 配置。平台 provider 注册示例：
+
+```json
+{
+  "id": "ai-orchestrator",
+  "name": "AI Orchestrator",
+  "type": "c",
+  "base_url": "http://ai-orchestrator.internal:8090",
+  "api_key": "<secret>",
+  "timeout_ms": 60000,
+  "enabled": true
+}
+```
+
+部署注意：
+
+- `analyze` 总时延 = evidence 预算（默认 5s）+ provider 时延；provider `timeout_ms` 建议不超过 20s，或相应调大平台 `server.write_timeout_s`（默认 30s），避免响应被截断。
+- 编排服务应部署在内网，`ModelBaseURL` 由运维通过环境变量配置并限制出站范围；平台侧另有 `ai.outbound_allowed_hosts` / `ValidateOutboundURL` 防护，本参考服务未内置 SSRF 校验。
+
+服务直接返回分析对象（平台 toolgateway 再包装为 `data`）：
+
+```json
+{
+  "summary": "...",
+  "risk_level": "medium",
+  "recommendations": ["建议操作...", "建议创建 xx 处置任务..."],
+  "references": ["observability evidence ev-..."],
+  "uncertainties": ["证据仅覆盖 ... 分钟"]
+}
+```
+
+服务只做分析与建议，不得返回可直接执行的命令；处置必须由人经 Runbook / Execution 链路确认。服务不持久化告警数据与模型密钥，日志仅记录耗时、token 计数和降级状态。
