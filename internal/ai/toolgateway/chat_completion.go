@@ -123,9 +123,9 @@ func (e *ChatCompletionExecutor) Invoke(ctx context.Context, cfg ProviderConfig,
 		content, tokens, retry, err := e.callModel(ctx, cfg, policy, timeout, targetURL, body)
 		if err != nil {
 			lastErr = err
-			// 父级 context 已结束（前端断开/整体超时）时不再重试，
-			// 避免第二次尝试同样被取消并拉长总耗时。
-			if ctx.Err() != nil {
+			// 父级 context 已结束（前端断开/整体超时）或本次尝试已耗尽模型超时预算时不再重试：
+			// 思考型模型同样 prompt 二次推理大概率仍然超时，重试只会撞上前端断开。
+			if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err
 			}
 			if retry {
