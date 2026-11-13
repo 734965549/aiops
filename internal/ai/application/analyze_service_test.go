@@ -73,7 +73,7 @@ func (f fakeProviderResolver) AnalysisProviderID() (string, bool) { return f.id,
 
 func TestAnalyzeServiceUsesDynamicProviderAndServerPrompt(t *testing.T) {
 	reader := &fakeAnalyzeAlertReader{alert: &AlertContext{ID: "a1", Name: "HighCPU", Severity: "p1"}}
-	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Data: map[string]any{"summary": "模型结论"}}}
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Allowed: true, Data: map[string]any{"summary": "模型结论"}}}
 	svc := NewAnalyzeService(reader, invoker, "static-provider", NoopAuditRecorder{})
 	svc.SetProviderResolver(fakeProviderResolver{id: "dynamic-provider", ok: true})
 
@@ -87,14 +87,42 @@ func TestAnalyzeServiceUsesDynamicProviderAndServerPrompt(t *testing.T) {
 	if invoker.captured.SystemPrompt == "" || invoker.captured.UserPrompt == "" {
 		t.Fatalf("expected server-side prompts, got %+v", invoker.captured)
 	}
+	if invoker.captured.RequiredPermission != "app:ai.analysis:analyze" {
+		t.Fatalf("expected stable analysis permission, got %q", invoker.captured.RequiredPermission)
+	}
 	if out.Summary != "模型结论" {
 		t.Fatalf("expected model summary, got %q", out.Summary)
 	}
 }
 
+func TestAnalyzeServiceSurfacesAuthorizationDenial(t *testing.T) {
+	reader := &fakeAnalyzeAlertReader{alert: &AlertContext{ID: "a1", Name: "HighCPU", Severity: "p1"}}
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{
+		Allowed: false,
+		Reason:  "missing operation permission",
+	}}
+	audit := &capturingAIAudit{}
+	svc := NewAnalyzeService(reader, invoker, "provider-1", audit)
+
+	if _, err := svc.AnalyzeAlert(context.Background(), "u1", AnalyzeAlertInput{AlertID: "a1"}); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	if len(audit.rows) != 1 {
+		t.Fatalf("unexpected audit rows: %+v", audit.rows)
+	}
+	payload := audit.rows[0].Payload
+	if payload["result"] != "partial" {
+		t.Fatalf("expected partial result, got %+v", payload)
+	}
+	toolError, _ := payload["tool_error"].(string)
+	if !strings.Contains(toolError, "authorization_denied") || !strings.Contains(toolError, "missing operation permission") {
+		t.Fatalf("expected denial reason in audit, got %q", toolError)
+	}
+}
+
 func TestAnalyzeServiceMarksDegradedProviderAsPartial(t *testing.T) {
 	reader := &fakeAnalyzeAlertReader{alert: &AlertContext{ID: "a1", Name: "HighCPU", Severity: "p1"}}
-	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Data: map[string]any{
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Allowed: true, Data: map[string]any{
 		"summary":  "降级结论",
 		"degraded": true,
 	}}}
@@ -118,7 +146,7 @@ func TestAnalyzeService_PayloadIncludesFullAlertSnapshot(t *testing.T) {
 		Labels:      map[string]string{"account_id": "acc-1", "region": "cn-north-4"},
 		Annotations: map[string]any{"ces_condition": "> 90% (average, 300s x3)"},
 	}}
-	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Data: map[string]any{}}}
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Allowed: true, Data: map[string]any{}}}
 	svc := NewAnalyzeService(reader, invoker, "provider-1", NoopAuditRecorder{})
 
 	if _, err := svc.AnalyzeAlert(context.Background(), "u1", AnalyzeAlertInput{
@@ -255,7 +283,7 @@ func TestDeriveMetricEvidenceQuerySkipReasons(t *testing.T) {
 }
 
 func TestAnalyzeService_InjectsMetricEvidenceAndReferences(t *testing.T) {
-	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Data: map[string]any{}}}
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Allowed: true, Data: map[string]any{}}}
 	collector := &fakeEvidenceCollector{result: &MetricEvidenceResult{
 		Status: EvidenceStatusOK,
 		Metrics: []MetricEvidence{{
@@ -282,7 +310,7 @@ func TestAnalyzeService_InjectsMetricEvidenceAndReferences(t *testing.T) {
 }
 
 func TestAnalyzeService_EvidenceErrorDoesNotBlockAnalysis(t *testing.T) {
-	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Data: map[string]any{}}}
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Allowed: true, Data: map[string]any{}}}
 	collector := &fakeEvidenceCollector{result: &MetricEvidenceResult{Status: EvidenceStatusPermissionDenied, Reason: "denied"}}
 	svc := NewAnalyzeService(&fakeAnalyzeAlertReader{alert: evidenceTestAlert()}, invoker, "provider-1", NoopAuditRecorder{})
 	svc.SetMetricEvidence(collector)
@@ -301,7 +329,7 @@ func TestAnalyzeService_EvidenceErrorDoesNotBlockAnalysis(t *testing.T) {
 }
 
 func TestAnalyzeService_CollectorDisabledSkipsEvidence(t *testing.T) {
-	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Data: map[string]any{}}}
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Allowed: true, Data: map[string]any{}}}
 	svc := NewAnalyzeService(&fakeAnalyzeAlertReader{alert: evidenceTestAlert()}, invoker, "provider-1", NoopAuditRecorder{})
 
 	if _, err := svc.AnalyzeAlert(context.Background(), "u-1", AnalyzeAlertInput{AlertID: "a1", IncludeMetrics: true}); err != nil {

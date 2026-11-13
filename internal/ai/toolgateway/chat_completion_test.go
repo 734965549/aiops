@@ -15,7 +15,7 @@ import (
 func chatTestRegistry(t *testing.T, baseURL string) *ProviderRegistry {
 	t.Helper()
 	r := NewProviderRegistryWithPolicy(OutboundPolicy{AllowLoopback: true})
-	r.RegisterExecutor(NewChatCompletionExecutor(ProviderTypeB, "/v1/chat/completions"))
+	r.RegisterExecutor(NewChatCompletionExecutor(ProviderTypeB, "/chat/completions"))
 	if err := r.UpsertProvider(ProviderConfig{
 		ID: "ark", Type: ProviderTypeB, BaseURL: baseURL, Model: "ep-2024", APIKey: "secret", Enabled: true,
 	}); err != nil {
@@ -33,14 +33,16 @@ func chatCompletionResponse(content string) map[string]any {
 
 func TestChatCompletionExecutorInvoke(t *testing.T) {
 	var captured chatRequest
+	var capturedPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &captured)
 		_ = json.NewEncoder(w).Encode(chatCompletionResponse(`{"summary":"CPU 持续高位","risk_level":"HIGH","recommendations":["建议创建 ECS 扩容处置任务"],"references":["observability evidence ev-model"],"uncertainties":["仅覆盖 30 分钟"]}`))
 	}))
 	defer srv.Close()
 
-	r := chatTestRegistry(t, srv.URL)
+	r := chatTestRegistry(t, srv.URL+"/api/v3")
 	resp, err := r.Invoke(context.Background(), "ark", ToolRequest{
 		ToolCode: "alarm.analyze",
 		Payload: map[string]any{
@@ -52,6 +54,9 @@ func TestChatCompletionExecutorInvoke(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
+	}
+	if capturedPath != "/api/v3/chat/completions" {
+		t.Fatalf("expected base_url version segment preserved, got path %q", capturedPath)
 	}
 	if captured.Model != "ep-2024" || captured.ResponseFormat.Type != "json_object" {
 		t.Fatalf("unexpected model request: %+v", captured)
@@ -143,7 +148,7 @@ func TestChatCompletionExecutorReturnsClientError(t *testing.T) {
 }
 
 func TestChatCompletionExecutorValidateRequiresModel(t *testing.T) {
-	exec := NewChatCompletionExecutor(ProviderTypeB, "/v1/chat/completions")
+	exec := NewChatCompletionExecutor(ProviderTypeB, "/chat/completions")
 	err := exec.Validate(ProviderConfig{BaseURL: "https://ark.example.com", APIKey: "k"})
 	if err == nil || apperr.FromError(err).Code != apperr.CodeInvalidArgument {
 		t.Fatalf("expected invalid argument, got %v", err)

@@ -13,20 +13,23 @@ import (
 // ToolRequest 表示一次 AI 工具调用。
 // SystemPrompt / UserPrompt 仅由服务端 application 层赋值，不来自 HTTP 请求绑定，
 // 避免调用方通过 payload 注入 system prompt 绕过安全护栏。
+// RequiredPermission 非空时优先校验该权限码，不再由 Resource/Action 拼接，
+// 用于服务端内部调用的权限语义与 HTTP 入口保持一致。
 type ToolRequest struct {
-	UserID       string
-	ToolCode     string
-	Resource     string
-	Action       string
-	OwnerID      string
-	Dept         string
-	Team         string
-	Region       string
-	Tags         []string
-	Confirmed    bool
-	Payload      map[string]any
-	SystemPrompt string
-	UserPrompt   string
+	UserID             string
+	ToolCode           string
+	Resource           string
+	Action             string
+	OwnerID            string
+	Dept               string
+	Team               string
+	Region             string
+	Tags               []string
+	Confirmed          bool
+	Payload            map[string]any
+	SystemPrompt       string
+	UserPrompt         string
+	RequiredPermission string
 }
 
 // ToolResponse 表示一次工具调用结果。
@@ -60,7 +63,19 @@ func (g *Gateway) Validate(ctx context.Context, req ToolRequest) (*ToolResponse,
 	if strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.ToolCode) == "" {
 		return nil, apperr.New(apperr.CodeInvalidArgument, "user_id and tool_code are required")
 	}
-	res, err := g.authorizer.Authorize(ctx, identityapp.AuthorizationInput{UserID: strings.TrimSpace(req.UserID), Resource: strings.TrimSpace(req.Resource), Action: strings.TrimSpace(req.Action), ObjectOwner: strings.TrimSpace(req.OwnerID), ObjectDept: strings.TrimSpace(req.Dept), ObjectTeam: strings.TrimSpace(req.Team), ObjectRegion: strings.TrimSpace(req.Region), ObjectTags: req.Tags, ToolCode: strings.TrimSpace(req.ToolCode), UserConfirmed: req.Confirmed})
+	authInput := identityapp.AuthorizationInput{
+		UserID: strings.TrimSpace(req.UserID), ObjectOwner: strings.TrimSpace(req.OwnerID),
+		ObjectDept: strings.TrimSpace(req.Dept), ObjectTeam: strings.TrimSpace(req.Team),
+		ObjectRegion: strings.TrimSpace(req.Region), ObjectTags: req.Tags,
+		ToolCode: strings.TrimSpace(req.ToolCode), UserConfirmed: req.Confirmed,
+	}
+	if permission := strings.TrimSpace(req.RequiredPermission); permission != "" {
+		authInput.RequiredPermission = permission
+	} else {
+		authInput.Resource = strings.TrimSpace(req.Resource)
+		authInput.Action = strings.TrimSpace(req.Action)
+	}
+	res, err := g.authorizer.Authorize(ctx, authInput)
 	if err != nil {
 		logger.From(ctx).Warn("tool gateway authorization failed", logger.Error(err))
 		reason := "authorization failed"

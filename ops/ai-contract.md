@@ -25,6 +25,8 @@
 
 如果授权失败，HTTP 返回 **403**，`code` 为 `PERMISSION_DENIED`（与 HTTP 401 `UNAUTHENTICATED` 区分）。
 
+`POST /api/ai/analyze-alert` 的内部工具调用使用固定权限码 `app:ai.analysis:analyze`（通过内部 `ToolRequest.RequiredPermission` 传递，与 HTTP 入口一致），不再按 `resource/action` 拼接权限码。若工具网关返回 `allowed=false`，分析仍返回本地兜底摘要，但审计记为 `result=partial` 并在 `tool_error` 记录拒绝原因（`authorization_denied: ...`），避免静默降级。
+
 ## 4. Provider 管理接口
 
 ### 4.1 获取 provider 列表
@@ -86,7 +88,7 @@
 | `id` | string | 是 | provider 唯一标识 |
 | `name` | string | 是 | provider 显示名称 |
 | `type` | string | 是 | provider 类型，`a` / `b` / `c` |
-| `base_url` | string | 是 | provider 基础地址；类型 `b` 填模型 API 根地址（如 `https://ark.cn-beijing.volces.com/api/v3`） |
+| `base_url` | string | 是 | provider 基础地址；类型 `b` 填含版本段的模型 API 根地址（如 `https://ark.cn-beijing.volces.com/api/v3`、`https://api.openai.com/v1`），平台只追加 `/chat/completions` |
 | `model` | string | 类型 `b` 必填 | 模型名或推理接入点 ID（如 `ep-20241128xxxxx`） |
 | `api_key` | string | 新增必填；更新可省略 | 调用凭据；更新时省略则保留原密钥 |
 | `timeout_ms` | number | 否 | 请求超时时间，默认 30000 |
@@ -206,7 +208,7 @@ HTTP 200 且 `code` 为 `"OK"` 时，`data` 内仍可能 `allowed = false`（业
 | 类型 | 说明 |
 | --- | --- |
 | `a` | 通用 HTTP API Key 接入：平台按 `POST <base_url>/v1/tools/invoke` 转发工具调用 |
-| `b` | 平台直连模型：平台构造 `POST <base_url>/v1/chat/completions`，`model` 必填，`response_format={"type":"json_object"}`，解析 `choices[0].message.content` 并做分析 JSON 校验 |
+| `b` | 平台直连模型：`base_url` 为含版本段的根地址（OpenAI 填 `https://api.openai.com/v1`，方舟填 `https://ark.cn-beijing.volces.com/api/v3`），平台追加 `/chat/completions`；`model` 必填，`response_format={"type":"json_object"}`，解析 `choices[0].message.content` 并做分析 JSON 校验 |
 | `c` | 内部服务接入：兼容旧 `ai-orchestrator` 参考实现，按 `POST <base_url>/api/tool/invoke` 调用 |
 
 类型 `b` 是推荐路径：平台内置固定 system prompt（服务端构建，不接受调用方 payload 覆盖），告警快照和指标证据由 AnalyzeService 组装为 user 消息。模型不可达、429、5xx、空响应或输出无法解析时，平台返回保守降级结果并标记 `degraded=true`，审计记为 `partial`。类型 `c` 仅为可选参考实现，不再是必需组件。

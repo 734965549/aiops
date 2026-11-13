@@ -236,7 +236,9 @@ func main() {
 	}
 	providerRegistry := toolgateway.NewProviderRegistryWithPolicy(outboundPolicy)
 	providerRegistry.RegisterExecutor(toolgateway.NewHTTPToolExecutor(toolgateway.ProviderTypeA, "/v1/tools/invoke"))
-	providerRegistry.RegisterExecutor(toolgateway.NewChatCompletionExecutor(toolgateway.ProviderTypeB, "/v1/chat/completions"))
+	// base_url 语义为「含版本段的根地址」（如 OpenAI 的 /v1、方舟的 /api/v3），
+	// 执行器只追加 /chat/completions。
+	providerRegistry.RegisterExecutor(toolgateway.NewChatCompletionExecutor(toolgateway.ProviderTypeB, "/chat/completions"))
 	providerRegistry.RegisterExecutor(toolgateway.NewInternalServiceExecutor(toolgateway.ProviderTypeC, "/api/tool/invoke"))
 
 	providerSvc := aiapp.NewProviderService(aipg.NewProviderRepository(app.DB), providerRegistry, aiSecretCipher)

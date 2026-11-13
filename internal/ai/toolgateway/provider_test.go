@@ -194,6 +194,24 @@ func TestGatewayValidateAndErrors(t *testing.T) {
 	}
 }
 
+func TestGatewayValidateUsesRequiredPermission(t *testing.T) {
+	auth := &gatewayAuthorizer{result: &identityapp.AuthorizationResult{Allowed: true}}
+	gw := NewGateway(auth, NewProviderRegistry())
+	res, err := gw.Validate(context.Background(), ToolRequest{
+		UserID: "u1", ToolCode: "alarm.analyze", Resource: "alerts", Action: "analyze",
+		RequiredPermission: "app:ai.analysis:analyze",
+	})
+	if err != nil || res == nil || !res.Allowed {
+		t.Fatalf("expected allow, got res=%+v err=%v", res, err)
+	}
+	if auth.last.RequiredPermission != "app:ai.analysis:analyze" {
+		t.Fatalf("expected required permission forwarded, got %+v", auth.last)
+	}
+	if auth.last.Resource != "" || auth.last.Action != "" {
+		t.Fatalf("resource/action must not be derived when required permission is set: %+v", auth.last)
+	}
+}
+
 func TestGatewayInvokeSkipsProviderWhenDenied(t *testing.T) {
 	auth := &gatewayAuthorizer{result: &identityapp.AuthorizationResult{Allowed: false, Reason: "tool permission denied"}}
 	gw := NewGateway(auth, NewProviderRegistry())

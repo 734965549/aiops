@@ -9,6 +9,7 @@ import (
 
 	"github.com/734965549/aiops/internal/ai/toolgateway"
 	apperr "github.com/734965549/aiops/pkg/errors"
+	"github.com/734965549/aiops/pkg/logger"
 	"github.com/google/uuid"
 )
 
@@ -143,10 +144,21 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 			Payload:      payload,
 			SystemPrompt: analysisSystemPrompt,
 			UserPrompt:   buildAnalysisUserPrompt(snapshot, evidence),
+			// 与 HTTP 入口 app:ai.analysis:analyze 保持一致，避免网关按 resource/action 拼出
+			// 未种子的 app:alerts:analyze 导致静默拒绝。
+			RequiredPermission: "app:ai.analysis:analyze",
 		})
 		if invokeErr != nil {
 			toolFailed = true
 			toolError = invokeErr.Error()
+		} else if resp != nil && !resp.Allowed {
+			toolFailed = true
+			reason := strings.TrimSpace(resp.Reason)
+			if reason == "" {
+				reason = "tool authorization denied"
+			}
+			toolError = "authorization_denied: " + reason
+			logger.From(ctx).Warn("ai analyze tool call denied", logger.String("reason", reason))
 		} else if resp != nil && resp.Data != nil {
 			if degraded, _ := resp.Data["degraded"].(bool); degraded {
 				toolFailed = true

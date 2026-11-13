@@ -29,7 +29,7 @@ func TestAnalyzeService_WritesAuditOnSuccess(t *testing.T) {
 
 func TestAnalyzeService_WritesEvidenceAudit(t *testing.T) {
 	audit := &capturingAIAudit{}
-	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Data: map[string]any{}}}
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Allowed: true, Data: map[string]any{}}}
 	collector := &fakeEvidenceCollector{result: &MetricEvidenceResult{
 		Status:  EvidenceStatusOK,
 		Metrics: []MetricEvidence{{Metric: "cpu_util", EvidenceID: "ev-1"}},
