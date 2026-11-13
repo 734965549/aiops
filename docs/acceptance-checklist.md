@@ -411,6 +411,17 @@ go run ./cmd/migrate
 
 > 9.6.1 需已配置并启用 AI provider；无 provider 时 `include_metrics` 不会发起取数，仅返回本地摘要。
 
+### 9.7 AI Provider 页面配置（migration 0048）
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 9.7.1 | 配置持久化 | 在「AI 运维助手 -> Provider 管理」新增类型 `b` provider（Ark 地址 + API Key + `model`/`ep-xxx`），保存后重启 API | 列表仍显示该 provider，密钥显示「已配置」；`ai_provider` 表中 `api_key_encrypted` 为密文，无明文 |
+| 9.7.2 | 更新省略 api_key | 编辑该 provider，只改名称/模型、不填 `api_key`，保存后再次分析 | 保存成功且 `has_api_key=true`；分析仍可调用模型（原密钥未丢失） |
+| 9.7.3 | 启停即时生效 | 禁用该 provider 后再次调用 `POST /api/ai/analyze-alert`，再启用 | 禁用时回落到本地摘要或下一可用 provider；启用后恢复模型分析，全程无需重启 API |
+| 9.7.4 | 换模型即时生效 | 修改 `model`/`ep-xxx` 后保存，再次分析 | 下一次分析使用新模型（日志 `model` 字段可见），无需重启 API |
+
+> 前置：已执行迁移 `0048`；类型 `b` 必须配置 `model`，否则保存返回 400。YAML `ai.providers` 仅在 `ai_provider` 表为空时作为种子写入。
+
 ## 附录 A：仅 UI 手工步骤（精简表）
 
 > 适用场景：前端联调、演示、无脚本环境。

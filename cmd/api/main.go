@@ -19,8 +19,10 @@ import (
 	aiapp "github.com/734965549/aiops/internal/ai/application"
 	aialert "github.com/734965549/aiops/internal/ai/infrastructure/alert"
 	aiaudit "github.com/734965549/aiops/internal/ai/infrastructure/audit"
+	aicred "github.com/734965549/aiops/internal/ai/infrastructure/credential"
 	aiidentity "github.com/734965549/aiops/internal/ai/infrastructure/identity"
 	aiobs "github.com/734965549/aiops/internal/ai/infrastructure/observability"
+	aipg "github.com/734965549/aiops/internal/ai/infrastructure/persistence"
 	aihttp "github.com/734965549/aiops/internal/ai/interfaces/http"
 	"github.com/734965549/aiops/internal/ai/toolgateway"
 	alertapp "github.com/734965549/aiops/internal/alert/application"
@@ -65,6 +67,7 @@ import (
 	inspectionpg "github.com/734965549/aiops/internal/inspection/infrastructure/persistence"
 	inspectionhttp "github.com/734965549/aiops/internal/inspection/interfaces/http"
 	integapp "github.com/734965549/aiops/internal/integration/application"
+	integrationdomain "github.com/734965549/aiops/internal/integration/domain"
 	integaudit "github.com/734965549/aiops/internal/integration/infrastructure/audit"
 	integcred "github.com/734965549/aiops/internal/integration/infrastructure/credential"
 	integpg "github.com/734965549/aiops/internal/integration/infrastructure/persistence"
@@ -204,6 +207,28 @@ func main() {
 		logger.L().Fatal("ensure bootstrap admin role failed", logger.Error(err))
 	}
 
+	// ---- 凭据加密（AI provider 密钥复用 Integration credential vault）----
+	integVault, err := integcred.NewVault(
+		app.Cfg.Integration.CredentialEncryptionKey,
+		app.Cfg.Integration.CredentialEncryptionKeyVersion,
+	)
+	if err != nil {
+		logger.L().Fatal("init integration credential vault failed", logger.Error(err))
+	}
+	aiSecretCipher := aicred.NewSecretCipher(
+		func(material map[string]string) ([]byte, error) {
+			ciphertext, _, err := integVault.Encrypt(integrationdomain.CredentialMaterial(material))
+			return ciphertext, err
+		},
+		func(ciphertext []byte) (map[string]string, error) {
+			material, err := integVault.Decrypt(ciphertext)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]string(material), nil
+		},
+	)
+
 	// ---- 装配 AI 工具网关 ----
 	outboundPolicy := toolgateway.OutboundPolicy{
 		AllowedHosts:  app.Cfg.AI.OutboundAllowedHosts,
@@ -211,15 +236,15 @@ func main() {
 	}
 	providerRegistry := toolgateway.NewProviderRegistryWithPolicy(outboundPolicy)
 	providerRegistry.RegisterExecutor(toolgateway.NewHTTPToolExecutor(toolgateway.ProviderTypeA, "/v1/tools/invoke"))
-	providerRegistry.RegisterExecutor(toolgateway.NewOpenAICompatibleExecutor(toolgateway.ProviderTypeB, "/v1/chat/completions"))
+	providerRegistry.RegisterExecutor(toolgateway.NewChatCompletionExecutor(toolgateway.ProviderTypeB, "/v1/chat/completions"))
 	providerRegistry.RegisterExecutor(toolgateway.NewInternalServiceExecutor(toolgateway.ProviderTypeC, "/api/tool/invoke"))
 
-	if err := seedProvidersFromConfig(providerRegistry, app.Cfg.AI.Providers); err != nil {
-		logger.L().Fatal("seed ai providers from config failed", logger.Error(err))
+	providerSvc := aiapp.NewProviderService(aipg.NewProviderRepository(app.DB), providerRegistry, aiSecretCipher)
+	if err := providerSvc.Bootstrap(bootCtx, providerSeeds(app.Cfg.AI.Providers)); err != nil {
+		logger.L().Fatal("bootstrap ai providers failed", logger.Error(err))
 	}
 
 	aiGateway := toolgateway.NewGateway(authorizationSvc, providerRegistry)
-	defaultAIProviderID := firstEnabledProviderID(app.Cfg.AI.Providers)
 	alertRepo := alertpg.NewAlertRepository(app.DB)
 
 	// ---- 装配 Audit 限界上下文（Alert §9.4 操作审计）----
@@ -232,8 +257,9 @@ func main() {
 	identityAuditRecorder := identityaudit.NewRecorder(auditSvc)
 
 	alertReader := aialert.NewReaderAdapter(alertRepo)
-	analyzeSvc := aiapp.NewAnalyzeService(alertReader, aiGateway, defaultAIProviderID, aiAuditRecorder)
-	aiHandler := aihttp.NewHandler(aiGateway, providerRegistry, authorizationSvc, analyzeSvc, aiAuditRecorder)
+	analyzeSvc := aiapp.NewAnalyzeService(alertReader, aiGateway, "", aiAuditRecorder)
+	analyzeSvc.SetProviderResolver(providerRegistry)
+	aiHandler := aihttp.NewHandler(aiGateway, providerSvc, authorizationSvc, analyzeSvc, aiAuditRecorder)
 
 	accessSvc = identityapp.NewAccessControlService(accessRepo, userRepo, identityAuditRecorder)
 	identityHandler := identityhttp.NewHandler(userSvc, authSvc, accessSvc, authorizationSvc, loginLimiter, authAuditSvc, loginIPAllowlist)
@@ -311,13 +337,6 @@ func main() {
 	integCredentialRepo := integpg.NewCredentialRepository(app.DB)
 	integCapabilityRepo := integpg.NewCapabilityRepository(app.DB)
 	integCheckRepo := integpg.NewCheckResultRepository(app.DB)
-	integVault, err := integcred.NewVault(
-		app.Cfg.Integration.CredentialEncryptionKey,
-		app.Cfg.Integration.CredentialEncryptionKeyVersion,
-	)
-	if err != nil {
-		logger.L().Fatal("init integration credential vault failed", logger.Error(err))
-	}
 	integUOW := integpg.NewUnitOfWork(app.DB)
 	integAuditRecorder := integaudit.NewRecorder(auditSvc)
 	integAccountSvc := integapp.NewAccountService(
@@ -486,34 +505,21 @@ func alertSyncInstanceID() string {
 	return fmt.Sprintf("api:%s:%d", strings.TrimSpace(host), os.Getpid())
 }
 
-func seedProvidersFromConfig(registry *toolgateway.ProviderRegistry, providers []config.AIProviderConfig) error {
+func providerSeeds(providers []config.AIProviderConfig) []aiapp.ProviderSeed {
+	seeds := make([]aiapp.ProviderSeed, 0, len(providers))
 	for _, p := range providers {
-		if strings.TrimSpace(p.ID) == "" {
-			continue
-		}
-		if err := registry.UpsertProvider(toolgateway.ProviderConfig{
+		seeds = append(seeds, aiapp.ProviderSeed{
 			ID:          p.ID,
 			Name:        p.Name,
-			Type:        toolgateway.ProviderType(p.Type),
+			Type:        p.Type,
 			BaseURL:     p.BaseURL,
+			Model:       p.Model,
 			APIKey:      p.APIKey,
 			TimeoutMS:   p.TimeoutMS,
 			Headers:     p.Headers,
 			Enabled:     p.Enabled,
 			Description: p.Description,
-		}); err != nil {
-			return fmt.Errorf("provider %q: %w", p.ID, err)
-		}
+		})
 	}
-	return nil
-}
-
-func firstEnabledProviderID(providers []config.AIProviderConfig) string {
-	for _, p := range providers {
-		if strings.TrimSpace(p.ID) == "" || !p.Enabled {
-			continue
-		}
-		return strings.TrimSpace(p.ID)
-	}
-	return ""
+	return seeds
 }

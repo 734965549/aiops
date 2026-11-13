@@ -19,11 +19,11 @@ type Gateway interface {
 	Invoke(ctx context.Context, providerID string, req toolgateway.ToolRequest) (*toolgateway.ToolResponse, error)
 }
 
-type ProviderRegistry interface {
-	ListProviders() []toolgateway.ProviderPublic
-	UpsertProvider(cfg toolgateway.ProviderConfig) error
-	DeleteProvider(id string)
-	GetProvider(id string) (toolgateway.ProviderConfig, bool)
+// ProviderManager 是 provider 管理用例端口（持久化 + 运行时同步）。
+type ProviderManager interface {
+	ListProviders(ctx context.Context) ([]toolgateway.ProviderPublic, error)
+	UpsertProvider(ctx context.Context, in aiapp.UpsertProviderInput) error
+	DeleteProvider(ctx context.Context, providerID string) error
 }
 
 type Authorizer interface {
@@ -32,17 +32,17 @@ type Authorizer interface {
 
 type Handler struct {
 	gateway    Gateway
-	registry   ProviderRegistry
+	providers  ProviderManager
 	authorizer Authorizer
 	analyze    *aiapp.AnalyzeService
 	audit      aiapp.AuditRecorder
 }
 
-func NewHandler(gateway Gateway, registry ProviderRegistry, authorizer Authorizer, analyze *aiapp.AnalyzeService, audit aiapp.AuditRecorder) *Handler {
+func NewHandler(gateway Gateway, providers ProviderManager, authorizer Authorizer, analyze *aiapp.AnalyzeService, audit aiapp.AuditRecorder) *Handler {
 	if audit == nil {
 		audit = aiapp.NoopAuditRecorder{}
 	}
-	return &Handler{gateway: gateway, registry: registry, authorizer: authorizer, analyze: analyze, audit: audit}
+	return &Handler{gateway: gateway, providers: providers, authorizer: authorizer, analyze: analyze, audit: audit}
 }
 
 type providerRequest struct {
@@ -50,6 +50,7 @@ type providerRequest struct {
 	Name        string            `json:"name" binding:"required"`
 	Type        string            `json:"type" binding:"required"`
 	BaseURL     string            `json:"base_url" binding:"required"`
+	Model       string            `json:"model"`
 	APIKey      string            `json:"api_key"`
 	TimeoutMS   int64             `json:"timeout_ms"`
 	Headers     map[string]string `json:"headers"`
@@ -62,6 +63,7 @@ type providerListItem struct {
 	Name        string            `json:"name"`
 	Type        string            `json:"type"`
 	BaseURL     string            `json:"base_url"`
+	Model       string            `json:"model"`
 	HasAPIKey   bool              `json:"has_api_key"`
 	TimeoutMS   int64             `json:"timeout_ms"`
 	Headers     map[string]string `json:"headers"`
@@ -75,6 +77,7 @@ func maskProviderForList(p toolgateway.ProviderPublic) providerListItem {
 		Name:        p.Name,
 		Type:        string(p.Type),
 		BaseURL:     p.BaseURL,
+		Model:       p.Model,
 		HasAPIKey:   p.HasAPIKey,
 		TimeoutMS:   p.TimeoutMS,
 		Headers:     p.Headers,
@@ -84,11 +87,15 @@ func maskProviderForList(p toolgateway.ProviderPublic) providerListItem {
 }
 
 func (h *Handler) ListProviders(c *gin.Context) {
-	if h.registry == nil {
-		httpx.FailWith(c, apperr.CodeUnavailable, "provider registry is not configured")
+	if h.providers == nil {
+		httpx.FailWith(c, apperr.CodeUnavailable, "ai provider service is not configured")
 		return
 	}
-	providers := h.registry.ListProviders()
+	providers, err := h.providers.ListProviders(c.Request.Context())
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
 	out := make([]providerListItem, 0, len(providers))
 	for _, p := range providers {
 		out = append(out, maskProviderForList(p))
@@ -97,8 +104,8 @@ func (h *Handler) ListProviders(c *gin.Context) {
 }
 
 func (h *Handler) UpsertProvider(c *gin.Context) {
-	if h.registry == nil {
-		httpx.FailWith(c, apperr.CodeUnavailable, "provider registry is not configured")
+	if h.providers == nil {
+		httpx.FailWith(c, apperr.CodeUnavailable, "ai provider service is not configured")
 		return
 	}
 	var req providerRequest
@@ -106,34 +113,36 @@ func (h *Handler) UpsertProvider(c *gin.Context) {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "invalid provider request")
 		return
 	}
-	apiKey := strings.TrimSpace(req.APIKey)
-	if apiKey == "" {
-		if existing, ok := h.registry.GetProvider(req.ID); ok {
-			apiKey = existing.APIKey
-		} else {
-			httpx.FailWith(c, apperr.CodeInvalidArgument, "api_key is required for new provider")
-			return
-		}
-	}
-	cfg := toolgateway.ProviderConfig{ID: req.ID, Name: req.Name, Type: toolgateway.ProviderType(req.Type), BaseURL: req.BaseURL, APIKey: apiKey, TimeoutMS: req.TimeoutMS, Headers: req.Headers, Enabled: req.Enabled, Description: req.Description}
-	if err := h.registry.UpsertProvider(cfg); err != nil {
+	err := h.providers.UpsertProvider(c.Request.Context(), aiapp.UpsertProviderInput{
+		ID: req.ID, Name: req.Name, Type: req.Type, BaseURL: req.BaseURL, Model: req.Model,
+		APIKey: req.APIKey, TimeoutMS: req.TimeoutMS, Headers: req.Headers,
+		Enabled: req.Enabled, Description: req.Description,
+	})
+	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
 	logger.From(c.Request.Context()).Info("ai provider upserted",
 		logger.String("actor_user_id", c.GetString(middleware.CtxKeyUserID)),
-		logger.Any("provider", cfg.AuditFields()),
+		logger.Any("provider", toolgateway.ProviderConfig{
+			ID: strings.TrimSpace(req.ID), Name: req.Name, Type: toolgateway.ProviderType(req.Type),
+			BaseURL: req.BaseURL, Model: req.Model, APIKey: strings.TrimSpace(req.APIKey),
+			TimeoutMS: req.TimeoutMS, Headers: req.Headers, Enabled: req.Enabled, Description: req.Description,
+		}.AuditFields()),
 	)
 	httpx.OK(c, gin.H{"updated": true})
 }
 
 func (h *Handler) DeleteProvider(c *gin.Context) {
-	if h.registry == nil {
-		httpx.FailWith(c, apperr.CodeUnavailable, "provider registry is not configured")
+	if h.providers == nil {
+		httpx.FailWith(c, apperr.CodeUnavailable, "ai provider service is not configured")
 		return
 	}
 	id := c.Param("id")
-	h.registry.DeleteProvider(id)
+	if err := h.providers.DeleteProvider(c.Request.Context(), id); err != nil {
+		httpx.Fail(c, err)
+		return
+	}
 	logger.From(c.Request.Context()).Info("ai provider deleted",
 		logger.String("actor_user_id", c.GetString(middleware.CtxKeyUserID)),
 		logger.String("provider_id", id),

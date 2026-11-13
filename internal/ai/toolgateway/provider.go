@@ -3,6 +3,7 @@ package toolgateway
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ type ProviderConfig struct {
 	Name        string
 	Type        ProviderType
 	BaseURL     string
+	Model       string
 	APIKey      string
 	TimeoutMS   int64
 	Headers     map[string]string
@@ -38,6 +40,7 @@ type ProviderPublic struct {
 	Name        string
 	Type        ProviderType
 	BaseURL     string
+	Model       string
 	HasAPIKey   bool
 	TimeoutMS   int64
 	Headers     map[string]string
@@ -52,6 +55,7 @@ func (c ProviderConfig) Public() ProviderPublic {
 		Name:        c.Name,
 		Type:        c.Type,
 		BaseURL:     c.BaseURL,
+		Model:       c.Model,
 		HasAPIKey:   strings.TrimSpace(c.APIKey) != "",
 		TimeoutMS:   c.TimeoutMS,
 		Headers:     c.Headers,
@@ -68,6 +72,7 @@ func (c ProviderConfig) AuditFields() map[string]any {
 		"name":        pub.Name,
 		"type":        pub.Type,
 		"base_url":    pub.BaseURL,
+		"model":       pub.Model,
 		"has_api_key": pub.HasAPIKey,
 		"timeout_ms":  pub.TimeoutMS,
 		"enabled":     pub.Enabled,
@@ -124,31 +129,93 @@ func (r *ProviderRegistry) ListProviders() []ProviderPublic {
 	return out
 }
 
+// ValidateProvider 在不修改 registry 的前提下校验 provider 配置，
+// 供持久化写库前先做同一套校验，避免先落库再因非法配置回滚。
+func (r *ProviderRegistry) ValidateProvider(cfg ProviderConfig) error {
+	if r == nil {
+		return apperr.New(apperr.CodeUnavailable, "provider registry is not configured")
+	}
+	if err := validateProviderIdentity(cfg); err != nil {
+		return err
+	}
+	r.mu.RLock()
+	exec, hasExec := r.executors[cfg.Type]
+	policy := r.policy
+	r.mu.RUnlock()
+	return validateProviderConfig(context.Background(), cfg, policy, exec, hasExec)
+}
+
 func (r *ProviderRegistry) UpsertProvider(cfg ProviderConfig) error {
 	if r == nil {
 		return apperr.New(apperr.CodeUnavailable, "provider registry is not configured")
 	}
+	if err := validateProviderIdentity(cfg); err != nil {
+		return err
+	}
+	r.mu.RLock()
+	exec, hasExec := r.executors[cfg.Type]
+	policy := r.policy
+	r.mu.RUnlock()
+	if err := validateProviderConfig(context.Background(), cfg, policy, exec, hasExec); err != nil {
+		return err
+	}
+	if cfg.TimeoutMS <= 0 {
+		cfg.TimeoutMS = int64((30 * time.Second) / time.Millisecond)
+	}
+	r.mu.Lock()
+	r.providers[cfg.ID] = cfg
+	r.mu.Unlock()
+	return nil
+}
+
+func validateProviderIdentity(cfg ProviderConfig) error {
 	if strings.TrimSpace(cfg.ID) == "" {
 		return apperr.New(apperr.CodeInvalidArgument, "provider id is required")
 	}
 	if cfg.Type == "" {
 		return apperr.New(apperr.CodeInvalidArgument, "provider type is required")
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err := ValidateOutboundURL(context.Background(), cfg.BaseURL, r.policy); err != nil {
+	return nil
+}
+
+func validateProviderConfig(ctx context.Context, cfg ProviderConfig, policy OutboundPolicy, exec ToolExecutor, hasExec bool) error {
+	if err := ValidateOutboundURL(ctx, cfg.BaseURL, policy); err != nil {
 		return apperr.Wrap(err, apperr.CodeInvalidArgument, "invalid provider base_url")
 	}
-	if exec, ok := r.executors[cfg.Type]; ok {
+	if hasExec {
 		if err := exec.Validate(cfg); err != nil {
 			return appErrorOrWrap(err, apperr.CodeInvalidArgument, "invalid provider config")
 		}
 	}
-	if cfg.TimeoutMS <= 0 {
-		cfg.TimeoutMS = int64((30 * time.Second) / time.Millisecond)
-	}
-	r.providers[cfg.ID] = cfg
 	return nil
+}
+
+// AnalysisProviderID 返回告警分析应使用的 provider：优先启用中的 type b 直连模型，
+// 否则回落到任意启用中的 provider（保持 type a/c 兼容）。
+func (r *ProviderRegistry) AnalysisProviderID() (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := make([]string, 0, len(r.providers))
+	for id, p := range r.providers {
+		if p.Enabled {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, want := range []ProviderType{ProviderTypeB, ProviderTypeC} {
+		for _, id := range ids {
+			if r.providers[id].Type == want {
+				return id, true
+			}
+		}
+	}
+	if len(ids) > 0 {
+		return ids[0], true
+	}
+	return "", false
 }
 
 func (r *ProviderRegistry) DeleteProvider(id string) {

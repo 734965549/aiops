@@ -151,9 +151,9 @@
 
 | 函数 | 接口 | 说明 |
 | --- | --- | --- |
-| `listProviders` | `GET /api/ai/providers` | Provider 列表 |
-| `upsertProvider` | `POST /api/ai/providers` | 新增或更新 |
-| `deleteProvider` | `DELETE /api/ai/providers/:id` | 删除 |
+| `listProviders` | `GET /api/ai/providers` | Provider 列表；只返回 `has_api_key` 与 `model`，不回显明文密钥 |
+| `upsertProvider` | `POST /api/ai/providers` | 新增或更新；落库并立即生效，类型 `b` 必须填 `model`，省略 `api_key` 保留原密钥 |
+| `deleteProvider` | `DELETE /api/ai/providers/:id` | 删除并同步运行时 |
 | `invokeTool` | `POST /api/ai/tools/invoke` | 工具调用；成功响应内须检查 `allowed` |
 | `analyzeAlert` | `POST /api/ai/analyze-alert` | 告警上下文 AI 分析；返回 summary、risk_level、recommendations、references（证据来源）等 |
 

@@ -39,7 +39,8 @@ type ToolInvoker interface {
 type AnalyzeService struct {
 	alerts     AlertReader
 	tools      ToolInvoker
-	providerID string // 默认工具 provider；空则仅返回本地摘要
+	providerID string // 静态兜底 provider；空且无 resolver 时仅返回本地摘要
+	resolver   AnalysisProviderResolver
 	evidence   MetricEvidencePort
 	audit      AuditRecorder
 }
@@ -50,6 +51,27 @@ func NewAnalyzeService(alerts AlertReader, tools ToolInvoker, providerID string,
 		audit = NoopAuditRecorder{}
 	}
 	return &AnalyzeService{alerts: alerts, tools: tools, providerID: strings.TrimSpace(providerID), audit: audit}
+}
+
+// SetProviderResolver 注入动态 provider 解析器；设置后每次分析实时解析，
+// 前端启停或更换模型无需重启。
+func (s *AnalyzeService) SetProviderResolver(resolver AnalysisProviderResolver) {
+	if s == nil {
+		return
+	}
+	s.resolver = resolver
+}
+
+func (s *AnalyzeService) analysisProviderID() string {
+	if s != nil && s.resolver != nil {
+		if id, ok := s.resolver.AnalysisProviderID(); ok && strings.TrimSpace(id) != "" {
+			return strings.TrimSpace(id)
+		}
+	}
+	if s == nil {
+		return ""
+	}
+	return s.providerID
 }
 
 // SetMetricEvidence 注入只读指标证据端口；nil 表示关闭指标证据（灰度开关）。
@@ -88,7 +110,12 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 	toolFailed := false
 	var toolError string
 	var evidence *MetricEvidenceResult
-	if s.tools != nil && s.providerID != "" {
+	providerID := s.analysisProviderID()
+	if s.tools != nil && providerID != "" {
+		snapshot := alertSnapshot(alert)
+		if in.IncludeMetrics {
+			evidence = s.collectMetricEvidence(ctx, userID, alert)
+		}
 		payload := map[string]any{
 			"alert_id":        alertID,
 			"time_range":      timeRange,
@@ -97,7 +124,7 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 			"include_changes": in.IncludeChanges,
 			// alert 为完整告警快照（含 description/annotations/状态/时间/来源）；
 			// 其余平铺字段保留给既有 provider 兼容。
-			"alert":            alertSnapshot(alert),
+			"alert":            snapshot,
 			"alert_name":       alert.Name,
 			"alert_summary":    alert.Summary,
 			"alert_severity":   alert.Severity,
@@ -105,21 +132,26 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 			"resource_name":    alert.ResourceName,
 			"labels":           alert.Labels,
 		}
-		if in.IncludeMetrics {
-			evidence = s.collectMetricEvidence(ctx, userID, alert)
+		if evidence != nil {
 			payload["evidence"] = evidence
 		}
-		resp, invokeErr := s.tools.Invoke(ctx, s.providerID, toolgateway.ToolRequest{
-			UserID:   userID,
-			ToolCode: "alarm.analyze",
-			Resource: "alerts",
-			Action:   "analyze",
-			Payload:  payload,
+		resp, invokeErr := s.tools.Invoke(ctx, providerID, toolgateway.ToolRequest{
+			UserID:       userID,
+			ToolCode:     "alarm.analyze",
+			Resource:     "alerts",
+			Action:       "analyze",
+			Payload:      payload,
+			SystemPrompt: analysisSystemPrompt,
+			UserPrompt:   buildAnalysisUserPrompt(snapshot, evidence),
 		})
 		if invokeErr != nil {
 			toolFailed = true
 			toolError = invokeErr.Error()
 		} else if resp != nil && resp.Data != nil {
+			if degraded, _ := resp.Data["degraded"].(bool); degraded {
+				toolFailed = true
+				toolError = "provider_degraded"
+			}
 			mergeToolResponse(result, resp.Data)
 		}
 		if len(result.References) == 0 {

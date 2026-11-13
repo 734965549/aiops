@@ -1,4 +1,4 @@
-package http
+﻿package http
 
 import (
 	"bytes"
@@ -8,35 +8,42 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	aiapp "github.com/734965549/aiops/internal/ai/application"
 	"github.com/734965549/aiops/internal/ai/toolgateway"
+	apperr "github.com/734965549/aiops/pkg/errors"
 	"github.com/gin-gonic/gin"
 )
 
-type mockRegistry struct {
+type mockProviderManager struct {
 	providers []toolgateway.ProviderConfig
-	updated   toolgateway.ProviderConfig
+	upserted  aiapp.UpsertProviderInput
 	deletedID string
+	listErr   error
+	upsertErr error
 }
 
-func (m *mockRegistry) ListProviders() []toolgateway.ProviderPublic {
+func (m *mockProviderManager) ListProviders(ctx context.Context) ([]toolgateway.ProviderPublic, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
 	out := make([]toolgateway.ProviderPublic, 0, len(m.providers))
 	for _, p := range m.providers {
 		out = append(out, p.Public())
 	}
-	return out
+	return out, nil
 }
-func (m *mockRegistry) UpsertProvider(cfg toolgateway.ProviderConfig) error {
-	m.updated = cfg
+
+func (m *mockProviderManager) UpsertProvider(ctx context.Context, in aiapp.UpsertProviderInput) error {
+	if m.upsertErr != nil {
+		return m.upsertErr
+	}
+	m.upserted = in
 	return nil
 }
-func (m *mockRegistry) DeleteProvider(id string) { m.deletedID = id }
-func (m *mockRegistry) GetProvider(id string) (toolgateway.ProviderConfig, bool) {
-	for _, p := range m.providers {
-		if p.ID == id {
-			return p, true
-		}
-	}
-	return toolgateway.ProviderConfig{}, false
+
+func (m *mockProviderManager) DeleteProvider(ctx context.Context, providerID string) error {
+	m.deletedID = providerID
+	return nil
 }
 
 type mockGateway struct{}
@@ -50,7 +57,11 @@ func (m *mockGateway) Invoke(ctx context.Context, providerID string, req toolgat
 
 func TestListProviders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	h := NewHandler(&mockGateway{}, &mockRegistry{providers: []toolgateway.ProviderConfig{{ID: "demo", Name: "Demo", Type: toolgateway.ProviderTypeA, APIKey: "secret-key"}}}, nil, nil, nil)
+	mgr := &mockProviderManager{providers: []toolgateway.ProviderConfig{{
+		ID: "demo", Name: "Demo", Type: toolgateway.ProviderTypeB, BaseURL: "https://ark.example.com",
+		Model: "ep-1", APIKey: "secret-key",
+	}}}
+	h := NewHandler(&mockGateway{}, mgr, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/providers", nil)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -71,38 +82,38 @@ func TestListProviders(t *testing.T) {
 	if !bytes.Contains(body, []byte(`"has_api_key":true`)) {
 		t.Fatalf("expected has_api_key true: %s", string(body))
 	}
+	if !bytes.Contains(body, []byte(`"model":"ep-1"`)) {
+		t.Fatalf("expected model in response: %s", string(body))
+	}
 	if bytes.Contains(body, []byte("secret-key")) {
 		t.Fatalf("must not leak api_key: %s", string(body))
 	}
 }
 
-func TestUpsertProvider_UpdateKeepsExistingAPIKey(t *testing.T) {
+func TestListProvidersReturnsServiceError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	reg := &mockRegistry{}
-	reg.providers = []toolgateway.ProviderConfig{{ID: "demo-http-a", Name: "Old", Type: toolgateway.ProviderTypeA, APIKey: "stored-secret"}}
-	h := NewHandler(&mockGateway{}, reg, nil, nil, nil)
-	body, _ := json.Marshal(providerRequest{ID: "demo-http-a", Name: "Demo HTTP Provider A", Type: "a", BaseURL: "http://127.0.0.1:9000", TimeoutMS: 30000, Enabled: true})
-	req := httptest.NewRequest(http.MethodPost, "/providers", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	mgr := &mockProviderManager{listErr: apperr.New(apperr.CodeUnavailable, "database down")}
+	h := NewHandler(&mockGateway{}, mgr, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/providers", nil)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = req
 
-	h.UpsertProvider(c)
+	h.ListProviders(c)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	if reg.updated.APIKey != "stored-secret" {
-		t.Fatalf("expected preserved api key, got %q", reg.updated.APIKey)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
-func TestUpsertProvider(t *testing.T) {
+func TestUpsertProviderPassesInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	reg := &mockRegistry{}
-	h := NewHandler(&mockGateway{}, reg, nil, nil, nil)
-	body, _ := json.Marshal(providerRequest{ID: "demo-http-a", Name: "Demo HTTP Provider A", Type: "a", BaseURL: "http://127.0.0.1:9000", APIKey: "secret", TimeoutMS: 30000, Enabled: true})
+	mgr := &mockProviderManager{}
+	h := NewHandler(&mockGateway{}, mgr, nil, nil, nil)
+	body, _ := json.Marshal(providerRequest{
+		ID: "ark", Name: "Ark", Type: "b", BaseURL: "https://ark.example.com",
+		Model: "ep-1", APIKey: "secret", TimeoutMS: 30000, Enabled: true,
+	})
 	req := httptest.NewRequest(http.MethodPost, "/providers", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -114,14 +125,52 @@ func TestUpsertProvider(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	if reg.updated.ID != "demo-http-a" || reg.updated.Type != toolgateway.ProviderTypeA {
-		t.Fatalf("unexpected updated provider: %+v", reg.updated)
+	if mgr.upserted.ID != "ark" || mgr.upserted.Model != "ep-1" || mgr.upserted.APIKey != "secret" {
+		t.Fatalf("unexpected upsert input: %+v", mgr.upserted)
+	}
+}
+
+func TestUpsertProviderReturnsServiceError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mgr := &mockProviderManager{upsertErr: apperr.New(apperr.CodeInvalidArgument, "model is required for provider type b")}
+	h := NewHandler(&mockGateway{}, mgr, nil, nil, nil)
+	body, _ := json.Marshal(providerRequest{ID: "ark", Name: "Ark", Type: "b", BaseURL: "https://ark.example.com", APIKey: "secret"})
+	req := httptest.NewRequest(http.MethodPost, "/providers", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+
+	h.UpsertProvider(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteProvider(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mgr := &mockProviderManager{}
+	h := NewHandler(&mockGateway{}, mgr, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/providers/ark", nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Params = gin.Params{{Key: "id", Value: "ark"}}
+
+	h.DeleteProvider(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if mgr.deletedID != "ark" {
+		t.Fatalf("expected deleted id ark, got %q", mgr.deletedID)
 	}
 }
 
 func TestInvokeTool(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	h := NewHandler(&mockGateway{}, &mockRegistry{}, nil, nil, nil)
+	h := NewHandler(&mockGateway{}, &mockProviderManager{}, nil, nil, nil)
 	body, _ := json.Marshal(invokeRequest{ProviderID: "demo-http-a", ToolCode: "cmdb.search", Resource: "cmdb", Action: "read"})
 	req := httptest.NewRequest(http.MethodPost, "/tools/invoke", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -138,3 +187,4 @@ func TestInvokeTool(t *testing.T) {
 		t.Fatalf("expected provider in response: %s", w.Body.String())
 	}
 }
+

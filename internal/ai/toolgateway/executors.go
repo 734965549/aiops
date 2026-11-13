@@ -94,13 +94,6 @@ func (e *HTTPToolExecutor) Invoke(ctx context.Context, cfg ProviderConfig, req T
 	return &ToolResponse{Allowed: true, Provider: cfg.ID, Data: out}, nil
 }
 
-// OpenAICompatibleExecutor 支持类 OpenAI/Claude 的兼容请求，使用统一 API Key。
-type OpenAICompatibleExecutor struct{ HTTPToolExecutor }
-
-func NewOpenAICompatibleExecutor(t ProviderType, requestPath string) *OpenAICompatibleExecutor {
-	return &OpenAICompatibleExecutor{HTTPToolExecutor{typeName: t, RequestPath: requestPath, AuthHeader: "Authorization"}}
-}
-
 // InternalServiceExecutor 支持内部服务协议，可自定义头。
 type InternalServiceExecutor struct{ HTTPToolExecutor }
 

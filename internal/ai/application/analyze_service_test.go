@@ -52,14 +52,61 @@ func TestAnalyzeService_InvalidArgument(t *testing.T) {
 }
 
 type fakeToolInvoker struct {
-	captured toolgateway.ToolRequest
-	resp     *toolgateway.ToolResponse
-	err      error
+	providerID string
+	captured   toolgateway.ToolRequest
+	resp       *toolgateway.ToolResponse
+	err        error
 }
 
-func (f *fakeToolInvoker) Invoke(_ context.Context, _ string, req toolgateway.ToolRequest) (*toolgateway.ToolResponse, error) {
+func (f *fakeToolInvoker) Invoke(_ context.Context, providerID string, req toolgateway.ToolRequest) (*toolgateway.ToolResponse, error) {
+	f.providerID = providerID
 	f.captured = req
 	return f.resp, f.err
+}
+
+type fakeProviderResolver struct {
+	id string
+	ok bool
+}
+
+func (f fakeProviderResolver) AnalysisProviderID() (string, bool) { return f.id, f.ok }
+
+func TestAnalyzeServiceUsesDynamicProviderAndServerPrompt(t *testing.T) {
+	reader := &fakeAnalyzeAlertReader{alert: &AlertContext{ID: "a1", Name: "HighCPU", Severity: "p1"}}
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Data: map[string]any{"summary": "模型结论"}}}
+	svc := NewAnalyzeService(reader, invoker, "static-provider", NoopAuditRecorder{})
+	svc.SetProviderResolver(fakeProviderResolver{id: "dynamic-provider", ok: true})
+
+	out, err := svc.AnalyzeAlert(context.Background(), "u1", AnalyzeAlertInput{AlertID: "a1"})
+	if err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	if invoker.providerID != "dynamic-provider" {
+		t.Fatalf("expected dynamic provider, got %q", invoker.providerID)
+	}
+	if invoker.captured.SystemPrompt == "" || invoker.captured.UserPrompt == "" {
+		t.Fatalf("expected server-side prompts, got %+v", invoker.captured)
+	}
+	if out.Summary != "模型结论" {
+		t.Fatalf("expected model summary, got %q", out.Summary)
+	}
+}
+
+func TestAnalyzeServiceMarksDegradedProviderAsPartial(t *testing.T) {
+	reader := &fakeAnalyzeAlertReader{alert: &AlertContext{ID: "a1", Name: "HighCPU", Severity: "p1"}}
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Data: map[string]any{
+		"summary":  "降级结论",
+		"degraded": true,
+	}}}
+	audit := &capturingAIAudit{}
+	svc := NewAnalyzeService(reader, invoker, "provider-1", audit)
+
+	if _, err := svc.AnalyzeAlert(context.Background(), "u1", AnalyzeAlertInput{AlertID: "a1"}); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	if len(audit.rows) != 1 || audit.rows[0].Payload["result"] != "partial" {
+		t.Fatalf("expected partial audit, got %+v", audit.rows)
+	}
 }
 
 func TestAnalyzeService_PayloadIncludesFullAlertSnapshot(t *testing.T) {

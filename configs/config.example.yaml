@@ -188,15 +188,18 @@ ai:
         X-Client-Name: "aiops"
       enabled: true
       description: "通用 HTTP API Key 工具提供方样例（仅占位）"
+    # providers 仅在新库/空表时作为种子写入 ai_provider；
+    # 之后以「AI 运维助手 -> Provider 管理」页面配置为准，修改无需重启。
     - id: "demo-openai-b"
       name: "Demo OpenAI Compatible Provider B"
       type: "b"
-      base_url: "https://api.openai.com"
+      base_url: "https://ark.cn-beijing.volces.com/api/v3"
+      model: "<REPLACE_WITH_MODEL_OR_ENDPOINT_ID>"
       api_key: "<REPLACE_WITH_YOUR_API_KEY>"
       timeout_ms: 30000
       headers: {}
       enabled: false
-      description: "类 OpenAI / Claude 兼容提供方样例（仅占位）"
+      description: "平台直连模型样例（仅占位，type b 必须配置 model）"
     - id: "demo-internal-c"
       name: "Demo Internal Provider C"
       type: "c"

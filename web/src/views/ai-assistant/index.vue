@@ -107,8 +107,21 @@
                 >
                   <a-input
                     v-model="form.base_url"
-                    placeholder="http://127.0.0.1:9000"
+                    placeholder="https://ark.cn-beijing.volces.com/api/v3"
                   />
+                </a-form-item>
+                <a-form-item
+                  v-if="form.type === 'b'"
+                  label="模型 / Endpoint"
+                  required
+                >
+                  <a-input
+                    v-model="form.model"
+                    placeholder="ep-xxxxxxxx（方舟推理接入点 ID）"
+                  />
+                  <div class="field-hint">
+                    类型 B 由平台直连 chat/completions；模型监听变更后无需重启
+                  </div>
                 </a-form-item>
                 <a-form-item label="API Key">
                   <a-input-password
@@ -275,6 +288,7 @@ const providerColumns = [
   { title: 'ID', dataIndex: 'id', width: 140 },
   { title: '名称', dataIndex: 'name' },
   { title: '类型', dataIndex: 'type', width: 70 },
+  { title: '模型', dataIndex: 'model', width: 150 },
   { title: '密钥', slotName: 'hasApiKey', width: 80 },
   { title: '状态', slotName: 'enabled', width: 80 },
   { title: '操作', slotName: 'actions', width: 80 }
@@ -291,6 +305,7 @@ const emptyForm = () => ({
   name: '',
   type: 'a',
   base_url: '',
+  model: '',
   api_key: '',
   timeout_ms: 30000,
   enabled: true,
@@ -334,6 +349,7 @@ function onSelectProvider(record: Record<string, unknown>) {
   form.name = p.name
   form.type = p.type
   form.base_url = p.base_url
+  form.model = p.model ?? ''
   form.api_key = ''
   form.timeout_ms = p.timeout_ms ?? 30000
   form.enabled = p.enabled
@@ -351,6 +367,10 @@ async function onSaveProvider() {
     Message.warning('请填写 ID、名称与 Base URL')
     return
   }
+  if (form.type === 'b' && !form.model.trim()) {
+    Message.warning('类型 B 必须填写模型 / Endpoint')
+    return
+  }
   savingProvider.value = true
   try {
     await upsertProvider({
@@ -358,6 +378,7 @@ async function onSaveProvider() {
       name: form.name.trim(),
       type: form.type,
       base_url: form.base_url.trim(),
+      model: form.model.trim() || undefined,
       api_key: form.api_key.trim() || undefined,
       timeout_ms: form.timeout_ms,
       enabled: form.enabled,

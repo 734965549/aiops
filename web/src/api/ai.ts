@@ -5,6 +5,7 @@ export interface AIProvider {
   name: string
   type: 'a' | 'b' | 'c' | string
   base_url: string
+  model?: string
   api_key?: string
   has_api_key?: boolean
   timeout_ms?: number
@@ -18,6 +19,7 @@ export interface UpsertProviderInput {
   name: string
   type: string
   base_url: string
+  model?: string
   api_key?: string
   timeout_ms?: number
   headers?: Record<string, string>

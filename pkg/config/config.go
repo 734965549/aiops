@@ -295,6 +295,7 @@ type AIProviderConfig struct {
 	Name        string            `mapstructure:"name"`
 	Type        string            `mapstructure:"type"`
 	BaseURL     string            `mapstructure:"base_url"`
+	Model       string            `mapstructure:"model"`
 	APIKey      string            `mapstructure:"api_key"`
 	TimeoutMS   int64             `mapstructure:"timeout_ms"`
 	Headers     map[string]string `mapstructure:"headers"`

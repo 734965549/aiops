@@ -35,7 +35,7 @@
 
 #### 响应示例
 
-列表接口**不返回** `api_key` 字段；通过 `has_api_key` 表示是否已配置密钥。
+列表接口**不返回** `api_key` 字段；通过 `has_api_key` 表示是否已配置密钥。`model` 仅对类型 `b` 有意义，类型 `a` / `c` 返回空字符串。
 
 ```json
 {
@@ -48,6 +48,7 @@
       "name": "Demo HTTP Provider A",
       "type": "a",
       "base_url": "http://127.0.0.1:9000",
+      "model": "",
       "has_api_key": true,
       "timeout_ms": 30000,
       "headers": {
@@ -55,6 +56,18 @@
       },
       "enabled": true,
       "description": "通用 HTTP API Key 工具提供方样例"
+    },
+    {
+      "id": "ark",
+      "name": "火山方舟",
+      "type": "b",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "model": "ep-20241128xxxxx",
+      "has_api_key": true,
+      "timeout_ms": 30000,
+      "headers": {},
+      "enabled": true,
+      "description": "平台直连模型"
     }
   ]
 }
@@ -73,7 +86,8 @@
 | `id` | string | 是 | provider 唯一标识 |
 | `name` | string | 是 | provider 显示名称 |
 | `type` | string | 是 | provider 类型，`a` / `b` / `c` |
-| `base_url` | string | 是 | provider 基础地址 |
+| `base_url` | string | 是 | provider 基础地址；类型 `b` 填模型 API 根地址（如 `https://ark.cn-beijing.volces.com/api/v3`） |
+| `model` | string | 类型 `b` 必填 | 模型名或推理接入点 ID（如 `ep-20241128xxxxx`） |
 | `api_key` | string | 新增必填；更新可省略 | 调用凭据；更新时省略则保留原密钥 |
 | `timeout_ms` | number | 否 | 请求超时时间，默认 30000 |
 | `headers` | object | 否 | 额外请求头 |
@@ -103,6 +117,15 @@
 - Method: `DELETE`
 - Path: `/api/ai/providers/:id`
 - 鉴权: 是
+
+### 4.4 持久化与密钥约定
+
+- provider 配置落库到 `ai_provider`（迁移 `0048`），数据库是事实源；`ai.providers` YAML 仅在新库/空表时作为种子写入，之后以页面配置为准。
+- 启动时从数据库解密并加载到运行时注册表；新增/更新/删除经 `POST` / `DELETE` 同步写库并立即生效，无需重启。
+- `api_key` 使用平台凭据加密机制（AES-GCM，复用 Integration credential vault）保存为密文；接口只返回 `has_api_key`，从不回显明文。
+- 更新时省略 `api_key` 保留原密钥；新增时必填。日志与审计只记录 `has_api_key` / `provider_id` / `type` / `base_url` / `model` 等字段。
+- 单条 provider 启动加载失败（解密失败或配置非法）只跳过该条并记录 warn，不阻断 API 启动；坏配置可在页面修正后保存生效。
+- 告警分析动态选择 provider：优先启用中的类型 `b`，其次类型 `c`，最后任意启用项；因此页面启停/换模型无需重启。
 
 ## 5. 工具调用接口
 
@@ -182,16 +205,18 @@ HTTP 200 且 `code` 为 `"OK"` 时，`data` 内仍可能 `allowed = false`（业
 
 | 类型 | 说明 |
 | --- | --- |
-| `a` | 通用 HTTP API Key 接入 |
-| `b` | 类 OpenAI / Claude 兼容接入 |
-| `c` | 内部服务接入 |
+| `a` | 通用 HTTP API Key 接入：平台按 `POST <base_url>/v1/tools/invoke` 转发工具调用 |
+| `b` | 平台直连模型：平台构造 `POST <base_url>/v1/chat/completions`，`model` 必填，`response_format={"type":"json_object"}`，解析 `choices[0].message.content` 并做分析 JSON 校验 |
+| `c` | 内部服务接入：兼容旧 `ai-orchestrator` 参考实现，按 `POST <base_url>/api/tool/invoke` 调用 |
+
+类型 `b` 是推荐路径：平台内置固定 system prompt（服务端构建，不接受调用方 payload 覆盖），告警快照和指标证据由 AnalyzeService 组装为 user 消息。模型不可达、429、5xx、空响应或输出无法解析时，平台返回保守降级结果并标记 `degraded=true`，审计记为 `partial`。类型 `c` 仅为可选参考实现，不再是必需组件。
 
 ## 8. 前端页面交互建议
 
 ### 8.1 Provider 管理页
 
-- 左侧为 provider 列表，支持按启用状态筛选；
-- 右侧为表单编辑区，可新增、编辑、删除 provider；
+- 左侧为 provider 列表，支持按启用状态筛选；类型 `b` 的 `model` 直接展示在列表中；
+- 右侧为表单编辑区，可新增、编辑、删除 provider；类型 `b` 必须填写模型 / Endpoint；
 - 点击“测试连接”可校验 `base_url`、`api_key`、`headers` 是否可用；
 - 提交后立即刷新列表。
 
@@ -270,9 +295,11 @@ HTTP 200 且 `code` 为 `"OK"` 时，`data` 内仍可能 `allowed = false`（业
 
 provider 应同时消费 `payload.alert` 与 `payload.evidence`，在无证据或证据降级时明确说明不确定性。`references` 建议引用证据 `evidence_id`（如 `observability evidence ev-...`），便于平台回放与审计。
 
-### 9.4 type c 编排服务参考协议
+### 9.4 type b 平台直连与 type c 参考协议
 
-类型 `c` 的内部 AI 编排服务可作为参考实现：平台按现有 `POST /api/ai/tools/invoke` 调用，`tool_code=alarm.analyze`，`payload` 包含 `alert` 与 `evidence`。参考实现位于 `cmd/ai-orchestrator`，监听 `POST /api/tool/invoke`（兼容 `/v1/tools/invoke`），使用 `X-API-Key` 鉴权（平台发送 `Bearer <api_key>`，服务同时兼容裸 key）；模型侧通过 `AIOPS_AI_ORCH_MODEL_BASE_URL`、`AIOPS_AI_ORCH_MODEL_API_KEY`、`AIOPS_AI_ORCH_MODEL_NAME` 配置。平台 provider 注册示例：
+类型 `b` 是默认分析路径：平台直接调用模型 API，无需额外编排服务。prompt 由服务端固定构建；`POST /api/ai/analyze-alert` 返回 `summary` / `risk_level` / `recommendations` / `references`，模型异常时降级为保守结果。
+
+类型 `c` 的内部 AI 编排服务仅作为兼容参考实现：平台按现有 `POST /api/ai/tools/invoke` 调用，`tool_code=alarm.analyze`，`payload` 包含 `alert` 与 `evidence`。参考实现位于 `cmd/ai-orchestrator`，监听 `POST /api/tool/invoke`（兼容 `/v1/tools/invoke`），使用 `X-API-Key` 鉴权（平台发送 `Bearer <api_key>`，服务同时兼容裸 key）；模型侧通过 `AIOPS_AI_ORCH_MODEL_BASE_URL`、`AIOPS_AI_ORCH_MODEL_API_KEY`、`AIOPS_AI_ORCH_MODEL_NAME` 配置。平台 provider 注册示例：
 
 ```json
 {

@@ -11,18 +11,22 @@ import (
 )
 
 // ToolRequest 表示一次 AI 工具调用。
+// SystemPrompt / UserPrompt 仅由服务端 application 层赋值，不来自 HTTP 请求绑定，
+// 避免调用方通过 payload 注入 system prompt 绕过安全护栏。
 type ToolRequest struct {
-	UserID    string
-	ToolCode  string
-	Resource  string
-	Action    string
-	OwnerID   string
-	Dept      string
-	Team      string
-	Region    string
-	Tags      []string
-	Confirmed bool
-	Payload   map[string]any
+	UserID       string
+	ToolCode     string
+	Resource     string
+	Action       string
+	OwnerID      string
+	Dept         string
+	Team         string
+	Region       string
+	Tags         []string
+	Confirmed    bool
+	Payload      map[string]any
+	SystemPrompt string
+	UserPrompt   string
 }
 
 // ToolResponse 表示一次工具调用结果。
