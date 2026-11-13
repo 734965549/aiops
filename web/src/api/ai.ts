@@ -96,6 +96,8 @@ export function analyzeAlert(input: AnalyzeAlertInput) {
   return http<AnalyzeAlertResult>({
     url: '/api/ai/analyze-alert',
     method: 'post',
-    data: input
+    data: input,
+    // 模型为思考型，真实分析（含证据采集）可能超过全局 30s 超时。
+    timeout: 90_000
   })
 }

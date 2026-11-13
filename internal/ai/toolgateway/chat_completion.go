@@ -123,6 +123,11 @@ func (e *ChatCompletionExecutor) Invoke(ctx context.Context, cfg ProviderConfig,
 		content, tokens, retry, err := e.callModel(ctx, cfg, policy, timeout, targetURL, body)
 		if err != nil {
 			lastErr = err
+			// 父级 context 已结束（前端断开/整体超时）时不再重试，
+			// 避免第二次尝试同样被取消并拉长总耗时。
+			if ctx.Err() != nil {
+				return nil, err
+			}
 			if retry {
 				continue
 			}
