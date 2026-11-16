@@ -127,6 +127,29 @@ AIOPS_CORS__ALLOW_CREDENTIALS=true
 
 本地 dev：`npm run dev` 走 Vite proxy（`/` + 代理 `/api`），CORS 仅在后端直连浏览器时生效；`configs/config.example.yaml` 已包含 `5173` 与 `127.0.0.1:5173`。
 
+## 服务器超时预算链（AI 告警分析等长请求）
+
+平台存在**多层超时**，必须保持预算链自洽——外层必须大于内层总和，否则会出现「服务端执行成功但客户端收到空响应」的静默失败（排查成本极高）：
+
+```text
+浏览器 axios（analyzeAlert 单请求 90s）
+  > nginx proxy_read_timeout（web.conf，120s）
+  > 服务器 write_timeout_s（120s）
+  > AI 分析内层：证据采集 5s + 模型调用（provider timeout_ms，建议 60s）
+```
+
+**配置要点：**
+
+1. **环境变量优先级高于 config yaml**（viper 规则：`AIOPS_SERVER__*` > `server.*`）。`docker-compose.yml` 的 `AIOPS_SERVER__READ_TIMEOUT_S` / `AIOPS_SERVER__WRITE_TIMEOUT_S` 是 compose 部署的实际生效值——调整超时**只改 compose env 这一处**，不要只改 yaml（会被覆盖，且两层不一致时难以排查）。
+2. AI 分析链路的超时预算已按上表对齐：前端 `web/src/api/ai.ts` 的 `analyzeAlert` 单独 90s；`ops/ai-contract.md` §9.4 有完整说明。
+3. 模型 provider 的 `timeout_ms`（AI Provider 管理页配置）应 ≤ 前端 90s 减去证据采集 5s，建议 60000。思考型模型（带推理链）超过预算时会直接降级返回兜底结果（不重试），审计记 `result=partial` + `tool_error`。
+
+## 主机兼容与部署纪律
+
+- **CentOS 7 老内核 + Docker 26**：默认 seccomp 会拦截 PostgreSQL 16 的 syscall（initdb / 启动报 `Operation not permitted`），postgres 服务**必须**叠加 `docker-compose.host.yml`（`seccomp=unconfined`）。完整启动命令见上文「本地一次起全栈」。
+- **部署机不落任何手工改动**：所有修改（代码、配置、compose）一律走「开发机提交 → git → bundle/pull → 203 重建镜像 → compose up」流程。部署机工作区应保持 `git status` 干净；紧急热修复也必须在开发机提交后重新部署，避免下次发布覆盖或产生「改了什么不知道」的漂移。
+- 排查部署机问题时可用 `git status` / `git diff` 快速确认是否存在漂移。
+
 ## 通俗比喻
 
 `deployments` 就似搬新铺：Dockerfile 负责将厨房、桌椅、招牌打包装车；docker-compose 负责到新地址之后，边个放厨房、边个放收银台、边个接电。
