@@ -30,6 +30,10 @@ type ToolRequest struct {
 	SystemPrompt       string
 	UserPrompt         string
 	RequiredPermission string
+	// SkipDataScope 由服务端 application 内部设置：仅校验 RBAC 与工具权限，
+	// 数据范围由底层只读取数端口（如指标证据、告警读取）与路由鉴权各自保证。
+	// 该字段不来自 HTTP 请求绑定。
+	SkipDataScope bool
 }
 
 // ToolResponse 表示一次工具调用结果。
@@ -68,6 +72,7 @@ func (g *Gateway) Validate(ctx context.Context, req ToolRequest) (*ToolResponse,
 		ObjectDept: strings.TrimSpace(req.Dept), ObjectTeam: strings.TrimSpace(req.Team),
 		ObjectRegion: strings.TrimSpace(req.Region), ObjectTags: req.Tags,
 		ToolCode: strings.TrimSpace(req.ToolCode), UserConfirmed: req.Confirmed,
+		SkipDataScope: req.SkipDataScope,
 	}
 	if permission := strings.TrimSpace(req.RequiredPermission); permission != "" {
 		authInput.RequiredPermission = permission

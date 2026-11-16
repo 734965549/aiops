@@ -8,6 +8,9 @@ type AuditAction string
 const (
 	AuditAnalyzeAlert AuditAction = "analyze_alert"
 	AuditToolInvoke   AuditAction = "tool_invoke"
+	AuditChatSession  AuditAction = "chat_session"
+	AuditChatMessage  AuditAction = "chat_message"
+	AuditChatFeedback AuditAction = "chat_feedback"
 )
 
 // AuditRecord 审计载荷。

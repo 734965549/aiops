@@ -371,6 +371,20 @@ func main() {
 	)
 	analyzeSvc.SetMetricEvidence(aiEvidenceCollector)
 
+	// ---- 装配 AI 运维助手（会话 + 对话编排，流程图 §16）----
+	// 对话复用工具网关做权限校验、告警读取做快照、观测取数做指标证据，
+	// 回答只写入 ai_session_message，不产生任何执行动作。
+	aiSessionRepo := aipg.NewSessionRepository(app.DB)
+	aiChatSvc := aiapp.NewChatService(
+		aiSessionRepo,
+		alertReader,
+		aiGateway,
+		providerRegistry,
+		aiEvidenceCollector,
+		aiAuditRecorder,
+	)
+	aiChatHandler := aihttp.NewChatHandler(aiChatSvc)
+
 	// ---- 装配 CES 告警拉取（Alert 端口 -> Observability 适配 -> 共享租约）----
 	alertSyncLeaseRepo := alertpg.NewAlertSyncLeaseRepository(app.DB)
 	sourceSvc.SetAccountReader(alertinteg.NewAccountReader(integAccountSvc))
@@ -437,7 +451,7 @@ func main() {
 
 	registrars := []server.RouteRegistrar{
 		identityhttp.NewRegistrar(identityHandler, authorizationSvc),
-		aihttp.NewRegistrar(aiHandler, authorizationSvc),
+		aihttp.NewRegistrar(aiHandler, aiChatHandler, authorizationSvc),
 		assethttp.NewRegistrar(assetHandler, authorizationSvc),
 		audithttp.NewRegistrar(auditHandler, authorizationSvc),
 		alerthttp.NewRegistrar(alertHandler, alertIngestHandler, authorizationSvc),

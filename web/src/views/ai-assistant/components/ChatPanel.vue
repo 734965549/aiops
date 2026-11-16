@@ -1,0 +1,359 @@
+<template>
+  <div
+    class="chat-panel"
+    :class="{ 'chat-panel--compact': compact }"
+  >
+    <div
+      ref="scrollRef"
+      class="chat-stream"
+    >
+      <a-empty
+        v-if="!messages.length && !sending"
+        :description="emptyHint || '输入问题开始对话；AI 会自动带入当前页面上下文'"
+      >
+        <template #image>
+          <IconRobot :size="42" />
+        </template>
+      </a-empty>
+
+      <template
+        v-for="message in messages"
+        :key="message.message_id"
+      >
+        <div
+          v-if="message.role === 'user'"
+          class="message-row message-row--user"
+        >
+          <div class="message-bubble message-bubble--user">
+            {{ message.content }}
+            <span class="message-time">{{ formatTime(message.created_at) }}</span>
+          </div>
+        </div>
+        <div
+          v-else
+          class="message-row message-row--assistant"
+        >
+          <AnswerCard
+            v-if="message.answer"
+            :answer="message.answer"
+            :tool-calls="message.tool_calls"
+            :references="message.references"
+            :feedback="message.feedback"
+            :message-id="message.message_id"
+            :busy="sending || proposing"
+            @feedback="onFeedback"
+            @propose="onPropose"
+            @navigate="onNavigate"
+          />
+          <div
+            v-else
+            class="message-bubble message-bubble--assistant"
+          >
+            {{ message.content }}
+          </div>
+          <span class="message-time">{{ formatTime(message.created_at) }}</span>
+        </div>
+      </template>
+
+      <div
+        v-if="sending"
+        class="stage-indicator"
+      >
+        <a-spin :size="14" />
+        <span>{{ STAGE_LABELS[stage === 'idle' ? 'thinking' : stage] }}</span>
+      </div>
+    </div>
+
+    <div class="chat-status">
+      <a-alert
+        v-if="status === 'failed'"
+        type="error"
+        :show-icon="true"
+      >
+        AI 回答失败，平台不会基于失败回答执行任何动作。可重新提问或稍后再试。
+        <template #action>
+          <a-button
+            size="mini"
+            :disabled="!lastUserContent || sending"
+            @click="emit('retry')"
+          >
+            重新提问
+          </a-button>
+        </template>
+      </a-alert>
+      <a-alert
+        v-else-if="status === 'insufficient_context'"
+        type="warning"
+        :show-icon="true"
+      >
+        当前上下文不足，请先打开告警或资源详情，或在提问中补充应用、资源与时间范围。
+      </a-alert>
+      <a-alert
+        v-else-if="status === 'not_executable'"
+        type="warning"
+        :show-icon="true"
+      >
+        AI 建议包含当前账号不可执行的动作，执行入口已禁用；原因见回答中的按钮提示。
+      </a-alert>
+      <a-alert
+        v-else-if="status === 'needs_confirm'"
+        type="info"
+        :show-icon="true"
+      >
+        该建议涉及变更动作：仅可生成待确认执行任务，必须在执行确认页再次确认后才会执行。
+      </a-alert>
+      <a-alert
+        v-if="error"
+        type="error"
+        :show-icon="true"
+      >
+        {{ error }}
+      </a-alert>
+    </div>
+
+    <div class="chat-input">
+      <div
+        v-if="quickQuestions && quickQuestions.length && !messages.length"
+        class="quick-questions"
+      >
+        <span class="quick-label">快捷问题</span>
+        <a-button
+          v-for="question in quickQuestions"
+          :key="question"
+          size="mini"
+          type="outline"
+          :disabled="sending"
+          @click="onQuickQuestion(question)"
+        >
+          {{ question }}
+        </a-button>
+      </div>
+      <a-textarea
+        v-model="input"
+        :auto-size="{ minRows: compact ? 2 : 3, maxRows: 6 }"
+        :placeholder="placeholder"
+        :disabled="sending"
+        @keydown.enter.exact.prevent="submit"
+      />
+      <div class="input-foot">
+        <span class="input-hint">Enter 发送 · Shift + Enter 换行 · 执行类动作需人工确认</span>
+        <a-button
+          type="primary"
+          size="small"
+          :loading="sending"
+          :disabled="!input.trim()"
+          @click="submit"
+        >
+          发送
+        </a-button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { nextTick, ref, watch } from 'vue'
+import { IconRobot } from '@arco-design/web-vue/es/icon'
+import type { ChatAnswer, ChatMessage } from '@/api/ai'
+import AnswerCard from './AnswerCard.vue'
+import { STAGE_LABELS, type ChatStage, type ChatUIStatus } from '../composables/useChat'
+
+const props = defineProps<{
+  messages: ChatMessage[]
+  sending: boolean
+  stage: ChatStage
+  status: ChatUIStatus
+  error?: string
+  proposing?: boolean
+  lastUserContent?: string
+  quickQuestions?: string[]
+  compact?: boolean
+  emptyHint?: string
+  placeholder?: string
+}>()
+
+const emit = defineEmits<{
+  (e: 'send', content: string): void
+  (e: 'retry'): void
+  (e: 'feedback', messageId: string, feedback: 'valid' | 'invalid'): void
+  (e: 'propose', answer: ChatAnswer, messageId?: string): void
+  (e: 'navigate', url: string): void
+}>()
+
+const input = ref('')
+const scrollRef = ref<HTMLElement | null>(null)
+const placeholder = props.placeholder || '请输入你的问题，例如：帮我分析当前告警并给出排查步骤'
+
+watch(
+  () => props.messages.length,
+  async () => {
+    await nextTick()
+    const el = scrollRef.value
+    if (el) el.scrollTop = el.scrollHeight
+  }
+)
+
+watch(
+  () => props.sending,
+  async () => {
+    await nextTick()
+    const el = scrollRef.value
+    if (el) el.scrollTop = el.scrollHeight
+  }
+)
+
+function submit() {
+  const content = input.value.trim()
+  if (!content || props.sending) return
+  input.value = ''
+  emit('send', content)
+}
+
+function onQuickQuestion(question: string) {
+  if (props.sending) return
+  emit('send', question)
+}
+
+function onFeedback(messageId: string, feedback: 'valid' | 'invalid') {
+  emit('feedback', messageId, feedback)
+}
+
+function onPropose(answer: ChatAnswer, messageId?: string) {
+  emit('propose', answer, messageId)
+}
+
+function onNavigate(url: string) {
+  emit('navigate', url)
+}
+
+function formatTime(value: string) {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+</script>
+
+<style scoped>
+.chat-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-stream {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 2px 8px;
+}
+
+.message-row {
+  display: flex;
+  flex-direction: column;
+  max-width: 100%;
+}
+
+.message-row--user {
+  align-items: flex-end;
+}
+
+.message-row--assistant {
+  align-items: stretch;
+  gap: 4px;
+}
+
+.message-bubble {
+  max-width: 86%;
+  padding: 9px 12px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message-bubble--user {
+  color: #ffffff;
+  background: #51663f;
+  border-bottom-right-radius: 4px;
+}
+
+.message-bubble--assistant {
+  max-width: 100%;
+  color: var(--color-text-1);
+  background: var(--color-fill-1);
+  border-bottom-left-radius: 4px;
+}
+
+.message-time {
+  margin-top: 2px;
+  color: var(--color-text-3);
+  font-size: 10px;
+}
+
+.stage-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-2);
+  font-size: 12px;
+}
+
+.chat-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-status :deep(.arco-alert) {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.chat-input {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(81, 102, 63, 0.14);
+}
+
+.quick-questions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.quick-label {
+  color: var(--color-text-3);
+  font-size: 11px;
+}
+
+.input-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.input-hint {
+  color: var(--color-text-3);
+  font-size: 10px;
+}
+
+.chat-panel--compact .chat-stream {
+  gap: 10px;
+}
+
+.chat-panel--compact .message-bubble {
+  font-size: 12px;
+}
+</style>

@@ -54,6 +54,19 @@
         </div>
         <div class="header-right">
           <span class="header-principle">SAFE · CONTROLLED · AUDITABLE</span>
+          <a-tooltip content="AI 助手（Alt + A）">
+            <a-button
+              type="text"
+              size="small"
+              class="ai-entry"
+              @click="aiContext.openOverlay()"
+            >
+              <template #icon>
+                <IconRobot />
+              </template>
+              AI 助手
+            </a-button>
+          </a-tooltip>
           <span class="status-dot" />
           <span class="user-name">{{ auth.user?.display_name || auth.user?.username || '未登录' }}</span>
           <a-button
@@ -70,11 +83,13 @@
         <RouterView />
       </a-layout-content>
     </a-layout>
+
+    <AIAssistantOverlay />
   </a-layout>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   IconDashboard,
@@ -87,15 +102,19 @@ import {
   IconUserGroup,
   IconCloud,
   IconBarChart,
-  IconBulb
+  IconBulb,
+  IconSettings
 } from '@arco-design/web-vue/es/icon'
 import { useAuthStore } from '@/stores/auth'
+import { useAIContextStore } from '@/stores/aiContext'
 import { fetchCurrentUser } from '@/api/system'
 import OceanBackdrop from './components/OceanBackdrop.vue'
+import AIAssistantOverlay from './components/AIAssistantOverlay.vue'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const aiContext = useAIContextStore()
 
 interface MenuItem { path: string; title: string; icon: unknown }
 
@@ -111,7 +130,8 @@ const menuItems: MenuItem[] = [
   { path: '/executions', title: '自动化执行', icon: IconCommand },
   { path: '/runbooks', title: 'Runbook 预案', icon: IconBook },
   { path: '/audits', title: '审计中心', icon: IconFile },
-  { path: '/identity/ldap-import', title: '域账号导入', icon: IconUserGroup }
+  { path: '/identity/ldap-import', title: '域账号导入', icon: IconUserGroup },
+  { path: '/system/ai-config', title: 'AI 配置', icon: IconSettings }
 ]
 
 const activeMenuKey = computed(() => {
@@ -134,12 +154,37 @@ function onMenuClick(key: string) {
   }
 }
 
+// 路由切换时刷新 AI 助手的页面上下文：任意页面都能带上当前页面；
+// 进入 AI 助手独立页时保留来源页面资源，便于继续追问。
+watch(
+  () => route.path,
+  (path) => {
+    const title = typeof route.meta.title === 'string' ? route.meta.title : ''
+    if (path === '/ai-assistant') {
+      if (!aiContext.hasResourceContext) {
+        aiContext.setPageBase('ai-assistant', title)
+      }
+      return
+    }
+    aiContext.setPageBase(path.replace(/^\//, ''), title)
+  },
+  { immediate: true }
+)
+
+function onKeydown(event: KeyboardEvent) {
+  if (event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'a') {
+    event.preventDefault()
+    aiContext.toggleOverlay()
+  }
+}
+
 async function onLogout() {
   await auth.logout()
   router.replace('/login')
 }
 
 onMounted(async () => {
+  window.addEventListener('keydown', onKeydown)
   if (!auth.token) return
   try {
     const u = await fetchCurrentUser()
@@ -147,6 +192,10 @@ onMounted(async () => {
   } catch {
     /* 错误已由拦截器提示；用户信息刷新失败不阻断布局渲染。 */
   }
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
 })
 </script>
 

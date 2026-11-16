@@ -84,6 +84,12 @@ const routes: RouteRecordRaw[] = [
         name: 'identity-access-control',
         component: () => import('@/views/identity/access-control/index.vue'),
         meta: { title: '权限管理', icon: 'UserGroup' }
+      },
+      {
+        path: 'system/ai-config',
+        name: 'system-ai-config',
+        component: () => import('@/views/system/ai-config/index.vue'),
+        meta: { title: 'AI 配置', icon: 'Settings' }
       }
     ]
   },

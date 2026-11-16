@@ -11,7 +11,7 @@
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
 | 0.1 | 依赖启动 | `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d` | Postgres 健康 |
-| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0001–0047，无报错；当前仓库未包含 `0021` Notification 迁移 |
+| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0001–0049，无报错；当前仓库未包含 `0021` Notification 迁移 |
 | 0.3 | API 启动 | `go run ./cmd/api` 或 compose 内 api 服务 | 登录接口可用 |
 | 0.4 | 前端（UI 验收） | `cd web && npm run dev` | 可登录并访问各页面 |
 | 0.5 | 自动化冒烟 | 见 [§7 推荐验收顺序](#7-推荐验收顺序自动化) | 全部输出 `PASS` |
@@ -313,7 +313,10 @@ go run ./cmd/migrate
 # 6. 权限管理 P1：viewer 角色、授权写接口、403 边界、审计
 .\scripts\e2e-identity-access.ps1
 
-# 7. Dashboard API 抽检
+# 7. AI 运维助手（migration 0049；建议先配置类型 b provider）
+.\scripts\e2e-ai-assistant.ps1
+
+# 8. Dashboard API 抽检
 # curl -H "Authorization: Bearer <token>" http://127.0.0.1:8080/api/dashboard/summary
 ```
 
@@ -329,6 +332,7 @@ go run ./cmd/migrate
 | 执行记录 | ☐ | `e2e-runbook.ps1` ☐ | ☐ | ☐ | ☐ |
 | Dashboard 摘要 | ☐ | 手工/API ☐ | ☐ | ☐ | ☐ |
 | 权限管理 P1 | ☐ | `e2e-identity-access.ps1` ☐ | ☐ | ☐ | ☐ |
+| AI 运维助手 | ☐ | `e2e-ai-assistant.ps1` ☐ | ☐ | ☐ | ☐ |
 | 审计中心 UI | ☐ | 手工/API ☐ | ☐ | ☐ | ☐ |
 | 权限校验 | ☐ | 负向用例 ☐ | ☐ | ☐ | ☐ |
 
@@ -414,13 +418,34 @@ go run ./cmd/migrate
 ### 9.7 AI Provider 页面配置（migration 0048）
 
 | # | 检查项 | 操作 | 预期 |
-|---|--------|------|------|
-| 9.7.1 | 配置持久化 | 在「AI 运维助手 -> Provider 管理」新增类型 `b` provider（Ark 地址 + API Key + `model`/`ep-xxx`），保存后重启 API | 列表仍显示该 provider，密钥显示「已配置」；`ai_provider` 表中 `api_key_encrypted` 为密文，无明文 |
+| ---|--------|------|------|
+| 9.7.1 | 配置持久化 | 在「系统管理 / AI 配置 -> Provider 管理」新增类型 `b` provider（Ark 地址 + API Key + `model`/`ep-xxx`），保存后重启 API | 列表仍显示该 provider，密钥显示「已配置」；`ai_provider` 表中 `api_key_encrypted` 为密文，无明文 |
 | 9.7.2 | 更新省略 api_key | 编辑该 provider，只改名称/模型、不填 `api_key`，保存后再次分析 | 保存成功且 `has_api_key=true`；分析仍可调用模型（原密钥未丢失） |
 | 9.7.3 | 启停即时生效 | 禁用该 provider 后再次调用 `POST /api/ai/analyze-alert`，再启用 | 禁用时回落到本地摘要或下一可用 provider；启用后恢复模型分析，全程无需重启 API |
 | 9.7.4 | 换模型即时生效 | 修改 `model`/`ep-xxx` 后保存，再次分析 | 下一次分析使用新模型（日志 `model` 字段可见），无需重启 API |
 
 > 前置：已执行迁移 `0048`；类型 `b` 必须配置 `model`，否则保存返回 400。YAML `ai.providers` 仅在 `ai_provider` 表为空时作为种子写入。
+
+### 9.8 AI 运维助手（migration 0049）
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 9.8.1 | 权限种子 | 执行 `go run ./cmd/migrate` | `app:ai:chat`、`app:ai:chat:feedback` 存在且绑定 `admin`；未授权用户调用返回 403 |
+| 9.8.2 | 创建会话 | `POST /api/ai/chat/sessions`（带 `alert_id` 上下文） | 返回 `session_id`，`context.alert_id` 回显，审计含 `chat_session` |
+| 9.8.3 | 发送消息 | `POST /api/ai/chat/sessions/{id}/messages` | `answer.summary/risk_level/actions` 完整；`status=ok/degraded/insufficient_context` 合法；审计含 `chat_message` 与 `tool_invoke` |
+| 9.8.4 | 工具拒绝可见 | 移除某角色的 `alarm.analyze` 或 `metrics.query` 工具权限后提问 | 工具调用 `allowed=false` 且带 `reason`；回答仍返回并展示拒绝原因，不静默降级 |
+| 9.8.5 | 降级回答 | 禁用/删除启用中的类型 `b` provider 后提问 | `status=degraded`、`degraded_reason=model_unavailable`；保留已获取的只读上下文；无执行建议 |
+| 9.8.6 | 会话归属 | 用另一账号 `GET /api/ai/chat/sessions/{id}` | 403 `PERMISSION_DENIED`，不返回其他用户会话内容 |
+| 9.8.7 | 反馈 | `POST .../messages/{message_id}/feedback` 提交 `valid` / `invalid` | 会话详情回显 `feedback`；审计含 `chat_feedback`；对用户消息提交反馈返回 400 |
+| 9.8.8 | 生成执行计划 | 点击回答中的「生成执行计划」 | 调用 `POST /api/executions/tasks`（`source_type=ai_conversation`），任务为 `pending_confirm`；未确认前不可执行 |
+| 9.8.9 | 确认边界 | 执行确认页输入 `CONFIRM` | 任务推进到 `pending_execute` 后才可执行；拒绝/大小写不符返回 400 |
+| 9.8.10 | 审计可查 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | 可查 `chat_session` / `chat_message` / `tool_invoke` / `chat_feedback`，payload 无 prompt 与凭据 |
+| 9.8.11 | 全局浮层 | 任意页面按 `Alt + A` 或点击顶栏「AI 助手」 | 浮层带入当前页面上下文；快捷问题可发送；只出现「生成执行计划」，无直接执行入口 |
+| 9.8.12 | AI 配置归位 | 侧栏「AI 配置」 | Provider 管理与工具调用调试在系统管理配置页；AI 运维助手页只保留对话工作台 |
+
+> 前置：已执行迁移 `0049`；9.8.3 的模型回答需要已启用类型 `b` provider。E2E 脚本：`scripts/e2e-ai-assistant.ps1`（自动覆盖 9.8.2/9.8.3/9.8.7/9.8.8/9.8.9/9.8.10）。
+>
+> 已知限制（P1 跟进）：告警快照读取当前仅校验 RBAC/工具权限，尚未按用户数据范围过滤（与 `POST /api/ai/analyze-alert` 一致，非本次回归）；`app:ai:chat` 目前仅绑定 admin，影响有限。详见 `ops/ai-contract.md` §10.11。
 
 ## 附录 A：仅 UI 手工步骤（精简表）
 

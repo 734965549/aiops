@@ -1,564 +1,242 @@
 <template>
-  <div class="page-shell ai-assistant">
-    <a-tabs
-      default-active-key="providers"
-      class="page-tabs"
-    >
-      <a-tab-pane
-        key="providers"
-        title="Provider 管理"
-      >
-        <a-row
-          :gutter="16"
-          class="equal-row"
+  <div class="page-shell ai-workbench">
+    <div class="workbench-head">
+      <div class="head-copy">
+        <h2>AI 运维助手</h2>
+        <p>
+          只分析与建议，不直接执行；执行类动作只生成待确认任务，全程写入审计。
+        </p>
+      </div>
+      <a-space>
+        <a-button
+          :loading="loadingSessions"
+          @click="loadSessions"
         >
-          <a-col
-            :xs="24"
-            :lg="14"
-          >
-            <a-card title="Provider 列表">
-              <template #extra>
-                <a-button
-                  size="small"
-                  :loading="loadingProviders"
-                  @click="loadProviders"
-                >
-                  刷新
-                </a-button>
-              </template>
-              <a-table
-                :columns="providerColumns"
-                :data="providers"
-                :loading="loadingProviders"
-                row-key="id"
-                :pagination="false"
-                @row-click="onSelectProvider"
-              >
-                <template #enabled="{ record }">
-                  <a-tag :color="record.enabled ? 'green' : 'gray'">
-                    {{ record.enabled ? '启用' : '禁用' }}
-                  </a-tag>
-                </template>
-                <template #hasApiKey="{ record }">
-                  <span v-if="record.has_api_key">已配置</span>
-                  <span
-                    v-else
-                    class="text-muted"
-                  >未配置</span>
-                </template>
-                <template #actions="{ record }">
-                  <a-popconfirm
-                    content="确认删除该 Provider？"
-                    @ok="onDeleteProvider(record.id)"
-                  >
-                    <a-button
-                      type="text"
-                      status="danger"
-                      size="mini"
-                    >
-                      删除
-                    </a-button>
-                  </a-popconfirm>
-                </template>
-              </a-table>
-            </a-card>
-          </a-col>
-          <a-col
-            :xs="24"
-            :lg="10"
-          >
-            <a-card :title="form.id ? '编辑 Provider' : '新增 Provider'">
-              <a-form
-                :model="form"
-                layout="vertical"
-                size="small"
-              >
-                <a-form-item
-                  label="ID"
-                  required
-                >
-                  <a-input
-                    v-model="form.id"
-                    :disabled="!!editingId"
-                    placeholder="demo-http-a"
-                  />
-                </a-form-item>
-                <a-form-item
-                  label="名称"
-                  required
-                >
-                  <a-input
-                    v-model="form.name"
-                    placeholder="Demo HTTP Provider"
-                  />
-                </a-form-item>
-                <a-form-item
-                  label="类型"
-                  required
-                >
-                  <a-select
-                    v-model="form.type"
-                    :options="typeOptions"
-                  />
-                </a-form-item>
-                <a-form-item
-                  label="Base URL"
-                  required
-                >
-                  <a-input
-                    v-model="form.base_url"
-                    placeholder="https://ark.cn-beijing.volces.com/api/v3"
-                  />
-                </a-form-item>
-                <a-form-item
-                  v-if="form.type === 'b'"
-                  label="模型 / Endpoint"
-                  required
-                >
-                  <a-input
-                    v-model="form.model"
-                    placeholder="ep-xxxxxxxx（方舟推理接入点 ID）"
-                  />
-                  <div class="field-hint">
-                    类型 B 由平台直连 chat/completions；模型监听变更后无需重启
-                  </div>
-                </a-form-item>
-                <a-form-item label="API Key">
-                  <a-input-password
-                    v-model="form.api_key"
-                    placeholder="新增必填；编辑留空则保留原密钥"
-                  />
-                  <div
-                    v-if="editingId && formHasApiKey"
-                    class="field-hint"
-                  >
-                    当前已配置密钥
-                  </div>
-                </a-form-item>
-                <a-form-item label="超时 (ms)">
-                  <a-input-number
-                    v-model="form.timeout_ms"
-                    :min="1000"
-                    :step="1000"
-                    style="width: 100%"
-                  />
-                </a-form-item>
-                <a-form-item label="启用">
-                  <a-switch v-model="form.enabled" />
-                </a-form-item>
-                <a-form-item label="描述">
-                  <a-textarea
-                    v-model="form.description"
-                    :auto-size="{ minRows: 2 }"
-                  />
-                </a-form-item>
-                <a-space>
-                  <a-button
-                    type="primary"
-                    :loading="savingProvider"
-                    @click="onSaveProvider"
-                  >
-                    保存
-                  </a-button>
-                  <a-button @click="resetForm">
-                    重置
-                  </a-button>
-                </a-space>
-              </a-form>
-            </a-card>
-          </a-col>
-        </a-row>
-      </a-tab-pane>
+          刷新会话
+        </a-button>
+        <a-button
+          type="primary"
+          @click="startNewSession"
+        >
+          新建会话
+        </a-button>
+      </a-space>
+    </div>
 
-      <a-tab-pane
-        key="invoke"
-        title="工具调用"
+    <a-row
+      :gutter="12"
+      class="workbench-body"
+    >
+      <a-col
+        :xs="24"
+        :md="6"
+        :lg="5"
+        class="workbench-col"
       >
-        <a-row
-          :gutter="16"
-          class="equal-row"
+        <a-card
+          title="会话"
+          :bordered="false"
+          class="workbench-card"
         >
-          <a-col
-            :xs="24"
-            :lg="12"
-          >
-            <a-card title="调用参数">
-              <a-form
-                :model="invokeForm"
-                layout="vertical"
-                size="small"
-              >
-                <a-form-item
-                  label="Provider"
-                  required
-                >
-                  <a-select
-                    v-model="invokeForm.provider_id"
-                    placeholder="选择 Provider"
-                    :options="providerOptions"
-                    allow-search
-                  />
-                </a-form-item>
-                <a-form-item
-                  label="工具编码"
-                  required
-                >
-                  <a-input
-                    v-model="invokeForm.tool_code"
-                    placeholder="alarm.analyze"
-                  />
-                </a-form-item>
-                <a-form-item label="Resource">
-                  <a-input
-                    v-model="invokeForm.resource"
-                    placeholder="alarm"
-                  />
-                </a-form-item>
-                <a-form-item label="Action">
-                  <a-input
-                    v-model="invokeForm.action"
-                    placeholder="analyze"
-                  />
-                </a-form-item>
-                <a-form-item label="Payload (JSON)">
-                  <a-textarea
-                    v-model="payloadText"
-                    :auto-size="{ minRows: 6, maxRows: 12 }"
-                    placeholder="{&quot;alarm_id&quot;:&quot;a-123&quot;}"
-                  />
-                </a-form-item>
-                <a-form-item>
-                  <a-checkbox v-model="invokeForm.confirmed">
-                    已人工确认（require_confirm 类工具必填）
-                  </a-checkbox>
-                </a-form-item>
-                <a-button
-                  type="primary"
-                  :loading="invoking"
-                  @click="onInvoke"
-                >
-                  调用
-                </a-button>
-              </a-form>
-            </a-card>
-          </a-col>
-          <a-col
-            :xs="24"
-            :lg="12"
-          >
-            <a-card title="调用结果">
-              <pre
-                v-if="invokeResult"
-                class="result-json"
-              >{{ formattedResult }}</pre>
-              <a-empty
-                v-else
-                description="提交后将在此展示 allowed / reason / data"
-              />
-            </a-card>
-          </a-col>
-        </a-row>
-      </a-tab-pane>
-    </a-tabs>
+          <SessionList
+            :sessions="sessions"
+            :active-id="activeSessionId"
+            :loading="loadingSessions"
+            @create="startNewSession"
+            @select="onSelectSession"
+            @refresh="loadSessions"
+          />
+        </a-card>
+      </a-col>
+
+      <a-col
+        :xs="24"
+        :md="12"
+        :lg="14"
+        class="workbench-col"
+      >
+        <a-card
+          :title="activeSession?.title || '当前会话'"
+          :bordered="false"
+          class="workbench-card"
+        >
+          <template #extra>
+            <span class="session-context">{{ contextSummary }}</span>
+          </template>
+          <ChatPanel
+            :messages="messages"
+            :sending="sending"
+            :stage="stage"
+            :status="uiStatus"
+            :error="error"
+            :proposing="proposing"
+            :last-user-content="lastUserContent"
+            @send="onSend"
+            @retry="retry"
+            @feedback="submitFeedback"
+            @propose="proposeExecution"
+            @navigate="onNavigate"
+          />
+        </a-card>
+      </a-col>
+
+      <a-col
+        :xs="24"
+        :md="6"
+        :lg="5"
+        class="workbench-col"
+      >
+        <a-card
+          title="上下文与工具"
+          :bordered="false"
+          class="workbench-card"
+        >
+          <ContextPanel
+            :context="contextStore.current"
+            :tool-calls="latestToolCalls"
+            :references="latestReferences"
+            @navigate="onNavigate"
+          />
+        </a-card>
+      </a-col>
+    </a-row>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import Message from '@arco-design/web-vue/es/message'
-import {
-  deleteProvider,
-  invokeTool,
-  listProviders,
-  upsertProvider,
-  type AIProvider,
-  type InvokeToolResult
-} from '@/api/ai'
+import { computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import SessionList from './components/SessionList.vue'
+import ChatPanel from './components/ChatPanel.vue'
+import ContextPanel from './components/ContextPanel.vue'
+import { useChat } from './composables/useChat'
+import { useAIContextStore } from '@/stores/aiContext'
 
-const providers = ref<AIProvider[]>([])
-const loadingProviders = ref(false)
-const savingProvider = ref(false)
-const invoking = ref(false)
-const invokeResult = ref<InvokeToolResult | null>(null)
-const editingId = ref('')
-const formHasApiKey = ref(false)
-const payloadText = ref('{}')
+const router = useRouter()
+const contextStore = useAIContextStore()
+const {
+  sessions,
+  activeSession,
+  activeSessionId,
+  messages,
+  loadingSessions,
+  sending,
+  proposing,
+  error,
+  stage,
+  uiStatus,
+  lastUserContent,
+  contextSummary,
+  loadSessions,
+  selectSession,
+  startNewSession,
+  send,
+  retry,
+  submitFeedback,
+  proposeExecution
+} = useChat()
 
-const providerColumns = [
-  { title: 'ID', dataIndex: 'id', width: 140 },
-  { title: '名称', dataIndex: 'name' },
-  { title: '类型', dataIndex: 'type', width: 70 },
-  { title: '模型', dataIndex: 'model', width: 150 },
-  { title: '密钥', slotName: 'hasApiKey', width: 80 },
-  { title: '状态', slotName: 'enabled', width: 80 },
-  { title: '操作', slotName: 'actions', width: 80 }
-]
-
-const typeOptions = [
-  { label: 'A - HTTP API Key', value: 'a' },
-  { label: 'B - OpenAI 兼容', value: 'b' },
-  { label: 'C - 内部服务', value: 'c' }
-]
-
-const emptyForm = () => ({
-  id: '',
-  name: '',
-  type: 'a',
-  base_url: '',
-  model: '',
-  api_key: '',
-  timeout_ms: 30000,
-  enabled: true,
-  description: ''
+const latestToolCalls = computed(() => {
+  const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
+  return lastAssistant?.tool_calls ?? []
 })
 
-const form = reactive(emptyForm())
-
-const invokeForm = reactive({
-  provider_id: '',
-  tool_code: '',
-  resource: '',
-  action: '',
-  confirmed: false
+const latestReferences = computed(() => {
+  const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
+  return lastAssistant?.references ?? []
 })
 
-const providerOptions = computed(() =>
-  providers.value.map((p) => ({ label: `${p.name} (${p.id})`, value: p.id }))
-)
-
-const formattedResult = computed(() =>
-  invokeResult.value ? JSON.stringify(invokeResult.value, null, 2) : ''
-)
-
-async function loadProviders() {
-  loadingProviders.value = true
-  try {
-    providers.value = await listProviders()
-  } catch {
-    /* 错误已由拦截器提示。 */
-  } finally {
-    loadingProviders.value = false
-  }
+async function onSend(content: string) {
+  await send(content)
 }
 
-function onSelectProvider(record: Record<string, unknown>) {
-  const p = record as unknown as AIProvider
-  editingId.value = p.id
-  formHasApiKey.value = !!p.has_api_key
-  form.id = p.id
-  form.name = p.name
-  form.type = p.type
-  form.base_url = p.base_url
-  form.model = p.model ?? ''
-  form.api_key = ''
-  form.timeout_ms = p.timeout_ms ?? 30000
-  form.enabled = p.enabled
-  form.description = p.description ?? ''
+async function onSelectSession(sessionId: string) {
+  await selectSession(sessionId)
 }
 
-function resetForm() {
-  editingId.value = ''
-  formHasApiKey.value = false
-  Object.assign(form, emptyForm())
+function onNavigate(url: string) {
+  if (url) router.push(url)
 }
 
-async function onSaveProvider() {
-  if (!form.id.trim() || !form.name.trim() || !form.base_url.trim()) {
-    Message.warning('请填写 ID、名称与 Base URL')
-    return
-  }
-  if (form.type === 'b' && !form.model.trim()) {
-    Message.warning('类型 B 必须填写模型 / Endpoint')
-    return
-  }
-  savingProvider.value = true
-  try {
-    await upsertProvider({
-      id: form.id.trim(),
-      name: form.name.trim(),
-      type: form.type,
-      base_url: form.base_url.trim(),
-      model: form.model.trim() || undefined,
-      api_key: form.api_key.trim() || undefined,
-      timeout_ms: form.timeout_ms,
-      enabled: form.enabled,
-      description: form.description.trim() || undefined
-    })
-    Message.success('保存成功')
-    editingId.value = form.id.trim()
-    await loadProviders()
-  } finally {
-    savingProvider.value = false
-  }
-}
-
-async function onDeleteProvider(id: string) {
-  try {
-    await deleteProvider(id)
-    Message.success('已删除')
-    if (editingId.value === id) resetForm()
-    await loadProviders()
-  } catch {
-    /* 错误已由拦截器提示。 */
-  }
-}
-
-function parsePayload(): Record<string, unknown> | undefined {
-  const text = payloadText.value.trim()
-  if (!text) return undefined
-  try {
-    const parsed = JSON.parse(text)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>
-    }
-    throw new Error('payload must be a JSON object')
-  } catch {
-    Message.error('Payload 必须是合法 JSON 对象')
-    throw new Error('invalid payload')
-  }
-}
-
-async function onInvoke() {
-  if (!invokeForm.provider_id || !invokeForm.tool_code.trim()) {
-    Message.warning('请选择 Provider 并填写工具编码')
-    return
-  }
-  let payload: Record<string, unknown> | undefined
-  try {
-    payload = parsePayload()
-  } catch {
-    return
-  }
-  invoking.value = true
-  invokeResult.value = null
-  try {
-    invokeResult.value = await invokeTool({
-      provider_id: invokeForm.provider_id,
-      tool_code: invokeForm.tool_code.trim(),
-      resource: invokeForm.resource.trim() || undefined,
-      action: invokeForm.action.trim() || undefined,
-      confirmed: invokeForm.confirmed,
-      payload
-    })
-    if (invokeResult.value && !invokeResult.value.allowed) {
-      Message.warning(invokeResult.value.reason || '工具调用被拒绝（allowed=false）')
-    }
-  } finally {
-    invoking.value = false
-  }
-}
-
-onMounted(loadProviders)
+onMounted(async () => {
+  // 页面基础上下文由布局按路由同步；这里只加载会话列表。
+  await loadSessions()
+})
 </script>
 
 <style scoped>
-/* 文字控件保持 100% 原始大小；内容超高时卡片体内部滚动，页面不出滚动条。
-   容器/页签填充链由全局 .page-shell / .page-tabs 提供。 */
-.ai-assistant :deep(.arco-tabs-content) {
-  padding-top: 10px;
+.ai-workbench {
+  gap: 10px;
 }
 
-/* 页签头（吸顶兜底）：胶囊化页签，选中态高对比，清晰可见 */
-.ai-assistant :deep(.arco-tabs-nav) {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  margin: 0 0 10px;
-  padding: 6px 0 10px;
-  background: transparent;
+.workbench-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.ai-assistant :deep(.arco-tabs-nav-type-line .arco-tabs-tab) {
-  margin: 0 10px 0 0;
-  padding: 0 18px;
-  height: 34px;
-  border: 1px solid rgba(81, 102, 63, 0.16);
-  border-radius: var(--radius-md);
-  color: #4a544c;
-  font-weight: 500;
-  background: rgba(81, 102, 63, 0.06);
-  transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease,
-    box-shadow 160ms ease;
+.head-copy h2 {
+  margin: 0;
+  color: var(--color-text-1);
+  font-size: 17px;
+  font-weight: 600;
 }
 
-/* 关闭 Arco 默认的标题悬停填充，避免与胶囊底色叠加 */
-.ai-assistant :deep(.arco-tabs-tab-title:before) {
-  background-color: transparent !important;
+.head-copy p {
+  margin: 4px 0 0;
+  color: var(--color-text-3);
+  font-size: 12px;
 }
 
-.ai-assistant :deep(.arco-tabs-nav-type-line .arco-tabs-tab:hover) {
-  color: #263328;
-  background: rgba(81, 102, 63, 0.14);
-  border-color: rgba(81, 102, 63, 0.28);
-}
-
-/* 选中页签：苔绿实底 + 白字，一眼可见 */
-.ai-assistant :deep(.arco-tabs-nav-type-line .arco-tabs-tab-active),
-.ai-assistant :deep(.arco-tabs-nav-type-line .arco-tabs-tab-active:hover) {
-  color: #ffffff;
-  border-color: #51663f;
-  background: #51663f;
-  box-shadow: 0 2px 10px rgba(81, 102, 63, 0.35);
-}
-
-.ai-assistant :deep(.arco-tabs-tab-active .arco-tabs-tab-title) {
-  color: #ffffff !important;
-}
-
-/* 绿色胶囊已表明选中态，去掉 Arco 默认的蓝色下划指示条 */
-.ai-assistant :deep(.arco-tabs-nav-ink) {
-  display: none !important;
-}
-
-/* 左右两列等高由全局 .equal-row 提供；这里让行铺满页签 pane */
-.ai-assistant .equal-row {
+.workbench-body {
   flex: 1;
   min-height: 0;
+  display: flex;
 }
 
-/* 两列卡片：列高已由全局 .equal-row 锁定为行高，
-   卡片允许收缩，卡片体内部滚动（表单内容超高时不再被裁切）。 */
-.ai-assistant .equal-row > .arco-col > .arco-card {
+.workbench-col {
+  height: 100%;
   min-height: 0;
+  display: flex;
 }
 
-.ai-assistant :deep(.arco-card-header) {
+.workbench-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.workbench-card :deep(.arco-card-header) {
   flex: 0 0 auto;
 }
 
-.ai-assistant :deep(.arco-card-body) {
+.workbench-card :deep(.arco-card-body) {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 14px;
 }
 
-/* 紧凑表单：缩小表单项间距与标签留白 */
-.ai-assistant :deep(.arco-form-item) {
-  margin-bottom: 10px;
-}
-
-.ai-assistant :deep(.arco-form-item-label-col) {
-  padding-bottom: 3px;
-}
-
-.result-json {
-  margin: 0;
-  padding: 12px;
-  background: var(--color-fill-1);
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  line-height: 1.5;
-  overflow: auto;
-}
-
-.field-hint {
-  margin-top: 4px;
-  font-size: 12px;
+.session-context {
+  max-width: 320px;
+  overflow: hidden;
   color: var(--color-text-3);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.text-muted {
-  color: var(--color-text-3);
+@media (max-width: 768px) {
+  .workbench-head {
+    flex-direction: column;
+  }
+
+  .workbench-col {
+    height: auto;
+  }
 }
 </style>

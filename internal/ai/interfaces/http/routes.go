@@ -11,8 +11,9 @@ import (
 
 // Registrar 将 AI 模块路由挂到 /api 下。
 type Registrar struct {
-	handler    *Handler
-	authorizer routeAuthorizer
+	handler     *Handler
+	chatHandler *ChatHandler
+	authorizer  routeAuthorizer
 }
 
 type routeAuthorizer interface {
@@ -49,8 +50,8 @@ func (a authorizationMiddlewareAdapter) Authorize(ctx context.Context, in middle
 	}, nil
 }
 
-func NewRegistrar(handler *Handler, authorizer routeAuthorizer) *Registrar {
-	return &Registrar{handler: handler, authorizer: authorizer}
+func NewRegistrar(handler *Handler, chatHandler *ChatHandler, authorizer routeAuthorizer) *Registrar {
+	return &Registrar{handler: handler, chatHandler: chatHandler, authorizer: authorizer}
 }
 
 func (r *Registrar) RegisterRoutes(groups server.RouteGroups) {
@@ -64,10 +65,25 @@ func (r *Registrar) RegisterRoutes(groups server.RouteGroups) {
 			return middleware.AuthorizationInput{UserID: c.GetString(middleware.CtxKeyUserID), Resource: "ai.tools", Action: "invoke"}, true
 		}), r.handler.Invoke)
 		authed.POST("/analyze-alert", middleware.AuthorizeStatic(authz, "ai.analysis", "analyze"), r.handler.AnalyzeAlert)
+		if r.chatHandler != nil {
+			authed.POST("/chat/sessions", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.CreateSession)
+			authed.GET("/chat/sessions", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.ListSessions)
+			authed.GET("/chat/sessions/:session_id", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.GetSession)
+			authed.POST("/chat/sessions/:session_id/messages", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.SendMessage)
+			authed.POST("/chat/sessions/:session_id/messages/:message_id/feedback",
+				middleware.AuthorizeStatic(authz, "ai", "chat:feedback"), r.chatHandler.SubmitFeedback)
+		}
 		return
 	}
 	authed.GET("/providers", r.handler.ListProviders)
 	authed.POST("/providers", r.handler.UpsertProvider)
 	authed.DELETE("/providers/:id", r.handler.DeleteProvider)
 	authed.POST("/tools/invoke", r.handler.Invoke)
+	if r.chatHandler != nil {
+		authed.POST("/chat/sessions", r.chatHandler.CreateSession)
+		authed.GET("/chat/sessions", r.chatHandler.ListSessions)
+		authed.GET("/chat/sessions/:session_id", r.chatHandler.GetSession)
+		authed.POST("/chat/sessions/:session_id/messages", r.chatHandler.SendMessage)
+		authed.POST("/chat/sessions/:session_id/messages/:message_id/feedback", r.chatHandler.SubmitFeedback)
+	}
 }

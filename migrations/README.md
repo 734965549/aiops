@@ -55,6 +55,10 @@
 0043_fix_orphaned_alert_app_refs.up.sql
 0044_lock_default_admin_account.up.sql
 0045_inspection_policy_deleted_scope_cleanup.up.sql
+0046_alert_source_pull.up.sql
+0047_alert_source_pull_state.up.sql
+0048_ai_provider.up.sql
+0049_ai_session.up.sql
 ```
 
 说明：
@@ -65,7 +69,8 @@
 - 禁止在生产或预发环境手工 `psql -f migrations/*.up.sql`、手工执行 `manual_schema_migrations.sql`，或手工写入 / 修改 `schema_migrations`。
 - `*.down.sql` 只作为人工回滚参考，不由应用自动执行。
 - `0016_seed_default_admin_user.up.sql` 是 DBA 初始化入口账号兜底：创建/重置 `admin/admin123`，并把 `admin` 角色绑定到当前全部权限、数据范围和 AI 工具权限。只执行 `0001/0002` 不算完整初始化。
-- 当前仓库未包含 `0021` 文件；runner 会按实际文件名顺序执行到 `0045`，唔好自己补一条空账本记录。
+- 当前仓库未包含 `0021` 文件；runner 会按实际文件名顺序执行到 `0049`，唔好自己补一条空账本记录。
+- `0049_ai_session.up.sql` 创建 AI 运维助手会话/消息表并种子 `app:ai:chat`、`app:ai:chat:feedback` 权限（绑定 `admin`）；AI 助手页依赖该迁移。
 - Integration、Observability、Inspection 同 Execution Agent 点样串到主链路，睇 `docs/AI运维平台整体流程与调用关系.md`。
 
 执行命令：

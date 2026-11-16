@@ -2,7 +2,9 @@
 
 ## 1. 范围
 
-本文档描述 AI 模块当前对外暴露的 provider 管理接口与工具调用接口，供前端联调、联调环境配置和后续运维接入使用。
+本文档描述 AI 模块当前对外暴露的 provider 管理接口、工具调用接口、告警分析接口，以及 AI 运维助手（会话 + 对话）接口，供前端联调、联调环境配置和后续运维接入使用。
+
+AI 助手只做分析、解释、建议与执行计划，不直接执行任何动作；真实执行必须进入 Execution 状态机并人工确认。
 
 ## 2. 统一响应格式
 
@@ -123,6 +125,7 @@
 ### 4.4 持久化与密钥约定
 
 - provider 配置落库到 `ai_provider`（迁移 `0048`），数据库是事实源；`ai.providers` YAML 仅在新库/空表时作为种子写入，之后以页面配置为准。
+- 页面入口位于「系统管理 / AI 配置」的 Provider 管理页签（`web/src/views/system/ai-config`）；AI 运维助手页只负责对话，不再承载 AI 配置。
 - 启动时从数据库解密并加载到运行时注册表；新增/更新/删除经 `POST` / `DELETE` 同步写库并立即生效，无需重启。
 - `api_key` 使用平台凭据加密机制（AES-GCM，复用 Integration credential vault）保存为密文；接口只返回 `has_api_key`，从不回显明文。
 - 更新时省略 `api_key` 保留原密钥；新增时必填。日志与审计只记录 `has_api_key` / `provider_id` / `type` / `base_url` / `model` 等字段。
@@ -213,9 +216,11 @@ HTTP 200 且 `code` 为 `"OK"` 时，`data` 内仍可能 `allowed = false`（业
 
 类型 `b` 是推荐路径：平台内置固定 system prompt（服务端构建，不接受调用方 payload 覆盖），告警快照和指标证据由 AnalyzeService 组装为 user 消息。模型不可达、429、5xx、空响应或输出无法解析时，平台返回保守降级结果并标记 `degraded=true`，审计记为 `partial`。类型 `c` 仅为可选参考实现，不再是必需组件。
 
+AI 运维助手（§10）只使用类型 `b` 做对话补全：没有启用中的类型 `b` 时对话返回 `status=degraded`、`degraded_reason=model_unavailable`，仍返回已获取的只读上下文，不返回任何执行建议。
+
 ## 8. 前端页面交互建议
 
-### 8.1 Provider 管理页
+### 8.1 Provider 管理页（系统管理 / AI 配置）
 
 - 左侧为 provider 列表，支持按启用状态筛选；类型 `b` 的 `model` 直接展示在列表中；
 - 右侧为表单编辑区，可新增、编辑、删除 provider；类型 `b` 必须填写模型 / Endpoint；
@@ -333,3 +338,216 @@ provider 应同时消费 `payload.alert` 与 `payload.evidence`，在无证据�
 ```
 
 服务只做分析与建议，不得返回可直接执行的命令；处置必须由人经 Runbook / Execution 链路确认。服务不持久化告警数据与模型密钥，日志仅记录耗时、token 计数和降级状态。
+
+## 10. AI 运维助手会话与对话
+
+### 10.1 范围与安全边界
+
+AI 运维助手通过自然语言查询状态、分析告警、生成排查步骤与执行计划。服务端固定编排（核心业务流程图 §16）：
+
+1. 接收用户消息 + 页面上下文；
+2. 按上下文执行只读工具权限校验并取数（告警快照、指标证据）；
+3. 调用平台直连模型（类型 `b`）生成结构化回答；
+4. 由服务端补齐可执行动作、确认语义与证据引用；
+5. 会话与消息落库，工具调用、对话与反馈全部写审计。
+
+约束：
+
+- AI 不能直接执行、分发或调度任何任务；`execution.tasks.dispatch` / `execution.command.run` 保持不可达。
+- 执行类入口只返回「生成执行计划」动作，前端调用既有 `POST /api/executions/tasks`（`source_type=ai_conversation`），任务进入 Execution `pending_confirm`，需人工输入 `CONFIRM` 后才会执行。
+- 凭据、`api_key`、AK/SK、Token 不进入 prompt、日志、审计明文或前端持久化状态。
+- 工具调用继承当前用户身份，服务端二次校验 RBAC 与工具权限；`allowed=false` 是业务拒绝，前端必须展示 `reason`。
+
+### 10.2 权限码
+
+| 权限码 | 说明 |
+| --- | --- |
+| `app:ai:chat` | 创建会话、查询会话、发送消息 |
+| `app:ai:chat:feedback` | 提交回答有效/无效反馈 |
+
+迁移 `0049` 同时把以上权限绑定到内置 `admin` 角色。工具权限沿用既有种子：`alarm.analyze`、`metrics.query`（只读），`execution.tasks.propose`（`require_confirm`，仅用于生成执行计划入口的权限判断）。
+
+### 10.3 创建会话
+
+- Method: `POST`
+- Path: `/api/ai/chat/sessions`
+- 鉴权: 是（`app:ai:chat`）
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `title` | string | 否 | 会话标题，缺省为「新会话」，首条用户消息会补充标题 |
+| `context` | object | 否 | 页面上下文，见 §10.8 |
+
+响应 `data`：
+
+```json
+{
+  "session_id": "9b0f...",
+  "title": "新会话",
+  "status": "active",
+  "context": {
+    "page": "alerts",
+    "page_title": "告警详情",
+    "alert_id": "alt-1",
+    "application_id": "app-1",
+    "resource_id": "i-001",
+    "resource_type": "ecs",
+    "time_range": "30m"
+  },
+  "created_at": "2026-01-02T03:04:05Z",
+  "updated_at": "2026-01-02T03:04:05Z"
+}
+```
+
+### 10.4 会话列表
+
+- Method: `GET`
+- Path: `/api/ai/chat/sessions?limit=20`
+- 鉴权: 是（`app:ai:chat`）
+
+`limit` 取值 1–100，默认 20；按 `updated_at` 倒序返回当前用户的会话数组。
+
+### 10.5 会话详情
+
+- Method: `GET`
+- Path: `/api/ai/chat/sessions/:session_id`
+- 鉴权: 是（`app:ai:chat`）
+
+返回 `{ session, messages[] }`，消息按时间升序；`assistant` 消息带结构化 `answer`，并含 `tool_calls` 与 `references`。会话不属于当前用户时返回 403 `PERMISSION_DENIED`。
+
+### 10.6 发送消息（同步返回回答）
+
+- Method: `POST`
+- Path: `/api/ai/chat/sessions/:session_id/messages`
+- 鉴权: 是（`app:ai:chat`）
+
+请求体：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `content` | string | 是 | 用户问题，最长 4000 字符 |
+| `context` | object | 否 | 覆盖会话上下文（浮层从任意页面唤起时携带） |
+
+响应 `data`（节选）：
+
+```json
+{
+  "session_id": "9b0f...",
+  "message_id": "m-assistant-1",
+  "status": "ok",
+  "answer": {
+    "summary": "当前告警可能由实例 CPU 持续升高导致。",
+    "evidence": ["告警 HighCPU（级别 p1，状态 firing）", "observability evidence ev-..."],
+    "impact": ["影响 payment-service 支付链路"],
+    "recommendations": ["建议生成执行计划，由人工在执行确认页确认"],
+    "risk_level": "medium",
+    "require_confirm": true,
+    "actions": [
+      { "code": "execution.propose", "label": "生成执行计划", "allowed": true, "target": "/executions" },
+      { "code": "view.alert", "label": "查看告警详情", "allowed": true, "target": "/alerts?alert_id=alt-1" },
+      { "code": "view.metrics", "label": "查看指标", "allowed": true, "target": "/observability" }
+    ],
+    "rollback": "缩容回原实例数",
+    "uncertainties": ["缺少最近变更记录"],
+    "insufficient_context": false
+  },
+  "tool_calls": [
+    { "tool_code": "alarm.analyze", "allowed": true, "mode": "read_only", "status": "ok" },
+    { "tool_code": "metrics.query", "allowed": false, "status": "denied", "reason": "tool permission denied" },
+    { "tool_code": "execution.tasks.propose", "allowed": true, "mode": "require_confirm", "status": "ok" }
+  ],
+  "references": [
+    { "type": "alert", "id": "alt-1", "label": "HighCPU", "url": "/alerts?alert_id=alt-1" },
+    { "type": "observability_evidence", "id": "ev-...", "label": "指标证据 ev-...", "url": "/observability" }
+  ],
+  "context": { "page": "alerts", "alert_id": "alt-1", "time_range": "30m" },
+  "created_at": "2026-01-02T03:04:10Z"
+}
+```
+
+#### 10.6.1 `status` 语义
+
+| status | 说明 |
+| --- | --- |
+| `ok` | 模型正常返回并通过结构校验 |
+| `degraded` | 模型未配置、调用失败或输出非法；`answer.degraded=true` 且 `answer.degraded_reason` 为 `model_unavailable` / `model_failed` / `model_output_invalid`，保留已获取的只读上下文 |
+| `insufficient_context` | 模型显式声明上下文不足（`answer.insufficient_context=true`） |
+
+#### 10.6.2 `answer` 字段
+
+`summary` / `evidence` / `impact` / `recommendations` / `risk_level` / `require_confirm` / `actions` / `rollback` / `uncertainties` / `insufficient_context`。
+
+- `risk_level`：`low` / `medium` / `high` / `info`；模型返回 `critical` 时按 `high` 呈现。
+- `actions` 由服务端按权限生成，**不采信模型输出**：
+  - `execution.propose`：服务端校验 `execution.tasks.propose` 工具权限，`allowed=false` 时带 `reason`；
+  - `view.alert` / `view.metrics`：只读跳转入口，`target` 为前端路由。
+- `require_confirm`：模型声明或 `risk_level` 为 medium/high 时为 `true`。该字段只表达“建议需要人工确认”，不替代 Execution 状态机的确认。
+- `uncertainties` 必须保留，前端需展示；降级回答必须给出不确定性说明。
+
+#### 10.6.3 工具调用与审计
+
+- 上下文中的 `alert_id` 会触发 `alarm.analyze` 权限校验并读取告警快照；可推导指标查询条件时触发 `metrics.query` 权限校验并采集只读指标证据。
+- 每次工具校验/调用都写入审计：`resource_type=ai`、`resource_id=session_id`、`action=tool_invoke`，payload 含 `tool_code/allowed/mode/status/reason/result`，不含 prompt 与凭据。
+- 回答写入审计：`action=chat_message`，含 `status/risk_level/require_confirm/tool_codes/tool_denied/reference_count/provider_id/tokens/degraded_reason`。
+- 工具权限校验只做 RBAC 与工具权限，不做对象级数据范围判断：
+  - 指标证据的数据范围由观测取数端口按账号权限二次校验；
+  - 告警快照读取当前与 `POST /api/ai/analyze-alert` 一致，仅校验告警读取/工具权限，**尚未按用户数据范围过滤**（P1 待补，见 §10.11）。
+  - 不在工具校验处强制数据范围，是为了避免无对象上下文的对话被误判为“缺少对象上下文”。
+- 对话历史最多取最近 12 条送入模型；单条历史内容截断，不读取全量会话。
+
+### 10.7 提交回答反馈
+
+- Method: `POST`
+- Path: `/api/ai/chat/sessions/:session_id/messages/:message_id/feedback`
+- 鉴权: 是（`app:ai:chat:feedback`）
+
+请求体：`{ "feedback": "valid" | "invalid" }`。仅支持 `assistant` 消息，重复提交覆盖为最后一次结果；审计 `action=chat_feedback`。
+
+### 10.8 页面上下文
+
+```json
+{
+  "page": "alerts",
+  "page_title": "告警详情",
+  "alert_id": "alt-1",
+  "application_id": "app-1",
+  "resource_id": "i-001",
+  "resource_type": "ecs",
+  "time_range": "30m"
+}
+```
+
+- 字段均为可选业务标识；服务端只做长度裁剪与去空白，不信任前端做权限判断。
+- 前端在告警详情页写入告警/应用/资源上下文，其它页面写入页面级上下文；发送消息时随请求携带，会话创建时也会保存一份。
+- 上下文只存业务 ID 与标题，禁止写入凭据、Token、告警正文或自由文本。
+
+### 10.9 前端状态映射（页面原型 §23.2）
+
+| UI 状态 | 判定 |
+| --- | --- |
+| AI 思考中 / 查询工具中 / 生成回答中 | 请求进行中的阶段提示（同步接口） |
+| AI 回答失败 | `status=degraded`，展示 `degraded_reason` 与可重试入口 |
+| AI 无足够上下文 | `status=insufficient_context` 或 `answer.insufficient_context=true` |
+| AI 建议需人工确认 | `answer.require_confirm=true` |
+| AI 建议不可执行 | `actions` 中 `execution.propose.allowed=false`，展示 `reason` |
+
+### 10.10 存储与迁移
+
+- 迁移 `0049_ai_session`：`ai_session`（`session_id` 业务唯一列、`user_id`、`title`、`context_json`、`status`）与 `ai_session_message`（`message_id` 业务唯一列、`session_id`、`role`、`content`、`tool_calls_json`、`references_json`、`feedback`）。
+- `assistant` 消息的 `content` 保存结构化回答 JSON；读取时由服务端解析为 `answer` 字段。
+- 消息落库与会话 `updated_at` / 标题 / 上下文更新在同一事务内完成。
+- 会话归属用户：跨用户访问返回 403；不暴露自增 `id`。
+
+### 10.11 已知限制与 P1 待办
+
+- **告警上下文未做数据范围过滤（P1，建议优先）**：`AlertReader.GetForAnalysis` 当前按 `alert_id` 直读，ChatService 的工具校验也只做 RBAC + 工具权限（与 `POST /api/ai/analyze-alert` 行为一致，非本次回归）。拥有 `app:ai:chat` 的用户可以把任意 `alert_id` 作为上下文读取告警快照。当前 `app:ai:chat` 仅绑定 `admin`，影响有限；P1 需要：
+  1. 为告警读取补用户数据范围校验（按告警归属/部门/团队/区域等对象上下文）；
+  2. 评估在 ChatService 工具校验中恢复数据范围判断（带对象上下文，避免误判）；
+  3. 同步 `POST /api/ai/analyze-alert` 的同类缺口，保持一致。
+- 同步接口：对话为一次性返回，流式与取消语义属 P1+。
+- 工具范围：当前仅告警快照 + 指标证据（`alarm.analyze` / `metrics.query`）；日志、资产、变更类只读工具未接入。
+- 资源级上下文：告警详情最完整；资产/执行/观测页当前仅页面级上下文。
+- 会话能力：仅本人可见，分享未实现；归档后端已支持但 UI 未提供。
+- 消息幂等：未引入 `client_message_id`，客户端超时重试可能产生重复用户消息。

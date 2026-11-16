@@ -156,8 +156,25 @@
 | `deleteProvider` | `DELETE /api/ai/providers/:id` | 删除并同步运行时 |
 | `invokeTool` | `POST /api/ai/tools/invoke` | 工具调用；成功响应内须检查 `allowed` |
 | `analyzeAlert` | `POST /api/ai/analyze-alert` | 告警上下文 AI 分析；返回 summary、risk_level、recommendations、references（证据来源）等 |
+| `createChatSession` | `POST /api/ai/chat/sessions` | 创建 AI 助手会话，可带页面上下文 |
+| `listChatSessions` | `GET /api/ai/chat/sessions?limit=` | 当前用户最近会话 |
+| `getChatSession` | `GET /api/ai/chat/sessions/:session_id` | 会话详情与历史消息（assistant 消息带 `answer`） |
+| `sendChatMessage` | `POST /api/ai/chat/sessions/:session_id/messages` | 发送消息并同步返回结构化回答；超时按 90s 设置 |
+| `sendChatFeedback` | `POST .../messages/:message_id/feedback` | 回答有效/无效反馈 |
 
-页面：`views/ai-assistant/index.vue`、`views/alerts/index.vue`（告警详情先 `requestAlertAIAnalysis` 写时间线，再 `analyzeAlert` 取结果展示）。契约：`ops/ai-contract.md`。
+页面：
+
+- AI 运维助手工作台 `views/ai-assistant/index.vue`（三栏：会话列表 / 对话 / 上下文与工具），对话逻辑在 `views/ai-assistant/composables/useChat.ts`，与全局浮层 `layouts/components/AIAssistantOverlay.vue` 共用。
+- AI 配置（Provider 管理 + 工具调用调试）在 `views/system/ai-config/index.vue`，路由 `/system/ai-config`；`views/ai-assistant` 不再承载 Provider 管理。
+- 告警详情 `views/alerts/index.vue` 会写入页面上下文（`stores/aiContext.ts`），并支持 `/alerts?alert_id=` 深链打开详情。
+
+契约：`ops/ai-contract.md`（§10 为 AI 助手会话与对话）。要点：
+
+- 成功判断使用 `code === "OK"`；`sendChatMessage` 的 `data.status` 为 `ok` / `degraded` / `insufficient_context`，前端必须分别展示失败、无足够上下文状态。
+- `data.answer.actions` 由服务端按权限生成；`execution.propose.allowed=false` 时必须禁用按钮并展示 `reason`。
+- 「生成执行计划」调用既有 `createExecutionTask`（`source_type=ai_conversation`，`source_id=session_id`），任务进入 Execution `pending_confirm`；前端不得提供任何直接执行入口。
+- 工具调用结果必须检查 `allowed`；被拒绝是业务结果，需展示 `reason`。
+- Provider 的 `api_key` 只显示掩码与 `has_api_key`，不在前端持久化；页面上下文只保存业务 ID，不保存凭据或告警正文。
 
 ## Audit（`audit.ts`）
 

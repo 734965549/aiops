@@ -284,10 +284,16 @@
             <a-button
               v-if="canAIAnalysis"
               type="outline"
-              :loading="aiLoading"
               @click="openAIModal"
             >
               AI 分析
+            </a-button>
+            <a-button
+              v-if="canAIAnalysis"
+              type="outline"
+              @click="askAI"
+            >
+              问 AI 助手
             </a-button>
             <a-button
               v-if="canCreateExecution"
@@ -454,43 +460,11 @@
       />
     </a-modal>
 
-    <a-modal
+    <AlertAIAnalysisModal
       v-model:visible="showAIModal"
-      title="AI 告警分析"
-      :width="640"
-      :ok-loading="aiLoading"
-      @before-ok="beforeAIAnalysis"
-      @cancel="resetAIModal"
-    >
-      <a-form
-        :model="aiForm"
-        layout="vertical"
-      >
-        <a-form-item label="时间范围">
-          <a-input
-            v-model="aiForm.time_range"
-            placeholder="30m"
-          />
-        </a-form-item>
-        <a-form-item>
-          <a-space direction="vertical">
-            <a-checkbox v-model="aiForm.include_logs">
-              包含日志
-            </a-checkbox>
-            <a-checkbox v-model="aiForm.include_metrics">
-              包含指标
-            </a-checkbox>
-            <a-checkbox v-model="aiForm.include_changes">
-              包含变更
-            </a-checkbox>
-          </a-space>
-        </a-form-item>
-      </a-form>
-      <AlertAIAnalysisResult
-        v-if="aiResult"
-        :result="aiResult"
-      />
-    </a-modal>
+      :alert-id="selectedAlertId"
+      @analyzed="refreshDetail"
+    />
 
     <a-modal
       v-model:visible="showExecutionModal"
@@ -586,8 +560,8 @@ import { useRouter } from 'vue-router'
 import Message from '@arco-design/web-vue/es/message'
 import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import { useAuthStore } from '@/stores/auth'
+import { useAIContextStore } from '@/stores/aiContext'
 import { getApiError } from '@/api/request'
-import { analyzeAlert, type AnalyzeAlertResult } from '@/api/ai'
 import * as alertApi from '@/api/alert'
 import type { Alert, AlertDetail, AlertEvent, AlertSource } from '@/api/alert'
 import * as executionApi from '@/api/execution'
@@ -595,12 +569,15 @@ import * as runbookApi from '@/api/runbook'
 import type { RunbookRecommendation } from '@/api/runbook'
 import AlertSourceManager from './components/AlertSourceManager.vue'
 import AlertDetailEnhancement from './components/AlertDetailEnhancement.vue'
-import AlertAIAnalysisResult from './components/AlertAIAnalysisResult.vue'
+import AlertAIAnalysisModal from './components/AlertAIAnalysisModal.vue'
 import { statusOptions, severityOptions, columns, eventTypeLabel } from './composables/alertPresentation'
+import { clearAlertAIContext, syncAlertAIContext, useAlertDeepLink } from './composables/alertAIContext'
 
 const router = useRouter()
 
 const auth = useAuthStore()
+const aiContext = useAIContextStore()
+const deepLink = useAlertDeepLink(openDetail)
 
 const alerts = ref<Alert[]>([])
 const sources = ref<AlertSource[]>([])
@@ -613,7 +590,6 @@ const loadingDetail = ref(false)
 const loadingSources = ref(false)
 const actionLoading = ref(false)
 const modalLoading = ref(false)
-const aiLoading = ref(false)
 const executionLoading = ref(false)
 const runbookLoading = ref(false)
 const runbookRecommendations = ref<RunbookRecommendation[]>([])
@@ -628,8 +604,6 @@ const showAssignModal = ref(false)
 const showCommentModal = ref(false)
 const showAIModal = ref(false)
 const showExecutionModal = ref(false)
-
-const aiResult = ref<AnalyzeAlertResult | null>(null)
 
 // 窄视口抽屉改全宽，避免固定 720px 溢出；matchMedia 缺失（SSR/jsdom）时安全跳过。
 const isNarrow = ref(false)
@@ -658,12 +632,6 @@ const closeForm = reactive({ resolution: '' })
 const silenceForm = reactive({ reason: '', duration_s: 3600 })
 const assignForm = reactive({ assignee_user_id: '', message: '' })
 const commentForm = reactive({ message: '' })
-const aiForm = reactive({
-  time_range: '30m',
-  include_logs: false,
-  include_metrics: false,
-  include_changes: false
-})
 
 const runbookForm = reactive({
   template_id: '',
@@ -829,6 +797,7 @@ async function openDetail(alertId: string) {
   loadingDetail.value = true
   try {
     detail.value = await alertApi.getAlert(alertId)
+    syncAlertAIContext(detail.value.alert)
   } catch (err) {
     // 请求失败态允许 error 色；规则字段降级态一律 info/中性，二者不得互相回归。
     const apiErr = getApiError(err)
@@ -845,6 +814,19 @@ function closeDetail() {
   detail.value = null
   detailError.value = ''
   selectedAlertId.value = ''
+  clearAlertAIContext()
+  deepLink.resetDeepLink()
+}
+
+/** 打开全局 AI 浮层，并把当前告警作为页面上下文带入。 */
+function askAI() {
+  const alert = detail.value?.alert
+  if (!alert) {
+    Message.warning('请先加载告警详情')
+    return
+  }
+  syncAlertAIContext(alert)
+  aiContext.openOverlay()
 }
 
 function onRowClick(record: TableData) {
@@ -998,12 +980,7 @@ async function beforeComment(): Promise<boolean> {
 }
 
 function openAIModal() {
-  aiResult.value = null
   showAIModal.value = true
-}
-
-function resetAIModal() {
-  aiResult.value = null
 }
 
 function openRunbookModal() {
@@ -1072,34 +1049,6 @@ async function beforeCreateFromRunbook(): Promise<boolean> {
     return false
   } finally {
     executionLoading.value = false
-  }
-}
-
-async function beforeAIAnalysis(): Promise<boolean> {
-  if (!selectedAlertId.value) return false
-  aiLoading.value = true
-  try {
-    await alertApi.requestAlertAIAnalysis(selectedAlertId.value, {
-      time_range: aiForm.time_range,
-      include_logs: aiForm.include_logs,
-      include_metrics: aiForm.include_metrics,
-      include_changes: aiForm.include_changes
-    })
-    aiResult.value = await analyzeAlert({
-      alert_id: selectedAlertId.value,
-      time_range: aiForm.time_range,
-      include_logs: aiForm.include_logs,
-      include_metrics: aiForm.include_metrics,
-      include_changes: aiForm.include_changes
-    })
-    Message.success('AI 分析完成')
-    await refreshDetail()
-    // 保留弹窗以展示分析结果，由用户手动关闭。
-    return false
-  } catch {
-    return false
-  } finally {
-    aiLoading.value = false
   }
 }
 

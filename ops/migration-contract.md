@@ -63,6 +63,7 @@
 0046_alert_source_pull.up.sql                        -> Alert：alert_source 增加 delivery_mode/account_id/pull_config/last_sync_at/last_sync_status/sync_state；新增 alert_source_sync_lease 跨实例源级租约；存量源默认 webhook
 0047_alert_source_pull_state.up.sql                  -> Alert：幂等补齐 alert_source.delivery_mode 与 sync_state（不改写已发布的 0046）；时间戳仍由 Go 维护
 0048_ai_provider.up.sql                              -> AI：ai_provider（provider_id 唯一、type/base_url/model/api_key_encrypted/headers/timeout_ms/enabled）；凭据仅存 AES-GCM 密文；时间戳由 Go 维护
+0049_ai_session.up.sql                               -> AI：ai_session / ai_session_message（会话与消息，session_id / message_id 业务唯一）；种子 app:ai:chat、app:ai:chat:feedback 并绑定 admin；时间戳由 Go 维护
 ```
 
 | 职责 | 0001 / 0002 / 0016 迁移 | 启动期 bootstrap（`cmd/api`） |
@@ -302,6 +303,7 @@ Integration 上下文第一阶段迁移，建表：
 | `0046` | `0046_alert_source_pull.up.sql` | Alert | `alert_source` 增加 `delivery_mode`（默认 `webhook`）、`account_id`、`pull_config`、`last_sync_at`、`last_sync_status`、`sync_state`；新增 `alert_source_sync_lease`（`source_id` 唯一、`owner_id`、`lease_until`）作为跨实例源级同步租约；时间戳由 Go 维护；`down.sql` 删除租约表并移除新增字段（人工回滚参考，已导入告警与审计保留） | 已落地 |
 | `0047` | `0047_alert_source_pull_state.up.sql` | Alert | 幂等补齐 `alert_source.delivery_mode` 与 `sync_state`（`ADD COLUMN IF NOT EXISTS`）；用于兼容已应用早期 0046 的环境，遵守“不改写已发布迁移”的规则；时间戳仍由 Go 维护；`down.sql` 仅删除这两列（人工回滚参考） | 已落地 |
 | `0048` | `0048_ai_provider.up.sql` | AI | 新建 `ai_provider`：`provider_id` 唯一业务标识、`type` / `base_url` / `model` / `api_key_encrypted`（BYTEA 密文）/ `headers` JSONB / `timeout_ms` / `enabled` / `description`；`created_at` / `updated_at` 由 Go 维护、无 DB DEFAULT、无外键；`CREATE TABLE/INDEX IF NOT EXISTS` 幂等；`down.sql` 删除表（人工回滚参考） | 已落地 |
+| `0049` | `0049_ai_session.up.sql` | AI | 新建 `ai_session`（`session_id` 唯一、`user_id`、`title`、`context_json`、`status`）与 `ai_session_message`（`message_id` 唯一、`session_id`、`role`、`content`、`tool_calls_json`、`references_json`、`feedback`）；助手消息 `content` 保存结构化回答 JSON；无外键，按 `session_id` 索引与事务保证一致性；种子 `app:ai:chat`、`app:ai:chat:feedback` 并绑定 `admin`；`down.sql` 删除表与权限（人工回滚参考） | 已落地 |
 
 这些迁移必须同步种子化权限和 AI 工具权限，并把 admin 角色绑定到新增权限：
 
@@ -310,6 +312,7 @@ Integration 上下文第一阶段迁移，建表：
 - Inspection：`app:inspections:read/create/update/run`，AI 工具 `inspection.runs.create`、`inspection.findings.analyze`。
 - Notification：`app:notifications:read/create/update/test`。
 - Execution Agent：`app:executions:media:read/create/update/delete`、`app:executions:agents:manage`、`app:executions:command_specs:read/create/update/delete`，AI 工具 `execution.media.list`、`execution.tasks.propose`；`execution.tasks.dispatch` 不授予 AI。
+- AI 运维助手（`0049`）：`app:ai:chat`、`app:ai:chat:feedback`，均绑定 `admin`；对话内部工具复用既有 `alarm.analyze`、`metrics.query`、`execution.tasks.propose` 工具权限。
 
 建表仍遵守全局规范：`id BIGSERIAL` 仅作内部主键；跨上下文和对外 API 使用 `provider_account_id`、`inspection_run_id`、`medium_id`、`agent_id`、`command_spec_id`、`lease_id` 等业务 ID；业务表必须包含由 Go 维护的 `created_at` / `updated_at`；默认不加数据库外键，通过 repository 事务、唯一索引和存在性校验保证一致性。
 
