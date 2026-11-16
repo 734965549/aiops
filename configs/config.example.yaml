@@ -13,7 +13,7 @@ app:
 server:
   host: 0.0.0.0
   port: 8080
-  read_timeout_s: 15
+  read_timeout_s: 150
   read_header_timeout_s: 5
   write_timeout_s: 120
   shutdown_timeout_s: 10
