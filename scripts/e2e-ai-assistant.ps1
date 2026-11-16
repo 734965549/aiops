@@ -1,4 +1,4 @@
-# AI assistant E2E (requires migration 0049 + running API + configured AI provider).
+﻿# AI assistant E2E (requires migration 0049 + running API + configured AI provider).
 #
 # Covers the P0 assistant loop:
 #   login -> create session -> ask with alert context -> structured answer (risk/actions)
