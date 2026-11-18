@@ -301,10 +301,11 @@ export function getSharedChatSession(token: string) {
 
 // ---- 流式对话（ops/ai-contract.md §10.17）----
 
-/** 服务端推送的流式事件：阶段、工具观测、最终回答、业务错误。 */
+/** 服务端推送的流式事件：阶段、工具观测、模型增量、最终回答、业务错误。 */
 export type ChatStreamEvent =
   | { type: 'stage'; stage: string }
   | { type: 'tool'; tool: ChatToolCall }
+  | { type: 'delta'; phase: 'thinking' | 'answer' | string; text: string }
   | { type: 'answer'; result: SendChatMessageResult }
   | { type: 'error'; code?: string; message?: string }
 

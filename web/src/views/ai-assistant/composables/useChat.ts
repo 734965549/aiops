@@ -68,6 +68,8 @@ export function useChat() {
   const proposing = ref(false)
   const error = ref('')
   const stage = ref<ChatStage>('idle')
+  // delta 事件只做“已生成 N 字”进度提示，不渲染半成品 JSON。
+  const deltaChars = ref(0)
   const uiStatus = ref<ChatUIStatus>('idle')
   const lastUserContent = ref('')
   // 最近一次提问的幂等键，重试时复用（ops/ai-contract.md §10.6.5）。
@@ -88,6 +90,7 @@ export function useChat() {
 
   function endStage() {
     stage.value = 'idle'
+    deltaChars.value = 0
     streamController = null
   }
 
@@ -104,9 +107,15 @@ export function useChat() {
     if (event.type === 'stage') {
       stage.value = mapServerStage(event.stage)
     } else if (event.type === 'tool') {
-      // 工具观测到达即说明正在取数，先于模型阶段给出提示。
+      // 工具观测到达即说明正在取数，先于模型阶段给出提示；新一轮模型输出重新计数。
       stage.value = 'querying_tools'
+      deltaChars.value = 0
+    } else if (event.type === 'delta') {
+      if (event.phase === 'answer' && event.text) {
+        deltaChars.value += Array.from(event.text).length
+      }
     }
+    // 未知事件类型（例如未来新增的通知）直接忽略，避免破坏现有流。
   }
 
   function deriveUIStatus(status: ChatResultStatus, answer?: ChatAnswer): ChatUIStatus {
@@ -208,6 +217,7 @@ export function useChat() {
 
     error.value = ''
     sending.value = true
+    deltaChars.value = 0
     lastUserContent.value = content
     // 同一条提问的重试复用同一个幂等键，服务端据此返回首次结果而不是重复落消息。
     const clientId = clientMessageId || newClientMessageId()
@@ -375,6 +385,7 @@ export function useChat() {
     activeSessionId.value = ''
     messages.value = []
     uiStatus.value = 'idle'
+    deltaChars.value = 0
     lastResult.value = null
     error.value = ''
   }
@@ -458,6 +469,7 @@ export function useChat() {
     proposing,
     error,
     stage,
+    deltaChars,
     uiStatus,
     lastResult,
     lastUserContent,

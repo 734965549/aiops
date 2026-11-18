@@ -60,7 +60,12 @@
         class="stage-indicator"
       >
         <a-spin :size="14" />
-        <span>{{ STAGE_LABELS[stage === 'idle' ? 'thinking' : stage] }}</span>
+        <span>
+          {{ STAGE_LABELS[stage === 'idle' ? 'thinking' : stage] }}
+          <template v-if="stageDeltaChars">
+            · 已生成 {{ stageDeltaChars }} 字
+          </template>
+        </span>
       </div>
     </div>
 
@@ -170,6 +175,7 @@ const props = defineProps<{
   messages: ChatMessage[]
   sending: boolean
   stage: ChatStage
+  stageDeltaChars?: number
   status: ChatUIStatus
   error?: string
   proposing?: boolean

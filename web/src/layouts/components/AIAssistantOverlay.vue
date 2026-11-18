@@ -38,6 +38,7 @@
         :messages="messages"
         :sending="sending"
         :stage="stage"
+        :stage-delta-chars="deltaChars"
         :status="uiStatus"
         :error="error"
         :proposing="proposing"
@@ -72,6 +73,7 @@ const {
   proposing,
   error,
   stage,
+  deltaChars,
   uiStatus,
   lastUserContent,
   contextSummary,

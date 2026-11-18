@@ -198,7 +198,7 @@
 - 会话归档后只读：`sendChatMessage` 会返回 409 `FAILED_PRECONDITION`，前端应在发送前按 `session.status` 拦截并提示先恢复。
 - 消息幂等：每次提问生成 `client_message_id`（`crypto.randomUUID`），重试复用同一值；服务端已生成回答时返回首次结果，回答缺失时返回 409 `FAILED_PRECONDITION`，此时提示用户刷新会话而不是静默重发。
 - 归档/恢复/删除入口在会话列表（`SessionList.vue`），三者均需二次确认；删除当前会话后自动切到下一个会话。
-- 流式对话（§10.17）：`streamChatMessage` 走 `fetch` + `web/src/api/sse.ts` 解析 SSE，不用 `EventSource`（需要 POST 与 Bearer 头）。`stage` 事件驱动阶段提示，`tool` 事件即时展示工具校验结果；`answer` 事件与同步接口同构。发送中可点「停止生成」（`AbortController`），服务端不落回答并写 `chat_canceled` 审计；停止后回读会话以去掉本地乐观消息。收到 `error` 事件时抛 `ApiHttpError`（HTTP 200 + 业务码）。
+- 流式对话（§10.17）：`streamChatMessage` 走 `fetch` + `web/src/api/sse.ts` 解析 SSE，不用 `EventSource`（需要 POST 与 Bearer 头）。`stage` 事件驱动阶段提示，`tool` 事件即时展示工具校验结果，`delta` 事件只用于“已生成 N 字”进度（`thinking`/`answer`，最终答案仍以 `answer` 事件整体渲染）；`: ping` 注释心跳由解析器忽略，未知事件类型优雅忽略。`answer` 事件与同步接口同构。发送中可点「停止生成」（`AbortController`），服务端中止模型调用、不落回答并写 `chat_canceled` 审计；停止后回读会话以去掉本地乐观消息。收到 `error` 事件时抛 `ApiHttpError`（HTTP 200 + 业务码）。
 - 会话分享（§10.18）：仅**对内只读**，访问者必须登录且具备 `app:ai:chat`；token 只在创建响应返回一次，前端不持久化。共享页路由 `/ai-assistant/shared/:token`（`SharedSession.vue`）只读渲染，禁用反馈与动作；过期/撤销/源会话删除统一 404。入口在会话列表「分享」→ `ShareDialog.vue`。
 - Provider 的 `api_key` 只显示掩码与 `has_api_key`，不在前端持久化；页面上下文只保存业务 ID，不保存凭据或告警正文。
 
