@@ -143,7 +143,7 @@ function Register-AiMockProvider {
     param(
         [Parameter(Mandatory = $true)][string]$ApiBase,
         [Parameter(Mandatory = $true)][hashtable]$Headers,
-        [Parameter(Mandatory = $true)][int]$Port,
+        [int]$Port = 18081,
         # BaseUrl 为空时按本机 loopback 注册；远程 API 场景传入外部可达地址
         # （如 203 compose 网络内的 http://ai-e2e-mock:18081/v1）。
         [string]$BaseUrl = ""

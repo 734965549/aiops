@@ -103,7 +103,7 @@ func main() {
 				return
 			}
 		}
-		content, scenario := state.nextContent(prompt)
+		content, scenario := state.nextContent(req.Messages)
 		log.Printf("completion served: scenario=%s prompt_runes=%d", scenario, len([]rune(prompt)))
 
 		w.Header().Set("Content-Type", "application/json")
@@ -130,17 +130,32 @@ type scenarioState struct {
 	seen map[string]int
 }
 
-func (s *scenarioState) nextContent(prompt string) (string, string) {
+func (s *scenarioState) nextContent(messages []chatMessage) (string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if strings.Contains(prompt, "MOCK_TOOL_INFINITE") {
+	// 服务端 user prompt 是 JSON 包装体（question/context/observations），
+	// 标记与参数在 question 原文里；从解码后的原文提取，避免 JSON 转义
+	// （{\"account_id\":...}）破坏参数解析。注意 joinPrompt 会把 system prompt
+	// 与 user prompt 拼在一起，整体不再是合法 JSON，必须逐条消息解析。
+	prompt := joinPrompt(messages)
+	target := prompt
+	for _, message := range messages {
+		var body struct {
+			Question string `json:"question"`
+		}
+		if err := json.Unmarshal([]byte(message.Content), &body); err == nil && strings.TrimSpace(body.Question) != "" {
+			target = body.Question
+			break
+		}
+	}
+	if strings.Contains(target, "MOCK_TOOL_INFINITE") {
 		return infiniteToolRequests, "infinite"
 	}
-	if idx := strings.Index(prompt, "MOCK_TOOL_RULES"); idx >= 0 {
+	if idx := strings.Index(target, "MOCK_TOOL_RULES"); idx >= 0 {
 		s.seen["rules"]++
 		if s.seen["rules"] == 1 {
 			var params ruleScenarioParams
-			decoder := json.NewDecoder(strings.NewReader(prompt[idx+len("MOCK_TOOL_RULES"):]))
+			decoder := json.NewDecoder(strings.NewReader(target[idx+len("MOCK_TOOL_RULES"):]))
 			if err := decoder.Decode(&params); err != nil {
 				log.Printf("rules scenario params invalid: %v", err)
 				return answerContent, "rules_params_invalid"
@@ -158,19 +173,20 @@ func (s *scenarioState) nextContent(prompt string) (string, string) {
 				params.Metric, string(dimensions), params.From, params.To, params.Period,
 			), "rules"
 		}
+		// 观测在包装体的 observations 字段里，检查要看完整 prompt。
 		if strings.Contains(prompt, "rule-fake") && strings.Contains(prompt, "evidence_ids") {
 			return ruleInspectionAnswer, "answer_after_rules"
 		}
 		return answerContent, "answer_after_rules"
 	}
-	if strings.Contains(prompt, "MOCK_TOOL_DENY") {
+	if strings.Contains(target, "MOCK_TOOL_DENY") {
 		s.seen["deny"]++
 		if s.seen["deny"] == 1 {
 			return denyToolRequests, "deny"
 		}
 		return answerContent, "answer_after_deny"
 	}
-	if strings.Contains(prompt, "MOCK_TOOL_LOOP") {
+	if strings.Contains(target, "MOCK_TOOL_LOOP") {
 		s.seen["loop"]++
 		if s.seen["loop"] == 1 {
 			return loopToolRequests, "loop"
