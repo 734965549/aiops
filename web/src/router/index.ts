@@ -26,6 +26,13 @@ const routes: RouteRecordRaw[] = [
         meta: { title: 'AI 运维助手', icon: 'ChatDotRound' }
       },
       {
+        // 只读分享：仍需登录 + app:ai:chat，链接过期/撤销后服务端返回 404（契约 §10.18）。
+        path: 'ai-assistant/shared/:token',
+        name: 'ai-assistant-shared',
+        component: () => import('@/views/ai-assistant/SharedSession.vue'),
+        meta: { title: '共享会话（只读）' }
+      },
+      {
         path: 'alerts',
         name: 'alerts',
         component: () => import('@/views/alerts/index.vue'),

@@ -45,6 +45,16 @@ npm run build
 此时用 `npx vite build --no-emptyOutDir` 跳过清空即可完成构建；旧哈希资源会保留在 `dist` 中，
 不影响 `index.html` 指向的新产物。CI 与常规本地环境仍使用 `npm run build`。
 
+在火绒（Huorong）安全软件开启 HIPS 的机器上，esbuild 服务进程“创建临时文件→立即删除”
+的 IPC 模式会被实时防护拦截，构建在 rendering chunks 阶段报
+`[vite:esbuild-transpile] remove <TMP>\esbuild-*: Access is denied`（属于环境策略，不是源码错误）。
+两种处理方式任选：
+
+- 推荐在火绒信任区添加 `web\node_modules\esbuild\*`（或 esbuild.exe）与构建临时目录；
+- 或构建前把 TMP/TEMP 指向项目内目录（火绒对项目目录删除更宽松）：
+  PowerShell 示例 `New-Item -ItemType Directory -Force -Path web\.esbuild-tmp; $env:TMP="$PWD\web\.esbuild-tmp"; $env:TEMP="$PWD\web\.esbuild-tmp"; npm run build`。
+  `web/.esbuild-tmp/` 已加入 `.gitignore`。
+
 ## 容器化（前后端分离）
 
 前端是**独立镜像 `aiops-web`**，与后端 `aiops-api` 分开，不打包在一起：

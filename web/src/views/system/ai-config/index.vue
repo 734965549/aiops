@@ -16,6 +16,12 @@
       >
         <ToolConsole />
       </a-tab-pane>
+      <a-tab-pane
+        key="knowledge"
+        title="知识沉淀"
+      >
+        <KnowledgeManager />
+      </a-tab-pane>
     </a-tabs>
   </div>
 </template>
@@ -23,6 +29,7 @@
 <script setup lang="ts">
 import ProviderManager from './components/ProviderManager.vue'
 import ToolConsole from './components/ToolConsole.vue'
+import KnowledgeManager from './components/KnowledgeManager.vue'
 </script>
 
 <style scoped>

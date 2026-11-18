@@ -253,9 +253,11 @@ import Message from '@arco-design/web-vue/es/message'
 import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import * as executionApi from '@/api/execution'
 import type { ExecutionTask, ExecutionTaskDetail } from '@/api/execution'
+import { useAIContextStore } from '@/stores/aiContext'
 
 const route = useRoute()
 const router = useRouter()
+const aiContext = useAIContextStore()
 
 const tasks = ref<ExecutionTask[]>([])
 const detail = ref<ExecutionTaskDetail | null>(null)
@@ -416,6 +418,7 @@ async function openDetail(taskId: string) {
   loadingDetail.value = true
   try {
     detail.value = await executionApi.getExecutionTask(taskId)
+    syncExecutionAIContext(detail.value?.task)
   } finally {
     loadingDetail.value = false
   }
@@ -425,6 +428,29 @@ function closeDetail() {
   detailVisible.value = false
   detail.value = null
   selectedTaskId.value = ''
+  aiContext.clearResourceContext('executions', '执行中心')
+}
+
+/**
+ * 执行页资源级上下文（ops/ai-contract.md §10.8）：
+ * 任务本身用 execution_id 表达；来源为告警时带 alert_id，目标是资源时带 resource_id/type。
+ * 不把 parameters/输出等自由文本写入上下文。
+ */
+function syncExecutionAIContext(task?: ExecutionTask) {
+  if (!task?.id) {
+    aiContext.clearResourceContext('executions', '执行中心')
+    return
+  }
+  const fromAlert = task.source_type === 'alert' ? (task.source_id || '').trim() : ''
+  const isResourceTarget = task.target_type === 'resource'
+  aiContext.setPageContext({
+    page: 'executions',
+    page_title: `执行任务 · ${task.name || task.id}`,
+    execution_id: task.id,
+    alert_id: fromAlert || undefined,
+    resource_id: isResourceTarget ? task.target_id : undefined,
+    resource_type: isResourceTarget ? task.target_type : undefined
+  })
 }
 
 function onSearch() {

@@ -1,4 +1,6 @@
-import { http } from './request'
+import { http, ApiHttpError, type ApiResponse } from './request'
+import { consumeSSE, type SSEFrame } from './sse'
+import { useAuthStore } from '@/stores/auth'
 
 export interface AIProvider {
   id: string
@@ -112,6 +114,7 @@ export interface ChatSessionContext {
   application_id?: string
   resource_id?: string
   resource_type?: string
+  execution_id?: string
   time_range?: string
 }
 
@@ -202,6 +205,8 @@ export interface CreateChatSessionInput {
 export interface SendChatMessageInput {
   content: string
   context?: ChatSessionContext
+  /** 幂等键：客户端超时重试时复用同一值，避免重复落消息与重复模型调用。 */
+  client_message_id?: string
 }
 
 export function createChatSession(input: CreateChatSessionInput) {
@@ -242,5 +247,272 @@ export function sendChatFeedback(sessionId: string, messageId: string, feedback:
     url: `/api/ai/chat/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/feedback`,
     method: 'post',
     data: { feedback }
+  })
+}
+
+// ---- 会话只读分享（ops/ai-contract.md §10.18）----
+
+export interface ChatShare {
+  share_id: string
+  session_id: string
+  status: 'active' | 'revoked' | string
+  expires_at: string
+  created_at: string
+}
+
+export interface CreatedChatShare extends ChatShare {
+  /** 明文 token 只在创建响应返回一次，前端应立即展示/复制。 */
+  token: string
+  share_url: string
+}
+
+/** 创建只读分享链接；expiresInHours 缺省 168（7 天），允许 1–720。 */
+export function createChatShare(sessionId: string, expiresInHours?: number) {
+  return http<CreatedChatShare>({
+    url: `/api/ai/chat/sessions/${encodeURIComponent(sessionId)}/shares`,
+    method: 'post',
+    data: expiresInHours ? { expires_in_hours: expiresInHours } : {}
+  })
+}
+
+/** 会话的分享记录（含已撤销/过期），仅 owner 可查。 */
+export function listChatShares(sessionId: string) {
+  return http<{ shares: ChatShare[] }>({
+    url: `/api/ai/chat/sessions/${encodeURIComponent(sessionId)}/shares`,
+    method: 'get'
+  })
+}
+
+/** 撤销分享链接；重复撤销幂等。 */
+export function revokeChatShare(sessionId: string, shareId: string) {
+  return http<ChatShare>({
+    url: `/api/ai/chat/sessions/${encodeURIComponent(sessionId)}/shares/${encodeURIComponent(shareId)}`,
+    method: 'delete'
+  })
+}
+
+/** 通过分享 token 读取只读会话；不可用（过期/撤销/不存在）统一 404。 */
+export function getSharedChatSession(token: string) {
+  return http<ChatSessionDetail>({
+    url: `/api/ai/chat/shares/${encodeURIComponent(token)}`,
+    method: 'get'
+  })
+}
+
+// ---- 流式对话（ops/ai-contract.md §10.17）----
+
+/** 服务端推送的流式事件：阶段、工具观测、最终回答、业务错误。 */
+export type ChatStreamEvent =
+  | { type: 'stage'; stage: string }
+  | { type: 'tool'; tool: ChatToolCall }
+  | { type: 'answer'; result: SendChatMessageResult }
+  | { type: 'error'; code?: string; message?: string }
+
+export interface StreamChatHandlers {
+  /** 每收到一条事件回调一次；不回传答案本身，最终结果由 Promise 返回。 */
+  onEvent?: (event: ChatStreamEvent) => void
+  /** 主动停止：中断读取后服务端不会落 assistant 消息（契约 §10.17.4）。 */
+  signal?: AbortSignal
+}
+
+/**
+ * 流式发送消息：POST + fetch 读取 text/event-stream。
+ * 收到 error 事件时抛 ApiHttpError（HTTP 状态已是 200，code 为业务错误码）；
+ * 流结束但未收到 answer 时抛 ABORTED，调用方应回读会话。
+ */
+export async function streamChatMessage(
+  sessionId: string,
+  input: SendChatMessageInput,
+  handlers: StreamChatHandlers = {}
+): Promise<SendChatMessageResult> {
+  const auth = useAuthStore()
+  const url = `/api/ai/chat/sessions/${encodeURIComponent(sessionId)}/messages/stream`
+  let response = await openChatStream(url, input, auth.token, handlers.signal)
+  if (response.status === 401) {
+    // 与 request.ts 的 401 语义对齐：token 过期先刷一次再重试。
+    try {
+      await auth.refresh()
+    } catch {
+      /* refresh 失败保持 401，交给调用方提示重新登录。 */
+    }
+    if (auth.token) {
+      response = await openChatStream(url, input, auth.token, handlers.signal)
+    }
+  }
+  if (!response.ok) {
+    throw await toApiHttpError(response)
+  }
+
+  let result: SendChatMessageResult | null = null
+  await consumeSSE(
+    response,
+    (frame) => {
+      const event = decodeChatEvent(frame)
+      if (!event) return
+      handlers.onEvent?.(event)
+      if (event.type === 'answer') {
+        result = event.result
+      } else if (event.type === 'error') {
+        throw new ApiHttpError(200, event.code || 'UNKNOWN', event.message || 'AI 对话失败')
+      }
+    },
+    handlers.signal
+  )
+  if (!result) {
+    // 常见于客户端断开或服务端在推送 answer 前中断：不伪造回答，由调用方回读会话。
+    throw new ApiHttpError(0, 'ABORTED', 'AI 对话已中断，未收到回答')
+  }
+  return result
+}
+
+async function openChatStream(
+  url: string,
+  input: SendChatMessageInput,
+  token: string,
+  signal?: AbortSignal
+): Promise<Response> {
+  return fetch(apiPath(url), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      Accept: 'text/event-stream',
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    },
+    body: JSON.stringify(input),
+    signal
+  })
+}
+
+function decodeChatEvent(frame: SSEFrame): ChatStreamEvent | null {
+  if (!frame.data) return null
+  try {
+    const parsed = JSON.parse(frame.data) as ChatStreamEvent
+    if (parsed && typeof parsed.type === 'string') return parsed
+  } catch {
+    /* 单条坏事件不中断整个流。 */
+  }
+  return null
+}
+
+function apiPath(url: string): string {
+  const base = import.meta.env.VITE_API_BASE || '/'
+  if (!base || base === '/') return url
+  return `${base.replace(/\/+$/, '')}/${url.replace(/^\/+/, '')}`
+}
+
+async function toApiHttpError(response: Response): Promise<ApiHttpError> {
+  const body = (await response.json().catch(() => null)) as ApiResponse | null
+  return new ApiHttpError(
+    response.status,
+    body?.code || 'UNKNOWN',
+    body?.message || `${response.status} ${response.statusText}`,
+    body?.trace_id
+  )
+}
+
+/** 归档会话：归档后只读，仍可查看历史；重复归档幂等。 */
+export function archiveChatSession(sessionId: string) {
+  return http<ChatSession>({
+    url: `/api/ai/chat/sessions/${encodeURIComponent(sessionId)}/archive`,
+    method: 'post'
+  })
+}
+
+/** 恢复归档会话，使其可以继续对话。 */
+export function unarchiveChatSession(sessionId: string) {
+  return http<ChatSession>({
+    url: `/api/ai/chat/sessions/${encodeURIComponent(sessionId)}/unarchive`,
+    method: 'post'
+  })
+}
+
+/** 删除会话及其全部消息（不可恢复）。 */
+export function deleteChatSession(sessionId: string) {
+  return http<{ deleted: boolean }>({
+    url: `/api/ai/chat/sessions/${encodeURIComponent(sessionId)}`,
+    method: 'delete'
+  })
+}
+
+// ---- 知识沉淀（ops/ai-contract.md §10.15，鉴权 app:ai:knowledge:manage）----
+
+export type KnowledgeScope = 'global' | 'application' | 'resource_type' | string
+export type KnowledgeStatus = 'draft' | 'active' | 'disabled' | string
+
+export interface KnowledgeItem {
+  item_id: string
+  scope: KnowledgeScope
+  scope_ref: string
+  title: string
+  content: string
+  origin: 'feedback_aggregate' | 'manual' | string
+  status: KnowledgeStatus
+  hit_count: number
+  useful_count: number
+  reviewed_by?: string
+  reviewed_at?: number
+  created_by?: string
+  created_at: number
+  updated_at: number
+}
+
+export interface KnowledgeItemInput {
+  scope: KnowledgeScope
+  scope_ref?: string
+  title: string
+  content: string
+}
+
+export interface KnowledgeAggregateResult {
+  action: 'created' | 'updated' | 'skipped_active' | 'insufficient_cases' | string
+  source_cases: number
+  item?: KnowledgeItem
+}
+
+export function listKnowledgeItems(params: { status?: string; scope?: string; limit?: number; offset?: number } = {}) {
+  return http<{ items: KnowledgeItem[] }>({
+    url: '/api/ai/knowledge/items',
+    method: 'get',
+    params
+  })
+}
+
+export function createKnowledgeItem(input: KnowledgeItemInput) {
+  return http<KnowledgeItem>({
+    url: '/api/ai/knowledge/items',
+    method: 'post',
+    data: input
+  })
+}
+
+export function updateKnowledgeItem(itemId: string, input: KnowledgeItemInput) {
+  return http<KnowledgeItem>({
+    url: `/api/ai/knowledge/items/${encodeURIComponent(itemId)}`,
+    method: 'put',
+    data: input
+  })
+}
+
+export function reviewKnowledgeItem(itemId: string, action: 'activate' | 'disable') {
+  return http<KnowledgeItem>({
+    url: `/api/ai/knowledge/items/${encodeURIComponent(itemId)}/review`,
+    method: 'post',
+    data: { action }
+  })
+}
+
+export function deleteKnowledgeItem(itemId: string) {
+  return http<{ deleted: boolean }>({
+    url: `/api/ai/knowledge/items/${encodeURIComponent(itemId)}`,
+    method: 'delete'
+  })
+}
+
+/** 反馈聚合：把某应用下已确认有效的案例聚合成 draft（不覆盖 active 条目）。 */
+export function aggregateKnowledgeFromFeedback(applicationId: string, minCases = 3) {
+  return http<KnowledgeAggregateResult>({
+    url: '/api/ai/knowledge/aggregate',
+    method: 'post',
+    data: { application_id: applicationId, min_cases: minCases }
   })
 }

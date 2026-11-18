@@ -44,6 +44,7 @@ configs/config.local.yaml
 web/node_modules/
 web/dist/
 web/.vite/
+web/.esbuild-tmp/
 
 # OS
 .DS_Store

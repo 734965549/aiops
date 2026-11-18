@@ -138,9 +138,17 @@
       <div class="input-foot">
         <span class="input-hint">Enter 发送 · Shift + Enter 换行 · 执行类动作需人工确认</span>
         <a-button
+          v-if="sending"
+          size="small"
+          status="warning"
+          @click="emit('stop')"
+        >
+          停止生成
+        </a-button>
+        <a-button
+          v-else
           type="primary"
           size="small"
-          :loading="sending"
           :disabled="!input.trim()"
           @click="submit"
         >
@@ -175,6 +183,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'send', content: string): void
   (e: 'retry'): void
+  (e: 'stop'): void
   (e: 'feedback', messageId: string, feedback: 'valid' | 'invalid'): void
   (e: 'propose', answer: ChatAnswer, messageId?: string): void
   (e: 'navigate', url: string): void

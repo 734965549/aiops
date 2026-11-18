@@ -45,6 +45,10 @@
             @create="startNewSession"
             @select="onSelectSession"
             @refresh="loadSessions"
+            @archive="archiveSession"
+            @unarchive="unarchiveSession"
+            @delete="deleteSession"
+            @share="openShare"
           />
         </a-card>
       </a-col>
@@ -73,6 +77,7 @@
             :last-user-content="lastUserContent"
             @send="onSend"
             @retry="retry"
+            @stop="stop"
             @feedback="submitFeedback"
             @propose="proposeExecution"
             @navigate="onNavigate"
@@ -100,15 +105,21 @@
         </a-card>
       </a-col>
     </a-row>
+
+    <ShareDialog
+      v-model:visible="shareVisible"
+      :session-id="shareSessionId"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import SessionList from './components/SessionList.vue'
 import ChatPanel from './components/ChatPanel.vue'
 import ContextPanel from './components/ContextPanel.vue'
+import ShareDialog from './components/ShareDialog.vue'
 import { useChat } from './composables/useChat'
 import { useAIContextStore } from '@/stores/aiContext'
 
@@ -132,7 +143,11 @@ const {
   startNewSession,
   send,
   retry,
+  stop,
   submitFeedback,
+  archiveSession,
+  unarchiveSession,
+  deleteSession,
   proposeExecution
 } = useChat()
 
@@ -145,6 +160,15 @@ const latestReferences = computed(() => {
   const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
   return lastAssistant?.references ?? []
 })
+
+// 分享弹窗：token 只在创建响应返回一次，关闭后只能重新生成。
+const shareVisible = ref(false)
+const shareSessionId = ref('')
+
+function openShare(sessionId: string) {
+  shareSessionId.value = sessionId
+  shareVisible.value = true
+}
 
 async function onSend(content: string) {
   await send(content)

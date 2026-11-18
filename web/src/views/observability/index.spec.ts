@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
 import ObservabilityView from './index.vue'
 import { listIntegrationAccounts } from '@/api/integration'
 import { queryMetrics } from '@/api/observability'
+import { useAIContextStore } from '@/stores/aiContext'
 
 vi.mock('@/api/integration', () => ({
   listIntegrationAccounts: vi.fn()
@@ -50,30 +52,26 @@ vi.mock('@arco-design/web-vue', () => {
 const passthrough = { template: '<div><slot /></div>' }
 const buttonStub = { emits: ['click'], template: '<button @click="$emit(\'click\')"><slot /></button>' }
 
-function mountView() {
-  return mount(ObservabilityView, {
-    global: {
-      stubs: {
-        'a-alert': passthrough,
-        'a-button': buttonStub,
-        'a-card': passthrough,
-        'a-col': passthrough,
-        'a-empty': passthrough,
-        'a-form': passthrough,
-        'a-form-item': passthrough,
-        'a-input': passthrough,
-        'a-input-number': passthrough,
-        'a-option': passthrough,
-        'a-range-picker': passthrough,
-        'a-row': passthrough,
-        'a-select': passthrough,
-        'a-switch': passthrough,
-        'a-tab-pane': passthrough,
-        'a-table': passthrough,
-        'a-tabs': passthrough
-      }
-    }
-  })
+function stubMap() {
+  return {
+    'a-alert': passthrough,
+    'a-button': buttonStub,
+    'a-card': passthrough,
+    'a-col': passthrough,
+    'a-empty': passthrough,
+    'a-form': passthrough,
+    'a-form-item': passthrough,
+    'a-input': passthrough,
+    'a-input-number': passthrough,
+    'a-option': passthrough,
+    'a-range-picker': passthrough,
+    'a-row': passthrough,
+    'a-select': passthrough,
+    'a-switch': passthrough,
+    'a-tab-pane': passthrough,
+    'a-table': passthrough,
+    'a-tabs': passthrough
+  }
 }
 
 describe('observability metrics query', () => {
@@ -105,7 +103,11 @@ describe('observability metrics query', () => {
   })
 
   it('sends huawei CES required metric parameters from the page', async () => {
-    const wrapper = mountView()
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const wrapper = mount(ObservabilityView, {
+      global: { plugins: [pinia], stubs: stubMap() }
+    })
     await flushPromises()
 
     await wrapper.find('button').trigger('click')
@@ -121,5 +123,11 @@ describe('observability metrics query', () => {
       period: 60,
       aggregator: 'avg'
     })
+
+    // 查询成功后写入资源级上下文，供 AI 助手带入（ops/ai-contract.md §10.8）。
+    const context = useAIContextStore()
+    expect(context.current.page).toBe('observability')
+    expect(context.current.resource_id).toBe('ecs-xxx')
+    expect(context.current.time_range).toBe('1h')
   })
 })

@@ -148,7 +148,21 @@
       v-if="references.length"
       class="answer-section"
     >
-      <h4>引用数据</h4>
+      <h4>
+        引用数据
+        <span
+          v-if="memoryCaseCount"
+          class="reference-hint"
+        >
+          参考了 {{ memoryCaseCount }} 条历史案例
+        </span>
+        <span
+          v-if="knowledgeItemCount"
+          class="reference-hint"
+        >
+          命中 {{ knowledgeItemCount }} 条知识沉淀
+        </span>
+      </h4>
       <div class="reference-list">
         <a-link
           v-for="ref in references"
@@ -157,7 +171,8 @@
           @click="onNavigate(ref.url)"
         >
           <template #icon>
-            <IconLink />
+            <IconLink v-if="ref.url" />
+            <IconHistory v-else />
           </template>
           {{ ref.label || ref.id }}
         </a-link>
@@ -197,8 +212,9 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { IconLink, IconThumbDown, IconThumbUp } from '@arco-design/web-vue/es/icon'
+import { IconHistory, IconLink, IconThumbDown, IconThumbUp } from '@arco-design/web-vue/es/icon'
 import type { ChatAction, ChatAnswer, ChatReference, ChatToolCall } from '@/api/ai'
+import { toolReasonLabel } from '../toolReason'
 
 const props = defineProps<{
   answer: ChatAnswer
@@ -217,6 +233,14 @@ const emit = defineEmits<{
 
 const toolCalls = computed(() => props.toolCalls ?? [])
 const references = computed(() => props.references ?? [])
+// 历史案例引用只在记忆命中时出现（ops/ai-contract.md §10.14.3）。
+const memoryCaseCount = computed(
+  () => references.value.filter((ref) => ref.type === 'memory_case').length
+)
+// 知识沉淀引用只在命中生效知识时出现（ops/ai-contract.md §10.15.3）。
+const knowledgeItemCount = computed(
+  () => references.value.filter((ref) => ref.type === 'knowledge_item').length
+)
 // 被拒绝的动作必须在界面上直接说明原因，不能只依赖禁用态 tooltip。
 const deniedReason = computed(
   () => props.answer.actions?.find((action) => !action.allowed && action.reason)?.reason ?? ''
@@ -256,7 +280,7 @@ function toolLabel(code: string) {
 
 function toolTooltip(call: ChatToolCall) {
   const parts = [call.summary || toolLabel(call.tool_code)]
-  if (!call.allowed && call.reason) parts.push(`原因：${call.reason}`)
+  if (!call.allowed && call.reason) parts.push(`原因：${toolReasonLabel(call.reason)}`)
   if (call.mode) parts.push(`模式：${call.mode}`)
   return parts.join(' · ')
 }
@@ -322,6 +346,13 @@ function onNavigate(url?: string) {
   font-weight: 600;
   color: var(--color-text-2);
   letter-spacing: 0.02em;
+}
+
+.reference-hint {
+  margin-left: 8px;
+  color: var(--color-text-3);
+  font-size: 11px;
+  font-weight: 400;
 }
 
 .answer-section p {

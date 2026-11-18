@@ -50,6 +50,55 @@
             已归档
           </a-tag>
           <span>{{ formatTime(session.updated_at) }}</span>
+          <span
+            class="session-actions"
+            @click.stop
+          >
+            <a-button
+              size="mini"
+              type="text"
+              @click="emit('share', session.session_id)"
+            >
+              分享
+            </a-button>
+            <a-popconfirm
+              v-if="session.status === 'archived'"
+              content="恢复后可继续在该会话提问，确定恢复？"
+              @ok="emit('unarchive', session.session_id)"
+            >
+              <a-button
+                size="mini"
+                type="text"
+              >
+                恢复
+              </a-button>
+            </a-popconfirm>
+            <a-popconfirm
+              v-else
+              content="归档后会话只读，历史仍可查看，确定归档？"
+              @ok="emit('archive', session.session_id)"
+            >
+              <a-button
+                size="mini"
+                type="text"
+              >
+                归档
+              </a-button>
+            </a-popconfirm>
+            <a-popconfirm
+              content="删除后会话与消息不可恢复，确定删除？"
+              ok-text="删除"
+              @ok="emit('delete', session.session_id)"
+            >
+              <a-button
+                size="mini"
+                type="text"
+                status="danger"
+              >
+                删除
+              </a-button>
+            </a-popconfirm>
+          </span>
         </div>
       </div>
     </a-spin>
@@ -70,6 +119,10 @@ const emit = defineEmits<{
   (e: 'create'): void
   (e: 'select', sessionId: string): void
   (e: 'refresh'): void
+  (e: 'archive', sessionId: string): void
+  (e: 'unarchive', sessionId: string): void
+  (e: 'delete', sessionId: string): void
+  (e: 'share', sessionId: string): void
 }>()
 
 function formatTime(value: string) {
@@ -136,6 +189,25 @@ function formatTime(value: string) {
   margin-top: 4px;
   color: var(--color-text-3);
   font-size: 10px;
+}
+
+.session-actions {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.session-item:hover .session-actions,
+.session-item.is-active .session-actions {
+  opacity: 1;
+}
+
+.session-actions :deep(.arco-btn-size-mini) {
+  height: 20px;
+  padding: 0 4px;
+  font-size: 11px;
 }
 
 .session-empty {

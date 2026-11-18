@@ -21,9 +21,9 @@
         Control plane / 01
       </div>
       <a-menu
+        v-model:open-keys="openKeys"
         theme="dark"
         :selected-keys="[activeMenuKey]"
-        :default-open-keys="[]"
         @menu-item-click="onMenuClick"
       >
         <a-menu-item
@@ -35,6 +35,26 @@
           </template>
           {{ item.title }}
         </a-menu-item>
+        <a-sub-menu
+          v-for="group in menuGroups"
+          :key="group.key"
+        >
+          <template #icon>
+            <component :is="group.icon" />
+          </template>
+          <template #title>
+            {{ group.title }}
+          </template>
+          <a-menu-item
+            v-for="child in group.children"
+            :key="child.path"
+          >
+            <template #icon>
+              <component :is="child.icon" />
+            </template>
+            {{ child.title }}
+          </a-menu-item>
+        </a-sub-menu>
       </a-menu>
 
       <div class="sider-foot">
@@ -89,7 +109,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   IconDashboard,
@@ -103,6 +123,7 @@ import {
   IconCloud,
   IconBarChart,
   IconBulb,
+  IconTool,
   IconSettings
 } from '@arco-design/web-vue/es/icon'
 import { useAuthStore } from '@/stores/auth'
@@ -117,9 +138,9 @@ const auth = useAuthStore()
 const aiContext = useAIContextStore()
 
 interface MenuItem { path: string; title: string; icon: unknown }
+interface MenuGroup { key: string; title: string; icon: unknown; children: MenuItem[] }
 
 const menuItems: MenuItem[] = [
-  { path: '/identity/access-control', title: '权限管理', icon: IconUserGroup },
   { path: '/dashboard', title: '首页驾驶舱', icon: IconDashboard },
   { path: '/ai-assistant', title: 'AI 运维助手', icon: IconRobot },
   { path: '/alerts', title: '告警中心', icon: IconNotification },
@@ -129,24 +150,55 @@ const menuItems: MenuItem[] = [
   { path: '/inspections', title: '智能巡检', icon: IconBulb },
   { path: '/executions', title: '自动化执行', icon: IconCommand },
   { path: '/runbooks', title: 'Runbook 预案', icon: IconBook },
-  { path: '/audits', title: '审计中心', icon: IconFile },
-  { path: '/identity/ldap-import', title: '域账号导入', icon: IconUserGroup },
-  { path: '/system/ai-config', title: 'AI 配置', icon: IconSettings }
+  { path: '/audits', title: '审计中心', icon: IconFile }
+]
+
+const menuGroups: MenuGroup[] = [
+  {
+    key: 'settings',
+    title: '系统设置',
+    icon: IconTool,
+    children: [
+      { path: '/system/ai-config', title: 'AI 配置', icon: IconSettings },
+      { path: '/identity/access-control', title: '权限管理', icon: IconUserGroup },
+      { path: '/identity/ldap-import', title: '域账号导入', icon: IconUserGroup }
+    ]
+  }
+]
+
+// 侧栏高亮与标题按扁平列表查找：分组内子项与顶级菜单行为一致。
+const flatMenuItems: MenuItem[] = [
+  ...menuItems,
+  ...menuGroups.flatMap((group) => group.children)
 ]
 
 const activeMenuKey = computed(() => {
   const metaMenu = route.meta.activeMenu as string | undefined
   if (metaMenu) return metaMenu
-  const hit = menuItems.find(
+  const hit = flatMenuItems.find(
     (item) => route.path === item.path || route.path.startsWith(`${item.path}/`)
   )
   return hit?.path ?? route.path
 })
 
 const currentTitle = computed(() => {
-  const m = menuItems.find((i) => i.path === activeMenuKey.value)
+  const m = flatMenuItems.find((i) => i.path === activeMenuKey.value)
   return m?.title || (route.meta.title as string) || ''
 })
+
+const openKeys = ref<string[]>([])
+
+// 命中分组内子路由（含直接输入 URL）时自动展开所在分组。
+watch(
+  activeMenuKey,
+  (key) => {
+    const group = menuGroups.find((g) => g.children.some((c) => c.path === key))
+    if (group && !openKeys.value.includes(group.key)) {
+      openKeys.value = [...openKeys.value, group.key]
+    }
+  },
+  { immediate: true }
+)
 
 function onMenuClick(key: string) {
   if (key && key !== route.path) {

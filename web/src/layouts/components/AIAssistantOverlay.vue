@@ -47,6 +47,7 @@
         empty-hint="在任意页面唤起，自动带入当前页面上下文；只分析与建议，不改动生产。"
         @send="onSend"
         @retry="retry"
+        @stop="stop"
         @feedback="submitFeedback"
         @propose="proposeExecution"
         @navigate="onNavigate"
@@ -78,6 +79,7 @@ const {
   loadSessions,
   send,
   retry,
+  stop,
   submitFeedback,
   proposeExecution
 } = useChat()

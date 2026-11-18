@@ -159,21 +159,43 @@
 | `createChatSession` | `POST /api/ai/chat/sessions` | 创建 AI 助手会话，可带页面上下文 |
 | `listChatSessions` | `GET /api/ai/chat/sessions?limit=` | 当前用户最近会话 |
 | `getChatSession` | `GET /api/ai/chat/sessions/:session_id` | 会话详情与历史消息（assistant 消息带 `answer`） |
-| `sendChatMessage` | `POST /api/ai/chat/sessions/:session_id/messages` | 发送消息并同步返回结构化回答；超时按 90s 设置 |
+| `sendChatMessage` | `POST /api/ai/chat/sessions/:session_id/messages` | 发送消息并同步返回结构化回答；超时按 90s 设置；支持 `client_message_id` 幂等键 |
+| `streamChatMessage` | `POST /api/ai/chat/sessions/:session_id/messages/stream` | 流式发送：fetch 读取 SSE（`stage`/`tool`/`answer`/`error`），返回最终 `SendChatMessageResult`；`signal` 可中断，服务端取消后不落回答 |
+| `archiveChatSession` | `POST /api/ai/chat/sessions/:session_id/archive` | 归档会话（只读，可看历史）；幂等 |
+| `unarchiveChatSession` | `POST /api/ai/chat/sessions/:session_id/unarchive` | 恢复归档会话；幂等 |
+| `deleteChatSession` | `DELETE /api/ai/chat/sessions/:session_id` | 删除会话及消息，不可恢复；重复删除返回 404 |
+| `listKnowledgeItems` | `GET /api/ai/knowledge/items?status=&scope=&limit=&offset=` | 知识条目列表（`app:ai:knowledge:manage`） |
+| `createKnowledgeItem` | `POST /api/ai/knowledge/items` | 新建知识条目，固定为 `draft`，需审核激活 |
+| `updateKnowledgeItem` | `PUT /api/ai/knowledge/items/:item_id` | 编辑条目；编辑 active 条目会回到 `draft` |
+| `reviewKnowledgeItem` | `POST /api/ai/knowledge/items/:item_id/review` | `{ "action": "activate" \| "disable" }` |
+| `deleteKnowledgeItem` | `DELETE /api/ai/knowledge/items/:item_id` | 删除知识条目 |
+| `aggregateKnowledgeFromFeedback` | `POST /api/ai/knowledge/aggregate` | 反馈聚合：`{application_id, min_cases}` → draft；不覆盖 active 条目 |
 | `sendChatFeedback` | `POST .../messages/:message_id/feedback` | 回答有效/无效反馈 |
+| `createChatShare` | `POST /api/ai/chat/sessions/:session_id/shares` | 创建只读分享（默认 7 天，1–720 小时）；token 只返回一次 |
+| `listChatShares` | `GET /api/ai/chat/sessions/:session_id/shares` | 分享记录（含撤销/过期），仅 owner |
+| `revokeChatShare` | `DELETE /api/ai/chat/sessions/:session_id/shares/:share_id` | 撤销分享，幂等 |
+| `getSharedChatSession` | `GET /api/ai/chat/shares/:token` | 只读访问共享会话；过期/撤销/删除统一 404 |
 
 页面：
 
 - AI 运维助手工作台 `views/ai-assistant/index.vue`（三栏：会话列表 / 对话 / 上下文与工具），对话逻辑在 `views/ai-assistant/composables/useChat.ts`，与全局浮层 `layouts/components/AIAssistantOverlay.vue` 共用。
 - AI 配置（Provider 管理 + 工具调用调试）在 `views/system/ai-config/index.vue`，路由 `/system/ai-config`；`views/ai-assistant` 不再承载 Provider 管理。
 - 告警详情 `views/alerts/index.vue` 会写入页面上下文（`stores/aiContext.ts`），并支持 `/alerts?alert_id=` 深链打开详情。
+- 资源级上下文写入方：资产页（应用 + 高亮资源）、执行页（任务详情 `execution_id`）、观测页（指标查询后的资源维度与时间范围）；字段与规则见 `ops/ai-contract.md` §10.8。
 
 契约：`ops/ai-contract.md`（§10 为 AI 助手会话与对话）。要点：
 
 - 成功判断使用 `code === "OK"`；`sendChatMessage` 的 `data.status` 为 `ok` / `degraded` / `insufficient_context`，前端必须分别展示失败、无足够上下文状态。
 - `data.answer.actions` 由服务端按权限生成；`execution.propose.allowed=false` 时必须禁用按钮并展示 `reason`。
 - 「生成执行计划」调用既有 `createExecutionTask`（`source_type=ai_conversation`，`source_id=session_id`），任务进入 Execution `pending_confirm`；前端不得提供任何直接执行入口。
-- 工具调用结果必须检查 `allowed`；被拒绝是业务结果，需展示 `reason`。
+- 工具调用结果必须检查 `allowed`；被拒绝是业务结果，需展示 `reason`（`toolReason.ts` 负责原因码的中文映射）。
+- 引用类型：`alert`、`observability_evidence` 带 `url` 可跳转；`memory_case`（相似案例记忆，`ops/ai-contract.md` §10.14）与 `knowledge_item`（知识沉淀，§10.15）无 `url`，只展示标签与条数提示。
+- 知识沉淀管理接口（§10.15）要求 `app:ai:knowledge:manage`（当前仅 admin），入口在「系统管理 / AI 配置 → 知识沉淀」（`KnowledgeManager.vue`）；未授权时返回 403。
+- 会话归档后只读：`sendChatMessage` 会返回 409 `FAILED_PRECONDITION`，前端应在发送前按 `session.status` 拦截并提示先恢复。
+- 消息幂等：每次提问生成 `client_message_id`（`crypto.randomUUID`），重试复用同一值；服务端已生成回答时返回首次结果，回答缺失时返回 409 `FAILED_PRECONDITION`，此时提示用户刷新会话而不是静默重发。
+- 归档/恢复/删除入口在会话列表（`SessionList.vue`），三者均需二次确认；删除当前会话后自动切到下一个会话。
+- 流式对话（§10.17）：`streamChatMessage` 走 `fetch` + `web/src/api/sse.ts` 解析 SSE，不用 `EventSource`（需要 POST 与 Bearer 头）。`stage` 事件驱动阶段提示，`tool` 事件即时展示工具校验结果；`answer` 事件与同步接口同构。发送中可点「停止生成」（`AbortController`），服务端不落回答并写 `chat_canceled` 审计；停止后回读会话以去掉本地乐观消息。收到 `error` 事件时抛 `ApiHttpError`（HTTP 200 + 业务码）。
+- 会话分享（§10.18）：仅**对内只读**，访问者必须登录且具备 `app:ai:chat`；token 只在创建响应返回一次，前端不持久化。共享页路由 `/ai-assistant/shared/:token`（`SharedSession.vue`）只读渲染，禁用反馈与动作；过期/撤销/源会话删除统一 404。入口在会话列表「分享」→ `ShareDialog.vue`。
 - Provider 的 `api_key` 只显示掩码与 `has_api_key`，不在前端持久化；页面上下文只保存业务 ID，不保存凭据或告警正文。
 
 ## Audit（`audit.ts`）

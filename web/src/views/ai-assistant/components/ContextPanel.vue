@@ -66,7 +66,7 @@
             v-if="toolState(tool.code)?.reason"
             class="tool-reason"
           >
-            {{ toolState(tool.code)?.reason }}
+            {{ toolReasonLabel(toolState(tool.code)?.reason) }}
           </div>
         </div>
       </div>
@@ -94,6 +94,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { ChatReference, ChatSessionContext, ChatToolCall } from '@/api/ai'
+import { toolReasonLabel } from '../toolReason'
 
 const props = defineProps<{
   context: ChatSessionContext

@@ -381,6 +381,7 @@ import CloudSyncTab from './components/CloudSyncTab.vue'
 import MatchRuleTab from './components/MatchRuleTab.vue'
 import SyncBatchDetailDrawer from './components/SyncBatchDetailDrawer.vue'
 import { useAssetRegistry } from './composables/useAssetRegistry'
+import { syncAssetAIContext } from './composables/assetAIContext'
 import { useCloudSync } from './composables/useCloudSync'
 import { useMatchRules } from './composables/useMatchRules'
 import { RESOURCE_FILTER_QUERY_KEYS } from './composables/assetUtils'
@@ -459,6 +460,21 @@ onMounted(async () => {
     await registry.loadResources()
   }
 })
+
+// 资产页的资源级上下文：选中的应用 + 高亮资源一并写给 AI 助手（ops/ai-contract.md §10.8）。
+watch(
+  () => [selectedAppId.value, registry.highlightedResourceId, registry.resources.length],
+  () => {
+    const highlighted = registry.highlightedResourceId
+    const resource = highlighted ? registry.resources.find((item) => item.id === highlighted) ?? null : null
+    syncAssetAIContext({
+      applicationId: selectedAppId.value,
+      applicationName: registry.selectedAppName,
+      resource
+    })
+  },
+  { immediate: true }
+)
 </script>
 
 <style scoped>

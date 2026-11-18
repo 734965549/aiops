@@ -2,19 +2,25 @@ import { computed, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import Message from '@arco-design/web-vue/es/message'
 import {
+  archiveChatSession,
   createChatSession,
+  deleteChatSession,
   getChatSession,
   listChatSessions,
   sendChatFeedback,
-  sendChatMessage,
+  streamChatMessage,
+  unarchiveChatSession,
   type ChatAnswer,
   type ChatMessage,
   type ChatResultStatus,
   type ChatSession,
   type ChatSessionContext,
+  type ChatStreamEvent,
   type SendChatMessageResult
 } from '@/api/ai'
 import { createExecutionTask } from '@/api/execution'
+import { getApiError, isApiHttpError } from '@/api/request'
+import { isAbortError } from '@/api/sse'
 import { useAIContextStore } from '@/stores/aiContext'
 
 /** 请求进行中的可见阶段（同步接口，仅作进度提示）。 */
@@ -64,40 +70,44 @@ export function useChat() {
   const stage = ref<ChatStage>('idle')
   const uiStatus = ref<ChatUIStatus>('idle')
   const lastUserContent = ref('')
+  // 最近一次提问的幂等键，重试时复用（ops/ai-contract.md §10.6.5）。
+  const lastClientMessageId = ref('')
   const lastResult = ref<SendChatMessageResult | null>(null)
 
-  let stageTimers: number[] = []
+  // 流式请求的取消句柄；用户点「停止」时中断，服务端按 §10.17.4 不落 assistant 消息。
+  let streamController: AbortController | null = null
 
   const contextSummary = computed(() => contextStore.summary)
   const requestContext = computed<ChatSessionContext>(() => contextStore.toRequestContext())
   const sessionList = computed(() => sessions.value)
   const hasSession = computed(() => !!activeSessionId.value)
 
-  function clearStageTimers() {
-    stageTimers.forEach((timer) => window.clearTimeout(timer))
-    stageTimers = []
-  }
-
   function beginStage() {
-    clearStageTimers()
     stage.value = 'thinking'
-    // 同步接口无法回传真实阶段，用固定节奏提示“工具查询/生成回答”，让等待过程可感知。
-    stageTimers = [
-      window.setTimeout(() => {
-        if (sending.value) stage.value = 'querying_tools'
-      }, 1200),
-      window.setTimeout(() => {
-        if (sending.value) stage.value = 'generating'
-      }, 3200)
-    ]
   }
 
   function endStage() {
-    clearStageTimers()
     stage.value = 'idle'
+    streamController = null
   }
 
-  onUnmounted(clearStageTimers)
+  onUnmounted(() => streamController?.abort())
+
+  /** 把服务端 stage 事件映射到既有 UI 阶段。 */
+  function mapServerStage(serverStage: string): ChatStage {
+    if (serverStage === 'answering') return 'generating'
+    // gathering（取数/权限校验）与 thinking（模型调用）都归入「思考中」。
+    return 'thinking'
+  }
+
+  function handleStreamEvent(event: ChatStreamEvent) {
+    if (event.type === 'stage') {
+      stage.value = mapServerStage(event.stage)
+    } else if (event.type === 'tool') {
+      // 工具观测到达即说明正在取数，先于模型阶段给出提示。
+      stage.value = 'querying_tools'
+    }
+  }
 
   function deriveUIStatus(status: ChatResultStatus, answer?: ChatAnswer): ChatUIStatus {
     if (status === 'degraded') return 'failed'
@@ -185,15 +195,23 @@ export function useChat() {
     }
   }
 
-  async function send(rawContent: string) {
+  async function send(rawContent: string, clientMessageId?: string) {
     const content = rawContent.trim()
     if (!content || sending.value) return
+    // 归档会话只读：服务端会返回 409，前端提前拦截避免丢失已输入内容。
+    if (activeSession.value?.status === 'archived') {
+      Message.warning('会话已归档，请先恢复归档或新建会话再继续提问')
+      return
+    }
     const sessionId = await ensureSession()
     if (!sessionId) return
 
     error.value = ''
     sending.value = true
     lastUserContent.value = content
+    // 同一条提问的重试复用同一个幂等键，服务端据此返回首次结果而不是重复落消息。
+    const clientId = clientMessageId || newClientMessageId()
+    lastClientMessageId.value = clientId
     beginStage()
     const optimisticUserMessage: ChatMessage = {
       message_id: `local-${Date.now()}`,
@@ -206,11 +224,21 @@ export function useChat() {
     }
     messages.value = [...messages.value, optimisticUserMessage]
 
+    const controller = new AbortController()
+    streamController = controller
     try {
-      const result = await sendChatMessage(sessionId, {
-        content,
-        context: requestContext.value
-      })
+      const result = await streamChatMessage(
+        sessionId,
+        {
+          content,
+          context: requestContext.value,
+          client_message_id: clientId
+        },
+        {
+          signal: controller.signal,
+          onEvent: handleStreamEvent
+        }
+      )
       lastResult.value = result
       const assistantMessage: ChatMessage = {
         message_id: result.message_id,
@@ -228,14 +256,40 @@ export function useChat() {
         activeSession.value = { ...activeSession.value, context: result.context }
       }
       await refreshSessionList()
-    } catch {
+    } catch (err) {
+      if (isAbortError(err)) {
+        // 用户主动停止：服务端不落回答，回读会话以去掉本地乐观消息。
+        error.value = ''
+        uiStatus.value = 'idle'
+        try {
+          await selectSession(sessionId)
+        } catch {
+          /* 回读失败时保留本地状态。 */
+        }
+        Message.info('已停止生成')
+        return
+      }
+      const apiError = getApiError(err) ?? (isApiHttpError(err) ? err : null)
       // 后端可能已落库用户消息；失败后回读服务端会话，避免本地与服务端漂移。
       try {
         await selectSession(sessionId)
       } catch {
         /* 回读失败时保留本地错误提示。 */
       }
-      error.value = 'AI 回答失败，请稍后重试'
+      if (apiError?.code === 'FAILED_PRECONDITION') {
+        // 409 有两种业务语义：会话被归档，或幂等键对应的上一次请求仍在处理/已中断。
+        const detail = apiError.message || ''
+        error.value = detail.includes('archived')
+          ? '会话已归档，请先恢复归档或新建会话再继续提问'
+          : '上一次相同提问仍在处理或已中断；请刷新会话查看结果后再决定是否重新提问'
+      } else if (apiError?.status === 403) {
+        // 流式接口不经过 axios 拦截器，这里补齐权限提示。
+        error.value = '当前账号缺少 AI 对话权限，请联系管理员'
+      } else if (apiError?.status === 503) {
+        error.value = 'AI 对话服务暂不可用，请检查后端配置与模型 Provider'
+      } else {
+        error.value = 'AI 回答失败，请稍后重试'
+      }
       uiStatus.value = 'failed'
     } finally {
       sending.value = false
@@ -243,9 +297,16 @@ export function useChat() {
     }
   }
 
+  /** 用户主动停止生成：中断流读取，服务端按取消语义不写 assistant 消息。 */
+  function stop() {
+    streamController?.abort()
+    streamController = null
+  }
+
   async function retry() {
     if (!lastUserContent.value) return
-    await send(lastUserContent.value)
+    // 重试复用同一幂等键：服务端已生成答案时直接回放，不会产生重复消息。
+    await send(lastUserContent.value, lastClientMessageId.value || undefined)
   }
 
   async function refreshSessionList() {
@@ -257,6 +318,65 @@ export function useChat() {
     } catch {
       /* 列表刷新失败不影响本轮回答展示。 */
     }
+  }
+
+  /** 归档会话：归档后只读，历史仍可查看。 */
+  async function archiveSession(sessionId: string) {
+    if (!sessionId) return
+    try {
+      const updated = await archiveChatSession(sessionId)
+      applyStatusChange(updated)
+      Message.success('会话已归档')
+    } catch {
+      /* 错误已由拦截器提示。 */
+    }
+  }
+
+  /** 恢复归档会话，可继续提问。 */
+  async function unarchiveSession(sessionId: string) {
+    if (!sessionId) return
+    try {
+      const updated = await unarchiveChatSession(sessionId)
+      applyStatusChange(updated)
+      Message.success('会话已恢复')
+    } catch {
+      /* 错误已由拦截器提示。 */
+    }
+  }
+
+  /** 删除会话及其消息；删除当前会话后自动切到下一个会话。 */
+  async function deleteSession(sessionId: string) {
+    if (!sessionId) return
+    try {
+      await deleteChatSession(sessionId)
+      sessions.value = sessions.value.filter((session) => session.session_id !== sessionId)
+      if (activeSessionId.value === sessionId) {
+        resetActiveSession()
+        const next = sessions.value[0]
+        if (next) await selectSession(next.session_id)
+      }
+      Message.success('会话已删除')
+    } catch {
+      /* 错误已由拦截器提示。 */
+    }
+  }
+
+  function applyStatusChange(updated: ChatSession) {
+    sessions.value = sessions.value.map((session) =>
+      session.session_id === updated.session_id ? { ...session, ...updated } : session
+    )
+    if (activeSession.value?.session_id === updated.session_id) {
+      activeSession.value = { ...activeSession.value, ...updated }
+    }
+  }
+
+  function resetActiveSession() {
+    activeSession.value = null
+    activeSessionId.value = ''
+    messages.value = []
+    uiStatus.value = 'idle'
+    lastResult.value = null
+    error.value = ''
   }
 
   async function submitFeedback(messageId: string, feedback: 'valid' | 'invalid') {
@@ -350,8 +470,12 @@ export function useChat() {
     ensureSession,
     send,
     retry,
+    stop,
     refreshSessionList,
     submitFeedback,
+    archiveSession,
+    unarchiveSession,
+    deleteSession,
     proposeExecution,
     executionAction
   }
@@ -360,4 +484,11 @@ export function useChat() {
 function truncate(value: string, limit: number): string {
   const runes = Array.from(value || '')
   return runes.length <= limit ? value : runes.slice(0, limit).join('')
+}
+
+/** 生成幂等键；优先 crypto.randomUUID，非安全上下文回落时间戳+随机串。 */
+function newClientMessageId(): string {
+  const cryptoApi = globalThis.crypto as Crypto | undefined
+  if (cryptoApi && typeof cryptoApi.randomUUID === 'function') return cryptoApi.randomUUID()
+  return `cm-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
 }

@@ -337,6 +337,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import Message from '@arco-design/web-vue/es/message'
 import { listIntegrationAccounts, type IntegrationAccount } from '@/api/integration'
+import { useAIContextStore } from '@/stores/aiContext'
 import {
   queryMetrics,
   queryTopology,
@@ -461,6 +462,39 @@ function timeBounds(): { from: number; to: number } | null {
   }
 }
 
+/**
+ * 观测页资源级上下文（ops/ai-contract.md §10.8）：
+ * 用查询维度里的资源标识（instance_id / cloud_resource_id 等）作为 resource_id，
+ * 时间范围换算成 AI 助手的 time_range；指标名等查询条件不写入上下文。
+ */
+function syncObservabilityAIContext(dimensions: Record<string, string>) {
+  const resourceKeys = ['instance_id', 'cloud_resource_id', 'resource_id', 'pod', 'node']
+  let resourceId = ''
+  for (const key of resourceKeys) {
+    const value = (dimensions[key] || '').trim()
+    if (value) {
+      resourceId = value
+      break
+    }
+  }
+  useAIContextStore().setPageContext({
+    page: 'observability',
+    page_title: '观测查询',
+    resource_id: resourceId || undefined,
+    resource_type: resourceId ? (metricsForm.namespace || '').trim() || undefined : undefined,
+    time_range: timeRangeLabel()
+  })
+}
+
+function timeRangeLabel(): string {
+  const from = timeRange.value?.[0]
+  const to = timeRange.value?.[1]
+  if (!from || !to) return ''
+  const minutes = Math.max(0, Math.round((to.getTime() - from.getTime()) / 60000))
+  if (minutes >= 60 && minutes % 60 === 0) return `${minutes / 60}h`
+  return `${minutes}m`
+}
+
 async function loadAccounts() {
   accountsLoading.value = true
   try {
@@ -564,6 +598,7 @@ async function runMetricsQuery() {
     })
     metricSeriesRaw.value = res.series?.[0]?.points || []
     metricsEvidence.value = res.evidence_id
+    syncObservabilityAIContext(dimensions)
   } catch (err) {
     Message.error(getApiError(err)?.message || '指标查询失败')
   } finally {

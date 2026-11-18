@@ -16,7 +16,13 @@ export const useAIContextStore = defineStore('aiContext', () => {
   const overlayVisible = ref(false)
 
   const hasResourceContext = computed(
-    () => !!(current.value.alert_id || current.value.application_id || current.value.resource_id)
+    () =>
+      !!(
+        current.value.alert_id ||
+        current.value.application_id ||
+        current.value.resource_id ||
+        current.value.execution_id
+      )
   )
 
   const summary = computed(() => {
@@ -25,6 +31,7 @@ export const useAIContextStore = defineStore('aiContext', () => {
     if (current.value.alert_id) parts.push(`告警 ${current.value.alert_id}`)
     if (current.value.application_id) parts.push(`应用 ${current.value.application_id}`)
     if (current.value.resource_id && !current.value.alert_id) parts.push(`资源 ${current.value.resource_id}`)
+    if (current.value.execution_id) parts.push(`执行任务 ${current.value.execution_id}`)
     if (current.value.time_range) parts.push(`时间范围 ${current.value.time_range}`)
     return parts.length ? parts.join(' · ') : '未关联页面资源'
   })
@@ -37,6 +44,7 @@ export const useAIContextStore = defineStore('aiContext', () => {
       application_id: trimOrUndefined(context.application_id),
       resource_id: trimOrUndefined(context.resource_id),
       resource_type: trimOrUndefined(context.resource_type),
+      execution_id: trimOrUndefined(context.execution_id),
       time_range: trimOrUndefined(context.time_range)
     }
     current.value = next
@@ -65,6 +73,7 @@ export const useAIContextStore = defineStore('aiContext', () => {
     if (current.value.application_id) payload.application_id = current.value.application_id
     if (current.value.resource_id) payload.resource_id = current.value.resource_id
     if (current.value.resource_type) payload.resource_type = current.value.resource_type
+    if (current.value.execution_id) payload.execution_id = current.value.execution_id
     if (current.value.time_range) payload.time_range = current.value.time_range
     return payload
   }

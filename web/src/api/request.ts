@@ -85,6 +85,19 @@ function isAssetSyncInProgressResponse(status: number, body?: ApiResponse, url?:
   )
 }
 
+/**
+ * AI 对话发送的 409 属于业务语义（会话已归档 / 幂等键对应上一次请求仍在处理），
+ * 由对话区给出中文说明，这里不再重复弹通用错误 toast。
+ */
+function isChatMessageConflict(status: number, url?: string) {
+  return (
+    status === 409 &&
+    typeof url === 'string' &&
+    url.includes('/api/ai/chat/sessions/') &&
+    url.endsWith('/messages')
+  )
+}
+
 request.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const auth = useAuthStore()
   if (auth.token && config.headers) {
@@ -145,7 +158,7 @@ request.interceptors.response.use(
         return Promise.reject(apiError)
       }
 
-      if (isAssetSyncInProgressResponse(status, body, original?.url)) {
+      if (isAssetSyncInProgressResponse(status, body, original?.url) || isChatMessageConflict(status, original?.url)) {
         return Promise.reject(apiError)
       }
 
