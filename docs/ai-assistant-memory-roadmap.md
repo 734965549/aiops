@@ -209,7 +209,7 @@ feedback(valid/invalid) + 审计质量字段
 ### 6.4 工具扩展：规则体检 MVP（2026-11 重启）
 
 - 场景：用户询问「某 namespace 下哪些告警规则阈值设置不合理」，助手需要读取规则阈值并对照最近指标破限点。
-- 新增 `alert.rules.list`：按 `namespace` 查询规则（`rule_id` / `name` / `severity` / `enabled` / `metric` / `operator` / `threshold` / `window_seconds` 等），单次最多 50 条；账号级数据范围由 `AccountAccessAuthorizer` 前置校验。
+- 新增 `alert.rules.list`：按 `namespace` 查询规则（`rule_id` / `name` / `severity` / `enabled` / `metric` / `operator` / `threshold` / `window_seconds` 等），单次最多 50 条；账号级数据范围由 `AccountAccessAuthorizer` 前置校验。huawei `ak_sk` 已接真实 CES V2 `ListAlarmRules`，`auth_type=none` 走 fake，`agency` 返回 unsupported。
 - `metrics.query` 改为自由参数：模型可传 `account_id/region/project_id/namespace/metric/dimensions/from/to/period/aggregator`，服务端按告警推导兜底并校验窗口（日聚合最多 30 天、任意情况下最多 1440 点）。
 - Loop 白名单扩展为 `alarm.analyze` / `metrics.query` / `alert.rules.list`；轮数、token、单轮申请数与执行类拒绝约束不变。
 - 验收：`scripts/e2e-ai-rules.ps1`（脚本化 mock 模型 + fake huawei 账号）覆盖规则查询、自由指标取数、证据引用与审计。

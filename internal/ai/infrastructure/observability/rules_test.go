@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -123,5 +124,19 @@ func TestAlertRulesCollectorQueryError(t *testing.T) {
 	}
 	if result.Status != aiapp.EvidenceStatusError || result.Reason != "alert rules query failed" {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestAlertRulesCollectorProviderUnavailableIsError(t *testing.T) {
+	querier := &fakeAlertRulesQuerier{err: fmt.Errorf("%w: huawei ces request timed out", obsdomain.ErrProviderUnavailable)}
+	collector := newRulesCollector(querier, &fakeAccountAccess{})
+	result, err := collector.List(context.Background(), "u-1", aiapp.AlertRuleQuery{
+		AccountID: "acc-1", Namespace: "SYS.RDS",
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if result.Status != aiapp.EvidenceStatusError {
+		t.Fatalf("provider unavailable must map to error, got %+v", result)
 	}
 }

@@ -267,7 +267,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 | `TopologyQueryPort` | `QueryTopology` | 服务拓扑（需账号声明 `topology` 能力） |
 | `AssetDiscoveryPort` | `ListResources` | 云资源发现（阶段 2 HTTP / Asset Sync 复用） |
 | `CloudFullSyncPort` | `ListAllResources` | 云资源全量同步发现（Asset Sync 专用，不受交互查询 `limit <= 500` 限制） |
-| `AlertRuleQueryPort` | `ListAlertRules` | 告警规则（AI 规则体检复用）；返回含 `metric/operator/threshold/window_seconds` 可选字段 |
+| `AlertRuleQueryPort` | `ListAlertRules` | 告警规则（AI 规则体检复用）；返回含 `metric/operator/threshold/window_seconds` 可选字段。huawei `auth_type=none` 走 fake，`ak_sk` 走真实 CES V2 `ListAlarmRules`，`agency` 返回 unsupported |
 
 账号解析依赖 `IntegrationAccountPort`（adapter 包装 Integration 仓储），QueryService 编排：能力校验 → Provider Port → `obs_evidence_ref` → 审计。
 

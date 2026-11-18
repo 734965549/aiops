@@ -668,7 +668,11 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | `limit` | int | 否 | 默认 **50**，最大 **50**；超过上限返回 `status=invalid_argument` |
 
 - 返回规则字段：`rule_id`、`name`、`namespace`、`severity`、`enabled`、`description`（≤300 runes）、`metric`、`operator`、`threshold`、`window_seconds`、`labels`（≤20 对）。
-- provider 不支持该能力（如当前 huawei ak_sk/agency 的 alerts）时返回 `status=unsupported` 与稳定 reason，不视为内部错误。
+- provider 支持矩阵（2026-11）：
+  - huawei `ak_sk`：✅ 真实 CES V2 `ListAlarmRules`（单页 100、最多 10 页）；`region` 缺省取账号第一个区域，`project_id` 按 `extra_config.region_projects` / 账号配置解析；`keyword` 由服务端本地过滤（先取上限 500 条再截断到 `limit`）。
+  - huawei `auth_type=none`：✅ fake provider（联调/CI）。
+  - huawei `agency`：❌ 返回 `status=unsupported` 与稳定 reason，不视为内部错误。
+- 数据范围：`region` 不在账号区域列表中返回 `status=error`（invalid_argument），由 AI 层映射为 `status=error` 而非 unsupported。
 - 证据：观测 `data` 含 `namespace`、`rule_count`、`evidence_id`；最终回答 `references` 含 `observability_evidence`。
 
 **通用语义**

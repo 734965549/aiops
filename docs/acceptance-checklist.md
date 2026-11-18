@@ -555,9 +555,10 @@ go run ./cmd/migrate
 | 9.14.3 | 自由指标参数 | 让模型申请 `metrics.query`，params 带 `namespace/metric/dimensions/from/to/period` | 观测 `status=ok`；缺省字段由告警推导；`period=86400` 时 30 天窗口通过，>30 天或点数>1440 返回 `status=invalid_argument` |
 | 9.14.4 | 账号数据范围 | 用无权访问该 integration 账号的账号发起规则/指标工具 | 观测 `allowed=true`、`status=permission_denied`，不返回规则/指标数据；审计 `result=partial` |
 | 9.14.5 | Loop 审计 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | `chat_message` 含 `loop_rounds` 与两个工具码；每个 `tool_invoke` 含 `evidence_id`；无执行类工具调用 |
-| 9.14.6 | provider 不支持 | 对 huawei ak_sk/agency 账号申请规则列表 | 观测 `status=unsupported`、reason 稳定；回答仍正常返回 |
+| 9.14.6 | huawei ak_sk 真实规则 | 用带 `alerts` 能力的真实 ak_sk 账号申请规则列表（参数含 account_id/namespace/region） | 观测 `status=ok`、`rule_count>=1`；规则含 metric/operator/threshold/window_seconds；`tool_invoke` 审计带 `evidence_id` |
+| 9.14.7 | huawei agency 不支持 | 用 agency 账号申请规则列表 | 观测 `status=unsupported`、reason 稳定；回答仍正常返回 |
 
-> 前置：已执行迁移 `0055`；契约见 `ops/ai-contract.md` §10.12.1 / §10.16。E2E 脚本：`scripts/e2e-ai-rules.ps1`（脚本化 mock 模型 + fake `auth_type=none` 账号，自动覆盖 9.14.1/9.14.2/9.14.3/9.14.5；9.14.4 数据范围拒绝与 9.14.6 provider 不支持由单测覆盖）。
+> 前置：已执行迁移 `0055`；契约见 `ops/ai-contract.md` §10.12.1 / §10.16。E2E 脚本：`scripts/e2e-ai-rules.ps1`（脚本化 mock 模型 + fake `auth_type=none` 账号，自动覆盖 9.14.1/9.14.2/9.14.3/9.14.5；9.14.4 数据范围拒绝、9.14.6 real ak_sk 与 9.14.7 agency 不支持由单测覆盖，真实账号需手工回归）。
 
 
 ## 附录 A：仅 UI 手工步骤（精简表）

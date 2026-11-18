@@ -14,7 +14,7 @@ import (
 	"github.com/734965549/aiops/pkg/logger"
 )
 
-// Adapter 华为云只读观测 Adapter；auth_type=ak_sk 时指标与资源发现走真实 API，其余真实凭据账号的非指标能力返回 unsupported。
+// Adapter 华为云只读观测 Adapter；auth_type=ak_sk 时指标、资源发现与告警规则走真实 API，其余真实凭据账号的非指标能力返回 unsupported。
 type Adapter struct {
 	inner       *fake.Provider
 	credentials *CredentialProvider
@@ -22,6 +22,7 @@ type Adapter struct {
 	resources   ResourceDiscoveryClient
 	cesFullSync CESResourceDiscoveryClient
 	alarmPull   AlarmHistoryPullClient
+	ruleList    AlarmRuleListClient
 }
 
 func NewAdapter(credentials *CredentialProvider, ces MetricDataClient, resources ResourceDiscoveryClient) *Adapter {
@@ -38,7 +39,16 @@ func NewAdapter(credentials *CredentialProvider, ces MetricDataClient, resources
 		resources:   resources,
 		cesFullSync: NewCESResourceClient(),
 		alarmPull:   NewCESAlarmHistoryClient(),
+		ruleList:    NewCESAlarmRuleListClient(),
 	}
+}
+
+// WithAlarmRuleList 注入告警规则查询客户端，主要用于测试。
+func (a *Adapter) WithAlarmRuleList(client AlarmRuleListClient) *Adapter {
+	if client != nil {
+		a.ruleList = client
+	}
+	return a
 }
 
 // WithAlarmHistoryPull 注入告警记录拉取客户端，主要用于测试。
@@ -193,10 +203,80 @@ func (a *Adapter) listResourcesReal(ctx context.Context, pctx domain.ProviderCon
 }
 
 func (a *Adapter) ListAlertRules(ctx context.Context, pctx domain.ProviderContext, q domain.AlertRuleQuery) ([]domain.AlertRule, error) {
-	if err := a.requireFakeOnlyCapability(pctx, "alerts"); err != nil {
+	authType := integdomain.AuthType(strings.TrimSpace(pctx.Account.AuthType))
+	switch authType {
+	case integdomain.AuthNone:
+		return a.inner.ListAlertRules(ctx, pctx, q)
+	case integdomain.AuthAKSK:
+		return a.listAlertRulesReal(ctx, pctx, q)
+	case integdomain.AuthAgency:
+		return nil, apperr.Wrap(domain.ErrCapabilityUnsupported, apperr.CodeFailedPrecondition, "huawei alert rules query with agency auth is not implemented yet")
+	default:
+		return nil, apperr.New(apperr.CodeFailedPrecondition, "unsupported auth type for huawei observability")
+	}
+}
+
+// listAlertRulesReal 按 namespace 批量拉取真实 CES 规则；keyword 在本地按名称/描述过滤。
+// projectID 解析与 queryMetricsCES 同模式（extra_config region 映射优先）。
+func (a *Adapter) listAlertRulesReal(ctx context.Context, pctx domain.ProviderContext, q domain.AlertRuleQuery) ([]domain.AlertRule, error) {
+	if a == nil || a.credentials == nil || a.ruleList == nil {
+		return nil, apperr.New(apperr.CodeUnavailable, "huawei alarm rule list adapter is not configured")
+	}
+	region := strings.TrimSpace(q.Region)
+	if region == "" && len(pctx.Account.Regions) > 0 {
+		region = strings.TrimSpace(pctx.Account.Regions[0])
+	}
+	if region == "" {
+		return nil, apperr.New(apperr.CodeInvalidArgument, "region is required")
+	}
+	if len(pctx.Account.Regions) > 0 && !containsRegion(pctx.Account.Regions, region) {
+		return nil, apperr.New(apperr.CodeInvalidArgument, "region is not configured for account")
+	}
+	namespace := strings.TrimSpace(q.Namespace)
+	if namespace == "" {
+		return nil, apperr.New(apperr.CodeInvalidArgument, "namespace is required")
+	}
+	cfg := obsapp.ParseSyncModeConfig(pctx.Account.ExtraConfig)
+	projectID := cfg.ResolveProjectID(region, strings.TrimSpace(pctx.Account.ProjectID))
+	if projectID == "" {
+		return nil, apperr.New(apperr.CodeInvalidArgument, "project_id is required")
+	}
+	cred, err := a.credentials.ResolveAKSK(ctx, pctx.Account)
+	if err != nil {
 		return nil, err
 	}
-	return a.inner.ListAlertRules(ctx, pctx, q)
+	fetchLimit := q.Limit
+	if fetchLimit <= 0 || fetchLimit > ruleListCapMax {
+		fetchLimit = ruleListCapMax
+	}
+	if strings.TrimSpace(q.Keyword) != "" {
+		// keyword 本地过滤发生在分页结果之后；先取上限，避免前 50 条不命中时漏掉后面的规则。
+		fetchLimit = ruleListCapMax
+	}
+	rules, err := a.ruleList.ListRules(ctx, cred, projectID, region, namespace, fetchLimit)
+	if err != nil {
+		return nil, err
+	}
+	rules = filterAlertRulesByKeyword(rules, q.Keyword)
+	if q.Limit > 0 && len(rules) > q.Limit {
+		rules = rules[:q.Limit]
+	}
+	return rules, nil
+}
+
+func filterAlertRulesByKeyword(rules []domain.AlertRule, keyword string) []domain.AlertRule {
+	keyword = strings.ToLower(strings.TrimSpace(keyword))
+	if keyword == "" {
+		return rules
+	}
+	out := make([]domain.AlertRule, 0, len(rules))
+	for _, rule := range rules {
+		if strings.Contains(strings.ToLower(rule.Name), keyword) ||
+			strings.Contains(strings.ToLower(rule.Description), keyword) {
+			out = append(out, rule)
+		}
+	}
+	return out
 }
 
 // ListAllResources 云资源全量同步发现，按 sync_mode 路由。
