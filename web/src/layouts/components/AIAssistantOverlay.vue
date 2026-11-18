@@ -84,7 +84,7 @@ const {
   proposeExecution
 } = useChat()
 
-const quickQuestions = ['分析当前页面', '生成排查步骤', '有什么风险']
+const quickQuestions = ['分析当前页面', '生成排查步骤', 'SYS.RDS 规则体检', '有什么风险']
 
 // 窄屏（手机 / 小窗）使用全宽，避免固定宽度抽屉超出视口。
 const drawerWidth = typeof window !== 'undefined' && window.innerWidth < 560 ? '100%' : 480

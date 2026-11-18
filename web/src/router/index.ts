@@ -81,22 +81,33 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '审计中心', icon: 'Document' }
       },
       {
-        path: 'identity/ldap-import',
-        name: 'identity-ldap-import',
-        component: () => import('@/views/identity/ldap-import/index.vue'),
-        meta: { title: '域账号导入', icon: 'UserGroup' }
-      },
-      {
-        path: 'identity/access-control',
-        name: 'identity-access-control',
-        component: () => import('@/views/identity/access-control/index.vue'),
-        meta: { title: '权限管理', icon: 'UserGroup' }
-      },
-      {
-        path: 'system/ai-config',
-        name: 'system-ai-config',
-        component: () => import('@/views/system/ai-config/index.vue'),
-        meta: { title: 'AI 配置', icon: 'Settings' }
+        // 系统设置改为页面内导航：侧栏只有「系统设置」一个入口，
+        // 三个配置页仍是 /system/ai-config、/identity/* 的稳定 URL。
+        path: 'system',
+        name: 'system-settings',
+        component: () => import('@/views/system/index.vue'),
+        redirect: '/system/ai-config',
+        meta: { title: '系统设置', icon: 'Settings', activeMenu: '/system' },
+        children: [
+          {
+            path: 'ai-config',
+            name: 'system-ai-config',
+            component: () => import('@/views/system/ai-config/index.vue'),
+            meta: { title: 'AI 配置', icon: 'Settings' }
+          },
+          {
+            path: '/identity/access-control',
+            name: 'identity-access-control',
+            component: () => import('@/views/identity/access-control/index.vue'),
+            meta: { title: '权限管理', icon: 'UserGroup' }
+          },
+          {
+            path: '/identity/ldap-import',
+            name: 'identity-ldap-import',
+            component: () => import('@/views/identity/ldap-import/index.vue'),
+            meta: { title: '域账号导入', icon: 'UserGroup' }
+          }
+        ]
       }
     ]
   },

@@ -170,6 +170,8 @@
 | `reviewKnowledgeItem` | `POST /api/ai/knowledge/items/:item_id/review` | `{ "action": "activate" \| "disable" }` |
 | `deleteKnowledgeItem` | `DELETE /api/ai/knowledge/items/:item_id` | 删除知识条目 |
 | `aggregateKnowledgeFromFeedback` | `POST /api/ai/knowledge/aggregate` | 反馈聚合：`{application_id, min_cases}` → draft；不覆盖 active 条目 |
+| `listMemoryCases` | `GET /api/ai/memory/cases` | 管理端检索记忆条目（状态/归属用户/关键词） |
+| `updateMemoryCaseStatus` | `POST /api/ai/memory/cases/:case_id/status` | `{ "status": "active" \| "retired" }`；停用后不再参与回答检索 |
 | `sendChatFeedback` | `POST .../messages/:message_id/feedback` | 回答有效/无效反馈 |
 | `createChatShare` | `POST /api/ai/chat/sessions/:session_id/shares` | 创建只读分享（默认 7 天，1–720 小时）；token 只返回一次 |
 | `listChatShares` | `GET /api/ai/chat/sessions/:session_id/shares` | 分享记录（含撤销/过期），仅 owner |
@@ -179,7 +181,7 @@
 页面：
 
 - AI 运维助手工作台 `views/ai-assistant/index.vue`（三栏：会话列表 / 对话 / 上下文与工具），对话逻辑在 `views/ai-assistant/composables/useChat.ts`，与全局浮层 `layouts/components/AIAssistantOverlay.vue` 共用。
-- AI 配置（Provider 管理 + 工具调用调试）在 `views/system/ai-config/index.vue`，路由 `/system/ai-config`；`views/ai-assistant` 不再承载 Provider 管理。
+- AI 配置（Provider 管理 + 工具调用调试 + 知识沉淀 + 记忆管理）在 `views/system/ai-config/index.vue`，路由 `/system/ai-config`；`views/ai-assistant` 不再承载 Provider 管理。
 - 告警详情 `views/alerts/index.vue` 会写入页面上下文（`stores/aiContext.ts`），并支持 `/alerts?alert_id=` 深链打开详情。
 - 资源级上下文写入方：资产页（应用 + 高亮资源）、执行页（任务详情 `execution_id`）、观测页（指标查询后的资源维度与时间范围）；字段与规则见 `ops/ai-contract.md` §10.8。
 
@@ -189,8 +191,10 @@
 - `data.answer.actions` 由服务端按权限生成；`execution.propose.allowed=false` 时必须禁用按钮并展示 `reason`。
 - 「生成执行计划」调用既有 `createExecutionTask`（`source_type=ai_conversation`，`source_id=session_id`），任务进入 Execution `pending_confirm`；前端不得提供任何直接执行入口。
 - 工具调用结果必须检查 `allowed`；被拒绝是业务结果，需展示 `reason`（`toolReason.ts` 负责原因码的中文映射）。
+- 对话只读工具（§10.12.1）：`alarm.analyze`、自由参数 `metrics.query`、`alert.rules.list`（规则体检）；`status=invalid_argument / skipped / unsupported / permission_denied` 都需展示原因，不能当作网络错误。
 - 引用类型：`alert`、`observability_evidence` 带 `url` 可跳转；`memory_case`（相似案例记忆，`ops/ai-contract.md` §10.14）与 `knowledge_item`（知识沉淀，§10.15）无 `url`，只展示标签与条数提示。
-- 知识沉淀管理接口（§10.15）要求 `app:ai:knowledge:manage`（当前仅 admin），入口在「系统管理 / AI 配置 → 知识沉淀」（`KnowledgeManager.vue`）；未授权时返回 403。
+- 知识沉淀管理接口（§10.15）要求 `app:ai:knowledge:manage`（当前仅 admin），入口在「系统设置 → AI 配置 → 知识沉淀」（`KnowledgeManager.vue`）；未授权时返回 403。
+- 记忆管理接口（§10.19）要求 `app:ai:memory:manage`（当前仅 admin），入口在「系统设置 → AI 配置 → 记忆管理」（`MemoryManager.vue`）；停用/启用只影响后续检索并写 `memory_review` 审计，回答注入仍按归属用户隔离。
 - 会话归档后只读：`sendChatMessage` 会返回 409 `FAILED_PRECONDITION`，前端应在发送前按 `session.status` 拦截并提示先恢复。
 - 消息幂等：每次提问生成 `client_message_id`（`crypto.randomUUID`），重试复用同一值；服务端已生成回答时返回首次结果，回答缺失时返回 409 `FAILED_PRECONDITION`，此时提示用户刷新会话而不是静默重发。
 - 归档/恢复/删除入口在会话列表（`SessionList.vue`），三者均需二次确认；删除当前会话后自动切到下一个会话。

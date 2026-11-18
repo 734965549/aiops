@@ -516,3 +516,54 @@ export function aggregateKnowledgeFromFeedback(applicationId: string, minCases =
     data: { application_id: applicationId, min_cases: minCases }
   })
 }
+
+// ---- 记忆管理（ops/ai-contract.md §10.19，鉴权 app:ai:memory:manage）----
+
+export type MemoryCaseStatus = 'active' | 'retired' | string
+
+export interface MemoryCase {
+  case_id: string
+  source_type: string
+  session_id?: string
+  user_id: string
+  application_id: string
+  resource_id: string
+  resource_type: string
+  alert_signature?: string
+  keywords?: string
+  summary: string
+  recommendations: string[]
+  risk_level: string
+  quality_score: number
+  status: MemoryCaseStatus
+  created_at: number
+  updated_at: number
+}
+
+export interface MemoryCaseListParams {
+  status?: string
+  user_id?: string
+  application_id?: string
+  resource_id?: string
+  keyword?: string
+  limit?: number
+  offset?: number
+}
+
+/** 管理端检索记忆条目；回答注入仍按归属用户隔离，本接口不影响检索范围。 */
+export function listMemoryCases(params: MemoryCaseListParams = {}) {
+  return http<{ items: MemoryCase[] }>({
+    url: '/api/ai/memory/cases',
+    method: 'get',
+    params
+  })
+}
+
+/** 手动停用/启用记忆条目；停用后不再参与后续回答检索，可重新启用。 */
+export function updateMemoryCaseStatus(caseId: string, status: 'active' | 'retired') {
+  return http<MemoryCase>({
+    url: `/api/ai/memory/cases/${encodeURIComponent(caseId)}/status`,
+    method: 'post',
+    data: { status }
+  })
+}

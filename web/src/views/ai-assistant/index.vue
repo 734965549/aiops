@@ -75,6 +75,7 @@
             :error="error"
             :proposing="proposing"
             :last-user-content="lastUserContent"
+            :quick-questions="quickQuestions"
             @send="onSend"
             @retry="retry"
             @stop="stop"
@@ -125,6 +126,12 @@ import { useAIContextStore } from '@/stores/aiContext'
 
 const router = useRouter()
 const contextStore = useAIContextStore()
+const quickQuestions = [
+  '分析当前告警并给出排查步骤',
+  '分析 SYS.RDS 命名空间的告警规则合理性',
+  '最近 7 天的指标趋势有什么异常',
+  '生成一份处置计划'
+]
 const {
   sessions,
   activeSession,

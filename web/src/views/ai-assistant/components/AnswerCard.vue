@@ -263,6 +263,7 @@ const RISK_LABELS: Record<string, string> = {
 const TOOL_LABELS: Record<string, string> = {
   'alarm.analyze': '读取告警快照',
   'metrics.query': '查询指标证据',
+  'alert.rules.list': '查询告警规则',
   'execution.tasks.propose': '生成执行计划权限'
 }
 

@@ -22,6 +22,12 @@
       >
         <KnowledgeManager />
       </a-tab-pane>
+      <a-tab-pane
+        key="memory"
+        title="记忆管理"
+      >
+        <MemoryManager />
+      </a-tab-pane>
     </a-tabs>
   </div>
 </template>
@@ -30,6 +36,7 @@
 import ProviderManager from './components/ProviderManager.vue'
 import ToolConsole from './components/ToolConsole.vue'
 import KnowledgeManager from './components/KnowledgeManager.vue'
+import MemoryManager from './components/MemoryManager.vue'
 </script>
 
 <style scoped>
