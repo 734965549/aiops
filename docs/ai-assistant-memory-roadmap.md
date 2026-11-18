@@ -1,6 +1,6 @@
 # AI 助手记忆与自我优化演进设计
 
-> 状态：**三个阶段均已落地**：阶段 1（migration 0051，契约 §10.14）、阶段 2（migration 0052，契约 §10.15）、阶段 3（无新迁移，契约 §10.16）。2026-11 规则体检场景重启了只读工具扩展的第一阶段（`alert.rules.list` + 自由参数 `metrics.query`，migration 0055，契约 §10.12.1）。本文档保留原始设计与演进记录。 AI 运维助手从“固定管线 + 单轮编排”演进为“带记忆、可自我优化、受限 Agent Loop”的设计意图与实施路径。实现前不得把本文内容当作已交付能力写进 `ops/ai-contract.md` 的接口契约。
+> 状态：**三个阶段均已落地**：阶段 1（migration 0051，契约 §10.14）、阶段 2（migration 0052，契约 §10.15）、阶段 3（无新迁移，契约 §10.16）。2026-11 规则体检场景落地了只读工具扩展的第一阶段（`alert.rules.list` + 自由参数 `metrics.query`，migration 0055，契约 §10.12.1）；上下文不足修复随后补齐 `accounts.list` / `resource.analyze` / `resources.list`（migration 0056）。本文档保留原始设计与演进记录。 AI 运维助手从“固定管线 + 单轮编排”演进为“带记忆、可自我优化、受限 Agent Loop”的设计意图与实施路径。实现前不得把本文内容当作已交付能力写进 `ops/ai-contract.md` 的接口契约。
 
 ## 1. 背景与目标
 
@@ -222,6 +222,7 @@ feedback(valid/invalid) + 审计质量字段
 | 阶段 2 | `0052_ai_knowledge_item` | 知识条目表 + 权限种子 `app:ai:knowledge:manage`（同步 admin 绑定） |
 | 阶段 3 | 无新表 | 仅代码编排变更；`ai_session_message.tool_calls_json` 沿用现有结构 |
 | 规则体检 MVP | `0055_ai_alert_rules_tool_permission` | 仅种子 `alert.rules.list` AI 工具权限并绑定 admin；无表结构变更 |
+| 上下文发现 | `0056_ai_discovery_tools_permission` | 仅种子 `accounts.list` / `resource.analyze` / `resources.list` AI 工具权限并绑定 admin；无表结构变更 |
 
 - 版本号从当前最新 `0049` 后连续递增，不插队、不改写已发布版本。
 - pgvector 为可选增强（阶段 2）：如启用，迁移内 `CREATE EXTENSION IF NOT EXISTS vector` 需 DBA 确认生产实例支持；未启用时关键词检索为默认路径，不得因缺少扩展阻塞迁移。
@@ -251,7 +252,7 @@ feedback(valid/invalid) + 审计质量字段
 
 1. 阶段 1 先做最小闭环：`0051` 建表 + 反馈写记忆 + ChatService 检索注入 + references 回显（约 3–5 天量级，不动模型调用方式）。
 2. 阶段 1 验收通过后再评估阶段 2；知识审核 UI 放在「系统管理 / AI 配置」新增页签。
-3. 阶段 3 依赖阶段 1 的 `memory_status` 审计字段稳定；Agent Loop 已按「只读工具 + 预算控制」形态落地（契约 §10.16）。2026-11 规则体检 MVP 已重启只读工具扩展的第一阶段：`alert.rules.list` + 自由参数 `metrics.query`（契约 §10.12.1、migration 0055）；日志/资产/变更类工具与 `cloud.*` 仍推迟。
+3. 阶段 3 依赖阶段 1 的 `memory_status` 审计字段稳定；Agent Loop 已按「只读工具 + 预算控制」形态落地（契约 §10.16）。2026-11 规则体检 MVP 落地 `alert.rules.list` + 自由参数 `metrics.query`（契约 §10.12.1、migration 0055）；上下文不足修复随后落地 `accounts.list` / `resource.analyze` / `resources.list`（migration 0056）。日志/变更类工具与 `cloud.*` 仍推迟。
 
 ## 11. 文档同步要求
 

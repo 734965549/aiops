@@ -325,7 +325,8 @@ go run ./cmd/migrate
 # 7.3 AI 流式对话与取消（migration 0049；脚本自带本地 mock 模型，需 dev 环境）
 .\scripts\e2e-ai-stream.ps1
 
-# 7.4 AI Agent Loop（migration 0049；需要一条 active 告警，脚本自带本地 mock 模型）
+# 7.4 AI Agent Loop（migration 0049 / 0056；需要一条 active 告警，脚本自带本地 mock 模型；
+#     同时覆盖 accounts.list + resources.list 上下文发现分支）
 .\scripts\e2e-ai-agent-loop.ps1
 
 # 7.5 AI 规则体检（migration 0055；脚本自带本地 mock 模型和 fake huawei 账号）
@@ -561,6 +562,21 @@ go run ./cmd/migrate
 | 9.14.7 | huawei agency 不支持 | 用 agency 账号申请规则列表 | 观测 `status=unsupported`、reason 稳定；回答仍正常返回 |
 
 > 前置：已执行迁移 `0055`；契约见 `ops/ai-contract.md` §10.12.1 / §10.16。E2E 脚本：`scripts/e2e-ai-rules.ps1`（脚本化 mock 模型 + fake `auth_type=none` 账号，自动覆盖 9.14.1/9.14.2/9.14.3/9.14.5；9.14.4 数据范围拒绝、9.14.6 real ak_sk 与 9.14.7 agency 不支持由单测覆盖，真实账号需手工回归）。
+
+### 9.15 AI 上下文发现工具（migration 0056，契约 §10.12.1）
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 9.15.1 | 工具权限种子 | `go run ./cmd/migrate` 后查 `iam_ai_tool_permission` / `iam_role_ai_tool_permission` | 存在 `accounts.list` / `resource.analyze` / `resources.list`（read_only）且绑定 admin；非 admin 申请返回 `allowed=false` |
+| 9.15.2 | accounts.list 自动注入 | 无告警上下文的新会话发送任意问题 | `tool_calls` 含 `accounts.list`（`status=ok`），观测 `data` 含 `accounts/total`；`tool_invoke` 审计可见；账号清单进入模型 prompt |
+| 9.15.3 | resource.analyze 资产上下文 | 资产页选中云同步 RDS 资源后提问 | `tool_calls` 含 `resource.analyze`；观测 `data` 含 `account_id/region/namespace/dimensions`；随后 `metrics.query` 缺省字段按资源推导 |
+| 9.15.4 | 观测页云维度资源 | 观测页执行一次指标查询后提问（上下文 `resource_id` 为 instance_id） | `resource.analyze` 按 `cloud_resource_id` 命中并带入账号/区域/维度；资源未同步时 `reason=resource_not_found`，回答降级不中断 |
+| 9.15.5 | resources.list 纯对话发现 | 无告警/资源上下文提问「列出 RDS 实例」 | 模型申请 `resources.list`；观测 `resources` 含 `cloud_resource_id/namespace/dimension_name`；账号缺失时 `status=skipped`、`reason=no_account` |
+| 9.15.6 | 数据范围 | 用无权访问该集成账号的账号申请 `resource.analyze` / `resources.list` | `status=denied` / `permission_denied`；不返回资源数据；审计 `result=partial` |
+| 9.15.7 | 前端提示具体化 | 无上下文且模型返回 `insufficient_context` | ChatPanel 按 skipped reason 展示具体补全指引（缺账号 → 云账号接入；缺命名空间/维度 → 资产管理；缺指标名 → 提示补充指标名） |
+| 9.15.8 | 资源维度推导 | 对 `SYS.RDS` 资源提问 CPU 指标 | 缺省 `dimensions` 为 `rds_cluster_id` 且值为资源主维度；阈值不因资源推导而臆造 |
+
+> 前置：已执行迁移 `0056`；契约见 `ops/ai-contract.md` §10.12.1。E2E 脚本：`scripts/e2e-ai-agent-loop.ps1` 的 `MOCK_TOOL_DISCOVERY` 分支自动覆盖 9.15.2 / 9.15.5 的链路；9.15.3 / 9.15.4 / 9.15.6 / 9.15.8 由单测与手工验收覆盖（需要真实云同步资源）。
 
 
 ## 附录 A：仅 UI 手工步骤（精简表）
