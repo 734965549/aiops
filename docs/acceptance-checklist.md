@@ -319,6 +319,18 @@ go run ./cmd/migrate
 # 7.1 AI 相似案例记忆（migration 0051；需要一个未降级的模型回答）
 .\scripts\e2e-ai-memory.ps1
 
+# 7.2 AI 知识管理（migration 0052 / 0054；脚本自带本地 mock 模型，需 dev 环境）
+.\scripts\e2e-ai-knowledge.ps1
+
+# 7.3 AI 流式对话与取消（migration 0049；脚本自带本地 mock 模型，需 dev 环境）
+.\scripts\e2e-ai-stream.ps1
+
+# 7.4 AI Agent Loop（migration 0049；需要一条 active 告警，脚本自带本地 mock 模型）
+.\scripts\e2e-ai-agent-loop.ps1
+
+# 7.5 AI 规则体检（migration 0055；脚本自带本地 mock 模型和 fake huawei 账号）
+.\scripts\e2e-ai-rules.ps1
+
 # 8. Dashboard API 抽检
 # curl -H "Authorization: Bearer <token>" http://127.0.0.1:8080/api/dashboard/summary
 ```
@@ -335,7 +347,7 @@ go run ./cmd/migrate
 | 执行记录 | ☐ | `e2e-runbook.ps1` ☐ | ☐ | ☐ | ☐ |
 | Dashboard 摘要 | ☐ | 手工/API ☐ | ☐ | ☐ | ☐ |
 | 权限管理 P1 | ☐ | `e2e-identity-access.ps1` ☐ | ☐ | ☐ | ☐ |
-| AI 运维助手 | ☐ | `e2e-ai-assistant.ps1` ☐ | ☐ | ☐ | ☐ |
+| AI 运维助手 | ☐ | `e2e-ai-assistant.ps1` / `e2e-ai-memory.ps1` / `e2e-ai-knowledge.ps1` / `e2e-ai-stream.ps1` / `e2e-ai-agent-loop.ps1` / `e2e-ai-rules.ps1` ☐ | ☐ | ☐ | ☐ |
 | 审计中心 UI | ☐ | 手工/API ☐ | ☐ | ☐ | ☐ |
 | 权限校验 | ☐ | 负向用例 ☐ | ☐ | ☐ | ☐ |
 
@@ -422,7 +434,7 @@ go run ./cmd/migrate
 
 | # | 检查项 | 操作 | 预期 |
 | ---|--------|------|------|
-| 9.7.1 | 配置持久化 | 在「系统管理 / AI 配置 -> Provider 管理」新增类型 `b` provider（Ark 地址 + API Key + `model`/`ep-xxx`），保存后重启 API | 列表仍显示该 provider，密钥显示「已配置」；`ai_provider` 表中 `api_key_encrypted` 为密文，无明文 |
+| 9.7.1 | 配置持久化 | 在「系统设置 → AI 配置 → Provider 管理」新增类型 `b` provider（Ark 地址 + API Key + `model`/`ep-xxx`），保存后重启 API | 列表仍显示该 provider，密钥显示「已配置」；`ai_provider` 表中 `api_key_encrypted` 为密文，无明文 |
 | 9.7.2 | 更新省略 api_key | 编辑该 provider，只改名称/模型、不填 `api_key`，保存后再次分析 | 保存成功且 `has_api_key=true`；分析仍可调用模型（原密钥未丢失） |
 | 9.7.3 | 启停即时生效 | 禁用该 provider 后再次调用 `POST /api/ai/analyze-alert`，再启用 | 禁用时回落到本地摘要或下一可用 provider；启用后恢复模型分析，全程无需重启 API |
 | 9.7.4 | 换模型即时生效 | 修改 `model`/`ep-xxx` 后保存，再次分析 | 下一次分析使用新模型（日志 `model` 字段可见），无需重启 API |
@@ -444,7 +456,7 @@ go run ./cmd/migrate
 | 9.8.9 | 确认边界 | 执行确认页输入 `CONFIRM` | 任务推进到 `pending_execute` 后才可执行；拒绝/大小写不符返回 400 |
 | 9.8.10 | 审计可查 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | 可查 `chat_session` / `chat_message` / `tool_invoke` / `chat_feedback`，payload 无 prompt 与凭据 |
 | 9.8.11 | 全局浮层 | 任意页面按 `Alt + A` 或点击顶栏「AI 助手」 | 浮层带入当前页面上下文；快捷问题可发送；只出现「生成执行计划」，无直接执行入口 |
-| 9.8.12 | AI 配置归位 | 侧栏「AI 配置」 | Provider 管理与工具调用调试在系统管理配置页；AI 运维助手页只保留对话工作台 |
+| 9.8.12 | AI 配置归位 | 侧栏「AI 配置」 | Provider 管理与工具调用调试在系统设置配置页；AI 运维助手页只保留对话工作台 |
 | 9.8.13 | 告警数据范围（AI） | 建角色仅绑 `team=A` 数据范围并绑定测试账号；用 `team=B` 标签的告警分别调 `POST /api/ai/analyze-alert` 和对话（`alert_id` 为该告警） | 分析返回 403 `PERMISSION_DENIED` 且审计 `result=denied`；对话 `tool_calls` 中 `alarm.analyze` 为 `allowed=false`、`status=denied`、`reason=data_scope_denied`，无告警引用与 `view.alert`，仍返回回答 |
 | 9.8.14 | 数据范围放行 | 同一账号改用 `team=A` 标签告警重复 9.8.13 | 分析正常返回；对话 `alarm.analyze` 为 `allowed=true`、`status=ok`，引用含该告警 |
 | 9.8.15 | 会话归档 / 恢复 | 会话列表点击「归档」→ 刷新 → 点击「恢复」 | 归档后列表显示「已归档」、历史仍可查看；归档态发消息被拦截（服务端 409，前端提前提示）；恢复后可继续提问；审计含 `chat_session_status`（含 `previous_status`） |
@@ -469,8 +481,10 @@ go run ./cmd/migrate
 | 9.9.5 | 跨用户隔离 | 用另一账号对同一应用/资源提问 | 不返回 A 用户的案例（`memory_status=empty`），日志不含案例摘要 |
 | 9.9.6 | 降级不阻断 | 停库或让检索失败后提问（可用错表/断连接复现） | 回答正常返回；审计 `memory_status=error`、`memory_used=0` |
 | 9.9.7 | 审计字段 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | `chat_message` payload 含 `memory_used` / `memory_status`，不含案例原文 |
+| 9.9.8 | 记忆管理列表 | admin 调用 `GET /api/ai/memory/cases?status=active&keyword=...`；非 admin 调用 | 返回脱敏案例列表（摘要/建议/质量分/状态）；非 admin 返回 403 |
+| 9.9.9 | 手动停用/启用 | `POST /api/ai/memory/cases/{case_id}/status` 依次提交 `retired`、`active` | 停用后提问不再命中该案例且审计 `memory_review`（`previous_status`/`status`）；启用后重新参与检索；重复提交同状态幂等且不新增审计 |
 
-> 前置：已执行迁移 `0051`；9.9.3/9.9.4 需要已启用类型 `b` provider。契约见 `ops/ai-contract.md` §10.14。E2E 脚本：`scripts/e2e-ai-memory.ps1`（自动覆盖 9.9.1/9.9.3/9.9.4/9.9.7；跨用户隔离 9.9.5 与降级 9.9.6 仍需人工验证）。
+> 前置：已执行迁移 `0051`、`0054`；9.9.3/9.9.4 需要已启用类型 `b` provider。契约见 `ops/ai-contract.md` §10.14、§10.19。E2E 脚本：`scripts/e2e-ai-memory.ps1`（自动覆盖 9.9.1/9.9.3/9.9.4/9.9.7；跨用户隔离 9.9.5 与降级 9.9.6 仍需人工验证）；`scripts/e2e-ai-knowledge.ps1` 额外覆盖 9.9.8 的列表检索与 9.9.9 的停用动作。
 
 ### 9.10 知识沉淀（migration 0052，阶段 2）
 
@@ -489,7 +503,7 @@ go run ./cmd/migrate
 | 9.10.11 | 聚合幂等与保护 | 再次聚合同一应用；随后把该条目激活并再次聚合 | 未激活时 `action=updated` 且条目仍只有一条；激活后 `action=skipped_active`，线上内容不被覆盖 |
 | 9.10.12 | 聚合案例不足 | 对有效案例 <3 条的应用点击聚合 | 返回 `action=insufficient_cases`，不生成草稿，前端提示案例不足 |
 
-> 前置：已执行迁移 `0052`。契约见 `ops/ai-contract.md` §10.15。管理入口：「系统管理 / AI 配置 → 知识沉淀」页签（列表 / 新建 / 编辑 / 激活 / 停用 / 删除 / 反馈聚合）。
+> 前置：已执行迁移 `0052`。契约见 `ops/ai-contract.md` §10.15。管理入口：「系统设置 → AI 配置 → 知识沉淀」页签（列表 / 新建 / 编辑 / 激活 / 停用 / 删除 / 反馈聚合）。E2E 脚本：`scripts/e2e-ai-knowledge.ps1`（自动覆盖 9.10.2/9.10.3/9.10.4/9.10.6/9.10.7/9.10.10；编辑回草稿 9.10.5、低效自动停用 9.10.8、聚合幂等 9.10.11 与案例不足 9.10.12 仍需人工/单测补充）。
 
 ### 9.11 受限 Agent Loop（阶段 3，无新迁移）
 
@@ -501,7 +515,7 @@ go run ./cmd/migrate
 | 9.11.4 | 无进展收敛 | 让模型持续申请被拒绝的工具 | 至多两次模型调用即收敛（一次纠正机会），不悬挂、不超时 |
 | 9.11.5 | 审计可回放 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | 每轮工具调用都有 `tool_invoke`；`chat_message` payload 含 `loop_rounds`、`tokens` |
 
-> 前置：契约见 `ops/ai-contract.md` §10.16；无需新迁移。循环内不产生任何执行动作，`actions` 仍由服务端生成。
+> 前置：契约见 `ops/ai-contract.md` §10.16；无需新迁移。循环内不产生任何执行动作，`actions` 仍由服务端生成。E2E 脚本：`scripts/e2e-ai-agent-loop.ps1`（通过脚本化 mock 模型自动覆盖 9.11.1/9.11.2/9.11.3/9.11.5，需要一条 active 告警；无进展收敛 9.11.4 由既有单测覆盖）。
 
 ### 9.12 流式对话与取消（SSE，契约 §10.17）
 
@@ -515,7 +529,7 @@ go run ./cmd/migrate
 | 9.12.6 | 幂等重放 | 同一 `client_message_id` 先调同步接口，再调流式接口 | 流式只收到 `gathering` + `answer`，`message_id` 与首次一致；不新增消息、不再次调用模型；审计 `chat_message` 带 `replayed=true` |
 | 9.12.7 | 前端阶段提示与停止 | AI 助手页发送长问题；发送中点击「停止生成」 | 阶段提示按服务端事件切换（思考 → 查询工具 → 生成回答），不再依赖固定定时器；停止后输入区恢复、无半成品回答、提示「已停止生成」 |
 
-> 前置：契约见 `ops/ai-contract.md` §10.17；9.12.1/9.12.2 需要已启用类型 `b` provider。流式与取消目前由 `go test ./internal/ai/...` 覆盖（事件顺序、错误事件、取消审计、重放），未纳入 E2E 脚本，按上表手工抽检。
+> 前置：契约见 `ops/ai-contract.md` §10.17。E2E 脚本：`scripts/e2e-ai-stream.ps1`（通过脚本化 mock 模型自动覆盖 9.12.1/9.12.3/9.12.4/9.12.5/9.12.6；9.12.2 工具事件需要告警上下文，9.12.7 前端阶段提示与停止仍需人工抽检）。
 
 ### 9.13 会话只读分享（migration 0053，契约 §10.18）
 
@@ -532,6 +546,19 @@ go run ./cmd/migrate
 | 9.13.9 | 未装配降级 | 未注入分享仓储的环境调用分享接口 | 返回 503 `UNAVAILABLE`；普通对话、流式与归档不受影响 |
 
 > 前置：已执行迁移 `0053`；分享为**对内只读**，不提供匿名/对外链接。契约见 `ops/ai-contract.md` §10.18；应用层用例见 `internal/ai/application/chat_share_test.go`；E2E 脚本 `scripts/e2e-ai-assistant.ps1` 自动覆盖 9.13.1/9.13.2/9.13.3/9.13.8（跨账号访问、过期与上限仍需人工验证）。
+### 9.14 规则体检只读工具（migration 0055，契约 §10.12.1）
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 9.14.1 | 工具权限种子 | `go run ./cmd/migrate` 后查 `iam_ai_tool_permission` / `iam_role_ai_tool_permission` | 存在 `alert.rules.list`（read_only）且绑定 admin；非 admin 调用 `tool_requests` 返回 `allowed=false` |
+| 9.14.2 | 规则列表参数与证据 | 让模型申请 `alert.rules.list`，params 带 `namespace=SYS.RDS`、`limit<=50` | 观测 `status=ok`，`data.rule_count>=1`，规则含 `metric/operator/threshold/window_seconds`；回答 `references` 含 `observability_evidence`；`tool_invoke` 审计带 `evidence_id` |
+| 9.14.3 | 自由指标参数 | 让模型申请 `metrics.query`，params 带 `namespace/metric/dimensions/from/to/period` | 观测 `status=ok`；缺省字段由告警推导；`period=86400` 时 30 天窗口通过，>30 天或点数>1440 返回 `status=invalid_argument` |
+| 9.14.4 | 账号数据范围 | 用无权访问该 integration 账号的账号发起规则/指标工具 | 观测 `allowed=true`、`status=permission_denied`，不返回规则/指标数据；审计 `result=partial` |
+| 9.14.5 | Loop 审计 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | `chat_message` 含 `loop_rounds` 与两个工具码；每个 `tool_invoke` 含 `evidence_id`；无执行类工具调用 |
+| 9.14.6 | provider 不支持 | 对 huawei ak_sk/agency 账号申请规则列表 | 观测 `status=unsupported`、reason 稳定；回答仍正常返回 |
+
+> 前置：已执行迁移 `0055`；契约见 `ops/ai-contract.md` §10.12.1 / §10.16。E2E 脚本：`scripts/e2e-ai-rules.ps1`（脚本化 mock 模型 + fake `auth_type=none` 账号，自动覆盖 9.14.1/9.14.2/9.14.3/9.14.5；9.14.4 数据范围拒绝与 9.14.6 provider 不支持由单测覆盖）。
+
 
 ## 附录 A：仅 UI 手工步骤（精简表）
 

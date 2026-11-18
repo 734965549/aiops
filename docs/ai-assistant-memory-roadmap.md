@@ -1,6 +1,6 @@
 # AI 助手记忆与自我优化演进设计
 
-> 状态：**三个阶段均已落地**：阶段 1（migration 0051，契约 §10.14）、阶段 2（migration 0052，契约 §10.15）、阶段 3（无新迁移，契约 §10.16）。本文档保留原始设计与演进记录。 AI 运维助手从“固定管线 + 单轮编排”演进为“带记忆、可自我优化、受限 Agent Loop”的设计意图与实施路径。实现前不得把本文内容当作已交付能力写进 `ops/ai-contract.md` 的接口契约。
+> 状态：**三个阶段均已落地**：阶段 1（migration 0051，契约 §10.14）、阶段 2（migration 0052，契约 §10.15）、阶段 3（无新迁移，契约 §10.16）。2026-11 规则体检场景重启了只读工具扩展的第一阶段（`alert.rules.list` + 自由参数 `metrics.query`，migration 0055，契约 §10.12.1）。本文档保留原始设计与演进记录。 AI 运维助手从“固定管线 + 单轮编排”演进为“带记忆、可自我优化、受限 Agent Loop”的设计意图与实施路径。实现前不得把本文内容当作已交付能力写进 `ops/ai-contract.md` 的接口契约。
 
 ## 1. 背景与目标
 
@@ -206,6 +206,14 @@ feedback(valid/invalid) + 审计质量字段
 - 循环内不存在任何执行类工具调用；`execution.propose` 仍只出现在服务端生成的 `actions` 中。
 - 审计可完整回放每轮工具调用与 token 计数。
 
+### 6.4 工具扩展：规则体检 MVP（2026-11 重启）
+
+- 场景：用户询问「某 namespace 下哪些告警规则阈值设置不合理」，助手需要读取规则阈值并对照最近指标破限点。
+- 新增 `alert.rules.list`：按 `namespace` 查询规则（`rule_id` / `name` / `severity` / `enabled` / `metric` / `operator` / `threshold` / `window_seconds` 等），单次最多 50 条；账号级数据范围由 `AccountAccessAuthorizer` 前置校验。
+- `metrics.query` 改为自由参数：模型可传 `account_id/region/project_id/namespace/metric/dimensions/from/to/period/aggregator`，服务端按告警推导兜底并校验窗口（日聚合最多 30 天、任意情况下最多 1440 点）。
+- Loop 白名单扩展为 `alarm.analyze` / `metrics.query` / `alert.rules.list`；轮数、token、单轮申请数与执行类拒绝约束不变。
+- 验收：`scripts/e2e-ai-rules.ps1`（脚本化 mock 模型 + fake huawei 账号）覆盖规则查询、自由指标取数、证据引用与审计。
+
 ## 7. 数据库与迁移规划
 
 | 阶段 | 迁移 | 内容 |
@@ -213,6 +221,7 @@ feedback(valid/invalid) + 审计质量字段
 | 阶段 1 | `0051_ai_memory_case` | 记忆条目表 + 索引 |
 | 阶段 2 | `0052_ai_knowledge_item` | 知识条目表 + 权限种子 `app:ai:knowledge:manage`（同步 admin 绑定） |
 | 阶段 3 | 无新表 | 仅代码编排变更；`ai_session_message.tool_calls_json` 沿用现有结构 |
+| 规则体检 MVP | `0055_ai_alert_rules_tool_permission` | 仅种子 `alert.rules.list` AI 工具权限并绑定 admin；无表结构变更 |
 
 - 版本号从当前最新 `0049` 后连续递增，不插队、不改写已发布版本。
 - pgvector 为可选增强（阶段 2）：如启用，迁移内 `CREATE EXTENSION IF NOT EXISTS vector` 需 DBA 确认生产实例支持；未启用时关键词检索为默认路径，不得因缺少扩展阻塞迁移。
@@ -221,7 +230,7 @@ feedback(valid/invalid) + 审计质量字段
 
 | 项 | 变更 | 阶段 |
 | --- | --- | --- |
-| 权限码 | 复用 `app:ai:chat`；新增 `app:ai:knowledge:manage` | 阶段 2 |
+| 权限码 | 复用 `app:ai:chat`；新增 `app:ai:knowledge:manage`（阶段 2）、`app:ai:memory:manage`（记忆管理，migration 0054） | 阶段 2 / 管理 |
 | 审计 | `chat_message` 增加 `memory_used` / `memory_status` / `loop_rounds`；知识审核写 `knowledge_review` 审计 | 1–3 |
 | `ops/ai-contract.md` | 落地时同步：`references` 新增类型、payload `similar_cases`、错误语义不变 | 落地时 |
 | `web/src/api/README.md` | 如新增知识管理 API 同步登记 | 阶段 2 |
@@ -235,14 +244,14 @@ feedback(valid/invalid) + 审计质量字段
 | application | 反馈→记忆写入、检索注入、预算控制、降级路径必须有测试；跨用户隔离负向用例 |
 | infrastructure | 检索超时/空表/全文索引异常不阻断主链路 |
 | interfaces/http | 反馈与知识管理接口的成功/401/403/参数错误；记忆引用回显 |
-| E2E | 新增 `scripts/e2e-ai-memory.ps1`：valid 反馈 → 生成案例 → 同类告警提问 → 引用回显 → invalid 降分 → retired |
+| E2E | `scripts/e2e-ai-memory.ps1`：valid 反馈 → 生成案例 → 同类告警提问 → 引用回显 → invalid 降分 → retired；阶段 2/3 追加 `e2e-ai-knowledge.ps1`、`e2e-ai-stream.ps1`、`e2e-ai-agent-loop.ps1`（脚本内置 loopback mock 模型，dev 环境确定性触发） |
 | 架构检查 | 新文件遵守 800 行上限；`ChatService` 拆分时保持端口接口，避免 application 直接依赖 GORM |
 
 ## 10. 实施顺序建议
 
 1. 阶段 1 先做最小闭环：`0051` 建表 + 反馈写记忆 + ChatService 检索注入 + references 回显（约 3–5 天量级，不动模型调用方式）。
 2. 阶段 1 验收通过后再评估阶段 2；知识审核 UI 放在「系统管理 / AI 配置」新增页签。
-3. 阶段 3 依赖阶段 1 的 `memory_status` 审计字段稳定；Agent Loop 已按「现有两个只读工具 + 预算控制」形态先行落地（契约 §10.16）。原计划作为前置的只读工具清单扩展（日志/资产/变更类）已推迟，推迟原因与重启条件见 `ops/ai-contract.md` §10.12.1；工具清单扩展后 Loop 的单位价值会显著提高，属增强而非阻塞。
+3. 阶段 3 依赖阶段 1 的 `memory_status` 审计字段稳定；Agent Loop 已按「只读工具 + 预算控制」形态落地（契约 §10.16）。2026-11 规则体检 MVP 已重启只读工具扩展的第一阶段：`alert.rules.list` + 自由参数 `metrics.query`（契约 §10.12.1、migration 0055）；日志/资产/变更类工具与 `cloud.*` 仍推迟。
 
 ## 11. 文档同步要求
 
