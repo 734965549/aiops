@@ -1622,6 +1622,8 @@ flowchart TD
 - 从告警分析到根因定位。
 - 从建议执行到自愈策略推荐。
 - 从人工确认执行到低风险自动执行。
+- 会话记忆与自我优化：**三个阶段均已落地**——阶段 1 相似案例记忆（RAG-lite，migration `0051_ai_memory_case`，反馈沉淀 + 检索注入 + `memory_case` 引用，契约见 `ops/ai-contract.md` §10.14）；阶段 2 知识沉淀（migration `0052_ai_knowledge_item`，人工录入/审核激活/scope 注入/低效自动停用 + 反馈聚合生成 draft，§10.15）；阶段 3 受限 Agent Loop（≤3 轮只读工具循环 + token 预算 + 每轮 RBAC 复核，§10.16）。对话流式与取消见 §10.17；设计与演进记录见 `docs/ai-assistant-memory-roadmap.md`。
+- 已明确推迟的能力：对话工具范围扩展（日志/资产/变更类只读工具）、云厂商只读观测工具（cloud.* 系列）、`execution.tasks.propose` 工具化。推迟原因与重启条件见 `ops/ai-contract.md` §10.12；重启前必须先补齐契约定义再动代码。
 
 ### 16.3 运维能力演进
 

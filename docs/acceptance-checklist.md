@@ -313,8 +313,11 @@ go run ./cmd/migrate
 # 6. 权限管理 P1：viewer 角色、授权写接口、403 边界、审计
 .\scripts\e2e-identity-access.ps1
 
-# 7. AI 运维助手（migration 0049；建议先配置类型 b provider）
+# 7. AI 运维助手（migration 0049 / 0050；建议先配置类型 b provider）
 .\scripts\e2e-ai-assistant.ps1
+
+# 7.1 AI 相似案例记忆（migration 0051；需要一个未降级的模型回答）
+.\scripts\e2e-ai-memory.ps1
 
 # 8. Dashboard API 抽检
 # curl -H "Authorization: Bearer <token>" http://127.0.0.1:8080/api/dashboard/summary
@@ -442,10 +445,93 @@ go run ./cmd/migrate
 | 9.8.10 | 审计可查 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | 可查 `chat_session` / `chat_message` / `tool_invoke` / `chat_feedback`，payload 无 prompt 与凭据 |
 | 9.8.11 | 全局浮层 | 任意页面按 `Alt + A` 或点击顶栏「AI 助手」 | 浮层带入当前页面上下文；快捷问题可发送；只出现「生成执行计划」，无直接执行入口 |
 | 9.8.12 | AI 配置归位 | 侧栏「AI 配置」 | Provider 管理与工具调用调试在系统管理配置页；AI 运维助手页只保留对话工作台 |
+| 9.8.13 | 告警数据范围（AI） | 建角色仅绑 `team=A` 数据范围并绑定测试账号；用 `team=B` 标签的告警分别调 `POST /api/ai/analyze-alert` 和对话（`alert_id` 为该告警） | 分析返回 403 `PERMISSION_DENIED` 且审计 `result=denied`；对话 `tool_calls` 中 `alarm.analyze` 为 `allowed=false`、`status=denied`、`reason=data_scope_denied`，无告警引用与 `view.alert`，仍返回回答 |
+| 9.8.14 | 数据范围放行 | 同一账号改用 `team=A` 标签告警重复 9.8.13 | 分析正常返回；对话 `alarm.analyze` 为 `allowed=true`、`status=ok`，引用含该告警 |
+| 9.8.15 | 会话归档 / 恢复 | 会话列表点击「归档」→ 刷新 → 点击「恢复」 | 归档后列表显示「已归档」、历史仍可查看；归档态发消息被拦截（服务端 409，前端提前提示）；恢复后可继续提问；审计含 `chat_session_status`（含 `previous_status`） |
+| 9.8.16 | 会话删除 | 会话列表点击「删除」并确认 | 会话与消息一并删除，列表即时移除；删除当前会话自动切到下一个；重复删除返回 404；审计含 `chat_session_delete` |
+| 9.8.17 | 消息幂等 | 用同一 `client_message_id` 连续 `POST .../messages` 两次（内容相同） | 两次返回相同 `message_id` 与 `answer`；会话详情只有一组用户/助手消息；审计含 `chat_message` 且第二次 `replayed=true`；第二次不再调用模型（可用 provider 日志或耗时判断） |
+| 9.8.18 | 幂等冲突 | 手工插入一条仅含用户消息（无回答）的 `client_message_id`（或中断一次请求后重试同一 id） | 返回 409 `FAILED_PRECONDITION`，提示上一次请求仍在处理或已中断；不新增消息、不调用模型 |
+| 9.8.19 | 资源级上下文（资产） | 资产页选中应用并高亮某个资源后打开 AI 助手 | 上下文展示应用/资源 ID；`POST .../messages` 请求体 `context` 含 `application_id`、`resource_id`、`resource_type` |
+| 9.8.20 | 资源级上下文（执行 / 观测） | 执行页打开任务详情、观测页执行一次指标查询后分别唤起 AI 助手 | 执行页上下文含 `execution_id`（告警来源另带 `alert_id`、资源目标另带 `resource_id`）；观测页上下文含 `resource_id` 与 `time_range`；关闭详情或查询后字段随页面切换清理 |
 
-> 前置：已执行迁移 `0049`；9.8.3 的模型回答需要已启用类型 `b` provider。E2E 脚本：`scripts/e2e-ai-assistant.ps1`（自动覆盖 9.8.2/9.8.3/9.8.7/9.8.8/9.8.9/9.8.10）。
+> 前置：已执行迁移 `0049`、`0050`（0050 为消息幂等键）；9.8.3 的模型回答需要已启用类型 `b` provider。E2E 脚本：`scripts/e2e-ai-assistant.ps1`（自动覆盖 9.8.2/9.8.3/9.8.7/9.8.8/9.8.9/9.8.10/9.8.15/9.8.16/9.8.17）。
 >
-> 已知限制（P1 跟进）：告警快照读取当前仅校验 RBAC/工具权限，尚未按用户数据范围过滤（与 `POST /api/ai/analyze-alert` 一致，非本次回归）；`app:ai:chat` 目前仅绑定 admin，影响有限。详见 `ops/ai-contract.md` §10.11。
+> 数据范围（9.8.13/9.8.14）：告警快照读取按对象数据范围过滤，分析路径与对话路径共用同一入口，映射与拒绝语义见 `ops/ai-contract.md` §10.6.4、§10.11。注意告警列表/详情接口的自身数据范围口径不在 AI 模块范围内。
+
+### 9.9 相似案例记忆（migration 0051，阶段 1）
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 9.9.1 | 有效反馈沉淀 | 对一条 `status=ok` 的回答提交 `valid` 反馈 | `ai_memory_case` 新增一条：`source_message_id` 为该回答、`quality_score=1`、`status=active`；重复提交不新增第二条 |
+| 9.9.2 | 降级回答不入记忆 | 在无可用 provider（`degraded=true`）时提交 `valid` | 不生成案例；反馈接口仍返回 200 |
+| 9.9.3 | 检索注入与引用 | 用同一告警再次提问（或重复调用 `POST /api/ai/analyze-alert`） | 对话 `references` 含 `type=memory_case`、`id=case_id`；provider payload 含 `memory_cases`（分析接口为 `similar_cases`） |
+| 9.9.4 | 无效反馈降分与淘汰 | 对同一回答连续提交两次 `invalid` | 第一次 `quality_score=1 → -1` 仍 `active`；第二次 `≤ -2` 转 `retired`；后续检索不再命中 |
+| 9.9.5 | 跨用户隔离 | 用另一账号对同一应用/资源提问 | 不返回 A 用户的案例（`memory_status=empty`），日志不含案例摘要 |
+| 9.9.6 | 降级不阻断 | 停库或让检索失败后提问（可用错表/断连接复现） | 回答正常返回；审计 `memory_status=error`、`memory_used=0` |
+| 9.9.7 | 审计字段 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | `chat_message` payload 含 `memory_used` / `memory_status`，不含案例原文 |
+
+> 前置：已执行迁移 `0051`；9.9.3/9.9.4 需要已启用类型 `b` provider。契约见 `ops/ai-contract.md` §10.14。E2E 脚本：`scripts/e2e-ai-memory.ps1`（自动覆盖 9.9.1/9.9.3/9.9.4/9.9.7；跨用户隔离 9.9.5 与降级 9.9.6 仍需人工验证）。
+
+### 9.10 知识沉淀（migration 0052，阶段 2）
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 9.10.1 | 权限种子 | `go run ./cmd/migrate` 后查 `iam_permission` | 存在 `app:ai:knowledge:manage` 且绑定 `admin`；非 admin 调用返回 403 |
+| 9.10.2 | 新建为草稿 | `POST /api/ai/knowledge/items`（scope=global，title/content） | 返回 `status=draft`、`origin=manual`；审计 `knowledge_edit` |
+| 9.10.3 | 草稿不注入 | 用命中该应用/资源类型的会话提问 | system prompt 无「知识沉淀」段落，`references` 无 `knowledge_item`，审计 `knowledge_used=0` |
+| 9.10.4 | 审核激活后注入 | `POST .../items/{item_id}/review` `{"action":"activate"}` 后再次提问 | system prompt 末尾出现知识段落（固定安全约束仍在最前），`references` 含 `knowledge_item`；`hit_count` +1；审计 `knowledge_review` |
+| 9.10.5 | 编辑回草稿 | `PUT` 修改 active 条目的 title/content | 条目回到 `draft`、`reviewed_by` 清空；再次提问不再注入 |
+| 9.10.6 | 停用立即失效 | `review` `{"action":"disable"}` 后提问 | 立即不再注入（无缓存残留） |
+| 9.10.7 | 有效反馈计入 useful | 对注入了知识的回答提交 `valid` | 条目 `useful_count` +1；不会自动停用 |
+| 9.10.8 | 低效自动停用 | 让某条目被注入 ≥5 次且从未获得 `valid` | 条目转 `disabled`，审计 `knowledge_review` 且 `action=auto_disable`；后续不再注入 |
+| 9.10.9 | 审计可查 | `GET /api/audits?resource_type=ai&resource_id={item_id}` | 可查 `knowledge_edit` / `knowledge_review`，payload 含 `action` 与 `status` |
+| 9.10.10 | 反馈聚合生成草稿 | 对同一应用积累 ≥3 条 `valid` 反馈后，在「AI 配置 → 知识沉淀」填写应用 ID 点击「反馈聚合生成草稿」 | 返回 `action=created`，生成 `origin=feedback_aggregate`、`status=draft`、`item_id=agg-<app_id>` 的条目；内容含历史案例摘要与建议；审计 `knowledge_edit` 且 `action=aggregate` |
+| 9.10.11 | 聚合幂等与保护 | 再次聚合同一应用；随后把该条目激活并再次聚合 | 未激活时 `action=updated` 且条目仍只有一条；激活后 `action=skipped_active`，线上内容不被覆盖 |
+| 9.10.12 | 聚合案例不足 | 对有效案例 <3 条的应用点击聚合 | 返回 `action=insufficient_cases`，不生成草稿，前端提示案例不足 |
+
+> 前置：已执行迁移 `0052`。契约见 `ops/ai-contract.md` §10.15。管理入口：「系统管理 / AI 配置 → 知识沉淀」页签（列表 / 新建 / 编辑 / 激活 / 停用 / 删除 / 反馈聚合）。
+
+### 9.11 受限 Agent Loop（阶段 3，无新迁移）
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 9.11.1 | 追加只读工具 | 配置一个会在上下文不足时输出 `tool_requests`（`metrics.query`）的模型，提问 | 服务端执行追加取数后二次调用模型；`tool_calls` 含该轮调用；审计 `chat_message` 的 `loop_rounds ≥ 1` |
+| 9.11.2 | 执行类工具不可达 | 让模型申请 `execution.command.run` / `execution.tasks.propose` | 该工具 `allowed=false`、`reason=tool is not allowed in agent loop`；**不会产生任何执行动作**，回答仍返回 |
+| 9.11.3 | 轮数预算 | 让模型持续申请 `metrics.query` | 追加轮数最多 3 轮，随后返回 `status=degraded`、`degraded_reason=agent_loop_exhausted`，保留已取观测 |
+| 9.11.4 | 无进展收敛 | 让模型持续申请被拒绝的工具 | 至多两次模型调用即收敛（一次纠正机会），不悬挂、不超时 |
+| 9.11.5 | 审计可回放 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | 每轮工具调用都有 `tool_invoke`；`chat_message` payload 含 `loop_rounds`、`tokens` |
+
+> 前置：契约见 `ops/ai-contract.md` §10.16；无需新迁移。循环内不产生任何执行动作，`actions` 仍由服务端生成。
+
+### 9.12 流式对话与取消（SSE，契约 §10.17）
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 9.12.1 | SSE 事件流 | `curl -N -X POST http://127.0.0.1:8080/api/ai/chat/sessions/{session_id}/messages/stream -H "Authorization: Bearer <token>" -H "Content-Type: application/json" -d '{"content":"分析这个告警","context":{"alert_id":"<alert_id>"}}'` | 响应头含 `Content-Type: text/event-stream`、`Cache-Control: no-cache`、`X-Accel-Buffering: no`；依次收到 `stage:gathering`、`tool`（有告警上下文时）、`stage:thinking`、`stage:answering`、`answer`；每条为 `data: <json>` + 空行 |
+| 9.12.2 | 工具事件 | 用有 `alarm.analyze` 权限的账号发起 9.12.1 | 收到 `type=tool`、`tool_code=alarm.analyze`、`allowed=true`、`status=ok`；无权限账号收到 `allowed=false` 且带 `reason`，回答仍返回 |
+| 9.12.3 | 业务错误转事件 | 对已归档会话调用流式接口 | HTTP 200，收到 `{"type":"error","code":"FAILED_PRECONDITION",...}`；无 `answer` 事件；不落 assistant 消息 |
+| 9.12.4 | 缺 content | 请求体为空 | 写 SSE 之前返回 400（统一响应结构），无事件下发 |
+| 9.12.5 | 客户端断开 / 停止 | 收到首个事件后终止 curl（或前端点「停止生成」） | 会话只剩用户消息、无 assistant 消息；审计 `chat_canceled` 含 `phase` 与 `result=canceled`；同步接口不受影响 |
+| 9.12.6 | 幂等重放 | 同一 `client_message_id` 先调同步接口，再调流式接口 | 流式只收到 `gathering` + `answer`，`message_id` 与首次一致；不新增消息、不再次调用模型；审计 `chat_message` 带 `replayed=true` |
+| 9.12.7 | 前端阶段提示与停止 | AI 助手页发送长问题；发送中点击「停止生成」 | 阶段提示按服务端事件切换（思考 → 查询工具 → 生成回答），不再依赖固定定时器；停止后输入区恢复、无半成品回答、提示「已停止生成」 |
+
+> 前置：契约见 `ops/ai-contract.md` §10.17；9.12.1/9.12.2 需要已启用类型 `b` provider。流式与取消目前由 `go test ./internal/ai/...` 覆盖（事件顺序、错误事件、取消审计、重放），未纳入 E2E 脚本，按上表手工抽检。
+
+### 9.13 会话只读分享（migration 0053，契约 §10.18）
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 9.13.1 | 创建分享 | 会话列表点「分享」，选 7 天后点「生成链接」 | 返回 `share_id`、`token`、`share_url`；`expires_at` 约为 7 天后；弹窗展示可复制链接；审计 `chat_share_create` |
+| 9.13.2 | 访问分享（另一账号） | 用另一具备 `app:ai:chat` 的账号打开 `share_url` | 只读渲染会话历史与结构化回答；顶部有只读提示；无输入框、反馈与「生成执行计划」按钮 |
+| 9.13.3 | 撤销后失效 | owner 在弹窗点「撤销」，再用同一链接访问 | 撤销成功；链接访问返回 404，页面提示「链接不可用」；审计 `chat_share_revoke` |
+| 9.13.4 | 过期失效 | 手工把 `ai_session_share.expires_at` 改到过去，再访问 | 返回 404（与撤销不可区分）；不泄露会话内容 |
+| 9.13.5 | owner 边界 | 非 owner 调用创建/列表/撤销接口 | 返回 403 `PERMISSION_DENIED`；跨会话的 `share_id` 撤销返回 404 |
+| 9.13.6 | 上限与参数 | 同一会话连续生成 11 条有效链接；再传 `expires_in_hours=0`/`721` 创建 | 第 11 条返回 409 `FAILED_PRECONDITION`；0 取默认 7 天；721 返回 400 |
+| 9.13.7 | 会话删除联动 | 分享后删除源会话，再访问链接 | 返回 404；不返回任何消息 |
+| 9.13.8 | 审计与日志脱敏 | `GET /api/audits?resource_type=ai&resource_id={session_id}`；再查看后端访问日志中的分享访问记录 | 可查 `chat_share_create` / `chat_share_revoke` / `chat_share_view`；审计 payload 无 token、无消息正文；访问日志路径显示为 `/api/ai/chat/shares/<redacted>` |
+| 9.13.9 | 未装配降级 | 未注入分享仓储的环境调用分享接口 | 返回 503 `UNAVAILABLE`；普通对话、流式与归档不受影响 |
+
+> 前置：已执行迁移 `0053`；分享为**对内只读**，不提供匿名/对外链接。契约见 `ops/ai-contract.md` §10.18；应用层用例见 `internal/ai/application/chat_share_test.go`；E2E 脚本 `scripts/e2e-ai-assistant.ps1` 自动覆盖 9.13.1/9.13.2/9.13.3/9.13.8（跨账号访问、过期与上限仍需人工验证）。
 
 ## 附录 A：仅 UI 手工步骤（精简表）
 
