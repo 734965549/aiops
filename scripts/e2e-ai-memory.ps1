@@ -37,7 +37,31 @@ function Invoke-Api {
         # Windows PowerShell 5.1 may encode string bodies as ASCII, turning Chinese into '?'.
         $params.Body = [System.Text.Encoding]::UTF8.GetBytes($jsonBody)
     }
-    $resp = Invoke-WebRequest @params
+    # PS 5.1 throws on 4xx/5xx before the body can be parsed; surface the API code for diagnosability.
+    try {
+        $resp = Invoke-WebRequest @params
+    } catch {
+        # PS 5.1 keeps the response body in ErrorDetails.Message; fall back to the raw stream.
+        $body = ""
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            $body = $_.ErrorDetails.Message
+        } elseif ($_.Exception.Response) {
+            try {
+                $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                $body = $reader.ReadToEnd()
+            } catch { $body = "" }
+        }
+        $code = ""
+        $detail = $_.Exception.Message
+        if ($body) {
+            try {
+                $j = $body | ConvertFrom-Json
+                $code = [string]$j.code
+                $detail = [string]$j.message
+            } catch { }
+        }
+        throw "API $Method $Path failed: $code $detail"
+    }
     $json = $resp.Content | ConvertFrom-Json
     if ($json.code -ne "OK") {
         throw "API $Method $Path failed: $($json.code) $($json.message)"
