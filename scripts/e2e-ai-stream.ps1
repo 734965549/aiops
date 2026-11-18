@@ -1,7 +1,7 @@
 ﻿# AI streaming E2E (requires migration 0049 + running API in dev env).
 #
 # Covers ops/ai-contract.md §10.17:
-#   SSE headers and event order (stage -> answer)
+#   SSE headers and event order (stage -> delta(thinking/answer) -> answer)
 #   archived session -> HTTP 200 + error event FAILED_PRECONDITION (no answer)
 #   missing content -> HTTP 400 before any event
 #   idempotent replay -> only gathering + answer with the same message_id
@@ -138,6 +138,16 @@ try {
     $answerEvent = @($events | Where-Object { $_.type -eq "answer" })
     if ($answerEvent.Count -ne 1) { throw ("expected exactly one answer event, got " + $answerEvent.Count) }
     if (-not $answerEvent[0].result.message_id) { throw "answer event missing message_id" }
+    $deltaEvents = @($events | Where-Object { $_.type -eq "delta" -and $_.text })
+    if ($deltaEvents.Count -lt 2) {
+        throw ("expected model delta events, got " + $deltaEvents.Count)
+    }
+    $deltaPhases = @($deltaEvents | ForEach-Object { [string]$_.phase })
+    foreach ($phase in @("thinking", "answer")) {
+        if ($deltaPhases -notcontains $phase) {
+            throw ("missing delta phase " + $phase + ": " + ($deltaPhases -join ","))
+        }
+    }
     if ($events[-1].type -ne "answer") { throw ("last event must be answer, got " + $events[-1].type) }
     $normalDetail = Invoke-AiApi -ApiBase $ApiBase -Method GET -Path ("/api/ai/chat/sessions/" + $sessionId) -Headers $auth
     if (@($normalDetail.messages | Where-Object { $_.role -eq "assistant" }).Count -ne 1) {

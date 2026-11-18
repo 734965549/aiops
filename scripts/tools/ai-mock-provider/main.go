@@ -53,6 +53,7 @@ type chatMessage struct {
 
 type chatRequest struct {
 	Messages []chatMessage `json:"messages"`
+	Stream   bool          `json:"stream,omitempty"`
 }
 
 type completionChoice struct {
@@ -104,8 +105,12 @@ func main() {
 			}
 		}
 		content, scenario := state.nextContent(req.Messages)
-		log.Printf("completion served: scenario=%s prompt_runes=%d", scenario, len([]rune(prompt)))
+		log.Printf("completion served: scenario=%s stream=%t prompt_runes=%d", scenario, req.Stream, len([]rune(prompt)))
 
+		if req.Stream {
+			serveStream(w, r, content)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(completionResponse{
 			ID:     "chatcmpl-aiops-e2e",
@@ -122,6 +127,60 @@ func main() {
 	log.Printf("ai mock provider listening on http://%s", *addr)
 	if err := http.ListenAndServe(*addr, mux); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func serveStream(w http.ResponseWriter, r *http.Request, content string) {
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	flusher, _ := w.(http.Flusher)
+	send := func(payload any) bool {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", raw); err != nil {
+			return false
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return true
+	}
+	chunk := func(delta map[string]string) bool {
+		return send(map[string]any{
+			"id": "chatcmpl-aiops-e2e", "object": "chat.completion.chunk",
+			"choices": []any{map[string]any{"index": 0, "delta": delta}},
+		})
+	}
+
+	if !chunk(map[string]string{"reasoning_content": "正在核对上下文与只读观测。"}) {
+		return
+	}
+	runes := []rune(content)
+	const contentChunkRunes = 24
+	for start := 0; start < len(runes); start += contentChunkRunes {
+		if r.Context().Err() != nil {
+			return
+		}
+		end := start + contentChunkRunes
+		if end > len(runes) {
+			end = len(runes)
+		}
+		if !chunk(map[string]string{"content": string(runes[start:end])}) {
+			return
+		}
+	}
+	if !send(map[string]any{
+		"id": "chatcmpl-aiops-e2e", "object": "chat.completion.chunk",
+		"choices": []any{map[string]any{"index": 0, "delta": map[string]string{}, "finish_reason": "stop"}},
+		"usage":   map[string]int{"prompt_tokens": 100, "completion_tokens": 100, "total_tokens": 200},
+	}) {
+		return
+	}
+	_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	if flusher != nil {
+		flusher.Flush()
 	}
 }
 
