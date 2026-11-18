@@ -44,6 +44,8 @@ type AnalyzeService struct {
 	resolver   AnalysisProviderResolver
 	evidence   MetricEvidencePort
 	audit      AuditRecorder
+	// memory 为可选的相似案例记忆能力；nil 表示关闭。
+	memory MemoryCaseStore
 }
 
 // NewAnalyzeService 构造分析服务；providerID 为空时跳过工具网关调用。
@@ -83,6 +85,14 @@ func (s *AnalyzeService) SetMetricEvidence(port MetricEvidencePort) {
 	s.evidence = port
 }
 
+// SetMemory 注入相似案例记忆能力；nil 表示关闭（payload 不含 similar_cases）。
+func (s *AnalyzeService) SetMemory(memory MemoryCaseStore) {
+	if s == nil {
+		return
+	}
+	s.memory = memory
+}
+
 // AnalyzeAlert 加载告警上下文并尝试经 toolgateway 调用 alarm.analyze；失败时回落本地摘要。
 func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in AnalyzeAlertInput) (*AnalyzeAlertResult, error) {
 	if s == nil || s.alerts == nil {
@@ -92,8 +102,10 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 	if alertID == "" {
 		return nil, apperr.New(apperr.CodeInvalidArgument, "alert_id is required")
 	}
-	alert, err := s.alerts.GetForAnalysis(ctx, alertID)
+	// 告警读取端口按当前用户数据范围过滤；拒绝时不返回任何分析结果。
+	alert, err := s.alerts.GetForAnalysis(ctx, userID, alertID)
 	if err != nil {
+		s.recordScopeDeniedAudit(ctx, alertID, userID, err)
 		return nil, err
 	}
 	timeRange := strings.TrimSpace(in.TimeRange)
@@ -111,12 +123,17 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 	toolFailed := false
 	var toolError string
 	var evidence *MetricEvidenceResult
+	memoryStatus := MemoryStatusSkipped
+	var similarCases []chatMemoryCase
 	providerID := s.analysisProviderID()
 	if s.tools != nil && providerID != "" {
 		snapshot := alertSnapshot(alert)
+		obj := AlertObjectContextOf(alert)
 		if in.IncludeMetrics {
 			evidence = s.collectMetricEvidence(ctx, userID, alert)
 		}
+		// 相似案例记忆（阶段 1）：命中则与 evidence 平级注入，失败降级不中断分析。
+		similarCases, memoryStatus = s.searchSimilarCases(ctx, userID, alert, evidence)
 		payload := map[string]any{
 			"alert_id":        alertID,
 			"time_range":      timeRange,
@@ -136,6 +153,9 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 		if evidence != nil {
 			payload["evidence"] = evidence
 		}
+		if len(similarCases) > 0 {
+			payload["similar_cases"] = similarCases
+		}
 		resp, invokeErr := s.tools.Invoke(ctx, providerID, toolgateway.ToolRequest{
 			UserID:       userID,
 			ToolCode:     "alarm.analyze",
@@ -147,6 +167,8 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 			// 与 HTTP 入口 app:ai.analysis:analyze 保持一致，避免网关按 resource/action 拼出
 			// 未种子的 app:alerts:analyze 导致静默拒绝。
 			RequiredPermission: "app:ai.analysis:analyze",
+			// 工具调用继承告警对象上下文，网关按同一套映射复核数据范围（纵深防御）。
+			OwnerID: obj.Owner, Dept: obj.Dept, Team: obj.Team, Region: obj.Region, Tags: obj.Tags,
 		})
 		if invokeErr != nil {
 			toolFailed = true
@@ -172,8 +194,22 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 			}
 		}
 	}
-	s.recordAnalyzeAudit(ctx, alertID, userID, convID, toolFailed, toolError, result.RiskLevel, evidence)
+	s.recordAnalyzeAudit(ctx, alertID, userID, convID, toolFailed, toolError, result.RiskLevel, evidence, memoryStatus, len(similarCases))
 	return result, nil
+}
+
+// searchSimilarCases 检索相似案例并转成 payload 结构；未装配或失败时返回 skipped/error。
+func (s *AnalyzeService) searchSimilarCases(ctx context.Context, userID string, alert *AlertContext, evidence *MetricEvidenceResult) ([]chatMemoryCase, string) {
+	if s.memory == nil {
+		return nil, MemoryStatusSkipped
+	}
+	result := s.memory.SearchSimilar(ctx, MemorySearchInput{
+		UserID:   userID,
+		Alert:    alert,
+		Evidence: evidence,
+		Context:  domainContextOf(alert),
+	})
+	return memoryPromptCases(result.Cases), result.Status
 }
 
 // collectMetricEvidence 在预算内收集指标证据；任何失败都降级为 evidence status，不中断分析。
@@ -195,7 +231,7 @@ func (s *AnalyzeService) collectMetricEvidence(ctx context.Context, userID strin
 	return capEvidencePayload(result)
 }
 
-func (s *AnalyzeService) recordAnalyzeAudit(ctx context.Context, alertID, userID, convID string, toolFailed bool, toolError, riskLevel string, evidence *MetricEvidenceResult) {
+func (s *AnalyzeService) recordAnalyzeAudit(ctx context.Context, alertID, userID, convID string, toolFailed bool, toolError, riskLevel string, evidence *MetricEvidenceResult, memoryStatus string, memoryUsed int) {
 	if s == nil || s.audit == nil {
 		return
 	}
@@ -203,6 +239,7 @@ func (s *AnalyzeService) recordAnalyzeAudit(ctx context.Context, alertID, userID
 	payload := map[string]any{
 		"alert_id": alertID, "conversation_id": convID,
 		"risk_level": riskLevel, "result": result,
+		"memory_status": memoryStatus, "memory_used": memoryUsed,
 	}
 	if toolFailed {
 		payload["result"] = "partial"
@@ -220,6 +257,33 @@ func (s *AnalyzeService) recordAnalyzeAudit(ctx context.Context, alertID, userID
 		Action:       AuditAnalyzeAlert,
 		UserID:       userID,
 		Payload:      payload,
+	})
+}
+
+// recordScopeDeniedAudit 记录按数据范围被拒绝的分析请求，便于审计追溯越权尝试。
+// 仅在权限不足时写审计；其它错误（不存在、内部错误）由调用方按原语义返回。
+func (s *AnalyzeService) recordScopeDeniedAudit(ctx context.Context, alertID, userID string, err error) {
+	if s == nil || s.audit == nil || err == nil {
+		return
+	}
+	appErr := apperr.FromError(err)
+	if appErr == nil || appErr.Code != apperr.CodePermissionDenied {
+		return
+	}
+	reason := strings.TrimSpace(appErr.Message)
+	if reason == "" {
+		reason = "data scope denied"
+	}
+	logger.From(ctx).Warn("ai alert analysis denied by data scope",
+		logger.String("alert_id", alertID), logger.String("user_id", userID))
+	_ = s.audit.Record(ctx, AuditRecord{
+		ResourceType: "ai",
+		ResourceID:   alertID,
+		Action:       AuditAnalyzeAlert,
+		UserID:       userID,
+		Payload: map[string]any{
+			"alert_id": alertID, "result": "denied", "scope_denied": true, "reason": reason,
+		},
 	})
 }
 

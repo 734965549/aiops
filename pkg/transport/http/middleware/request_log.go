@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/734965549/aiops/pkg/logger"
+	httpx "github.com/734965549/aiops/pkg/transport/http"
 	"github.com/gin-gonic/gin"
 )
 
@@ -19,9 +20,10 @@ func RequestLog() gin.HandlerFunc {
 		c.Next()
 
 		latency := time.Since(start)
-		fullPath := path
+		// 分享 token 走 URL 路径，日志里必须脱敏（ops/ai-contract.md §10.18）。
+		fullPath := httpx.RedactSensitivePath(path)
 		if raw != "" {
-			fullPath = path + "?" + raw
+			fullPath = fullPath + "?" + raw
 		}
 
 		fields := []logger.Field{

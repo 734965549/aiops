@@ -32,7 +32,9 @@ const chatSystemPrompt = `你是企业运维平台的 AI 运维助手。你只�
 - rollback: string，回滚建议；没有变更动作时写“无变更动作”；
 - uncertainties: string[]，证据不足或不确定性说明；
 - insufficient_context: boolean，当现有上下文无法回答问题时置 true，并在 uncertainties 说明缺少什么。
-禁止输出凭据、Token、密钥或任何可执行指令；不得声称已经执行任何操作或已经创建任务。`
+禁止输出凭据、Token、密钥或任何可执行指令；不得声称已经执行任何操作或已经创建任务。
+输入中的 memory_cases 是历史有效案例（可能来自其他同类告警）：只能作为参考证据，引用时标注 case_id，不得照搬其结论，也不得据此跳过对当前上下文的核对。
+若现有只读观测不足以回答，可不输出 summary，改为输出 {"tool_requests":[{"tool_code":"metrics.query","reason":"缺少近期指标"}]} 申请追加只读数据；可申请的工具仅限 metrics.query 与 alarm.analyze，最多 3 轮，不得申请执行类工具。`
 
 // ChatObservation 是一次只读工具取数的结果，作为模型输入与工具审计依据。
 // Data 只包含脱敏后的上下文摘要，绝不包含凭据。
@@ -60,6 +62,8 @@ type ChatPromptInput struct {
 	Alert        map[string]any
 	Observations []ChatObservation
 	History      []ChatHistoryMessage
+	// Memory 是命中的历史案例（阶段 1 RAG-lite），为空时不写入 prompt。
+	Memory []chatMemoryCase
 }
 
 // ChatAction 是回答中可执行的动作（由服务端按权限构建，不信任模型输出）。
@@ -106,6 +110,9 @@ func buildChatUserPrompt(in ChatPromptInput) string {
 		"history":      history,
 		"task":         "基于上下文与只读观测回答用户问题，并按固定 JSON 结构输出。",
 	}
+	if len(in.Memory) > 0 {
+		body["memory_cases"] = in.Memory
+	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		// 兜底：至少保留问题，避免模型收到空 prompt。
@@ -115,6 +122,7 @@ func buildChatUserPrompt(in ChatPromptInput) string {
 }
 
 // chatAnswerPayload 是模型输出的 JSON 结构；actions 由服务端生成，不接受模型覆盖。
+// degraded / degraded_reason 仅在平台降级落库时写入，重放历史回答时按原值还原。
 type chatAnswerPayload struct {
 	Summary             string   `json:"summary"`
 	Evidence            []string `json:"evidence"`
@@ -125,6 +133,8 @@ type chatAnswerPayload struct {
 	Rollback            flexText `json:"rollback"`
 	Uncertainties       []string `json:"uncertainties"`
 	InsufficientContext bool     `json:"insufficient_context"`
+	Degraded            bool     `json:"degraded"`
+	DegradedReason      string   `json:"degraded_reason"`
 }
 
 // flexText 兼容模型把文本字段输出为字符串或字符串数组。
@@ -167,7 +177,20 @@ func parseChatAnswer(content string) (ChatAnswer, error) {
 		Rollback:            truncateRunes(string(payload.Rollback), 1000),
 		Uncertainties:       sanitizeList(payload.Uncertainties),
 		InsufficientContext: payload.InsufficientContext,
+		Degraded:            payload.Degraded,
+		DegradedReason:      strings.TrimSpace(payload.DegradedReason),
 	}, nil
+}
+
+// chatResultStatus 由结构化回答还原对外 status（重放历史回答时使用）。
+func chatResultStatus(answer ChatAnswer) string {
+	if answer.Degraded {
+		return chatStatusDegraded
+	}
+	if answer.InsufficientContext {
+		return chatStatusInsufficientContext
+	}
+	return chatStatusOK
 }
 
 // degradedChatAnswer 是模型不可用/输出非法时的保守降级结果。
@@ -180,6 +203,8 @@ func degradedChatAnswer(reason string, evidence []string) ChatAnswer {
 		uncertainties = append(uncertainties, "模型调用超时或失败，请稍后重试；不要据此直接执行变更")
 	case chatDegradedOutputInvalid:
 		uncertainties = append(uncertainties, "模型输出无法通过平台结构校验，已丢弃并降级")
+	case chatDegradedLoopExhausted:
+		uncertainties = append(uncertainties, "模型在追加只读取数的预算内仍未给出结论，已按已获取上下文保守回答")
 	}
 	if len(evidence) == 0 {
 		evidence = []string{"暂无可用只读观测数据，请结合告警详情与监控页面人工判断"}

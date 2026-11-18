@@ -2,20 +2,24 @@ package application
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/734965549/aiops/internal/ai/domain"
 	"github.com/734965549/aiops/internal/ai/toolgateway"
 	apperr "github.com/734965549/aiops/pkg/errors"
 )
 
 type fakeAnalyzeAlertReader struct {
-	alert *AlertContext
-	err   error
+	alert  *AlertContext
+	err    error
+	userID string
 }
 
-func (f *fakeAnalyzeAlertReader) GetForAnalysis(_ context.Context, _ string) (*AlertContext, error) {
+func (f *fakeAnalyzeAlertReader) GetForAnalysis(_ context.Context, userID, _ string) (*AlertContext, error) {
+	f.userID = userID
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -40,6 +44,62 @@ func TestAnalyzeService_NotFound(t *testing.T) {
 	_, err := svc.AnalyzeAlert(context.Background(), "u1", AnalyzeAlertInput{AlertID: "missing"})
 	if err == nil || apperr.FromError(err).Code != apperr.CodeNotFound {
 		t.Fatalf("expected not found, got %v", err)
+	}
+}
+
+func TestAnalyzeService_ScopeDeniedStopsAnalysisAndAudits(t *testing.T) {
+	audit := &capturingAIAudit{}
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Allowed: true}}
+	reader := &fakeAnalyzeAlertReader{err: apperr.New(apperr.CodePermissionDenied, "data scope denied")}
+	svc := NewAnalyzeService(reader, invoker, "provider-1", audit)
+
+	_, err := svc.AnalyzeAlert(context.Background(), "u1", AnalyzeAlertInput{AlertID: "a1", IncludeMetrics: true})
+	if err == nil || apperr.CodeOf(err) != apperr.CodePermissionDenied {
+		t.Fatalf("expected permission denied, got %v", err)
+	}
+	if reader.userID != "u1" {
+		t.Fatalf("alert reader must receive the analyzing user, got %q", reader.userID)
+	}
+	// 被拒绝时不得调用模型、不得返回本地摘要。
+	if invoker.captured.ToolCode != "" {
+		t.Fatalf("tool must not be invoked after denial: %+v", invoker.captured)
+	}
+	if len(audit.rows) != 1 {
+		t.Fatalf("expected denial audit row, got %+v", audit.rows)
+	}
+	row := audit.rows[0]
+	if row.Action != AuditAnalyzeAlert || row.Payload["result"] != "denied" || row.Payload["scope_denied"] != true {
+		t.Fatalf("unexpected denial audit: %+v", row)
+	}
+	if row.UserID != "u1" || row.Payload["alert_id"] != "a1" {
+		t.Fatalf("unexpected denial audit payload: %+v", row)
+	}
+}
+
+func TestAnalyzeService_ToolRequestCarriesAlertObjectContext(t *testing.T) {
+	reader := &fakeAnalyzeAlertReader{alert: &AlertContext{
+		ID: "a1", Name: "HighCPU", Severity: "p1", BusinessLine: "payments", Environment: "prod",
+		OwnerUserID: "user-9",
+		Labels:      map[string]string{"team": "sre", "region": "cn-north-4"},
+	}}
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Allowed: true, Data: map[string]any{}}}
+	svc := NewAnalyzeService(reader, invoker, "provider-1", NoopAuditRecorder{})
+
+	if _, err := svc.AnalyzeAlert(context.Background(), "u1", AnalyzeAlertInput{AlertID: "a1"}); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	req := invoker.captured
+	if req.OwnerID != "user-9" || req.Team != "sre" || req.Region != "cn-north-4" {
+		t.Fatalf("tool request must carry object context: %+v", req)
+	}
+	if req.SkipDataScope {
+		t.Fatal("tool request must let the gateway re-check data scope")
+	}
+	if len(req.Tags) == 0 || req.Tags[0] != "prod" {
+		t.Fatalf("tool request tags = %+v", req.Tags)
+	}
+	if _, ok := invoker.captured.Payload["alert"].(map[string]any)["owner_user_id"]; ok {
+		t.Fatal("owner_user_id must not be sent to the provider payload")
 	}
 }
 
@@ -134,6 +194,74 @@ func TestAnalyzeServiceMarksDegradedProviderAsPartial(t *testing.T) {
 	}
 	if len(audit.rows) != 1 || audit.rows[0].Payload["result"] != "partial" {
 		t.Fatalf("expected partial audit, got %+v", audit.rows)
+	}
+}
+
+func TestAnalyzeService_InjectsSimilarCases(t *testing.T) {
+	repo := &fakeMemoryRepo{}
+	if _, err := repo.Create(context.Background(), domain.MemoryCase{
+		CaseID: "case-9", SourceType: domain.MemoryCaseSourceChatMessage, SourceMessageID: "m-old",
+		UserID: "u-1", ApplicationID: "app-1", Summary: "历史结论：扩容后恢复",
+		Recommendations: []string{"先确认实例规格"}, RiskLevel: "medium",
+		QualityScore: 1, Status: domain.MemoryCaseStatusActive,
+	}); err != nil {
+		t.Fatalf("seed case: %v", err)
+	}
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Allowed: true, Data: map[string]any{}}}
+	audit := &capturingAIAudit{}
+	reader := &fakeAnalyzeAlertReader{alert: &AlertContext{
+		ID: "a1", Name: "HighCPU", Severity: "p1", ApplicationID: "app-1", ResourceID: "i-1",
+	}}
+	svc := NewAnalyzeService(reader, invoker, "provider-1", audit)
+	svc.SetMemory(NewMemoryService(repo, reader))
+
+	if _, err := svc.AnalyzeAlert(context.Background(), "u-1", AnalyzeAlertInput{AlertID: "a1"}); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	cases, ok := invoker.captured.Payload["similar_cases"].([]chatMemoryCase)
+	if !ok || len(cases) != 1 || cases[0].CaseID != "case-9" {
+		t.Fatalf("similar_cases payload = %#v", invoker.captured.Payload["similar_cases"])
+	}
+	if len(audit.rows) != 1 || audit.rows[0].Payload["memory_status"] != MemoryStatusOK || audit.rows[0].Payload["memory_used"] != 1 {
+		t.Fatalf("unexpected memory audit: %+v", audit.rows)
+	}
+}
+
+func TestAnalyzeService_MemoryDisabledKeepsPayloadClean(t *testing.T) {
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Allowed: true, Data: map[string]any{}}}
+	audit := &capturingAIAudit{}
+	svc := NewAnalyzeService(&fakeAnalyzeAlertReader{alert: evidenceTestAlert()}, invoker, "provider-1", audit)
+
+	if _, err := svc.AnalyzeAlert(context.Background(), "u-1", AnalyzeAlertInput{AlertID: "a1"}); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	if _, ok := invoker.captured.Payload["similar_cases"]; ok {
+		t.Fatal("similar_cases must be absent when memory is disabled")
+	}
+	if audit.rows[0].Payload["memory_status"] != MemoryStatusSkipped {
+		t.Fatalf("memory_status = %v", audit.rows[0].Payload["memory_status"])
+	}
+}
+
+func TestAnalyzeService_MemoryFailureDegrades(t *testing.T) {
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Allowed: true, Data: map[string]any{}}}
+	audit := &capturingAIAudit{}
+	reader := &fakeAnalyzeAlertReader{alert: evidenceTestAlert()}
+	svc := NewAnalyzeService(reader, invoker, "provider-1", audit)
+	svc.SetMemory(NewMemoryService(&fakeMemoryRepo{searchErr: errors.New("db down")}, reader))
+
+	out, err := svc.AnalyzeAlert(context.Background(), "u-1", AnalyzeAlertInput{AlertID: "a1"})
+	if err != nil {
+		t.Fatalf("memory failure must not block analysis: %v", err)
+	}
+	if out.Summary == "" {
+		t.Fatal("analysis summary missing")
+	}
+	if _, ok := invoker.captured.Payload["similar_cases"]; ok {
+		t.Fatal("failed memory search must not add similar_cases")
+	}
+	if audit.rows[0].Payload["memory_status"] != MemoryStatusError {
+		t.Fatalf("memory_status = %v", audit.rows[0].Payload["memory_status"])
 	}
 }
 

@@ -20,6 +20,8 @@ type fakeChatSessionRepo struct {
 	sessions  map[string]domain.Session
 	messages  map[string][]domain.Message
 	appendErr error
+	// onAppend 在真正写入前调用，用于模拟并发请求抢先写入（返回错误则终止写入）。
+	onAppend func(message domain.Message) error
 }
 
 func newFakeChatSessionRepo() *fakeChatSessionRepo {
@@ -58,9 +60,22 @@ func (f *fakeChatSessionRepo) AppendMessage(_ context.Context, message domain.Me
 	if f.appendErr != nil {
 		return f.appendErr
 	}
+	if f.onAppend != nil {
+		if err := f.onAppend(message); err != nil {
+			return err
+		}
+	}
 	session, ok := f.sessions[message.SessionID]
 	if !ok {
 		return domain.ErrSessionNotFound
+	}
+	// 与 migration 0050 的部分唯一索引等价：同一会话内 user 消息的 client_message_id 唯一。
+	if message.Role == domain.RoleUser && message.ClientMessageID != "" {
+		for _, existing := range f.messages[message.SessionID] {
+			if existing.Role == domain.RoleUser && existing.ClientMessageID == message.ClientMessageID {
+				return domain.ErrDuplicateClientMessage
+			}
+		}
 	}
 	if touch.Title != "" {
 		session.Title = touch.Title
@@ -114,9 +129,61 @@ func (f *fakeChatSessionRepo) SetFeedback(_ context.Context, sessionID, messageI
 	return domain.ErrMessageNotFound
 }
 
+func (f *fakeChatSessionRepo) SetStatus(_ context.Context, sessionID string, status domain.SessionStatus, updatedAt time.Time) error {
+	session, ok := f.sessions[sessionID]
+	if !ok {
+		return domain.ErrSessionNotFound
+	}
+	session.Status = status
+	session.UpdatedAt = updatedAt
+	f.sessions[sessionID] = session
+	return nil
+}
+
+func (f *fakeChatSessionRepo) FindUserMessageByClientID(_ context.Context, sessionID, clientMessageID string) (*domain.Message, error) {
+	if clientMessageID == "" {
+		return nil, nil
+	}
+	for _, message := range f.messages[sessionID] {
+		if message.Role == domain.RoleUser && message.ClientMessageID == clientMessageID {
+			copied := message
+			return &copied, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *fakeChatSessionRepo) FindAssistantAnswer(_ context.Context, sessionID, userMessageID string) (*domain.Message, error) {
+	rows := f.messages[sessionID]
+	for i := range rows {
+		if rows[i].MessageID != userMessageID || rows[i].Role != domain.RoleUser {
+			continue
+		}
+		for j := i + 1; j < len(rows); j++ {
+			if rows[j].Role == domain.RoleAssistant {
+				copied := rows[j]
+				return &copied, nil
+			}
+		}
+		return nil, nil
+	}
+	return nil, nil
+}
+
+func (f *fakeChatSessionRepo) Delete(_ context.Context, sessionID string) error {
+	if _, ok := f.sessions[sessionID]; !ok {
+		return domain.ErrSessionNotFound
+	}
+	delete(f.sessions, sessionID)
+	delete(f.messages, sessionID)
+	return nil
+}
+
 type fakeChatClient struct {
-	providerID   string
-	content      string
+	providerID string
+	content    string
+	// script 非空时按顺序返回（Agent Loop 多轮场景）；耗尽后回落到 content。
+	script       []string
 	err          error
 	system       string
 	user         string
@@ -139,7 +206,12 @@ func (f *fakeChatClient) Complete(_ context.Context, providerID, systemPrompt, u
 	if f.err != nil {
 		return nil, f.err
 	}
-	return &toolgateway.ChatCompletionResult{Content: f.content, Tokens: 42}, nil
+	content := f.content
+	if len(f.script) > 0 {
+		content = f.script[0]
+		f.script = f.script[1:]
+	}
+	return &toolgateway.ChatCompletionResult{Content: content, Tokens: 42}, nil
 }
 
 type fakeChatToolGateway struct {
@@ -284,7 +356,7 @@ func TestSendMessageHappyPath(t *testing.T) {
 	if !toolByCode[chatToolExecutionPropose].Allowed || toolByCode[chatToolExecutionPropose].Mode != "require_confirm" {
 		t.Fatalf("propose tool call = %+v", toolByCode[chatToolExecutionPropose])
 	}
-	// 工具权限校验使用固定权限码并跳过对象级数据范围（由数据端口各自保证）。
+	// 工具权限校验使用固定权限码并跳过对象级数据范围（告警对象级范围由读取端口收口）。
 	for _, req := range tools.requests {
 		if req.RequiredPermission != chatPermission || !req.SkipDataScope {
 			t.Fatalf("unexpected tool request: %+v", req)
@@ -478,6 +550,59 @@ func TestSendMessageRecordsDeniedToolAndStillAnswers(t *testing.T) {
 	}
 }
 
+func TestSendMessageRecordsDataScopeDeniedAlertAndStillAnswers(t *testing.T) {
+	svc, repo, tools, chat, audit, evidence := newChatTestService(t)
+	svc.alerts = &fakeAnalyzeAlertReader{err: apperr.New(apperr.CodePermissionDenied, "data scope denied")}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "alerts", AlertID: "a1"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析这个告警",
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	// 告警上下文被拒：只留一条 denied 观测，不产生告警引用、不取指标、不提供告警跳转。
+	var alertCall *domain.ToolCall
+	for i := range result.ToolCalls {
+		if result.ToolCalls[i].ToolCode == chatToolAlarmAnalyze {
+			alertCall = &result.ToolCalls[i]
+		}
+	}
+	if alertCall == nil || alertCall.Allowed || alertCall.Status != "denied" || alertCall.Reason != "data_scope_denied" {
+		t.Fatalf("alert tool call = %+v", alertCall)
+	}
+	if len(result.References) != 0 {
+		t.Fatalf("references must be empty on denied alert context: %+v", result.References)
+	}
+	if evidence.got.Metric != "" {
+		t.Fatalf("metric evidence must not be collected: %+v", evidence.got)
+	}
+	for _, action := range result.Answer.Actions {
+		if action.Code == "view.alert" {
+			t.Fatalf("view.alert must be suppressed: %+v", action)
+		}
+	}
+	// 数据范围拒绝是业务结果，仍需写工具审计（result=denied）。
+	deniedAudits := 0
+	for _, row := range audit.rows {
+		if row.Action == AuditToolInvoke && row.Payload["reason"] == "data_scope_denied" && row.Payload["result"] == "denied" {
+			deniedAudits++
+		}
+	}
+	if deniedAudits != 1 {
+		t.Fatalf("expected one denied tool audit, got %+v", audit.rows)
+	}
+	// RBAC/工具权限先于对象读取：告警工具已校验通过，但拒绝后不得再取指标证据。
+	for _, req := range tools.requests {
+		if req.ToolCode == chatToolMetricsQuery {
+			t.Fatalf("denied alert must not trigger metric evidence: %+v", req)
+		}
+	}
+	if chat.calls != 1 {
+		t.Fatalf("model should still answer with degraded context, calls=%d", chat.calls)
+	}
+}
+
 func TestSendMessageRejectsArchivedSession(t *testing.T) {
 	svc, repo, _, _, _, _ := newChatTestService(t)
 	session := seedChatSession(t, repo, "u-1", domain.SessionContext{})
@@ -508,6 +633,874 @@ func TestSendMessageUpdatesContextAndTitle(t *testing.T) {
 	// 已有明确标题的会话不被首条消息覆盖。
 	if updated.Title != "生产告警分析" {
 		t.Fatalf("session title should be preserved, got %q", updated.Title)
+	}
+}
+
+func TestArchiveAndUnarchiveSession(t *testing.T) {
+	svc, repo, _, _, audit, _ := newChatTestService(t)
+	seedChatSession(t, repo, "u-1", domain.SessionContext{AlertID: "a1"})
+
+	archived, err := svc.ArchiveSession(context.Background(), "u-1", "s-1")
+	if err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	if archived.Status != string(domain.SessionStatusArchived) {
+		t.Fatalf("status = %q", archived.Status)
+	}
+	if repo.sessions["s-1"].Status != domain.SessionStatusArchived {
+		t.Fatal("status not persisted")
+	}
+	// 归档后不可继续对话（读取历史仍允许）。
+	if _, err := svc.SendMessage(context.Background(), SendChatMessageInput{UserID: "u-1", SessionID: "s-1", Content: "继续"}); err == nil ||
+		apperr.FromError(err).Code != apperr.CodeFailedPrecondition {
+		t.Fatalf("expected archived send rejection, got %v", err)
+	}
+	if _, err := svc.GetSession(context.Background(), "u-1", "s-1"); err != nil {
+		t.Fatalf("archived session should stay readable: %v", err)
+	}
+
+	// 幂等：重复归档不报错，也不推进 updated_at。
+	before := repo.sessions["s-1"].UpdatedAt
+	again, err := svc.ArchiveSession(context.Background(), "u-1", "s-1")
+	if err != nil || again.Status != string(domain.SessionStatusArchived) {
+		t.Fatalf("idempotent archive: %v %+v", err, again)
+	}
+	if !repo.sessions["s-1"].UpdatedAt.Equal(before) {
+		t.Fatal("idempotent archive must not touch updated_at")
+	}
+
+	restored, err := svc.UnarchiveSession(context.Background(), "u-1", "s-1")
+	if err != nil {
+		t.Fatalf("unarchive: %v", err)
+	}
+	if restored.Status != string(domain.SessionStatusActive) {
+		t.Fatalf("status = %q", restored.Status)
+	}
+	if _, err := svc.SendMessage(context.Background(), SendChatMessageInput{UserID: "u-1", SessionID: "s-1", Content: "继续"}); err != nil {
+		t.Fatalf("unarchived session should accept messages: %v", err)
+	}
+
+	var statusAudits []AuditRecord
+	for _, row := range audit.rows {
+		if row.Action == AuditChatSessionStatus {
+			statusAudits = append(statusAudits, row)
+		}
+	}
+	if len(statusAudits) != 3 {
+		t.Fatalf("expected 3 status audits (archive/archive/unarchive), got %+v", statusAudits)
+	}
+	if statusAudits[0].Payload["status"] != "archived" || statusAudits[0].Payload["previous_status"] != "active" {
+		t.Fatalf("unexpected archive audit payload: %+v", statusAudits[0].Payload)
+	}
+	if statusAudits[2].Payload["status"] != "active" || statusAudits[2].Payload["previous_status"] != "archived" {
+		t.Fatalf("unexpected unarchive audit payload: %+v", statusAudits[2].Payload)
+	}
+}
+
+func TestArchiveSessionRejectsForeignSession(t *testing.T) {
+	svc, repo, _, _, _, _ := newChatTestService(t)
+	seedChatSession(t, repo, "owner", domain.SessionContext{})
+
+	for name, call := range map[string]func() error{
+		"archive": func() error {
+			_, err := svc.ArchiveSession(context.Background(), "attacker", "s-1")
+			return err
+		},
+		"unarchive": func() error {
+			_, err := svc.UnarchiveSession(context.Background(), "attacker", "s-1")
+			return err
+		},
+		"delete": func() error {
+			return svc.DeleteSession(context.Background(), "attacker", "s-1")
+		},
+	} {
+		err := call()
+		if err == nil || apperr.FromError(err).Code != apperr.CodePermissionDenied {
+			t.Fatalf("%s: expected permission denied, got %v", name, err)
+		}
+	}
+	if repo.sessions["s-1"].Status != domain.SessionStatusActive {
+		t.Fatal("foreign session must not change status")
+	}
+}
+
+func TestDeleteSession(t *testing.T) {
+	svc, repo, _, _, audit, _ := newChatTestService(t)
+	seedChatSession(t, repo, "u-1", domain.SessionContext{AlertID: "a1"})
+	if _, err := svc.SendMessage(context.Background(), SendChatMessageInput{UserID: "u-1", SessionID: "s-1", Content: "分析告警"}); err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+
+	if err := svc.DeleteSession(context.Background(), "u-1", "s-1"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, ok := repo.sessions["s-1"]; ok {
+		t.Fatal("session not deleted")
+	}
+	if len(repo.messages["s-1"]) != 0 {
+		t.Fatal("messages not deleted")
+	}
+	if _, err := svc.GetSession(context.Background(), "u-1", "s-1"); err == nil ||
+		apperr.FromError(err).Code != apperr.CodeNotFound {
+		t.Fatalf("expected not found after delete, got %v", err)
+	}
+	// 重复删除按不存在处理。
+	if err := svc.DeleteSession(context.Background(), "u-1", "s-1"); err == nil ||
+		apperr.FromError(err).Code != apperr.CodeNotFound {
+		t.Fatalf("expected not found on repeat delete, got %v", err)
+	}
+	deleted := 0
+	for _, row := range audit.rows {
+		if row.Action == AuditChatSessionDelete {
+			deleted++
+			if row.Payload["result"] != "success" || row.Payload["session_id"] != "s-1" {
+				t.Fatalf("unexpected delete audit: %+v", row)
+			}
+		}
+	}
+	if deleted != 1 {
+		t.Fatalf("expected one delete audit, got %+v", audit.rows)
+	}
+}
+
+func TestSessionLifecycleValidatesInput(t *testing.T) {
+	svc, _, _, _, _, _ := newChatTestService(t)
+	if _, err := svc.ArchiveSession(context.Background(), "", "s-1"); err == nil ||
+		apperr.FromError(err).Code != apperr.CodeUnauthenticated {
+		t.Fatalf("expected unauthenticated, got %v", err)
+	}
+	if _, err := svc.UnarchiveSession(context.Background(), "u-1", ""); err == nil ||
+		apperr.FromError(err).Code != apperr.CodeInvalidArgument {
+		t.Fatalf("expected invalid argument, got %v", err)
+	}
+	if err := svc.DeleteSession(context.Background(), "u-1", ""); err == nil ||
+		apperr.FromError(err).Code != apperr.CodeInvalidArgument {
+		t.Fatalf("expected invalid argument, got %v", err)
+	}
+}
+
+func TestSendMessageReplaysSameClientMessageID(t *testing.T) {
+	svc, repo, _, chat, audit, evidence := newChatTestService(t)
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "alerts", AlertID: "a1"})
+
+	first, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警", ClientMessageID: "cm-1",
+	})
+	if err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("expected one model call, got %d", chat.calls)
+	}
+	evidenceCalls := evidence.got.Metric != ""
+
+	// 超时重试：同一 client_message_id 必须原样返回首次结果，不新增消息、不再调模型。
+	replay, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警", ClientMessageID: "cm-1",
+	})
+	if err != nil {
+		t.Fatalf("replay send: %v", err)
+	}
+	if replay.MessageID != first.MessageID || replay.Answer.Summary != first.Answer.Summary || replay.Status != first.Status {
+		t.Fatalf("replay mismatch: first=%+v replay=%+v", first, replay)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("replay must not call the model again, got %d calls", chat.calls)
+	}
+	if len(repo.messages["s-1"]) != 2 {
+		t.Fatalf("replay must not append messages, got %d", len(repo.messages["s-1"]))
+	}
+	if (evidence.got.Metric != "") != evidenceCalls {
+		t.Fatal("replay must not collect metric evidence")
+	}
+	// 幂等重放也写入审计，并标记 replayed。
+	replayed := 0
+	for _, row := range audit.rows {
+		if row.Action == AuditChatMessage && row.Payload["replayed"] == true {
+			replayed++
+			if row.Payload["client_message_id"] != "cm-1" {
+				t.Fatalf("unexpected replay audit payload: %+v", row.Payload)
+			}
+		}
+	}
+	if replayed != 1 {
+		t.Fatalf("expected one replay audit, got %+v", audit.rows)
+	}
+
+	// 不同 client_message_id 仍然正常追加新消息。
+	if _, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "继续分析", ClientMessageID: "cm-2",
+	}); err != nil {
+		t.Fatalf("second send: %v", err)
+	}
+	if len(repo.messages["s-1"]) != 4 || chat.calls != 2 {
+		t.Fatalf("expected new message pair, messages=%d calls=%d", len(repo.messages["s-1"]), chat.calls)
+	}
+}
+
+func TestSendMessageRejectsInFlightDuplicate(t *testing.T) {
+	svc, repo, _, chat, _, _ := newChatTestService(t)
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+	// 模拟上一次请求已落用户消息、但回答尚未写回（服务端中断）。
+	repo.messages["s-1"] = append(repo.messages["s-1"], domain.Message{
+		MessageID: "m-user-orphan", SessionID: "s-1", Role: domain.RoleUser,
+		Content: "分析告警", ClientMessageID: "cm-inflight",
+		CreatedAt: time.Date(2026, 1, 2, 3, 5, 0, 0, time.UTC),
+	})
+
+	_, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警", ClientMessageID: "cm-inflight",
+	})
+	if err == nil || apperr.FromError(err).Code != apperr.CodeFailedPrecondition {
+		t.Fatalf("expected failed precondition, got %v", err)
+	}
+	if chat.calls != 0 {
+		t.Fatal("in-flight duplicate must not call the model")
+	}
+	if len(repo.messages["s-1"]) != 1 {
+		t.Fatalf("in-flight duplicate must not append messages, got %d", len(repo.messages["s-1"]))
+	}
+}
+
+func TestSendMessageReplaysWhenConcurrentInsertLoses(t *testing.T) {
+	svc, repo, _, chat, _, _ := newChatTestService(t)
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+	// 并发：查重时还没有记录，插入前另一个请求抢先写入同一 client_message_id 并完成回答。
+	repo.onAppend = func(message domain.Message) error {
+		if message.Role != domain.RoleUser || message.ClientMessageID == "" {
+			return nil
+		}
+		repo.messages["s-1"] = append(repo.messages["s-1"],
+			domain.Message{MessageID: "m-u", SessionID: "s-1", Role: domain.RoleUser, Content: "分析告警", ClientMessageID: "cm-race"},
+			domain.Message{MessageID: "m-a", SessionID: "s-1", Role: domain.RoleAssistant, Content: chatAnswerJSON("并发胜出")},
+		)
+		return domain.ErrDuplicateClientMessage
+	}
+
+	out, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警", ClientMessageID: "cm-race",
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if out.MessageID != "m-a" || out.Answer.Summary != "并发胜出" {
+		t.Fatalf("expected replay of winner answer, got %+v", out)
+	}
+	if chat.calls != 0 {
+		t.Fatal("losing duplicate must not call the model")
+	}
+	if len(repo.messages["s-1"]) != 2 {
+		t.Fatalf("losing duplicate must not append rows, got %d", len(repo.messages["s-1"]))
+	}
+}
+
+func TestSendMessageReplaysAfterSessionArchived(t *testing.T) {
+	svc, repo, _, chat, _, _ := newChatTestService(t)
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+	first, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警", ClientMessageID: "cm-arch",
+	})
+	if err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	if _, err := svc.ArchiveSession(context.Background(), "u-1", "s-1"); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	// 归档后重放已生成的回答仍可返回（只读）；新提问才被拒绝。
+	replay, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警", ClientMessageID: "cm-arch",
+	})
+	if err != nil || replay.MessageID != first.MessageID {
+		t.Fatalf("expected replay after archive, got %+v err=%v", replay, err)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("replay must not call the model, got %d", chat.calls)
+	}
+	if _, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "新问题", ClientMessageID: "cm-new",
+	}); err == nil || apperr.FromError(err).Code != apperr.CodeFailedPrecondition {
+		t.Fatalf("new message on archived session must be rejected, got %v", err)
+	}
+}
+
+func TestSendMessageValidatesClientMessageID(t *testing.T) {
+	svc, repo, _, _, _, _ := newChatTestService(t)
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+	_, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "hi", ClientMessageID: strings.Repeat("x", chatMaxClientMessageIDRunes+1),
+	})
+	if err == nil || apperr.FromError(err).Code != apperr.CodeInvalidArgument {
+		t.Fatalf("expected invalid argument, got %v", err)
+	}
+}
+
+func TestChatResultStatusFromAnswer(t *testing.T) {
+	if got := chatResultStatus(ChatAnswer{Summary: "s"}); got != chatStatusOK {
+		t.Fatalf("status = %q", got)
+	}
+	if got := chatResultStatus(ChatAnswer{Degraded: true, DegradedReason: "model_failed"}); got != chatStatusDegraded {
+		t.Fatalf("status = %q", got)
+	}
+	if got := chatResultStatus(ChatAnswer{InsufficientContext: true}); got != chatStatusInsufficientContext {
+		t.Fatalf("status = %q", got)
+	}
+	// 落库的降级回答必须能被解析回来（重放时 status 不能丢）。
+	raw, err := json.Marshal(ChatAnswer{Summary: "降级", Degraded: true, DegradedReason: "model_unavailable"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	parsed, err := parseChatAnswer(string(raw))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !parsed.Degraded || parsed.DegradedReason != "model_unavailable" {
+		t.Fatalf("degraded flags lost: %+v", parsed)
+	}
+}
+
+func TestSendMessageInjectsMemoryCases(t *testing.T) {
+	svc, repo, _, chat, audit, _ := newChatTestService(t)
+	memoryRepo := &fakeMemoryRepo{}
+	svc.SetMemory(NewMemoryService(memoryRepo, &fakeAnalyzeAlertReader{alert: &AlertContext{
+		ID: "a1", Name: "HighCPU", Labels: map[string]string{"metric_name": "cpu_util"},
+	}}))
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "alerts", AlertID: "a1"})
+
+	// 预置一条同用户历史案例（应用匹配）。
+	if _, err := memoryRepo.Create(context.Background(), domain.MemoryCase{
+		CaseID: "case-1", SourceType: domain.MemoryCaseSourceChatMessage, SourceMessageID: "m-old",
+		UserID: "u-1", ApplicationID: "app-1", AlertSignature: "", Keywords: "cpu 告警",
+		Summary: "历史结论：发布导致 CPU 升高", Recommendations: []string{"先查发布记录"},
+		RiskLevel: "medium", QualityScore: 1, Status: domain.MemoryCaseStatusActive,
+	}); err != nil {
+		t.Fatalf("seed memory case: %v", err)
+	}
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "这个告警怎么回事", Context: &domain.SessionContext{Page: "alerts", AlertID: "a1", ApplicationID: "app-1"},
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	// Prompt 注入 memory_cases（含 case_id）。
+	if !strings.Contains(chat.user, "memory_cases") || !strings.Contains(chat.user, "case-1") {
+		t.Fatalf("memory cases not injected into prompt: %s", chat.user)
+	}
+	// references 回显 memory_case。
+	found := false
+	for _, ref := range result.References {
+		if ref.Type == "memory_case" && ref.ID == "case-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("memory_case reference missing: %+v", result.References)
+	}
+	// 审计记录条数与状态，不含案例原文。
+	var chatAudit *AuditRecord
+	for i := range audit.rows {
+		if audit.rows[i].Action == AuditChatMessage {
+			chatAudit = &audit.rows[i]
+		}
+	}
+	if chatAudit == nil {
+		t.Fatal("chat_message audit missing")
+	}
+	if chatAudit.Payload["memory_used"] != 1 || chatAudit.Payload["memory_status"] != MemoryStatusOK {
+		t.Fatalf("unexpected memory audit fields: %+v", chatAudit.Payload)
+	}
+	if _, ok := chatAudit.Payload["summary"]; ok {
+		t.Fatal("audit must not contain case summary text")
+	}
+}
+
+func TestSendMessageMemoryFailureDoesNotBlock(t *testing.T) {
+	svc, repo, _, chat, audit, _ := newChatTestService(t)
+	svc.SetMemory(NewMemoryService(&fakeMemoryRepo{searchErr: errors.New("db down")}, nil))
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "alerts", AlertID: "a1"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警", Context: &domain.SessionContext{AlertID: "a1", ApplicationID: "app-1"},
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if result.Status != chatStatusOK {
+		t.Fatalf("status = %q", result.Status)
+	}
+	if strings.Contains(chat.user, "memory_cases") {
+		t.Fatal("failed memory search must not inject cases")
+	}
+	var chatAudit *AuditRecord
+	for i := range audit.rows {
+		if audit.rows[i].Action == AuditChatMessage {
+			chatAudit = &audit.rows[i]
+		}
+	}
+	if chatAudit == nil || chatAudit.Payload["memory_status"] != MemoryStatusError || chatAudit.Payload["memory_used"] != 0 {
+		t.Fatalf("unexpected memory audit: %+v", chatAudit)
+	}
+}
+
+func TestSubmitFeedbackSyncsMemory(t *testing.T) {
+	svc, repo, _, _, _, _ := newChatTestService(t)
+	memoryRepo := &fakeMemoryRepo{}
+	svc.SetMemory(NewMemoryService(memoryRepo, nil))
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "alerts"})
+
+	sent, err := svc.SendMessage(context.Background(), SendChatMessageInput{UserID: "u-1", SessionID: "s-1", Content: "分析告警"})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if _, err := svc.SubmitFeedback(context.Background(), "u-1", "s-1", sent.MessageID, "valid"); err != nil {
+		t.Fatalf("feedback: %v", err)
+	}
+	if len(memoryRepo.cases) != 1 || memoryRepo.cases[0].SourceMessageID != sent.MessageID {
+		t.Fatalf("valid feedback must create a memory case: %+v", memoryRepo.cases)
+	}
+	if _, err := svc.SubmitFeedback(context.Background(), "u-1", "s-1", sent.MessageID, "invalid"); err != nil {
+		t.Fatalf("invalid feedback: %v", err)
+	}
+	if memoryRepo.cases[0].QualityScore != domain.MemoryCaseValidDelta+domain.MemoryCaseInvalidDelta {
+		t.Fatalf("invalid feedback must lower quality: %+v", memoryRepo.cases[0])
+	}
+}
+
+func TestSubmitFeedbackMemoryFailureDoesNotBlock(t *testing.T) {
+	svc, repo, _, _, audit, _ := newChatTestService(t)
+	svc.SetMemory(NewMemoryService(&fakeMemoryRepo{createErr: errors.New("db down")}, nil))
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+	sent, err := svc.SendMessage(context.Background(), SendChatMessageInput{UserID: "u-1", SessionID: "s-1", Content: "分析告警"})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	view, err := svc.SubmitFeedback(context.Background(), "u-1", "s-1", sent.MessageID, "valid")
+	if err != nil {
+		t.Fatalf("feedback must succeed even if memory write fails: %v", err)
+	}
+	if view.Feedback != string(domain.FeedbackValid) {
+		t.Fatalf("feedback = %q", view.Feedback)
+	}
+	found := false
+	for _, row := range audit.rows {
+		if row.Action == AuditChatFeedback {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("feedback audit missing")
+	}
+}
+
+func TestSendMessageInjectsKnowledgeAppendix(t *testing.T) {
+	svc, repo, _, chat, audit, _ := newChatTestService(t)
+	knowledgeRepo := newFakeKnowledgeRepo(knowledgeTestItem("item-1", domain.KnowledgeStatusActive))
+	svc.SetKnowledge(NewKnowledgeService(knowledgeRepo, NoopAuditRecorder{}))
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "alerts", AlertID: "a1"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "这个告警怎么回事",
+		Context: &domain.SessionContext{Page: "alerts", AlertID: "a1", ApplicationID: "app-1"},
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	// 知识进 system prompt 附加段，固定安全约束仍在最前面。
+	if !strings.Contains(chat.system, "只依据") {
+		t.Fatalf("fixed system prompt lost: %s", chat.system)
+	}
+	if !strings.Contains(chat.system, "item-1") || !strings.Contains(chat.system, "先查发布记录") {
+		t.Fatalf("knowledge appendix missing: %s", chat.system)
+	}
+	if strings.Index(chat.system, "只依据") > strings.Index(chat.system, "item-1") {
+		t.Fatal("knowledge appendix must not precede the fixed safety prompt")
+	}
+	// references 回显 knowledge_item。
+	found := false
+	for _, ref := range result.References {
+		if ref.Type == "knowledge_item" && ref.ID == "item-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("knowledge_item reference missing: %+v", result.References)
+	}
+	// 命中计数 +1。
+	if knowledgeRepo.items["item-1"].HitCount != 1 {
+		t.Fatalf("hit_count = %d", knowledgeRepo.items["item-1"].HitCount)
+	}
+	// 审计字段。
+	var chatAudit *AuditRecord
+	for i := range audit.rows {
+		if audit.rows[i].Action == AuditChatMessage {
+			chatAudit = &audit.rows[i]
+		}
+	}
+	if chatAudit == nil || chatAudit.Payload["knowledge_used"] != 1 || chatAudit.Payload["knowledge_status"] != KnowledgeStatusOK {
+		t.Fatalf("unexpected knowledge audit: %+v", chatAudit)
+	}
+}
+
+func TestSendMessageSkipsDraftKnowledge(t *testing.T) {
+	svc, repo, _, chat, _, _ := newChatTestService(t)
+	knowledgeRepo := newFakeKnowledgeRepo(knowledgeTestItem("item-1", domain.KnowledgeStatusDraft))
+	svc.SetKnowledge(NewKnowledgeService(knowledgeRepo, NoopAuditRecorder{}))
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{UserID: "u-1", SessionID: "s-1", Content: "分析告警"})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if strings.Contains(chat.system, "item-1") {
+		t.Fatal("draft knowledge must not be injected")
+	}
+	for _, ref := range result.References {
+		if ref.Type == "knowledge_item" {
+			t.Fatalf("draft knowledge must not be referenced: %+v", ref)
+		}
+	}
+	if knowledgeRepo.items["item-1"].HitCount != 0 {
+		t.Fatalf("draft hit_count = %d", knowledgeRepo.items["item-1"].HitCount)
+	}
+}
+
+func TestSubmitFeedbackMarksKnowledgeUseful(t *testing.T) {
+	svc, repo, _, _, _, _ := newChatTestService(t)
+	knowledgeRepo := newFakeKnowledgeRepo(knowledgeTestItem("item-1", domain.KnowledgeStatusActive))
+	svc.SetKnowledge(NewKnowledgeService(knowledgeRepo, NoopAuditRecorder{}))
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+
+	sent, err := svc.SendMessage(context.Background(), SendChatMessageInput{UserID: "u-1", SessionID: "s-1", Content: "分析告警"})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if _, err := svc.SubmitFeedback(context.Background(), "u-1", "s-1", sent.MessageID, "valid"); err != nil {
+		t.Fatalf("feedback: %v", err)
+	}
+	// 有效反馈把注入过的条目记为 useful（hit_count 已在注入时累加）。
+	if knowledgeRepo.items["item-1"].UsefulCount != 1 {
+		t.Fatalf("useful_count = %d", knowledgeRepo.items["item-1"].UsefulCount)
+	}
+	if knowledgeRepo.items["item-1"].Status != domain.KnowledgeStatusActive {
+		t.Fatalf("useful item must stay active, got %s", knowledgeRepo.items["item-1"].Status)
+	}
+}
+
+func TestSendMessageKnowledgeFailureDoesNotBlock(t *testing.T) {
+	svc, repo, _, chat, audit, _ := newChatTestService(t)
+	failing := newFakeKnowledgeRepo()
+	failing.listErr = errors.New("db down")
+	svc.SetKnowledge(NewKnowledgeService(failing, NoopAuditRecorder{}))
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{UserID: "u-1", SessionID: "s-1", Content: "分析告警"})
+	if err != nil {
+		t.Fatalf("knowledge failure must not block: %v", err)
+	}
+	if result.Status != chatStatusOK {
+		t.Fatalf("status = %q", result.Status)
+	}
+	if strings.Contains(chat.system, "知识沉淀") {
+		t.Fatal("failed lookup must not add an appendix")
+	}
+	var chatAudit *AuditRecord
+	for i := range audit.rows {
+		if audit.rows[i].Action == AuditChatMessage {
+			chatAudit = &audit.rows[i]
+		}
+	}
+	if chatAudit == nil || chatAudit.Payload["knowledge_status"] != KnowledgeStatusError {
+		t.Fatalf("unexpected knowledge audit: %+v", chatAudit)
+	}
+}
+
+func TestSendMessageAgentLoopRequestsReadOnlyTool(t *testing.T) {
+	svc, repo, _, chat, audit, evidence := newChatTestService(t)
+	// 第一轮：模型申请追加指标证据；第二轮：给出结构化回答。
+	chat.script = []string{
+		`{"tool_requests":[{"tool_code":"metrics.query","reason":"缺少近期指标"}]}`,
+		chatAnswerJSON("指标证据显示 CPU 峰值 97%"),
+	}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "alerts", AlertID: "a1"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "为什么 CPU 高",
+		Context: &domain.SessionContext{Page: "alerts", AlertID: "a1"},
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if chat.calls != 2 {
+		t.Fatalf("expected two model calls, got %d", chat.calls)
+	}
+	if result.Status != chatStatusOK || !strings.Contains(result.Answer.Summary, "97%") {
+		t.Fatalf("unexpected answer: %+v", result)
+	}
+	// 循环内的工具调用进入 tool_calls，并被审计。
+	metricsCalls := 0
+	for _, call := range result.ToolCalls {
+		if call.ToolCode == chatToolMetricsQuery {
+			metricsCalls++
+		}
+	}
+	if metricsCalls < 1 {
+		t.Fatalf("loop tool call missing: %+v", result.ToolCalls)
+	}
+	if evidence.got.Metric == "" {
+		t.Fatal("loop must actually collect evidence")
+	}
+	var chatAudit *AuditRecord
+	for i := range audit.rows {
+		if audit.rows[i].Action == AuditChatMessage {
+			chatAudit = &audit.rows[i]
+		}
+	}
+	if chatAudit == nil || chatAudit.Payload["loop_rounds"] != 1 {
+		t.Fatalf("unexpected loop audit: %+v", chatAudit)
+	}
+}
+
+func TestSendMessageAgentLoopRejectsExecutionTools(t *testing.T) {
+	svc, repo, _, chat, _, _ := newChatTestService(t)
+	chat.script = []string{
+		`{"tool_requests":[{"tool_code":"execution.command.run","reason":"直接执行"}]}`,
+		chatAnswerJSON("无法直接执行，建议生成执行计划"),
+	}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{AlertID: "a1"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{UserID: "u-1", SessionID: "s-1", Content: "帮我执行"})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	denied := false
+	for _, call := range result.ToolCalls {
+		if call.ToolCode == "execution.command.run" {
+			if call.Allowed || call.Status != "denied" || call.Reason != "tool is not allowed in agent loop" {
+				t.Fatalf("execution tool must be denied: %+v", call)
+			}
+			denied = true
+		}
+	}
+	if !denied {
+		t.Fatalf("execution tool request must be recorded as denied: %+v", result.ToolCalls)
+	}
+	if result.Status != chatStatusOK {
+		t.Fatalf("status = %q", result.Status)
+	}
+}
+
+func TestSendMessageAgentLoopExhaustsRounds(t *testing.T) {
+	svc, repo, _, chat, audit, _ := newChatTestService(t)
+	// 模型无限申请指标证据：轮数用尽后必须降级收敛，不能悬挂。
+	chat.content = `{"tool_requests":[{"tool_code":"metrics.query","reason":"还需要指标"}]}`
+	seedChatSession(t, repo, "u-1", domain.SessionContext{AlertID: "a1", Page: "alerts"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "继续查",
+		Context: &domain.SessionContext{AlertID: "a1", Page: "alerts"},
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if result.Status != chatStatusDegraded || result.Answer.DegradedReason != chatDegradedLoopExhausted {
+		t.Fatalf("expected agent_loop_exhausted, got %+v", result)
+	}
+	if chat.calls != chatMaxLoopRounds+1 {
+		t.Fatalf("expected %d model calls, got %d", chatMaxLoopRounds+1, chat.calls)
+	}
+	var chatAudit *AuditRecord
+	for i := range audit.rows {
+		if audit.rows[i].Action == AuditChatMessage {
+			chatAudit = &audit.rows[i]
+		}
+	}
+	if chatAudit == nil || chatAudit.Payload["loop_rounds"] != chatMaxLoopRounds {
+		t.Fatalf("unexpected loop audit: %+v", chatAudit)
+	}
+}
+
+func TestSendMessageAgentLoopStopsAfterOneRetryWithoutProgress(t *testing.T) {
+	svc, repo, _, chat, _, _ := newChatTestService(t)
+	// 模型持续申请未授权工具：先给一次纠正机会（拒绝原因已反馈），仍无实际取数才收敛。
+	chat.content = `{"tool_requests":[{"tool_code":"execution.command.run"}]}`
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+
+	result, err := svc.SendMessage(context.Background(), SendMessageInput("继续"))
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if result.Status != chatStatusDegraded || result.Answer.DegradedReason != chatDegradedLoopExhausted {
+		t.Fatalf("expected agent_loop_exhausted, got %+v", result)
+	}
+	// 一轮申请 + 一轮纠正机会，共两次模型调用；不无限重试。
+	if chat.calls != 2 {
+		t.Fatalf("expected two model calls (one retry after denial), got %d", chat.calls)
+	}
+}
+
+// SendMessageInput 是收敛测试的固定入参。
+func SendMessageInput(content string) SendChatMessageInput {
+	return SendChatMessageInput{UserID: "u-1", SessionID: "s-1", Content: content}
+}
+
+func TestSendMessageStreamEmitsStagesAndAnswer(t *testing.T) {
+	svc, repo, _, _, _, _ := newChatTestService(t)
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "alerts", AlertID: "a1"})
+
+	var events []ChatEvent
+	result, err := svc.SendMessageStream(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警",
+		Context: &domain.SessionContext{Page: "alerts", AlertID: "a1"},
+	}, func(event ChatEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream message: %v", err)
+	}
+	if result == nil || result.MessageID == "" {
+		t.Fatal("stream must return the persisted result")
+	}
+	// 顺序：gathering → thinking →（工具事件）→ answering → answer。
+	stages := make([]string, 0, 3)
+	var sawTool, sawAnswer bool
+	for _, event := range events {
+		switch event.Type {
+		case ChatEventStage:
+			stages = append(stages, event.Stage)
+		case ChatEventTool:
+			sawTool = true
+			if event.Tool == nil || event.Tool.ToolCode == "" {
+				t.Fatalf("tool event missing payload: %+v", event)
+			}
+		case ChatEventAnswer:
+			sawAnswer = true
+			if event.Result == nil || event.Result.MessageID != result.MessageID {
+				t.Fatalf("answer event mismatch: %+v", event.Result)
+			}
+		}
+	}
+	if len(stages) < 3 || stages[0] != ChatStageGathering || stages[len(stages)-1] != ChatStageAnswering {
+		t.Fatalf("unexpected stages: %+v", stages)
+	}
+	if !sawTool {
+		t.Fatal("expected at least one tool event")
+	}
+	if !sawAnswer {
+		t.Fatal("expected a final answer event")
+	}
+}
+
+func TestSendMessageStreamCancelSkipsPersistingAnswer(t *testing.T) {
+	svc, repo, _, _, audit, _ := newChatTestService(t)
+	seedChatSession(t, repo, "u-1", domain.SessionContext{AlertID: "a1"})
+	canceled := false
+
+	_, err := svc.SendMessageStream(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警",
+		Context: &domain.SessionContext{AlertID: "a1"},
+	}, func(event ChatEvent) error {
+		// gathering 阶段放行，thinking 事件后模拟客户端断开：
+		// 取消点落在模型调用前，命中 before_model 分支并写 chat_canceled 审计。
+		if event.Type == ChatEventStage && event.Stage == ChatStageThinking && !canceled {
+			canceled = true
+			return errors.New("client gone")
+		}
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected canceled error")
+	}
+	if apperr.CodeOf(err) != apperr.CodeAborted {
+		t.Fatalf("expected aborted, got %v", err)
+	}
+	// 取消后不落 assistant 消息。
+	assistant := 0
+	for _, message := range repo.messages["s-1"] {
+		if message.Role == domain.RoleAssistant {
+			assistant++
+		}
+	}
+	if assistant != 0 {
+		t.Fatalf("canceled stream must not persist assistant message, got %d", assistant)
+	}
+	// 取消事实写审计。
+	found := false
+	for _, row := range audit.rows {
+		if row.Action == AuditChatCanceled {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected chat_canceled audit, got %+v", audit.rows)
+	}
+}
+
+func TestSendMessageCanceledContextStillWritesCancelAudit(t *testing.T) {
+	svc, repo, _, _, audit, _ := newChatTestService(t)
+	// 模拟真实仓储：ctx 已取消时写入失败。取消审计必须脱链写入才能保留。
+	audit.requireLiveCtx = true
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := svc.SendMessage(ctx, SendChatMessageInput{UserID: "u-1", SessionID: "s-1", Content: "分析告警"})
+	if err == nil || apperr.CodeOf(err) != apperr.CodeAborted {
+		t.Fatalf("expected aborted, got %v", err)
+	}
+	found := false
+	for _, row := range audit.rows {
+		if row.Action == AuditChatCanceled && row.Payload["phase"] == "before_gather" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("canceled request must still write chat_canceled audit, got %+v", audit.rows)
+	}
+}
+
+func TestSendMessageStreamReplaysAnswerEvent(t *testing.T) {
+	svc, repo, _, chat, _, _ := newChatTestService(t)
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+	first, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警", ClientMessageID: "cm-stream-1",
+	})
+	if err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("expected one model call, got %d", chat.calls)
+	}
+
+	var events []ChatEvent
+	replay, err := svc.SendMessageStream(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警", ClientMessageID: "cm-stream-1",
+	}, func(event ChatEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream replay: %v", err)
+	}
+	if replay.MessageID != first.MessageID || replay.Status != first.Status {
+		t.Fatalf("replay mismatch: first=%+v replay=%+v", first, replay)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("stream replay must not call the model, got %d", chat.calls)
+	}
+	// 幂等重放也必须推 answer 事件，否则流式客户端只收到阶段事件后会一直等待。
+	answerEvents := 0
+	for _, event := range events {
+		if event.Type == ChatEventAnswer && event.Result != nil {
+			answerEvents++
+			if event.Result.MessageID != first.MessageID {
+				t.Fatalf("unexpected replayed answer: %+v", event.Result)
+			}
+		}
+	}
+	if answerEvents != 1 {
+		t.Fatalf("expected one answer event on replay, got %+v", events)
 	}
 }
 

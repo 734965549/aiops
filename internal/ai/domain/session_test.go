@@ -63,16 +63,27 @@ func TestSessionContextNormalizeAndIsEmpty(t *testing.T) {
 		ApplicationID: " app-1 ",
 		ResourceID:    " res-1 ",
 		ResourceType:  " pod ",
+		ExecutionID:   " exec-1 ",
 		TimeRange:     " 30m ",
 	}.Normalize()
 	if got.Page != "alerts" || got.AlertID != "alert-1" || got.ApplicationID != "app-1" ||
 		got.ResourceID != "res-1" || got.ResourceType != "pod" || got.TimeRange != "30m" {
 		t.Fatalf("unexpected normalized context: %+v", got)
 	}
+	if got.ExecutionID != "exec-1" {
+		t.Fatalf("execution_id not normalized: %+v", got)
+	}
 	if len([]rune(got.PageTitle)) != 128 {
 		t.Fatalf("expected page title truncated to 128 runes, got %d", len([]rune(got.PageTitle)))
 	}
 	if got.IsEmpty() {
 		t.Fatal("expected non-empty context")
+	}
+	// 仅执行任务上下文的会话也必须被视为非空（执行页场景）。
+	if (SessionContext{ExecutionID: "exec-1"}).IsEmpty() {
+		t.Fatal("execution_id alone must make the context non-empty")
+	}
+	if len([]rune((SessionContext{ExecutionID: strings.Repeat("e", 100)}).Normalize().ExecutionID)) != 64 {
+		t.Fatal("execution_id must be truncated to 64 runes")
 	}
 }

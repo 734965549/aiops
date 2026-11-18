@@ -11,9 +11,10 @@ import (
 
 // Registrar 将 AI 模块路由挂到 /api 下。
 type Registrar struct {
-	handler     *Handler
-	chatHandler *ChatHandler
-	authorizer  routeAuthorizer
+	handler          *Handler
+	chatHandler      *ChatHandler
+	knowledgeHandler *KnowledgeHandler
+	authorizer       routeAuthorizer
 }
 
 type routeAuthorizer interface {
@@ -50,8 +51,8 @@ func (a authorizationMiddlewareAdapter) Authorize(ctx context.Context, in middle
 	}, nil
 }
 
-func NewRegistrar(handler *Handler, chatHandler *ChatHandler, authorizer routeAuthorizer) *Registrar {
-	return &Registrar{handler: handler, chatHandler: chatHandler, authorizer: authorizer}
+func NewRegistrar(handler *Handler, chatHandler *ChatHandler, knowledgeHandler *KnowledgeHandler, authorizer routeAuthorizer) *Registrar {
+	return &Registrar{handler: handler, chatHandler: chatHandler, knowledgeHandler: knowledgeHandler, authorizer: authorizer}
 }
 
 func (r *Registrar) RegisterRoutes(groups server.RouteGroups) {
@@ -70,8 +71,30 @@ func (r *Registrar) RegisterRoutes(groups server.RouteGroups) {
 			authed.GET("/chat/sessions", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.ListSessions)
 			authed.GET("/chat/sessions/:session_id", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.GetSession)
 			authed.POST("/chat/sessions/:session_id/messages", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.SendMessage)
+			// 流式对话（SSE，事件级）：与同步接口同一编排，客户端断开即取消。
+			authed.POST("/chat/sessions/:session_id/messages/stream", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.SendMessageStream)
 			authed.POST("/chat/sessions/:session_id/messages/:message_id/feedback",
 				middleware.AuthorizeStatic(authz, "ai", "chat:feedback"), r.chatHandler.SubmitFeedback)
+			// 归档/恢复/删除复用 app:ai:chat：会话是用户私有资源，归属校验由 application 层负责，
+			// 不引入新权限码以免与记忆路线图的迁移编号冲突（ops/ai-contract.md §10.13）。
+			authed.POST("/chat/sessions/:session_id/archive", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.ArchiveSession)
+			authed.POST("/chat/sessions/:session_id/unarchive", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.UnarchiveSession)
+			authed.DELETE("/chat/sessions/:session_id", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.DeleteSession)
+			// 会话只读分享：只有 owner 能创建/查看/撤销；访问分享仍需登录 + app:ai:chat（契约 §10.18）。
+			authed.POST("/chat/sessions/:session_id/shares", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.CreateShare)
+			authed.GET("/chat/sessions/:session_id/shares", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.ListShares)
+			authed.DELETE("/chat/sessions/:session_id/shares/:share_id", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.RevokeShare)
+			authed.GET("/chat/shares/:token", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.ViewSharedSession)
+		}
+		// 知识沉淀管理（阶段 2）：draft 必须审核激活后才注入回答（ops/ai-contract.md §10.15）。
+		if r.knowledgeHandler != nil {
+			authed.GET("/knowledge/items", middleware.AuthorizeStatic(authz, "ai", "knowledge:manage"), r.knowledgeHandler.List)
+			authed.POST("/knowledge/items", middleware.AuthorizeStatic(authz, "ai", "knowledge:manage"), r.knowledgeHandler.Create)
+			authed.PUT("/knowledge/items/:item_id", middleware.AuthorizeStatic(authz, "ai", "knowledge:manage"), r.knowledgeHandler.Update)
+			authed.POST("/knowledge/items/:item_id/review", middleware.AuthorizeStatic(authz, "ai", "knowledge:manage"), r.knowledgeHandler.Review)
+			authed.DELETE("/knowledge/items/:item_id", middleware.AuthorizeStatic(authz, "ai", "knowledge:manage"), r.knowledgeHandler.Delete)
+			// 反馈聚合：把某应用下已确认有效的案例聚合成 draft（幂等，不覆盖 active 条目）。
+			authed.POST("/knowledge/aggregate", middleware.AuthorizeStatic(authz, "ai", "knowledge:manage"), r.knowledgeHandler.Aggregate)
 		}
 		return
 	}
@@ -84,6 +107,15 @@ func (r *Registrar) RegisterRoutes(groups server.RouteGroups) {
 		authed.GET("/chat/sessions", r.chatHandler.ListSessions)
 		authed.GET("/chat/sessions/:session_id", r.chatHandler.GetSession)
 		authed.POST("/chat/sessions/:session_id/messages", r.chatHandler.SendMessage)
+		authed.POST("/chat/sessions/:session_id/messages/stream", r.chatHandler.SendMessageStream)
 		authed.POST("/chat/sessions/:session_id/messages/:message_id/feedback", r.chatHandler.SubmitFeedback)
+		authed.POST("/chat/sessions/:session_id/archive", r.chatHandler.ArchiveSession)
+		authed.POST("/chat/sessions/:session_id/unarchive", r.chatHandler.UnarchiveSession)
+		authed.DELETE("/chat/sessions/:session_id", r.chatHandler.DeleteSession)
+		authed.POST("/chat/sessions/:session_id/shares", r.chatHandler.CreateShare)
+		authed.GET("/chat/sessions/:session_id/shares", r.chatHandler.ListShares)
+		authed.DELETE("/chat/sessions/:session_id/shares/:share_id", r.chatHandler.RevokeShare)
+		authed.GET("/chat/shares/:token", r.chatHandler.ViewSharedSession)
 	}
+	// 无 authorizer 时知识管理路由不注册：审核是管理员动作，不能在没有 RBAC 的环境放开。
 }

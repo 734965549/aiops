@@ -258,7 +258,7 @@ func main() {
 	aiAuditRecorder := aiaudit.NewRecorder(auditSvc)
 	identityAuditRecorder := identityaudit.NewRecorder(auditSvc)
 
-	alertReader := aialert.NewReaderAdapter(alertRepo)
+	alertReader := aialert.NewReaderAdapter(alertRepo, aiidentity.NewAlertScopeAuthorizer(authorizationSvc))
 	analyzeSvc := aiapp.NewAnalyzeService(alertReader, aiGateway, "", aiAuditRecorder)
 	analyzeSvc.SetProviderResolver(providerRegistry)
 	aiHandler := aihttp.NewHandler(aiGateway, providerSvc, authorizationSvc, analyzeSvc, aiAuditRecorder)
@@ -383,7 +383,21 @@ func main() {
 		aiEvidenceCollector,
 		aiAuditRecorder,
 	)
+	// 相似案例记忆（阶段 1）：反馈沉淀 + 对话/分析前检索注入。
+	// 检索失败只降级（memory_status=error），不阻断回答主链路。
+	aiMemoryRepo := aipg.NewMemoryCaseRepository(app.DB)
+	aiMemorySvc := aiapp.NewMemoryService(aiMemoryRepo, alertReader)
+	aiChatSvc.SetMemory(aiMemorySvc)
+	analyzeSvc.SetMemory(aiMemorySvc)
+	// 会话只读分享（§10.18）：token 只存哈希，访问者需登录 + app:ai:chat。
+	aiChatSvc.SetShares(aipg.NewSessionShareRepository(app.DB))
 	aiChatHandler := aihttp.NewChatHandler(aiChatSvc)
+	// 知识沉淀（阶段 2）：管理员审核 draft/active/disabled，只有 active 注入回答；
+	// 反馈聚合把确认有效的记忆案例转成待审核 draft（不覆盖已 active 条目）。
+	aiKnowledgeSvc := aiapp.NewKnowledgeService(aipg.NewKnowledgeItemRepository(app.DB), aiAuditRecorder)
+	aiKnowledgeSvc.SetMemorySource(aiMemoryRepo)
+	aiChatSvc.SetKnowledge(aiKnowledgeSvc)
+	aiKnowledgeHandler := aihttp.NewKnowledgeHandler(aiKnowledgeSvc)
 
 	// ---- 装配 CES 告警拉取（Alert 端口 -> Observability 适配 -> 共享租约）----
 	alertSyncLeaseRepo := alertpg.NewAlertSyncLeaseRepository(app.DB)
@@ -451,7 +465,7 @@ func main() {
 
 	registrars := []server.RouteRegistrar{
 		identityhttp.NewRegistrar(identityHandler, authorizationSvc),
-		aihttp.NewRegistrar(aiHandler, aiChatHandler, authorizationSvc),
+		aihttp.NewRegistrar(aiHandler, aiChatHandler, aiKnowledgeHandler, authorizationSvc),
 		assethttp.NewRegistrar(assetHandler, authorizationSvc),
 		audithttp.NewRegistrar(auditHandler, authorizationSvc),
 		alerthttp.NewRegistrar(alertHandler, alertIngestHandler, authorizationSvc),

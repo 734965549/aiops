@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/734965549/aiops/internal/ai/domain"
-	"github.com/734965549/aiops/pkg/logger"
 )
 
 // chatGeneration 是一次回答生成结果。
@@ -18,43 +17,10 @@ type chatGeneration struct {
 	Tokens     int
 }
 
-// generateAnswer 调用平台直连模型；模型不可用、调用失败或输出非法时降级。
-func (s *ChatService) generateAnswer(ctx context.Context, question string, session *domain.Session, history []ChatHistoryMessage, data chatContextData) chatGeneration {
-	evidence := observationEvidenceLines(data)
-	if s.chat == nil {
-		return chatGeneration{Answer: degradedChatAnswer(chatDegradedModelUnavailable, evidence), Status: chatStatusDegraded}
-	}
-	providerID, ok := s.chat.ChatProviderID()
-	if !ok {
-		return chatGeneration{Answer: degradedChatAnswer(chatDegradedModelUnavailable, evidence), Status: chatStatusDegraded}
-	}
-	prompt := buildChatUserPrompt(ChatPromptInput{
-		Question: question, Context: session.Context, TimeRange: session.Context.TimeRange,
-		Alert: alertSnapshot(data.Alert), Observations: data.Observations, History: history,
-	})
-	result, err := s.chat.Complete(ctx, providerID, chatSystemPrompt, prompt)
-	if err != nil {
-		logger.From(ctx).Warn("ai chat completion failed",
-			logger.String("provider_id", providerID), logger.Error(err))
-		return chatGeneration{
-			Answer: degradedChatAnswer(chatDegradedModelFailed, evidence),
-			Status: chatStatusDegraded, ProviderID: providerID,
-		}
-	}
-	answer, parseErr := parseChatAnswer(result.Content)
-	if parseErr != nil {
-		logger.From(ctx).Warn("ai chat answer invalid",
-			logger.String("provider_id", providerID), logger.Error(parseErr))
-		return chatGeneration{
-			Answer: degradedChatAnswer(chatDegradedOutputInvalid, evidence),
-			Status: chatStatusDegraded, ProviderID: providerID, Tokens: result.Tokens,
-		}
-	}
-	status := chatStatusOK
-	if answer.InsufficientContext {
-		status = chatStatusInsufficientContext
-	}
-	return chatGeneration{Answer: answer, Status: status, ProviderID: providerID, Tokens: result.Tokens}
+// generateAnswer 调用平台直连模型；模型可在预算内追加只读取数（受限 Agent Loop）。
+// 模型不可用、调用失败、输出非法或循环耗尽时降级。
+func (s *ChatService) generateAnswer(ctx context.Context, userID, question string, session *domain.Session, history []ChatHistoryMessage, data *chatContextData) chatGeneration {
+	return s.generateWithLoop(ctx, userID, question, session, history, data)
 }
 
 // finalizeAnswer 由服务端补齐动作、证据与确认语义（模型输出的 actions 一律忽略）。
@@ -103,7 +69,8 @@ func (s *ChatService) finalizeAnswer(ctx context.Context, userID string, session
 		}
 		actions = append(actions, action)
 	}
-	if alertID := strings.TrimSpace(session.Context.AlertID); alertID != "" {
+	// 告警上下文被数据范围拒绝时不给跳转入口，避免把用户引到无权查看的详情页。
+	if alertID := strings.TrimSpace(session.Context.AlertID); alertID != "" && !data.AlertDenied {
 		actions = append(actions, ChatAction{
 			Code: "view.alert", Label: "查看告警详情", Allowed: true,
 			Target: "/alerts?alert_id=" + url.QueryEscape(alertID),

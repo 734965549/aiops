@@ -54,9 +54,15 @@ func TestAnalyzeService_WritesEvidenceAudit(t *testing.T) {
 
 type capturingAIAudit struct {
 	rows []AuditRecord
+	// requireLiveCtx 为 true 时模拟真实仓储：请求 ctx 已取消则写入失败。
+	// 用于验证取消审计必须脱链写入。
+	requireLiveCtx bool
 }
 
-func (c *capturingAIAudit) Record(_ context.Context, rec AuditRecord) error {
+func (c *capturingAIAudit) Record(ctx context.Context, rec AuditRecord) error {
+	if c.requireLiveCtx && ctx.Err() != nil {
+		return ctx.Err()
+	}
 	c.rows = append(c.rows, rec)
 	return nil
 }

@@ -17,6 +17,10 @@ var ErrSessionNotFound = errors.New("ai chat session not found")
 // ErrMessageNotFound 表示消息不存在或不属于该会话。
 var ErrMessageNotFound = errors.New("ai chat message not found")
 
+// ErrDuplicateClientMessage 表示同一会话内 client_message_id 已被使用，
+// 由仓储的部分唯一索引（migration 0050）保证，用于超时重试的幂等处理。
+var ErrDuplicateClientMessage = errors.New("ai chat message client id already used")
+
 // MaxTitleRunes 是会话标题最大字符数（按 rune 截断，避免截断 UTF-8）。
 const MaxTitleRunes = 60
 
@@ -80,6 +84,7 @@ type SessionContext struct {
 	ApplicationID string `json:"application_id"`
 	ResourceID    string `json:"resource_id"`
 	ResourceType  string `json:"resource_type"`
+	ExecutionID   string `json:"execution_id"`
 	TimeRange     string `json:"time_range"`
 }
 
@@ -87,7 +92,8 @@ type SessionContext struct {
 func (c SessionContext) IsEmpty() bool {
 	return strings.TrimSpace(c.AlertID) == "" &&
 		strings.TrimSpace(c.ApplicationID) == "" &&
-		strings.TrimSpace(c.ResourceID) == ""
+		strings.TrimSpace(c.ResourceID) == "" &&
+		strings.TrimSpace(c.ExecutionID) == ""
 }
 
 // Normalize 去除首尾空白并约束长度。
@@ -99,6 +105,7 @@ func (c SessionContext) Normalize() SessionContext {
 		ApplicationID: truncate(strings.TrimSpace(c.ApplicationID), 64),
 		ResourceID:    truncate(strings.TrimSpace(c.ResourceID), 128),
 		ResourceType:  truncate(strings.TrimSpace(c.ResourceType), 64),
+		ExecutionID:   truncate(strings.TrimSpace(c.ExecutionID), 64),
 		TimeRange:     truncate(strings.TrimSpace(c.TimeRange), 32),
 	}
 }
@@ -142,8 +149,15 @@ type Message struct {
 	ToolCalls  []ToolCall
 	References []Reference
 	Feedback   Feedback
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// ClientMessageID 是客户端幂等键，仅 user 消息写入；空表示未提供。
+	ClientMessageID string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+// CanSendMessage 表示会话是否允许继续发送消息（归档会话只读）。
+func (s Session) CanSendMessage() bool {
+	return s.Status != SessionStatusArchived
 }
 
 // SessionTouch 描述与消息落库同一事务内的会话更新。
@@ -168,6 +182,14 @@ type SessionRepository interface {
 	ListRecentMessages(ctx context.Context, sessionID string, limit int) ([]Message, error)
 	GetMessage(ctx context.Context, sessionID, messageID string) (*Message, error)
 	SetFeedback(ctx context.Context, sessionID, messageID string, feedback Feedback, updatedAt time.Time) error
+	// SetStatus 流转会话状态（active <-> archived）；会话不存在时返回 ErrSessionNotFound。
+	SetStatus(ctx context.Context, sessionID string, status SessionStatus, updatedAt time.Time) error
+	// Delete 在同一事务内删除会话及其全部消息；会话不存在时返回 ErrSessionNotFound。
+	Delete(ctx context.Context, sessionID string) error
+	// FindUserMessageByClientID 按会话与客户端幂等键查找已存在的用户消息；不存在返回 (nil, nil)。
+	FindUserMessageByClientID(ctx context.Context, sessionID, clientMessageID string) (*Message, error)
+	// FindAssistantAnswer 返回指定用户消息之后的第一条 assistant 消息；不存在返回 (nil, nil)。
+	FindAssistantAnswer(ctx context.Context, sessionID, userMessageID string) (*Message, error)
 }
 
 // NewSessionTitle 从首条用户消息生成会话标题。

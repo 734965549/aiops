@@ -206,6 +206,8 @@ HTTP 200 且 `code` 为 `"OK"` 时，`data` 内仍可能 `allowed = false`（业
 - AI 生成的命令必须匹配 Execution 模块中的 Command Spec，并由运维人员确认后才能执行。
 - 执行介体、代理、租约和日志回传契约见 `ops/execution-agent-contract.md`。
 
+> 状态（2026-11）：本节工具保持规划态并已**推迟**，推迟原因与重启条件见 §10.12.2 / §10.12.3。当前对话链路实际可用的只读工具仅 `alarm.analyze` / `metrics.query`（§10.6.3）。
+
 ## 7. Provider 类型说明
 
 | 类型 | 说明 |
@@ -349,7 +351,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 2. 按上下文执行只读工具权限校验并取数（告警快照、指标证据）；
 3. 调用平台直连模型（类型 `b`）生成结构化回答；
 4. 由服务端补齐可执行动作、确认语义与证据引用；
-5. 会话与消息落库，工具调用、对话与反馈全部写审计。
+5. 会话与消息落库，工具调用、对话、反馈与归档/删除全部写审计。
 
 约束：
 
@@ -362,7 +364,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 | 权限码 | 说明 |
 | --- | --- |
-| `app:ai:chat` | 创建会话、查询会话、发送消息 |
+| `app:ai:chat` | 创建会话、查询会话、发送消息（含流式，§10.17）、归档/恢复/删除会话（§10.13）、创建/查看/撤销会话只读分享（§10.18） |
 | `app:ai:chat:feedback` | 提交回答有效/无效反馈 |
 
 迁移 `0049` 同时把以上权限绑定到内置 `admin` 角色。工具权限沿用既有种子：`alarm.analyze`、`metrics.query`（只读），`execution.tasks.propose`（`require_confirm`，仅用于生成执行计划入口的权限判断）。
@@ -429,6 +431,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | --- | --- | --- | --- |
 | `content` | string | 是 | 用户问题，最长 4000 字符 |
 | `context` | object | 否 | 覆盖会话上下文（浮层从任意页面唤起时携带） |
+| `client_message_id` | string | 否 | 幂等键，最长 64 字符；同一会话内重复提交返回首次结果，见 §10.6.5 |
 
 响应 `data`（节选）：
 
@@ -482,20 +485,53 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - `risk_level`：`low` / `medium` / `high` / `info`；模型返回 `critical` 时按 `high` 呈现。
 - `actions` 由服务端按权限生成，**不采信模型输出**：
   - `execution.propose`：服务端校验 `execution.tasks.propose` 工具权限，`allowed=false` 时带 `reason`；
-  - `view.alert` / `view.metrics`：只读跳转入口，`target` 为前端路由。
+  - `view.alert` / `view.metrics`：只读跳转入口，`target` 为前端路由；
+  - `memory_case` 类型引用只在 §10.14 记忆命中时出现，无 `url`，`id` 为 `case_id`（阶段 1）。
 - `require_confirm`：模型声明或 `risk_level` 为 medium/high 时为 `true`。该字段只表达“建议需要人工确认”，不替代 Execution 状态机的确认。
 - `uncertainties` 必须保留，前端需展示；降级回答必须给出不确定性说明。
 
 #### 10.6.3 工具调用与审计
 
-- 上下文中的 `alert_id` 会触发 `alarm.analyze` 权限校验并读取告警快照；可推导指标查询条件时触发 `metrics.query` 权限校验并采集只读指标证据。
+- 上下文中的 `alert_id` 会触发告警快照读取：先做 `alarm.analyze` 的 RBAC 与工具权限校验，再由 `AlertReader.GetForAnalysis` 按当前用户的数据范围校验对象（映射见 §10.6.4）；可推导指标查询条件时触发 `metrics.query` 权限校验并采集只读指标证据。
 - 每次工具校验/调用都写入审计：`resource_type=ai`、`resource_id=session_id`、`action=tool_invoke`，payload 含 `tool_code/allowed/mode/status/reason/result`，不含 prompt 与凭据。
 - 回答写入审计：`action=chat_message`，含 `status/risk_level/require_confirm/tool_codes/tool_denied/reference_count/provider_id/tokens/degraded_reason`。
-- 工具权限校验只做 RBAC 与工具权限，不做对象级数据范围判断：
-  - 指标证据的数据范围由观测取数端口按账号权限二次校验；
-  - 告警快照读取当前与 `POST /api/ai/analyze-alert` 一致，仅校验告警读取/工具权限，**尚未按用户数据范围过滤**（P1 待补，见 §10.11）。
-  - 不在工具校验处强制数据范围，是为了避免无对象上下文的对话被误判为“缺少对象上下文”。
+- 数据范围校验口径：
+  - 告警快照的对象级数据范围在 `AlertReader` 收口（`POST /api/ai/analyze-alert` 与对话共用同一入口），拒绝时返回 `PERMISSION_DENIED`，不返回任何告警字段；
+  - 对话路径把拒绝降级为一次观测：`alarm.analyze` 的 `allowed=false`、`status=denied`、`reason=data_scope_denied`，不产生告警 `references`，也不返回 `view.alert` 跳转入口，模型仍可基于其它上下文（或降级结果）作答；
+  - 工具校验固定 `SkipDataScope=true` 且排在对象读取之前：告警的数据范围由读取端口判断，而 `metrics.query`、`execution.tasks.propose` 没有对象上下文（指标范围由观测取数端口按账号二次校验），在此强制数据范围会把正常对话误判为“缺少对象上下文”，也会让无权用户靠拒绝原因探测对象是否存在。
+  - 分析路径在读取通过后会把同一份对象上下文随 `alarm.analyze` 工具请求下发，由网关复核（纵深防御）。
 - 对话历史最多取最近 12 条送入模型；单条历史内容截断，不读取全量会话。
+
+#### 10.6.4 数据范围映射（告警对象）
+平台告警没有独立的部门/团队/区域/tag 字段，对象上下文按以下固定映射生成后交给统一授权服务：
+
+| 告警字段 | 授权入参 | 说明 |
+| --- | --- | --- |
+| `owner_user_id` | `object_owner` | 匹配 `custom` 范围的 `owner_ids` |
+| `labels.department` / `dept` / `department_id` | `object_dept` | 平台告警无独立部门字段 |
+| `labels.team` / `owner_team` / `team_id` | `object_team` | |
+| `labels.region` / `region_id` | `object_region` | CES 拉取源会写入 `region` |
+| `labels.env` / `environment` / `business_line` / `tags`，以及归一化后的 `environment`、`business_line` 字段 | `object_tags` | 支持逗号/分号/竖线分隔；去重后最多 16 个；仅这些键参与 tag 匹配 |
+
+判定语义：
+
+- 用户无数据范围或具备 `all` 范围 → 不按对象过滤；
+- 用户具备 `department` / `team` / `region` / `tag` / `custom` 范围时，对象对应维度缺失或不匹配 → 403 `PERMISSION_DENIED`（fail-closed，不做“没标注就放行”）；
+- 数据范围守卫未装配（读取端口未注入授权适配器）→ 503 `UNAVAILABLE`，不放行；
+- `owner_user_id` 只参与对象级校验，不进入 provider payload，也不写入日志正文；
+- 拒绝审计：分析路径 `action=analyze_alert`、`result=denied`、`scope_denied=true`、`reason`；对话路径为 `action=tool_invoke` 的同名原因。日志只记录 `user_id` / `alert_id` / `reason`。
+
+#### 10.6.5 消息幂等（`client_message_id`）
+
+客户端可选的幂等键，用于「请求超时后重试」不产生重复消息与重复模型调用。
+
+- 落库：`ai_session_message.client_message_id`（migration `0050`），仅 user 消息写入；`(session_id, client_message_id)` 上有一个 `WHERE client_message_id <> ''` 的部分唯一索引，并发重复提交由数据库兜底。
+- 首次提交：正常落用户消息、校验工具、调用模型、落回答。
+- 重复提交（已有对应回答）：**原样返回首次结果**——相同的 `message_id`、`answer`、`tool_calls`、`references`、`status`；不新增消息、不再调用模型、不再采集指标证据。审计仍写一条 `action=chat_message`，并带 `replayed=true` 与 `client_message_id`。
+- 重复提交（用户消息已落库但回答缺失，如服务端中断）：返回 **409 `FAILED_PRECONDITION`**，message 提示上一次请求仍在处理或已中断；客户端应刷新会话查看结果，不要静默重发。
+- 并发重复提交：插入撞唯一索引后回落到上面的分支（有回答则重放，无回答则 409）。
+- 未提供 `client_message_id`：行为与之前一致（每次都是新消息），不承诺幂等。
+- 边界：本能力只保证「同一会话内同一幂等键最多一条用户消息 + 至多返回一次相同结果」，不是端到端 exactly-once；模型调用仍可能因超时被重试一次（服务端内部不重试）。
 
 ### 10.7 提交回答反馈
 
@@ -515,19 +551,41 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
   "application_id": "app-1",
   "resource_id": "i-001",
   "resource_type": "ecs",
+  "execution_id": "task-1",
   "time_range": "30m"
 }
 ```
 
+| 字段 | 长度上限 | 说明 |
+| --- | --- | --- |
+| `page` / `page_title` | 64 / 128 | 页面标识与标题，仅用于展示 |
+| `alert_id` | 64 | 告警详情 / 告警来源的执行任务 |
+| `application_id` | 64 | 应用上下文 |
+| `resource_id` | 128 | 资源上下文（资产页选中资源、执行任务目标资源、观测查询维度中的实例 ID） |
+| `resource_type` | 64 | 资源类型（如 `ecs` / `pod`），缺失时不传 |
+| `execution_id` | 64 | 执行任务详情 |
+| `time_range` | 32 | 时间范围标签（如 `30m` / `2h`），仅用于提示 |
+
 - 字段均为可选业务标识；服务端只做长度裁剪与去空白，不信任前端做权限判断。
-- 前端在告警详情页写入告警/应用/资源上下文，其它页面写入页面级上下文；发送消息时随请求携带，会话创建时也会保存一份。
-- 上下文只存业务 ID 与标题，禁止写入凭据、Token、告警正文或自由文本。
+- 前端按页面写入资源级上下文，其余页面只写页面级上下文；发送消息时随请求携带，会话创建时也会保存一份。写入方：
+
+| 页面 | 写入的上下文 |
+| --- | --- |
+| 告警中心（打开详情） | `alert_id` + `application_id` + `resource_id` + `resource_type` + `time_range=30m` |
+| 资产管理（选中应用 / 高亮资源） | `application_id`；高亮资源时补 `resource_id` + `resource_type`（云资源优先 `cloud_resource_type`） |
+| 执行中心（打开任务详情） | `execution_id`；来源为告警时补 `alert_id`，目标为资源时补 `resource_id` + `resource_type` |
+| 观测查询（指标查询成功后） | `resource_id`（维度里的 `instance_id` / `cloud_resource_id` 等）+ `resource_type`（按命名空间）+ `time_range`（按时间选择器换算） |
+| 其它页面 / AI 助手独立页 | 仅 `page` + `page_title`（进入 AI 助手页时保留来源页面资源，便于连续追问） |
+
+- 上下文只存业务 ID 与标题，禁止写入凭据、Token、告警正文、任务参数、标签明文或自由文本。
+- 退出详情或切换页面时清空资源级字段；`execution_id` 与 `resource_id` 一样被视为资源级上下文（有值时不会被路由切换覆盖）。
 
 ### 10.9 前端状态映射（页面原型 §23.2）
 
 | UI 状态 | 判定 |
 | --- | --- |
-| AI 思考中 / 查询工具中 / 生成回答中 | 请求进行中的阶段提示（同步接口） |
+| AI 思考中 / 查询工具中 / 生成回答中 | 流式接口按 `stage` / `tool` 事件即时切换；同步接口按请求进行中提示 |
+| 用户取消 / 连接中断 | 流提前结束且无 `answer` / `error`；服务端不落回答，记 `chat_canceled` 审计（§10.17.4） |
 | AI 回答失败 | `status=degraded`，展示 `degraded_reason` 与可重试入口 |
 | AI 无足够上下文 | `status=insufficient_context` 或 `answer.insufficient_context=true` |
 | AI 建议需人工确认 | `answer.require_confirm=true` |
@@ -536,18 +594,368 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 ### 10.10 存储与迁移
 
 - 迁移 `0049_ai_session`：`ai_session`（`session_id` 业务唯一列、`user_id`、`title`、`context_json`、`status`）与 `ai_session_message`（`message_id` 业务唯一列、`session_id`、`role`、`content`、`tool_calls_json`、`references_json`、`feedback`）。
-- `assistant` 消息的 `content` 保存结构化回答 JSON；读取时由服务端解析为 `answer` 字段。
+- 迁移 `0050_ai_session_message_idempotency`：`ai_session_message.client_message_id`（+ `(session_id, client_message_id)` 部分唯一索引），支撑 §10.6.5 消息幂等；幂等补齐，不改写已发布的 `0049`。
+- 迁移 `0053_ai_session_share`：`ai_session_share`（`share_id` 业务唯一、`session_id`、`owner_user_id`、`token_hash` 唯一、`status`、`expires_at`），支撑 §10.18 会话只读分享；只存 token 哈希，无外键，时间戳由 Go 维护。
+- `assistant` 消息的 `content` 保存结构化回答 JSON；读取时由服务端解析为 `answer` 字段（含 `degraded` / `degraded_reason`，保证重放与非重放一致的 `status`）。
 - 消息落库与会话 `updated_at` / 标题 / 上下文更新在同一事务内完成。
 - 会话归属用户：跨用户访问返回 403；不暴露自增 `id`。
+- 归档只更新 `status` 与 `updated_at`（保留历史消息）；删除在同一事务内先删消息再删会话，避免孤儿消息。会话表结构不变，因此归档/删除不新增迁移。
 
 ### 10.11 已知限制与 P1 待办
 
-- **告警上下文未做数据范围过滤（P1，建议优先）**：`AlertReader.GetForAnalysis` 当前按 `alert_id` 直读，ChatService 的工具校验也只做 RBAC + 工具权限（与 `POST /api/ai/analyze-alert` 行为一致，非本次回归）。拥有 `app:ai:chat` 的用户可以把任意 `alert_id` 作为上下文读取告警快照。当前 `app:ai:chat` 仅绑定 `admin`，影响有限；P1 需要：
-  1. 为告警读取补用户数据范围校验（按告警归属/部门/团队/区域等对象上下文）；
-  2. 评估在 ChatService 工具校验中恢复数据范围判断（带对象上下文，避免误判）；
-  3. 同步 `POST /api/ai/analyze-alert` 的同类缺口，保持一致。
-- 同步接口：对话为一次性返回，流式与取消语义属 P1+。
-- 工具范围：当前仅告警快照 + 指标证据（`alarm.analyze` / `metrics.query`）；日志、资产、变更类只读工具未接入。
-- 资源级上下文：告警详情最完整；资产/执行/观测页当前仅页面级上下文。
-- 会话能力：仅本人可见，分享未实现；归档后端已支持但 UI 未提供。
-- 消息幂等：未引入 `client_message_id`，客户端超时重试可能产生重复用户消息。
+- **告警上下文数据范围过滤已完成**：`AlertReader.GetForAnalysis` 按 §10.6.4 校验对象数据范围，`POST /api/ai/analyze-alert` 与 AI 助手共用同一入口；拒绝时分析返回 403 并写 `result=denied` 审计，对话降级为 `reason=data_scope_denied` 观测。后续新增告警读取入口必须复用该入口，不要绕过。
+- **会话归档/删除已完成**：见 §10.13，前端入口在会话列表（归档 / 恢复 / 删除，均二次确认）。
+- **消息幂等已完成**：见 §10.6.5（`client_message_id` + 部分唯一索引），前端每次提问生成幂等键、重试复用同一值。
+- **资源级上下文已完成**：告警、资产、执行、观测四类页面按 §10.8 写入资源级字段；`execution_id` 为 `0050` 之后新增的上下文维度（仅上下文 JSON，无表结构变更）。
+- **相似案例记忆（阶段 1）已完成**：见 §10.14（migration `0051_ai_memory_case`）。
+- **知识沉淀（阶段 2）已完成**：见 §10.15（migration `0052_ai_knowledge_item`，人工录入 + 反馈聚合生成 draft + 审核激活 + scope 注入 + 低效自动停用），管理页签在「系统管理 / AI 配置 → 知识沉淀」。
+- **受限 Agent Loop（阶段 3）已完成**：见 §10.16（≤3 轮只读工具循环、token 预算、每轮 RBAC 复核、`loop_rounds` 审计）；循环仍只做只读取数，执行类工具不可达。
+- **流式与取消已完成**：见 §10.17（SSE 事件级推送、取消不落回答并写 `chat_canceled` 审计）；同步接口 §10.6 保留不变。
+- **会话分享已完成**：见 §10.18（对内只读链接 + 1–720 小时有效期 + owner 撤销；不提供匿名/对外访问）。
+- **工具范围扩展已推迟**：当前仅告警快照 + 指标证据（`alarm.analyze` / `metrics.query`）；日志、资产、变更类只读工具推迟接入，推迟原因与重启条件见 §10.12.1。
+
+### 10.12 演进方向与推迟项（2026-11 决策）
+
+以下三项已明确**推迟**。重启前必须先在本节补齐定义（工具清单、参数 schema、权限码、降级语义、审计口径），不得跳过定义直接开工；记忆与自我优化三阶段已全部落地（§10.14–§10.16），演进记录见 `docs/ai-assistant-memory-roadmap.md`。
+
+#### 10.12.1 对话工具范围扩展 — 推迟
+
+- **推迟了什么**：不向只读工具清单新增 `logs.search`、`assets.get/list`、`changes.list` 等工具；对话与 Agent Loop（§10.16）继续只使用 `alarm.analyze` / `metrics.query` 两个只读工具。
+- **为什么推迟**：Observability `LogSearchPort` 当前仍为 fake provider，真实日志查询未落地，接了也是空转；资产/变更工具的对象级数据范围口径需与 §10.6.4 的告警数据范围模型统一设计，避免为赶进度开权限口子。
+- **什么时候推进**（满足其一即启动定义）：① Observability 日志查询从 fake 替换为真实 provider；② 用户负反馈中「助手回答不了日志/资产/变更问题」成为主要来源。启动顺序：先在本节补齐工具清单与 schema，再实现。
+
+#### 10.12.2 云厂商只读观测工具（cloud.* 系列）— 推迟
+
+- **推迟了什么**：§6 表格中的 `cloud.resources.list` / `cloud.metrics.query` / `cloud.logs.search` / `cloud.traces.query` / `cloud.topology.get` 保持规划态，不注册进 toolgateway。
+- **为什么推迟**：traces/topology 仍为 fake，且 cloud.* 工具需要 Integration 账号维度的数据范围联动（与告警数据范围工作同根）；指标场景已由专用 `metrics.query` 证据链覆盖，重复建第二套并行工具没有增量价值。
+- **什么时候推进**：真实云厂商 logs/traces provider 落地之后，且 Integration 账号纳入数据范围模型时，把 cloud.* 定义为 `metrics.query` 的泛化（或别名路由），不另起炉灶。
+
+#### 10.12.3 `execution.tasks.propose` 工具化 — 推迟
+
+- **推迟了什么**：不把 `execution.tasks.propose` 注册为 toolgateway 工具；AI 生成执行计划的唯一出口仍是 answer `actions` 中的 `execution.propose` 入口（前端调 `POST /api/executions/tasks`，`source_type=ai_conversation`，任务落 `pending_confirm`）。
+- **为什么推迟**：现有 actions 出口已完整满足安全闭环（人工确认 + 审计 + Execution 状态机），工具化不解决任何现存缺口；反而引入新的边界问题——模型可填字段的白名单、require_confirm 与 §10.16「循环内只读」约束的兼容性（当前裁决：循环内不可达，循环后由服务端触发）。
+- **什么时候推进**：仅当出现「模型必须在无人交互场景生成待确认任务」的真实需求（如巡检 Worker 建议 → 待确认任务）时重启定义；届时必须先解决字段白名单、幂等键与 Loop 边界三个问题。
+
+#### 10.12.4 其他未实现项
+
+- **会话分享匿名/对外公开链接**：未实现；若后续需要必须另行评审，不得绕过登录与 `app:ai:chat`。
+- **pgvector 向量检索**：记忆/知识检索当前为 SQL 关键词策略；向量增强仅在数据规模或召回质量证明必要时评估（路线图 §7）。
+
+### 10.13 会话归档 / 恢复 / 删除
+
+会话生命周期：`active` ⇄ `archived`，任一状态均可删除。归档后会话只读（可查看历史、不可发消息），用于收口历史而不丢证据。
+
+#### 10.13.1 归档会话
+
+- Method: `POST`
+- Path: `/api/ai/chat/sessions/:session_id/archive`
+- 鉴权: 是（`app:ai:chat`）
+
+响应 `data`：更新后的会话对象（`status=archived`）。
+
+- 已归档时幂等：返回当前视图，不报错、不推进 `updated_at`。
+- 归档只改状态，历史消息与工具调用记录保持原样。
+- 审计：`action=chat_session_status`，payload 含 `session_id/status/previous_status/result`。
+
+#### 10.13.2 恢复会话
+
+- Method: `POST`
+- Path: `/api/ai/chat/sessions/:session_id/unarchive`
+- 鉴权: 是（`app:ai:chat`）
+
+响应 `data`：更新后的会话对象（`status=active`）。未归档时幂等返回当前视图；恢复后可继续发送消息。审计同 §10.13.1。
+
+#### 10.13.3 删除会话
+
+- Method: `DELETE`
+- Path: `/api/ai/chat/sessions/:session_id`
+- 鉴权: 是（`app:ai:chat`）
+
+响应 `data`：`{ "deleted": true }`。
+
+- 删除会话及其全部消息，不可恢复；重复删除返回 404 `NOT_FOUND`。
+- 审计：`action=chat_session_delete`，payload 含 `session_id/status/result`。
+- 删除的是当前会话时，前端自动切到列表中的下一个会话；无剩余会话则回到空态。
+
+#### 10.13.4 权限与错误
+
+- 三个接口复用 `app:ai:chat`：会话是用户私有资源，真正的边界是 application 层的归属校验（跨用户 403），不引入新权限码，避免新增迁移与记忆路线图的版本编号冲突。
+- 会话不存在或已删除 → 404 `NOT_FOUND`；不属于当前用户 → 403 `PERMISSION_DENIED`；归档会话发消息 → 409 `FAILED_PRECONDITION`（既有语义）。
+- 前端在归档会话上发消息时提前拦截并提示先恢复，避免用户输入丢失。
+
+### 10.14 相似案例记忆（阶段 1，RAG-lite）
+
+从「有效反馈」沉淀历史案例，并在后续对话/告警分析中检索注入。设计背景见 `docs/ai-assistant-memory-roadmap.md` §4。
+
+#### 10.14.1 沉淀规则
+
+- 触发：`POST .../feedback` 提交 `valid`。
+- 条件：对应 assistant 消息的结构化回答可解析、`degraded=false`、`summary` 非空；降级回答不入记忆。
+- 幂等：迁移 `0051` 的部分唯一索引 `(user_id, source_message_id)` 保证同一条消息只沉淀一条案例；重复反馈不重复写入。
+- 字段：归属 `user_id`、`session_id`、`source_message_id`、`application_id`/`resource_id`/`resource_type`、`alert_signature`、`keywords`、`summary`（≤500 runes）、`recommendations`（≤3 条）、`risk_level`、`quality_score`（有效初始 +1）。
+- 无效反馈：对已有案例 `quality_score -2`；降到 `≤ -2` 时置 `retired`，之后不再被检索（阶段 1 不复活）。案例尚未沉淀时无效反馈是 no-op。
+- 失败降级：沉淀/降分失败只记 Warn，不影响反馈接口响应；不写案例原文到日志。
+
+#### 10.14.2 检索与注入
+
+- 触发：`POST .../messages` 在调用模型前检索；`POST /api/ai/analyze-alert` 在组装 payload 时检索。
+- 匹配优先级（`match_rank`）：`alert_signature` 精确命中 3 → `application_id` 或 `resource_id` 命中 2 → 关键词全文命中 1；同分按 `quality_score`、`updated_at` 倒序。
+- `alert_signature` = `alert_name + metric + 维度哈希`（名称/指标小写，维度按 key 排序后取 sha1 前 8 字节），同类告警可稳定命中。
+- 关键词由摘要、建议、告警名、资源类型切词去重生成（PostgreSQL `simple` 分词，`to_tsvector(...) @@ plainto_tsquery(...)`）。
+- 上限：单次最多注入 `3` 条；每条摘要 ≤500 runes；建议 ≤3 条。
+- 跨用户隔离：检索条件强制 `user_id = 当前用户` 且 `status = active`，A 用户案例不会出现在 B 用户回答中。
+
+#### 10.14.3 回答侧表现
+
+- 对话 prompt 追加 `memory_cases`：`[{case_id, summary, recommendations, risk_level}]`；system prompt 增加约束「记忆仅作参考证据、引用需标注 `case_id`、不得照搬结论」。
+- `answer.references` 新增 `{ "type": "memory_case", "id": "<case_id>", "label": "历史案例：<摘要摘要>" }`（无 `url`）。
+- 分析接口 provider payload 新增 `similar_cases`（与 `evidence` 平级），`include_metrics` 与否无关。
+- 审计：`chat_message` 与 `analyze_alert` 的 payload 新增 `memory_used`（注入条数）与 `memory_status`；
+  - `ok`：命中并注入；`empty`：无匹配；`error`：检索失败已降级；`skipped`：记忆能力未装配。
+  - 审计不含案例摘要或任何原文。
+
+#### 10.14.4 降级与边界
+
+| 场景 | 行为 |
+| --- | --- |
+| 记忆表为空 / 无匹配 | 正常回答，`references` 不含 `memory_case`，`memory_status=empty` |
+| 检索失败 | 跳过注入，回答主链路不变，`memory_status=error` |
+| 记忆能力未装配 | 行为与接入前一致，`memory_status=skipped` |
+| 告警指纹读取失败（越权/已删除） | 案例仍可沉淀，只是不带 `alert_signature` |
+| 记忆条目 retired | 不参与检索 |
+
+- 存储：`ai_memory_case`（migration `0051`），业务 ID 为 `case_id`，不暴露自增 `id`；时间戳由 Go 维护，无外键。
+- 记忆只影响证据与建议质量，不改变权限判断，也不会产生执行动作。
+
+### 10.15 知识沉淀（阶段 2）
+
+把「反馈有效」的经验沉淀为经人工审核的知识条目，生效后按 scope 注入回答的 system prompt 附加段。设计背景见 `docs/ai-assistant-memory-roadmap.md` §5。
+
+#### 10.15.1 条目模型
+
+| 字段 | 说明 |
+| --- | --- |
+| `item_id` | 业务 ID，对外使用（references 与审计引用它） |
+| `scope` | `global` / `application` / `resource_type` |
+| `scope_ref` | 范围值；`global` 必须为空，其它范围必填 |
+| `title` / `content` | 标题（≤120 runes）/ 内容（≤2000 runes）；不含凭据与告警正文 |
+| `origin` | `manual`（人工录入）/ `feedback_aggregate`（反馈聚合生成） |
+| `status` | `draft` / `active` / `disabled`；**只有 active 会注入** |
+| `hit_count` | 注入次数 |
+| `useful_count` | 注入后获得 `valid` 反馈的次数 |
+| `reviewed_by` / `reviewed_at` | 最近审核人与时间 |
+
+存储：`ai_knowledge_item`（migration `0052`），业务 ID 唯一、时间戳由 Go 维护、无外键。
+
+#### 10.15.2 管理接口（鉴权 `app:ai:knowledge:manage`，仅 admin 种子绑定）
+
+| Method | Path | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/ai/knowledge/items?status=&scope=&limit=&offset=` | 列表，返回 `{ items: [...] }`；`limit` 1–100，默认 20 |
+| `POST` | `/api/ai/knowledge/items` | 新建（总是 `draft`，`origin=manual`） |
+| `PUT` | `/api/ai/knowledge/items/:item_id` | 编辑内容/范围；**编辑 active 条目会回到 draft 并清空审核人** |
+| `POST` | `/api/ai/knowledge/items/:item_id/review` | `{ "action": "activate" \| "disable" }` |
+| `DELETE` | `/api/ai/knowledge/items/:item_id` | 删除；重复删除 404 |
+| `POST` | `/api/ai/knowledge/aggregate` | 反馈聚合：`{ application_id, min_cases? }` → 生成/更新 draft，不覆盖 active |
+
+- 审计：新建/编辑 `action=knowledge_edit`；审核/停用/删除/自动停用 `action=knowledge_review`（payload 含 `action` 与 `status`）。
+- 校验失败返回 400，条目不存在返回 404；`app:ai:knowledge` 权限缺失返回 403。
+- 未注入授权适配器（无 RBAC）的环境**不注册**知识管理路由，避免审核动作失去鉴权。
+
+#### 10.15.3 注入规则
+
+- 取数：`status=active` 且 `scope` 命中当前会话上下文（`global` 恒命中；`application` 比对 `context.application_id`；`resource_type` 比对 `context.resource_type`，上下文缺失时回落到告警快照字段）。
+- 排序与上限：按 `hit_count` 倒序、`updated_at` 倒序；最多 **5** 条，标题+内容累计 ≤ **3000 runes**（超长条目跳过，不截断内容）。
+- 注入形态：追加到 system prompt 末尾的「知识沉淀」段落，**固定安全约束段落保持在前**；同时写入 `answer.references`：`{ "type": "knowledge_item", "id": "<item_id>", "label": "<title>" }`（无 `url`）。
+- 命中统计：回答落库后 `hit_count + 1`；用户对含该条目的回答提交 `valid` → `useful_count + 1`。
+- 自动停用：`hit_count ≥ 5` 且 `useful_count == 0` 的 active 条目自动转 `disabled`，写 `knowledge_review` 审计（`action=auto_disable`），立即停止注入。
+- 审计：`chat_message` payload 新增 `knowledge_used`（条数）与 `knowledge_status`（`ok/empty/error/skipped`），不含条目正文。
+
+#### 10.15.4 降级与边界
+
+| 场景 | 行为 |
+| --- | --- |
+| 无生效条目 / 范围不匹配 | 不注入，`knowledge_status=empty` |
+| 取数失败 | 跳过注入，回答主链路不变，`knowledge_status=error` |
+| 未装配知识能力 | 行为与接入前一致，`knowledge_status=skipped` |
+| draft / disabled 条目 | 永不注入，也不产生 references |
+| 条目内容含敏感信息 | 由录入/审核人负责；服务端只做长度与空白裁剪，注入前不做二次改写 |
+
+- 知识只影响建议质量，不改变权限判断、`actions` 生成或执行链路。
+- 反馈聚合（`POST /api/ai/knowledge/aggregate`）：
+  - 来源是该用户在某应用下 `status=active` 的记忆案例（§10.14），`min_cases` 默认 3、上限 20；案例不足不生成草稿（`action=insufficient_cases`）。
+  - 生成条目 `scope=application`、`scope_ref=application_id`、`origin=feedback_aggregate`、`status=draft`、`item_id=agg-<application_id>`（固定，保证同应用重复聚合同一条目）。
+  - 幂等与保护：草稿/停用条目被**更新**（`action=updated`）；已 `active` 的条目**不被机器覆盖**（`action=skipped_active`），需人工先停用再聚合。
+  - 聚合只读记忆案例、只写草稿条目，不改变回答链路；管理页签见「系统管理 / AI 配置 → 知识沉淀」。
+
+### 10.16 受限 Agent Loop（阶段 3）
+
+模型在单次回答内可申请追加**只读**工具取数，服务端在预算内多轮执行后收敛。设计背景见 `docs/ai-assistant-memory-roadmap.md` §6。
+
+#### 10.16.1 编排形态
+
+```text
+第 0 轮：服务端常规取数（告警快照 + 指标证据，与 §10.3 一致）
+  -> 模型输出结构化 answer，或输出 tool_requests 申请追加只读数据
+  -> 服务端逐个校验 RBAC + 工具权限并执行，结果作为 observations 追加
+  -> 下一轮模型调用（携带全部 observations）
+  -> 轮数/token 预算耗尽仍无 answer：返回 degraded(agent_loop_exhausted)
+```
+
+#### 10.16.2 硬约束
+
+| 控制点 | 要求 |
+| --- | --- |
+| 工具白名单 | 仅 `alarm.analyze` 与 `metrics.query` 可被申请；其它工具（含 `execution.tasks.propose` / `dispatch` / `command.run`）一律拒绝并记 `allowed=false`、`reason=tool is not allowed in agent loop` |
+| 权限 | 每轮每个工具独立过 RBAC + 工具权限（与首轮同一套校验），`allowed=false` 时把原因反馈给模型而不中断 |
+| 预算 | 追加轮数 ≤ **3**；累计 token ≥ **20000** 即终止；单轮最多受理 **3** 个申请（同轮同名工具去重） |
+| 收敛 | 连续两轮「申请了但一个工具都没真正执行」才终止，给模型一次看到拒绝原因后自我纠正的机会 |
+| 审计 | 每轮工具调用写 `tool_invoke`（与现状同结构）；`chat_message` 新增 `loop_rounds`（实际追加轮数） |
+| 契约 | 接口仍同步返回；`tool_calls` 数组容纳多轮调用记录；流式与取消见 §10.17 |
+| 执行边界 | 循环内不存在任何执行类工具调用；`actions` 仍只由服务端按权限生成 |
+
+#### 10.16.3 降级语义
+
+| 场景 | 行为 |
+| --- | --- |
+| 轮数或 token 预算耗尽 | `status=degraded`、`degraded_reason=agent_loop_exhausted`，保留已获取的 observations 作为证据 |
+| 连续两轮无实际取数 | 同上（`agent_loop_exhausted`） |
+| 模型输出既非 answer 也非 tool_requests | `degraded_reason=model_output_invalid`（与 §10.6.1 一致） |
+| 工具被拒绝 | 回答仍正常返回；拒绝原因在 `tool_calls[].reason` 与审计中可见 |
+| 未装配知识/记忆 | 循环本身不受影响 |
+
+- 提示词约束：system prompt 明确「只在现有只读观测不足时申请，工具仅限 `metrics.query` 与 `alarm.analyze`、最多 3 轮、不得申请执行类工具」。
+- 前端无需改动：多轮调用会自然出现在 `tool_calls`；`loop_rounds` 仅用于审计与排查。
+- 循环只影响取数与证据丰富度，不改变权限判断、`actions` 生成或执行链路。
+
+### 10.17 流式对话（SSE）与取消语义
+
+同步接口 §10.6 保留不变；另提供流式接口。回答是结构化 JSON（summary/actions/references），token 级流式对渲染没有价值，因此按**事件级**推送：阶段、工具观测、最终回答与错误分别下发。
+
+#### 10.17.1 接口
+
+- Method: `POST`
+- Path: `/api/ai/chat/sessions/:session_id/messages/stream`
+- 鉴权：是（`app:ai:chat`），会话归属与归档校验与同步接口一致
+- 请求体：与 §10.6 完全一致（`content` / `context` / `client_message_id`）
+- 响应头：
+  - `Content-Type: text/event-stream; charset=utf-8`
+  - `Cache-Control: no-cache`
+  - `Connection: keep-alive`
+  - `X-Accel-Buffering: no`（禁用反向代理缓冲）
+- 事件格式：每条 `data: <json>\n\n`，写入后立即 `Flush()`。
+
+#### 10.17.2 事件类型
+
+| `type` | 字段 | 说明 |
+| --- | --- | --- |
+| `stage` | `stage`: `gathering` / `thinking` / `answering` | 编排阶段：取数与权限校验 → 模型调用 → 组装回答 |
+| `tool` | `tool`: `{tool_code, allowed, status, reason?, summary?}` | 一次工具校验/执行摘要，与 `tool_calls` 同源；不含 prompt、凭据与告警正文 |
+| `answer` | `result`: 与 §10.6 响应 `data` 同构 | 最终结构化回答；收到即表示本轮结束 |
+| `error` | `code` / `message` | 业务错误；此时 HTTP 状态已是 200 |
+
+正常顺序：`gathering` → `tool`* → `thinking` → `tool`*（Agent Loop 追加轮）→ `answering` → `answer`。任一事件都可能因取消或错误提前结束。
+
+#### 10.17.3 状态码与错误
+
+- 请求体非法（缺 `content`、JSON 解析失败）：在写 SSE 头之前返回 400，不产生任何事件。
+- 401（未认证）与 403（RBAC/数据权限）发生在中间件或鉴权阶段，仍返回普通 JSON 错误，不进入 SSE。
+- 一旦开始写 SSE（HTTP 200），后续业务错误（会话不存在、归档、幂等冲突、内部错误）统一转 `error` 事件，`code` 为业务错误码（如 `FAILED_PRECONDITION` / `NOT_FOUND` / `INTERNAL`）。
+- 客户端应把「流结束但既无 `answer` 也无 `error`」视为连接中断。
+
+#### 10.17.4 取消语义
+
+- 触发：客户端断开（HTTP ctx 取消）或事件写入失败。
+- 服务端在四个检查点响应取消：`before_gather`（取数前）、`before_model`（模型调用前）、`before_persist`（模型返回后、落库前）、`before_answer`（推送 `answering` 前）。
+- 取消后**不写 assistant 消息**；已落库的用户消息保留，不回滚、不删除。
+- 取消写审计：`action=chat_canceled`，payload 含 `session_id` / `user_message_id` / `phase` / `result=canceled`。
+- 取消不是业务失败：不生成 `degraded` 回答，也不触发模型降级重试。
+- 客户端取消后不要用同一 `client_message_id` 立即重试并期待重放：用户消息已存在但无回答，服务端按 §10.6.5 返回 409。
+
+#### 10.17.5 幂等与重放
+
+- 与同步接口共享同一 `client_message_id` 幂等键。
+- 命中已有回答：先推 `gathering`，再直接推一条 `answer` 事件（内容与同步接口首次结果一致），不再调用模型、不再落消息；审计 `chat_message` 带 `replayed=true`。
+- 命中「用户消息已落库、回答缺失」：推 `error` 事件（`FAILED_PRECONDITION`），与同步接口的 409 语义一致。
+
+#### 10.17.6 前端接入约定
+
+- 使用 `fetch` + `ReadableStream` 读取，不用 `EventSource`（需要 POST 与 Bearer 头）；实现见 `web/src/api/sse.ts` 与 `web/src/api/ai.ts` 的 `streamChatMessage`。
+- `stage` 事件驱动阶段提示，`tool` 事件用于即时展示工具校验结果，`answer.result` 走与同步接口相同的渲染与 `actions` 权限判断。
+- 发送中允许「停止生成」：`AbortController.abort()` 中断读取；服务端按 §10.17.4 不落回答。停止后应回读会话，避免本地乐观消息与服务端不一致。
+
+### 10.18 会话只读分享
+
+会话默认按 `user_id` 隔离（§10.10）。分享提供**对内只读**链接：仅平台内已登录且具备 `app:ai:chat` 的用户可打开；**不提供匿名/对外公开访问**。
+
+#### 10.18.1 设计约束
+
+- token：32 字节随机（base64url），服务端只存 SHA-256；明文只在创建响应返回一次，之后无法再取回。
+- 有效期：允许 1–720 小时；缺省 168（7 天）；过期后访问按不可用处理。
+- 单会话最多 **10** 条同时有效（未撤销、未过期）的链接，超出返回 409。
+- owner 可随时撤销；撤销幂等；会话删除后其分享链接一并失效。
+- 分享视图**只读**：不提供发消息、反馈、归档/删除、生成执行计划；共享页会禁用反馈与动作按钮。
+- 审计：`chat_share_create` / `chat_share_revoke` / `chat_share_view`，payload 只含 `session_id` / `share_id` / `result`，**不含 token、消息正文或回答内容**。
+- 日志：访问日志与内部错误日志把 `/api/ai/chat/shares/<token>` 脱敏为 `/api/ai/chat/shares/<redacted>`（`pkg/transport/http.RedactSensitivePath`），token 不进入任何日志。
+- 分享不改变数据范围与权限判断：能打开链接的充要条件是「已登录 + `app:ai:chat`」，不额外做对象级数据范围过滤（会话不是告警类资源）。
+
+#### 10.18.2 创建分享
+
+- Method: `POST`
+- Path: `/api/ai/chat/sessions/:session_id/shares`
+- 鉴权: 是（`app:ai:chat`，且必须是会话 owner）
+
+请求体（可选）：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `expires_in_hours` | int | 否 | 1–720；缺省 168（7 天） |
+
+响应 `data`：
+
+```json
+{
+  "share_id": "sh-...",
+  "session_id": "9b0f...",
+  "status": "active",
+  "expires_at": "2026-01-09T03:04:05Z",
+  "created_at": "2026-01-02T03:04:05Z",
+  "token": "<一次性明文 token>",
+  "share_url": "/ai-assistant/shared/<token>"
+}
+```
+
+错误：非 owner → 403 `PERMISSION_DENIED`；`expires_in_hours` 越界 → 400；有效链接已达上限 → 409 `FAILED_PRECONDITION`；未装配分享能力 → 503 `UNAVAILABLE`。
+
+#### 10.18.3 分享列表
+
+- Method: `GET`
+- Path: `/api/ai/chat/sessions/:session_id/shares`
+- 鉴权: 是（`app:ai:chat`，owner）
+
+响应 `data`：`{ "shares": [ { share_id, session_id, status, expires_at, created_at } ] }`，含已撤销/已过期记录，按创建时间倒序；不返回 token 或哈希。
+
+#### 10.18.4 撤销分享
+
+- Method: `DELETE`
+- Path: `/api/ai/chat/sessions/:session_id/shares/:share_id`
+- 鉴权: 是（`app:ai:chat`，owner）
+
+响应 `data`：更新后的分享视图（`status=revoked`）。已撤销时幂等返回当前视图；分享不属于该会话或不存在 → 404 `NOT_FOUND`。
+
+#### 10.18.5 访问分享（只读）
+
+- Method: `GET`
+- Path: `/api/ai/chat/shares/:token`
+- 鉴权: 是（`app:ai:chat`，任意具备该权限的登录用户）
+
+响应 `data`：与 §10.5 相同的 `{ session, messages[] }` 结构；消息中的结构化 `answer` 正常解析。
+
+- 过期、已撤销、token 不存在、会话已删除：**统一返回 404 `NOT_FOUND`**，避免探测链接是否存在过。
+- 每次成功访问写 `chat_share_view` 审计（按访问者 `user_id` 记录）。
+
+#### 10.18.6 前端接入
+
+- 会话列表的「分享」打开弹窗：选择 1 / 7 / 30 天，生成后展示完整链接并支持复制；历史分享可撤销。
+- 共享页路由 `/ai-assistant/shared/:token`：只读渲染，顶部提示不可提问/反馈/执行；加载失败展示「链接不可用」。
+- 前端不持久化 token；链接只在弹窗内展示，关闭后需重新生成。

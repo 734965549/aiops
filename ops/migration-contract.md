@@ -64,6 +64,10 @@
 0047_alert_source_pull_state.up.sql                  -> Alert：幂等补齐 alert_source.delivery_mode 与 sync_state（不改写已发布的 0046）；时间戳仍由 Go 维护
 0048_ai_provider.up.sql                              -> AI：ai_provider（provider_id 唯一、type/base_url/model/api_key_encrypted/headers/timeout_ms/enabled）；凭据仅存 AES-GCM 密文；时间戳由 Go 维护
 0049_ai_session.up.sql                               -> AI：ai_session / ai_session_message（会话与消息，session_id / message_id 业务唯一）；种子 app:ai:chat、app:ai:chat:feedback 并绑定 admin；时间戳由 Go 维护
+0050_ai_session_message_idempotency.up.sql            -> AI：ai_session_message.client_message_id + (session_id, client_message_id) 部分唯一索引（空串不参与），支撑消息幂等重试；幂等补齐，不改写 0049
+0051_ai_memory_case.up.sql                           -> AI：ai_memory_case（相似案例记忆，case_id 业务唯一；(user_id, source_message_id) 部分唯一索引保证反馈幂等；签名/关键词 GIN 索引支撑检索）；时间戳由 Go 维护
+0052_ai_knowledge_item.up.sql                         -> AI：ai_knowledge_item（知识沉淀：item_id 业务唯一、scope/scope_ref、draft/active/disabled、hit/useful 计数）；种子 app:ai:knowledge:manage 并绑定 admin；时间戳由 Go 维护
+0053_ai_session_share.up.sql                          -> AI：ai_session_share（会话只读分享：share_id 业务唯一、token_hash 唯一、status、expires_at；只存 token 哈希，无新权限种子）；时间戳由 Go 维护
 ```
 
 | 职责 | 0001 / 0002 / 0016 迁移 | 启动期 bootstrap（`cmd/api`） |
@@ -304,6 +308,10 @@ Integration 上下文第一阶段迁移，建表：
 | `0047` | `0047_alert_source_pull_state.up.sql` | Alert | 幂等补齐 `alert_source.delivery_mode` 与 `sync_state`（`ADD COLUMN IF NOT EXISTS`）；用于兼容已应用早期 0046 的环境，遵守“不改写已发布迁移”的规则；时间戳仍由 Go 维护；`down.sql` 仅删除这两列（人工回滚参考） | 已落地 |
 | `0048` | `0048_ai_provider.up.sql` | AI | 新建 `ai_provider`：`provider_id` 唯一业务标识、`type` / `base_url` / `model` / `api_key_encrypted`（BYTEA 密文）/ `headers` JSONB / `timeout_ms` / `enabled` / `description`；`created_at` / `updated_at` 由 Go 维护、无 DB DEFAULT、无外键；`CREATE TABLE/INDEX IF NOT EXISTS` 幂等；`down.sql` 删除表（人工回滚参考） | 已落地 |
 | `0049` | `0049_ai_session.up.sql` | AI | 新建 `ai_session`（`session_id` 唯一、`user_id`、`title`、`context_json`、`status`）与 `ai_session_message`（`message_id` 唯一、`session_id`、`role`、`content`、`tool_calls_json`、`references_json`、`feedback`）；助手消息 `content` 保存结构化回答 JSON；无外键，按 `session_id` 索引与事务保证一致性；种子 `app:ai:chat`、`app:ai:chat:feedback` 并绑定 `admin`；`down.sql` 删除表与权限（人工回滚参考） | 已落地 |
+| `0050` | `0050_ai_session_message_idempotency.up.sql` | AI | `ai_session_message` 增加 `client_message_id`（默认空串）与部分唯一索引 `uq_ai_session_message_client (session_id, client_message_id) WHERE client_message_id <> ''`，支撑对话超时重试幂等（契约 §10.6.5）；空串（助手消息、历史数据）不参与唯一约束；`ADD COLUMN IF NOT EXISTS` + `CREATE UNIQUE INDEX IF NOT EXISTS` 幂等，不改写已发布的 `0049`；`down.sql` 删除索引与列（人工回滚参考） | 已落地 |
+| `0051` | `0051_ai_memory_case.up.sql` | AI | 新建 `ai_memory_case`（相似案例记忆阶段 1）：`case_id` 业务唯一、`source_type/source_message_id/session_id/user_id`、应用/资源上下文、`alert_signature`、`keywords`、`summary`、`recommendations`、`risk_level`、`quality_score`、`status`；`(user_id, source_message_id)` 部分唯一索引保证反馈幂等；签名索引 + `to_tsvector('simple', keywords)` GIN 索引支撑检索；无外键、时间戳由 Go 维护；`down.sql` 删除表（人工回滚参考） | 已落地 |
+| `0052` | `0052_ai_knowledge_item.up.sql` | AI | 新建 `ai_knowledge_item`（知识沉淀阶段 2）：`item_id` 业务唯一、`scope`（global/application/resource_type）+ `scope_ref`、`title`/`content`、`origin`（feedback_aggregate/manual）、`status`（draft/active/disabled）、`hit_count`/`useful_count`、`reviewed_by`/`reviewed_at`、`created_by`；索引 `(status, scope, scope_ref, updated_at)`；种子权限 `app:ai:knowledge:manage` 并绑定 `admin`；无外键、时间戳由 Go 维护；`down.sql` 删除表与权限（人工回滚参考） | 已落地 |
+| `0053` | `0053_ai_session_share.up.sql` | AI | 新建 `ai_session_share`（会话只读分享，契约 §10.18）：`share_id` 业务唯一、`session_id`、`owner_user_id`、`token_hash` 唯一（只存 SHA-256）、`status`（active/revoked）、`expires_at`；索引 `(session_id, status)` 与 `(status, expires_at)`；无新权限种子（复用 `app:ai:chat`）、无外键、时间戳由 Go 维护；`down.sql` 删除表（人工回滚参考） | 已落地 |
 
 这些迁移必须同步种子化权限和 AI 工具权限，并把 admin 角色绑定到新增权限：
 

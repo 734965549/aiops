@@ -51,7 +51,7 @@ func Fail(c *gin.Context, err error) {
 			logger.String("error_code", string(e.Code)),
 			logger.Int("http_status", status),
 			logger.String("method", c.Request.Method),
-			logger.String("path", c.Request.URL.Path),
+			logger.String("path", RedactSensitivePath(c.Request.URL.Path)),
 			logger.Error(err),
 		)
 	}
