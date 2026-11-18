@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/734965549/aiops/internal/ai/domain"
 )
@@ -27,6 +28,12 @@ type MemoryCaseRepository interface {
 	Search(ctx context.Context, filter domain.MemoryCaseFilter) ([]domain.MemoryCase, error)
 	// ListForAggregation 返回某应用下该用户的高质量案例，供知识聚合使用。
 	ListForAggregation(ctx context.Context, userID, applicationID string, limit int) ([]domain.MemoryCase, error)
+	// List 是管理端列表：可按归属用户、状态与关键词检索，不受 active 限制。
+	List(ctx context.Context, filter domain.MemoryCaseListFilter) ([]domain.MemoryCase, error)
+	// Get 按业务 ID 读取单条案例；不存在返回 domain.ErrMemoryCaseNotFound。
+	Get(ctx context.Context, caseID string) (*domain.MemoryCase, error)
+	// UpdateStatus 只更新时间与状态，不改写案例内容。
+	UpdateStatus(ctx context.Context, caseID string, status domain.MemoryCaseStatus, updatedAt time.Time) error
 }
 
 // MemorySearchInput 是一次相似案例检索的输入。
@@ -56,6 +63,23 @@ type MemoryCaseStore interface {
 	RecordValidFeedback(ctx context.Context, session *domain.Session, message *domain.Message) error
 	// RecordInvalidFeedback 依据无效反馈降低已有案例质量分，必要时转 retired。
 	RecordInvalidFeedback(ctx context.Context, session *domain.Session, message *domain.Message) error
+}
+
+// MemoryCaseListInput 是管理端记忆列表的查询条件。
+type MemoryCaseListInput struct {
+	UserID        string
+	ApplicationID string
+	ResourceID    string
+	Status        string
+	Keyword       string
+	Limit         int
+	Offset        int
+}
+
+// MemoryAdminStore 是记忆管理侧用例端口（列表与手动启停）。
+type MemoryAdminStore interface {
+	ListCases(ctx context.Context, in MemoryCaseListInput) ([]domain.MemoryCase, error)
+	UpdateCaseStatus(ctx context.Context, actorID, caseID, status string) (*domain.MemoryCase, error)
 }
 
 // memoryKeywords 拼接检索词，保持顺序以便单测与日志可读。

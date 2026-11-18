@@ -68,6 +68,8 @@
 0051_ai_memory_case.up.sql                           -> AI：ai_memory_case（相似案例记忆，case_id 业务唯一；(user_id, source_message_id) 部分唯一索引保证反馈幂等；签名/关键词 GIN 索引支撑检索）；时间戳由 Go 维护
 0052_ai_knowledge_item.up.sql                         -> AI：ai_knowledge_item（知识沉淀：item_id 业务唯一、scope/scope_ref、draft/active/disabled、hit/useful 计数）；种子 app:ai:knowledge:manage 并绑定 admin；时间戳由 Go 维护
 0053_ai_session_share.up.sql                          -> AI：ai_session_share（会话只读分享：share_id 业务唯一、token_hash 唯一、status、expires_at；只存 token 哈希，无新权限种子）；时间戳由 Go 维护
+0054_ai_memory_manage_permission.up.sql              -> AI：种子 app:ai:memory:manage 并绑定 admin（记忆管理：检索/手动停用启用，契约 §10.19）；无表结构变更
+0055_ai_alert_rules_tool_permission.up.sql           -> AI：种子 AI 工具权限 alert.rules.list 并绑定 admin（规则体检 MVP，契约 §10.12.1）；无表结构变更
 ```
 
 | 职责 | 0001 / 0002 / 0016 迁移 | 启动期 bootstrap（`cmd/api`） |
@@ -312,6 +314,8 @@ Integration 上下文第一阶段迁移，建表：
 | `0051` | `0051_ai_memory_case.up.sql` | AI | 新建 `ai_memory_case`（相似案例记忆阶段 1）：`case_id` 业务唯一、`source_type/source_message_id/session_id/user_id`、应用/资源上下文、`alert_signature`、`keywords`、`summary`、`recommendations`、`risk_level`、`quality_score`、`status`；`(user_id, source_message_id)` 部分唯一索引保证反馈幂等；签名索引 + `to_tsvector('simple', keywords)` GIN 索引支撑检索；无外键、时间戳由 Go 维护；`down.sql` 删除表（人工回滚参考） | 已落地 |
 | `0052` | `0052_ai_knowledge_item.up.sql` | AI | 新建 `ai_knowledge_item`（知识沉淀阶段 2）：`item_id` 业务唯一、`scope`（global/application/resource_type）+ `scope_ref`、`title`/`content`、`origin`（feedback_aggregate/manual）、`status`（draft/active/disabled）、`hit_count`/`useful_count`、`reviewed_by`/`reviewed_at`、`created_by`；索引 `(status, scope, scope_ref, updated_at)`；种子权限 `app:ai:knowledge:manage` 并绑定 `admin`；无外键、时间戳由 Go 维护；`down.sql` 删除表与权限（人工回滚参考） | 已落地 |
 | `0053` | `0053_ai_session_share.up.sql` | AI | 新建 `ai_session_share`（会话只读分享，契约 §10.18）：`share_id` 业务唯一、`session_id`、`owner_user_id`、`token_hash` 唯一（只存 SHA-256）、`status`（active/revoked）、`expires_at`；索引 `(session_id, status)` 与 `(status, expires_at)`；无新权限种子（复用 `app:ai:chat`）、无外键、时间戳由 Go 维护；`down.sql` 删除表（人工回滚参考） | 已落地 |
+| `0054` | `0054_ai_memory_manage_permission.up.sql` | AI | 仅种子权限：`app:ai:memory:manage`（记忆管理：列表检索与手动停用/启用，契约 §10.19）并绑定内置 `admin`；无表结构变更；`ON CONFLICT` 幂等；`down.sql` 删除角色绑定与权限（人工回滚参考） | 已落地 |
+| `0055` | `0055_ai_alert_rules_tool_permission.up.sql` | AI | 仅种子 AI 工具权限：`alert.rules.list`（read_only，规则体检，契约 §10.12.1）并绑定内置 `admin`；写入 `iam_ai_tool_permission` + `iam_role_ai_tool_permission`；无表结构变更；`ON CONFLICT` 幂等；`down.sql` 删除绑定与权限（人工回滚参考） | 已落地 |
 
 这些迁移必须同步种子化权限和 AI 工具权限，并把 admin 角色绑定到新增权限：
 

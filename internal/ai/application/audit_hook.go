@@ -19,6 +19,8 @@ const (
 	AuditKnowledgeEdit AuditAction = "knowledge_edit"
 	// AuditKnowledgeReview 覆盖知识条目的审核激活/停用/删除与自动停用。
 	AuditKnowledgeReview AuditAction = "knowledge_review"
+	// AuditMemoryReview 覆盖记忆条目的手动停用与启用。
+	AuditMemoryReview AuditAction = "memory_review"
 	// AuditChatCanceled 覆盖流式对话被客户端取消（不落 assistant 消息）。
 	AuditChatCanceled AuditAction = "chat_canceled"
 	// AuditChatShareCreate 覆盖会话只读分享链接的创建（payload 不含 token）。

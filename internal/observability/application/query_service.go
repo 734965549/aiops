@@ -15,18 +15,20 @@ import (
 )
 
 const (
-	maxMetricWindowSec  = 7 * 24 * 3600 // 7d
-	minMetricPeriodSec  = 10
-	defaultMetricPeriod = 60
-	maxMetricPoints     = 1440
-	defaultLogLimit     = 100
-	maxLogLimit         = 500
-	defaultTraceLimit   = 50
-	maxTraceLimit       = 1000
-	defaultAssetLimit   = 100
-	maxAssetLimit       = 500
-	defaultAlertLimit   = 100
-	maxAlertLimit       = 500
+	maxMetricWindowSec     = 7 * 24 * 3600 // 7d
+	maxMetricLongWindowSec = 30 * 24 * 3600
+	metricDailyPeriodSec   = 24 * 3600
+	minMetricPeriodSec     = 10
+	defaultMetricPeriod    = 60
+	maxMetricPoints        = 1440
+	defaultLogLimit        = 100
+	maxLogLimit            = 500
+	defaultTraceLimit      = 50
+	maxTraceLimit          = 1000
+	defaultAssetLimit      = 100
+	maxAssetLimit          = 500
+	defaultAlertLimit      = 100
+	maxAlertLimit          = 500
 )
 
 // QueryService 统一编排观测查询：账号解析 -> 能力校验 -> Provider Port -> 证据引用 -> 审计。
@@ -465,16 +467,24 @@ func normalizeMetricQuery(q domain.MetricQuery) (domain.MetricQuery, error) {
 	if q.From <= 0 || q.To <= 0 || q.From >= q.To {
 		return domain.MetricQuery{}, apperr.New(apperr.CodeInvalidArgument, "invalid time range")
 	}
-	window := q.To - q.From
-	if window > maxMetricWindowSec {
-		return domain.MetricQuery{}, apperr.New(apperr.CodeInvalidArgument, "time range exceeds maximum 7 days")
-	}
 	period := q.Period
 	if period <= 0 {
 		period = defaultMetricPeriod
 	}
 	if period < minMetricPeriodSec {
 		return domain.MetricQuery{}, apperr.New(apperr.CodeInvalidArgument, "period below minimum 10 seconds")
+	}
+	window := q.To - q.From
+	if window > maxMetricWindowSec {
+		if !q.AllowLongWindow {
+			return domain.MetricQuery{}, apperr.New(apperr.CodeInvalidArgument, "time range exceeds maximum 7 days")
+		}
+		if period < metricDailyPeriodSec {
+			return domain.MetricQuery{}, apperr.New(apperr.CodeInvalidArgument, "time range exceeds 7 days; period must be at least 86400")
+		}
+		if window > maxMetricLongWindowSec {
+			return domain.MetricQuery{}, apperr.New(apperr.CodeInvalidArgument, "time range exceeds maximum 30 days")
+		}
 	}
 	points := window/int64(period) + 1
 	if points > maxMetricPoints {

@@ -267,7 +267,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 | `TopologyQueryPort` | `QueryTopology` | 服务拓扑（需账号声明 `topology` 能力） |
 | `AssetDiscoveryPort` | `ListResources` | 云资源发现（阶段 2 HTTP / Asset Sync 复用） |
 | `CloudFullSyncPort` | `ListAllResources` | 云资源全量同步发现（Asset Sync 专用，不受交互查询 `limit <= 500` 限制） |
-| `AlertRuleQueryPort` | `ListAlertRules` | 告警规则（阶段 2 Agent 工具复用） |
+| `AlertRuleQueryPort` | `ListAlertRules` | 告警规则（AI 规则体检复用）；返回含 `metric/operator/threshold/window_seconds` 可选字段 |
 
 账号解析依赖 `IntegrationAccountPort`（adapter 包装 Integration 仓储），QueryService 编排：能力校验 → Provider Port → `obs_evidence_ref` → 审计。
 
@@ -301,7 +301,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 }
 ```
 
-`period` 默认 60 秒，最小 10 秒；单次时间窗口最大 7 天，最多返回 1440 个点，超过限制返回 `INVALID_ARGUMENT`。`project_id` 可选；缺省时按账号或 `extra_config.region_projects` 的 region 映射解析。多项目账号建议显式传入，避免查询到错误项目导致空序列。
+`period` 默认 60 秒，最小 10 秒；HTTP 查询单次时间窗口最大 7 天，最多返回 1440 个点，超过限制返回 `INVALID_ARGUMENT`。AI 只读工具路径（`ops/ai-contract.md` §10.12.1）在 `period >= 86400` 的日聚合下允许最大 30 天窗口，仍受 1440 点上限约束。`project_id` 可选；缺省时按账号或 `extra_config.region_projects` 的 region 映射解析。多项目账号建议显式传入，避免查询到错误项目导致空序列。
 
 响应：
 

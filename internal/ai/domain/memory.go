@@ -6,12 +6,16 @@ package domain
 
 import (
 	"crypto/sha1"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 	"unicode"
 )
+
+// ErrMemoryCaseNotFound 表示记忆条目不存在。
+var ErrMemoryCaseNotFound = errors.New("ai memory case not found")
 
 // MemoryCaseSource 表示记忆条目的来源。
 type MemoryCaseSource string
@@ -94,6 +98,18 @@ type MemoryCaseFilter struct {
 	ResourceID     string
 	Keywords       string
 	Limit          int
+}
+
+// MemoryCaseListFilter 是管理端列表条件；与回答注入用的 MemoryCaseFilter 分开，
+// 管理端允许按归属用户与状态检索，不参与对话注入。
+type MemoryCaseListFilter struct {
+	UserID        string
+	ApplicationID string
+	ResourceID    string
+	Status        *MemoryCaseStatus
+	Keyword       string
+	Limit         int
+	Offset        int
 }
 
 // MatchPriority 返回检索优先级（越大越优先），与仓储 SQL 的 match_rank 一致。

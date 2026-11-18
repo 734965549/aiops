@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 type fakeMemoryRepo struct {
 	cases       []domain.MemoryCase
 	searchErr   error
+	listErr     error
 	createErr   error
 	updateErr   error
 	searchCalls int
@@ -94,6 +96,54 @@ func (f *fakeMemoryRepo) Search(_ context.Context, filter domain.MemoryCaseFilte
 		out = out[:filter.Limit]
 	}
 	return out, nil
+}
+
+// List 是管理端列表：按用户/状态/关键词过滤，返回所有匹配条目。
+func (f *fakeMemoryRepo) List(_ context.Context, filter domain.MemoryCaseListFilter) ([]domain.MemoryCase, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	out := make([]domain.MemoryCase, 0, len(f.cases))
+	for _, c := range f.cases {
+		if filter.UserID != "" && c.UserID != filter.UserID {
+			continue
+		}
+		if filter.ApplicationID != "" && c.ApplicationID != filter.ApplicationID {
+			continue
+		}
+		if filter.ResourceID != "" && c.ResourceID != filter.ResourceID {
+			continue
+		}
+		if filter.Status != nil && c.Status != *filter.Status {
+			continue
+		}
+		if filter.Keyword != "" && !strings.Contains(strings.ToLower(c.Summary+" "+c.Keywords), strings.ToLower(filter.Keyword)) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+func (f *fakeMemoryRepo) Get(_ context.Context, caseID string) (*domain.MemoryCase, error) {
+	for i := range f.cases {
+		if f.cases[i].CaseID == caseID {
+			copied := f.cases[i]
+			return &copied, nil
+		}
+	}
+	return nil, domain.ErrMemoryCaseNotFound
+}
+
+func (f *fakeMemoryRepo) UpdateStatus(_ context.Context, caseID string, status domain.MemoryCaseStatus, updatedAt time.Time) error {
+	for i := range f.cases {
+		if f.cases[i].CaseID == caseID {
+			f.cases[i].Status = status
+			f.cases[i].UpdatedAt = updatedAt
+			return nil
+		}
+	}
+	return domain.ErrMemoryCaseNotFound
 }
 
 func memoryTestSession() *domain.Session {

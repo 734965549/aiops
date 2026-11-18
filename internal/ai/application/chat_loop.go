@@ -3,9 +3,11 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/734965549/aiops/internal/ai/domain"
+	"github.com/734965549/aiops/internal/ai/toolgateway"
 	"github.com/734965549/aiops/pkg/logger"
 )
 
@@ -21,19 +23,17 @@ const (
 	chatDegradedLoopExhausted = "agent_loop_exhausted"
 )
 
-// loopAllowedTools 是模型只能在回合内申请的只读工具白名单。
+// loopAllowedTools 是模型只能在回合内申请的只读工具白名单（toolgateway 内置工具清单）。
 //
 // 执行类工具（execution.tasks.propose / dispatch / command.run）永不出现在白名单里：
 // 它们只能作为服务端生成的 actions 存在，不能由模型在循环中直接触发。
-var loopAllowedTools = map[string]struct{}{
-	chatToolAlarmAnalyze: {},
-	chatToolMetricsQuery: {},
-}
+var loopAllowedTools = toolgateway.BuiltinChatToolSet()
 
 // chatToolRequest 是模型申请的追加只读取数。
 type chatToolRequest struct {
-	ToolCode string `json:"tool_code"`
-	Reason   string `json:"reason,omitempty"`
+	ToolCode string         `json:"tool_code"`
+	Reason   string         `json:"reason,omitempty"`
+	Params   map[string]any `json:"params,omitempty"`
 }
 
 // chatToolRequestPayload 兼容「模型只申请工具、不产出 answer」的响应形态。
@@ -54,7 +54,7 @@ func parseChatToolRequests(content string) []chatToolRequest {
 		if code == "" {
 			continue
 		}
-		out = append(out, chatToolRequest{ToolCode: code, Reason: strings.TrimSpace(req.Reason)})
+		out = append(out, chatToolRequest{ToolCode: code, Reason: strings.TrimSpace(req.Reason), Params: req.Params})
 	}
 	return out
 }
@@ -184,7 +184,11 @@ func (s *ChatService) runLoopToolRequests(ctx context.Context, userID string, se
 				executed++
 			}
 		case chatToolMetricsQuery:
-			if s.refreshMetricObservation(ctx, userID, session, data) {
+			if s.refreshMetricObservation(ctx, userID, session, data, req.Params) {
+				executed++
+			}
+		case chatToolAlertRulesList:
+			if s.refreshAlertRulesObservation(ctx, userID, session, data, req.Params) {
 				executed++
 			}
 		}
@@ -221,19 +225,89 @@ func (s *ChatService) refreshAlertObservation(ctx context.Context, userID string
 }
 
 // refreshMetricObservation 重新采集指标证据（内部含工具权限校验）。
-func (s *ChatService) refreshMetricObservation(ctx context.Context, userID string, session *domain.Session, data *chatContextData) bool {
-	metricObs, evidence := s.collectMetricObservation(ctx, userID, data.Alert)
-	if metricObs == nil {
-		// 无可推导的查询条件：记录一条跳过观测，避免模型反复申请。
-		s.appendToolResult(ctx, userID, session.SessionID, "", data, ChatObservation{
-			ToolCode: chatToolMetricsQuery, Status: "skipped", Reason: "no metric query context",
-		})
+// refreshMetricObservation 按模型参数（缺省回退告警推导）重新采集指标证据。
+func (s *ChatService) refreshMetricObservation(ctx context.Context, userID string, session *domain.Session, data *chatContextData, params map[string]any) bool {
+	obs := s.checkTool(ctx, userID, chatToolMetricsQuery)
+	if !obs.Allowed {
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
 		return false
 	}
+	query, status, reason := buildMetricEvidenceQuery(data.Alert, params, s.now().Unix())
+	if status != "" {
+		obs.Status = status
+		obs.Reason = reason
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	metricObs, evidence := s.executeMetricObservation(ctx, userID, query)
+	if metricObs == nil {
+		obs.Status = "skipped"
+		obs.Reason = "metric evidence collector is not configured"
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	metricObs.Mode = obs.Mode
 	s.appendToolResult(ctx, userID, session.SessionID, "", data, *metricObs)
-	if evidence == nil || !metricObs.Allowed {
+	if evidence == nil || metricObs.Status != EvidenceStatusOK {
 		return false
 	}
 	data.Evidence = evidence
+	appendMetricEvidenceReferences(data, evidence)
 	return true
+}
+
+// refreshAlertRulesObservation 查询告警规则（规则体检）。
+func (s *ChatService) refreshAlertRulesObservation(ctx context.Context, userID string, session *domain.Session, data *chatContextData, params map[string]any) bool {
+	obs := s.checkTool(ctx, userID, chatToolAlertRulesList)
+	if !obs.Allowed {
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	if s.alertRules == nil {
+		obs.Status = "skipped"
+		obs.Reason = "alert rule query is not configured"
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	query, status, reason := buildAlertRuleQuery(data.Alert, params)
+	if status != "" {
+		obs.Status = status
+		obs.Reason = reason
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	result, err := s.alertRules.List(ctx, userID, query)
+	if err != nil {
+		logger.From(ctx).Warn("ai chat alert rules query failed", logger.Error(err))
+		obs.Status = EvidenceStatusError
+		obs.Reason = "alert rules query failed"
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	if result == nil {
+		obs.Status = EvidenceStatusError
+		obs.Reason = "empty alert rule result"
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	obs.Status = result.Status
+	if obs.Status == "" {
+		obs.Status = EvidenceStatusOK
+	}
+	obs.Reason = result.Reason
+	obs.EvidenceID = result.EvidenceID
+	if obs.Status == EvidenceStatusOK {
+		rules := capAlertRulesForObservation(result.Rules)
+		obs.Summary = fmt.Sprintf("告警规则 %d 条（%s）", len(rules), query.Namespace)
+		obs.Data = map[string]any{
+			"namespace": query.Namespace, "rule_count": len(rules),
+			"evidence_id": result.EvidenceID, "rules": rules,
+		}
+		appendRuleEvidenceReference(data, result.EvidenceID)
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return true
+	}
+	obs.Summary = "告警规则查询 " + obs.Status
+	s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+	return false
 }

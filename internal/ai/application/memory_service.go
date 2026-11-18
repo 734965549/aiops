@@ -18,11 +18,20 @@ import (
 type MemoryService struct {
 	repo   MemoryCaseRepository
 	alerts AlertReader
+	audit  AuditRecorder
 	now    func() time.Time
 }
 
 func NewMemoryService(repo MemoryCaseRepository, alerts AlertReader) *MemoryService {
 	return &MemoryService{repo: repo, alerts: alerts, now: time.Now}
+}
+
+// SetAudit 注入审计记录器（管理端手动启停需要审计）。
+func (s *MemoryService) SetAudit(rec AuditRecorder) {
+	if s == nil || rec == nil {
+		return
+	}
+	s.audit = rec
 }
 
 var _ MemoryCaseStore = (*MemoryService)(nil)

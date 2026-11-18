@@ -75,13 +75,19 @@ type CloudResource struct {
 
 // AlertRule 告警规则摘要。
 type AlertRule struct {
-	RuleID      string            `json:"rule_id"`
-	Name        string            `json:"name"`
-	Namespace   string            `json:"namespace,omitempty"`
-	Severity    string            `json:"severity,omitempty"`
-	Enabled     bool              `json:"enabled"`
-	Description string            `json:"description,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
+	RuleID      string `json:"rule_id"`
+	Name        string `json:"name"`
+	Namespace   string `json:"namespace,omitempty"`
+	Severity    string `json:"severity,omitempty"`
+	Enabled     bool   `json:"enabled"`
+	Description string `json:"description,omitempty"`
+	// Metric / Operator / Threshold / WindowSeconds 为可选阈值字段，
+	// 供 AI 规则体检判断阈值合理性；provider 不提供时省略。
+	Metric        string            `json:"metric,omitempty"`
+	Operator      string            `json:"operator,omitempty"`
+	Threshold     *float64          `json:"threshold,omitempty"`
+	WindowSeconds int               `json:"window_seconds,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
 }
 
 // EvidenceRef 查询证据引用，供巡检与 AI 分析复用。

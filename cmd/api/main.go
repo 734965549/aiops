@@ -363,13 +363,21 @@ func main() {
 	obsHandler := obshttp.NewHandler(obsQuerySvc)
 
 	// AnalyzeService 早于 Observability 构造，用 setter 注入只读指标证据端口。
+	aiAccountAccess := aiidentity.NewAccountAccessAuthorizer(authorizationSvc)
 	aiEvidenceCollector := aiobs.NewCollectorAdapter(
 		obsQuerySvc,
 		obsAccountAdapter,
-		aiidentity.NewAccountAccessAuthorizer(authorizationSvc),
+		aiAccountAccess,
 		app.Cfg.AI.EvidenceTimeout(),
 	)
 	analyzeSvc.SetMetricEvidence(aiEvidenceCollector)
+	// 规则体检 MVP：告警规则只读查询走同一账号数据范围预检。
+	aiRulesCollector := aiobs.NewAlertRulesCollector(
+		obsQuerySvc,
+		obsAccountAdapter,
+		aiAccountAccess,
+		app.Cfg.AI.EvidenceTimeout(),
+	)
 
 	// ---- 装配 AI 运维助手（会话 + 对话编排，流程图 §16）----
 	// 对话复用工具网关做权限校验、告警读取做快照、观测取数做指标证据，
@@ -383,10 +391,12 @@ func main() {
 		aiEvidenceCollector,
 		aiAuditRecorder,
 	)
+	aiChatSvc.SetAlertRules(aiRulesCollector)
 	// 相似案例记忆（阶段 1）：反馈沉淀 + 对话/分析前检索注入。
 	// 检索失败只降级（memory_status=error），不阻断回答主链路。
 	aiMemoryRepo := aipg.NewMemoryCaseRepository(app.DB)
 	aiMemorySvc := aiapp.NewMemoryService(aiMemoryRepo, alertReader)
+	aiMemorySvc.SetAudit(aiAuditRecorder)
 	aiChatSvc.SetMemory(aiMemorySvc)
 	analyzeSvc.SetMemory(aiMemorySvc)
 	// 会话只读分享（§10.18）：token 只存哈希，访问者需登录 + app:ai:chat。
@@ -398,6 +408,8 @@ func main() {
 	aiKnowledgeSvc.SetMemorySource(aiMemoryRepo)
 	aiChatSvc.SetKnowledge(aiKnowledgeSvc)
 	aiKnowledgeHandler := aihttp.NewKnowledgeHandler(aiKnowledgeSvc)
+	// 记忆管理（§10.19）：管理员检索案例并手动停用/启用；回答检索仍按归属用户隔离。
+	aiMemoryHandler := aihttp.NewMemoryHandler(aiMemorySvc)
 
 	// ---- 装配 CES 告警拉取（Alert 端口 -> Observability 适配 -> 共享租约）----
 	alertSyncLeaseRepo := alertpg.NewAlertSyncLeaseRepository(app.DB)
@@ -465,7 +477,7 @@ func main() {
 
 	registrars := []server.RouteRegistrar{
 		identityhttp.NewRegistrar(identityHandler, authorizationSvc),
-		aihttp.NewRegistrar(aiHandler, aiChatHandler, aiKnowledgeHandler, authorizationSvc),
+		aihttp.NewRegistrar(aiHandler, aiChatHandler, aiKnowledgeHandler, aiMemoryHandler, authorizationSvc),
 		assethttp.NewRegistrar(assetHandler, authorizationSvc),
 		audithttp.NewRegistrar(auditHandler, authorizationSvc),
 		alerthttp.NewRegistrar(alertHandler, alertIngestHandler, authorizationSvc),

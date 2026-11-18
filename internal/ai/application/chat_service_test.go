@@ -238,7 +238,8 @@ func (f *fakeChatToolGateway) Validate(_ context.Context, req toolgateway.ToolRe
 
 func allowAllChatTools() *fakeChatToolGateway {
 	return &fakeChatToolGateway{allowed: map[string]bool{
-		chatToolAlarmAnalyze: true, chatToolMetricsQuery: true, chatToolExecutionPropose: true,
+		chatToolAlarmAnalyze: true, chatToolMetricsQuery: true, chatToolAlertRulesList: true,
+		chatToolExecutionPropose: true,
 	}}
 }
 
@@ -1336,6 +1337,195 @@ func TestSendMessageAgentLoopStopsAfterOneRetryWithoutProgress(t *testing.T) {
 	if chat.calls != 2 {
 		t.Fatalf("expected two model calls (one retry after denial), got %d", chat.calls)
 	}
+}
+
+type fakeAlertRuleListPort struct {
+	got    AlertRuleQuery
+	userID string
+	result *AlertRuleListResult
+	err    error
+	calls  int
+}
+
+func (f *fakeAlertRuleListPort) List(_ context.Context, userID string, q AlertRuleQuery) (*AlertRuleListResult, error) {
+	f.got = q
+	f.userID = userID
+	f.calls++
+	return f.result, f.err
+}
+
+func TestSendMessageAgentLoopUsesFreeMetricParams(t *testing.T) {
+	svc, repo, _, chat, audit, evidence := newChatTestService(t)
+	chat.script = []string{
+		`{"tool_requests":[{"tool_code":"metrics.query","reason":"自由参数","params":{"namespace":"SYS.RDS","metric":"mem_util","dimensions":{"instance_id":"i-9"},"from":1700000000,"to":1700003600,"period":60}}]}`,
+		chatAnswerJSON("自由参数取数完成"),
+	}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "alerts", AlertID: "a1"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "看下 RDS 内存指标",
+		Context: &domain.SessionContext{Page: "alerts", AlertID: "a1"},
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if result.Status != chatStatusOK {
+		t.Fatalf("status = %q", result.Status)
+	}
+	if evidence.got.Namespace != "SYS.RDS" || evidence.got.Metric != "mem_util" {
+		t.Fatalf("model params not used: %+v", evidence.got)
+	}
+	if evidence.got.AccountID != "acc-1" || evidence.got.Region != "cn-north-4" {
+		t.Fatalf("alert identity fallback missing: %+v", evidence.got)
+	}
+	if evidence.got.From != 1700000000 || evidence.got.To != 1700003600 || evidence.got.Period != 60 {
+		t.Fatalf("time params not used: %+v", evidence.got)
+	}
+	if evidence.got.Threshold != nil {
+		t.Fatalf("threshold must be dropped when metric changes: %+v", evidence.got)
+	}
+	if !hasToolCall(result.ToolCalls, chatToolMetricsQuery, "ok") {
+		t.Fatalf("missing metrics.query ok call: %+v", result.ToolCalls)
+	}
+	if !hasReference(result.References, "ev-1") {
+		t.Fatalf("missing metric evidence reference: %+v", result.References)
+	}
+	if auditChatLoopRounds(audit) != 1 {
+		t.Fatalf("loop_rounds = %d", auditChatLoopRounds(audit))
+	}
+}
+
+func TestSendMessageAgentLoopQueriesAlertRules(t *testing.T) {
+	svc, repo, _, chat, audit, _ := newChatTestService(t)
+	threshold := 80.0
+	rulesPort := &fakeAlertRuleListPort{result: &AlertRuleListResult{
+		Status: EvidenceStatusOK, EvidenceID: "rules-ev-1",
+		Rules: []AlertRuleSummary{{
+			RuleID: "rule-1", Name: "High CPU", Namespace: "SYS.RDS", Severity: "major",
+			Enabled: true, Metric: "cpu_util", Operator: ">", Threshold: &threshold, WindowSeconds: 300,
+		}},
+	}}
+	svc.SetAlertRules(rulesPort)
+	chat.script = []string{
+		`{"tool_requests":[{"tool_code":"alert.rules.list","reason":"规则体检","params":{"namespace":"SYS.RDS","limit":10}}]}`,
+		chatAnswerJSON("规则阈值偏高"),
+	}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "alerts", AlertID: "a1"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "SYS.RDS 规则阈值合理吗",
+		Context: &domain.SessionContext{Page: "alerts", AlertID: "a1"},
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if result.Status != chatStatusOK {
+		t.Fatalf("status = %q", result.Status)
+	}
+	if rulesPort.got.AccountID != "acc-1" || rulesPort.got.Namespace != "SYS.RDS" || rulesPort.got.Limit != 10 {
+		t.Fatalf("rule query = %+v", rulesPort.got)
+	}
+	if !hasToolCall(result.ToolCalls, chatToolAlertRulesList, "ok") {
+		t.Fatalf("missing alert.rules.list call: %+v", result.ToolCalls)
+	}
+	if !hasReference(result.References, "rules-ev-1") {
+		t.Fatalf("missing rule evidence reference: %+v", result.References)
+	}
+	var ruleAudit *AuditRecord
+	for i := range audit.rows {
+		row := audit.rows[i]
+		if row.Action == AuditToolInvoke && row.Payload["tool_code"] == chatToolAlertRulesList {
+			ruleAudit = &audit.rows[i]
+		}
+	}
+	if ruleAudit == nil || ruleAudit.Payload["evidence_id"] != "rules-ev-1" || ruleAudit.Payload["result"] != "success" {
+		t.Fatalf("unexpected rule audit: %+v", ruleAudit)
+	}
+	if auditChatLoopRounds(audit) != 1 {
+		t.Fatalf("loop_rounds = %d", auditChatLoopRounds(audit))
+	}
+}
+
+func TestSendMessageAgentLoopInvalidMetricParamsDoesNotQuery(t *testing.T) {
+	svc, repo, _, chat, _, evidence := newChatTestService(t)
+	chat.script = []string{
+		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700000000,"to":1702678400,"period":86400}}]}`,
+		chatAnswerJSON("参数无效，改用现有证据"),
+	}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "alerts", AlertID: "a1"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "看 31 天趋势",
+		Context: &domain.SessionContext{Page: "alerts", AlertID: "a1"},
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if result.Status != chatStatusOK {
+		t.Fatalf("status = %q", result.Status)
+	}
+	if evidence.calls != 1 {
+		t.Fatalf("invalid params must not query evidence, calls=%d", evidence.calls)
+	}
+	if !hasToolCall(result.ToolCalls, chatToolMetricsQuery, chatObservationStatusInvalidArgument) {
+		t.Fatalf("missing invalid_argument observation: %+v", result.ToolCalls)
+	}
+}
+
+func TestSendMessageAgentLoopRulesUnsupportedDoesNotBlock(t *testing.T) {
+	svc, repo, _, chat, _, _ := newChatTestService(t)
+	svc.SetAlertRules(&fakeAlertRuleListPort{result: &AlertRuleListResult{
+		Status: EvidenceStatusUnsupported, Reason: "alert rules are not supported by the provider",
+	}})
+	chat.script = []string{
+		`{"tool_requests":[{"tool_code":"alert.rules.list","params":{"namespace":"SYS.RDS"}}]}`,
+		chatAnswerJSON("当前 provider 不支持规则查询"),
+	}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "alerts", AlertID: "a1"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "查规则",
+		Context: &domain.SessionContext{Page: "alerts", AlertID: "a1"},
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if result.Status != chatStatusOK {
+		t.Fatalf("status = %q", result.Status)
+	}
+	if !hasToolCall(result.ToolCalls, chatToolAlertRulesList, EvidenceStatusUnsupported) {
+		t.Fatalf("missing unsupported rule call: %+v", result.ToolCalls)
+	}
+}
+
+func hasToolCall(calls []domain.ToolCall, code, status string) bool {
+	for _, call := range calls {
+		if call.ToolCode == code && call.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func hasReference(refs []domain.Reference, id string) bool {
+	for _, ref := range refs {
+		if ref.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func auditChatLoopRounds(audit *capturingAIAudit) int {
+	for i := len(audit.rows) - 1; i >= 0; i-- {
+		if audit.rows[i].Action == AuditChatMessage {
+			if v, ok := audit.rows[i].Payload["loop_rounds"].(int); ok {
+				return v
+			}
+			return 0
+		}
+	}
+	return -1
 }
 
 // SendMessageInput 是收敛测试的固定入参。

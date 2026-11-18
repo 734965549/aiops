@@ -374,7 +374,7 @@ Authorization: Bearer <access_token>
 **推荐运维流程**：
 
 ```text
-1. 管理员登录平台 → 侧栏「域账号导入」（/identity/ldap-import）
+1. 管理员登录平台 → 侧栏「系统设置 → 域账号导入」（/identity/ldap-import）
 2. 填写 LDAP/AD 连接 → 连接目录 → 浏览 OU → 勾选用户 → 选择角色 → 导入
 3. 在 identity.providers 中启用同 id 的 LDAP/AD 身份源（供用户登录）
 4. 用户使用域账号登录

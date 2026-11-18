@@ -34,18 +34,26 @@ const chatSystemPrompt = `你是企业运维平台的 AI 运维助手。你只�
 - insufficient_context: boolean，当现有上下文无法回答问题时置 true，并在 uncertainties 说明缺少什么。
 禁止输出凭据、Token、密钥或任何可执行指令；不得声称已经执行任何操作或已经创建任务。
 输入中的 memory_cases 是历史有效案例（可能来自其他同类告警）：只能作为参考证据，引用时标注 case_id，不得照搬其结论，也不得据此跳过对当前上下文的核对。
-若现有只读观测不足以回答，可不输出 summary，改为输出 {"tool_requests":[{"tool_code":"metrics.query","reason":"缺少近期指标"}]} 申请追加只读数据；可申请的工具仅限 metrics.query 与 alarm.analyze，最多 3 轮，不得申请执行类工具。`
+输入中的 observations 可能包含告警快照、指标证据与告警规则。
+若现有只读观测不足以回答，可不输出 summary，改为输出 {"tool_requests":[{"tool_code":"metrics.query","reason":"缺少近期指标","params":{"namespace":"SYS.RDS","metric":"cpu_util","dimensions":{"instance_id":"i-1"},"from":1700000000,"to":1700003600,"period":300}}]} 申请追加只读数据。
+可申请的工具仅限：
+- metrics.query：params 支持 account_id / region / project_id / namespace / metric / dimensions / from / to / period / aggregator；缺省字段沿用告警推导；时间窗口最多 7 天，period=86400 的日聚合最多 30 天，最多 1440 点。
+- alert.rules.list：params 支持 account_id / region / namespace（必填，可回退告警标签）/ keyword / limit（最多 50）。
+- alarm.analyze：无参数，重新读取当前告警快照。
+若用户要求体检告警规则（例如判断阈值是否合理），优先申请 alert.rules.list 获取规则阈值，再按需要申请 metrics.query 获取趋势与破限点进行对照。
+最多 3 轮，不得申请执行类工具。`
 
 // ChatObservation 是一次只读工具取数的结果，作为模型输入与工具审计依据。
 // Data 只包含脱敏后的上下文摘要，绝不包含凭据。
 type ChatObservation struct {
-	ToolCode string         `json:"tool_code"`
-	Allowed  bool           `json:"allowed"`
-	Mode     string         `json:"mode,omitempty"`
-	Reason   string         `json:"reason,omitempty"`
-	Status   string         `json:"status"`
-	Summary  string         `json:"summary,omitempty"`
-	Data     map[string]any `json:"data,omitempty"`
+	ToolCode   string         `json:"tool_code"`
+	Allowed    bool           `json:"allowed"`
+	Mode       string         `json:"mode,omitempty"`
+	Reason     string         `json:"reason,omitempty"`
+	Status     string         `json:"status"`
+	Summary    string         `json:"summary,omitempty"`
+	EvidenceID string         `json:"evidence_id,omitempty"`
+	Data       map[string]any `json:"data,omitempty"`
 }
 
 // ChatHistoryMessage 是送入模型的历史消息摘要。

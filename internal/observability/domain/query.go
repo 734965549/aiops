@@ -14,6 +14,9 @@ type MetricQuery struct {
 	To         int64
 	Period     int
 	Aggregator string
+	// AllowLongWindow 仅供 AI 只读工具路径使用：period>=86400 的日聚合允许 30 天窗口。
+	// 不参与 HTTP 绑定与 evidence 哈希，普通查询仍保持 7 天上限。
+	AllowLongWindow bool `json:"-"`
 }
 
 // LogQuery 日志搜索条件，见 ops/cloud-observability-contract.md §5.2。

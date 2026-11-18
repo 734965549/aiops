@@ -74,13 +74,7 @@ func (s *ChatService) gatherContext(ctx context.Context, userID string, session 
 	}
 	data.Evidence = evidence
 	if data.Evidence != nil {
-		ids := evidenceIDs(data.Evidence)
-		for _, id := range ids {
-			data.References = append(data.References, domain.Reference{
-				Type: "observability_evidence", ID: id,
-				Label: "指标证据 " + id, URL: "/observability",
-			})
-		}
+		appendMetricEvidenceReferences(&data, data.Evidence)
 	}
 	return data
 }
@@ -105,6 +99,7 @@ func (s *ChatService) appendAlertLoadFailure(ctx context.Context, userID, sessio
 	s.appendToolResult(ctx, userID, sessionID, messageID, data, obs)
 }
 
+// collectMetricObservation 按告警推导参数采集指标证据（首轮常规取数）。
 func (s *ChatService) collectMetricObservation(ctx context.Context, userID string, alert *AlertContext) (*ChatObservation, *MetricEvidenceResult) {
 	if s.evidence == nil || alert == nil {
 		return nil, nil
@@ -117,28 +112,89 @@ func (s *ChatService) collectMetricObservation(ctx context.Context, userID strin
 	if !obs.Allowed {
 		return &obs, nil
 	}
+	metricObs, evidence := s.executeMetricObservation(ctx, userID, query)
+	if metricObs == nil {
+		obs.Status = "skipped"
+		obs.Reason = "metric evidence collector is not configured"
+		return &obs, nil
+	}
+	metricObs.Mode = obs.Mode
+	return metricObs, evidence
+}
+
+// executeMetricObservation 在工具权限已通过后调用证据端口并组装观测。
+func (s *ChatService) executeMetricObservation(ctx context.Context, userID string, query MetricEvidenceQuery) (*ChatObservation, *MetricEvidenceResult) {
+	if s.evidence == nil {
+		return nil, nil
+	}
 	result, err := s.evidence.Collect(ctx, userID, query)
 	if err != nil {
-		obs.Status = "error"
-		obs.Reason = "evidence_collect_failed"
 		logger.From(ctx).Warn("ai chat metric evidence failed", logger.Error(err))
-		return &obs, nil
+		return &ChatObservation{
+			ToolCode: chatToolMetricsQuery, Allowed: true,
+			Status: EvidenceStatusError, Reason: "evidence_collect_failed",
+		}, nil
 	}
 	result = capEvidencePayload(result)
 	if result == nil {
-		obs.Status = "error"
-		obs.Reason = "empty evidence result"
-		return &obs, nil
+		return &ChatObservation{
+			ToolCode: chatToolMetricsQuery, Allowed: true,
+			Status: EvidenceStatusError, Reason: "empty evidence result",
+		}, nil
 	}
-	obs.Status = result.Status
-	obs.Reason = result.Reason
-	obs.Summary = fmt.Sprintf("指标证据 %s（%s）", result.Status, query.Metric)
-	obs.Data = map[string]any{
-		"status": result.Status, "reason": result.Reason,
-		"metric": query.Metric, "metric_count": len(result.Metrics),
-		"evidence_ids": evidenceIDs(result),
+	status := result.Status
+	if status == "" {
+		status = EvidenceStatusOK
 	}
-	return &obs, result
+	ids := evidenceIDs(result)
+	obs := &ChatObservation{
+		ToolCode: chatToolMetricsQuery, Allowed: true,
+		Status: status, Reason: result.Reason,
+		Summary: "指标证据 " + status + "（" + query.Metric + "）",
+		Data: map[string]any{
+			"status": status, "reason": result.Reason,
+			"metric": query.Metric, "metric_count": len(result.Metrics),
+			"evidence_ids": ids,
+		},
+	}
+	if len(ids) > 0 {
+		obs.EvidenceID = ids[0]
+		obs.Data["evidence_id"] = ids[0]
+	}
+	return obs, result
+}
+
+// appendMetricEvidenceReferences 追加指标证据引用（按 evidence_id 去重）。
+func appendMetricEvidenceReferences(data *chatContextData, evidence *MetricEvidenceResult) {
+	if data == nil {
+		return
+	}
+	for _, id := range evidenceIDs(evidence) {
+		appendObservabilityEvidenceReference(data, id, "指标证据 "+id)
+	}
+}
+
+// appendRuleEvidenceReference 追加告警规则证据引用。
+func appendRuleEvidenceReference(data *chatContextData, evidenceID string) {
+	appendObservabilityEvidenceReference(data, evidenceID, "告警规则证据")
+}
+
+func appendObservabilityEvidenceReference(data *chatContextData, evidenceID, label string) {
+	if data == nil {
+		return
+	}
+	evidenceID = strings.TrimSpace(evidenceID)
+	if evidenceID == "" {
+		return
+	}
+	for _, ref := range data.References {
+		if ref.Type == "observability_evidence" && ref.ID == evidenceID {
+			return
+		}
+	}
+	data.References = append(data.References, domain.Reference{
+		Type: "observability_evidence", ID: evidenceID, Label: label, URL: "/observability",
+	})
 }
 
 // checkTool 校验工具 RBAC 与工具权限。
@@ -195,13 +251,14 @@ func (s *ChatService) appendToolResult(ctx context.Context, userID, sessionID, m
 		Reason: obs.Reason, Status: obs.Status, Summary: obs.Summary,
 	})
 	s.recordAudit(ctx, userID, "ai", sessionID, AuditToolInvoke, map[string]any{
-		"session_id": sessionID,
-		"message_id": messageID,
-		"tool_code":  obs.ToolCode,
-		"allowed":    obs.Allowed,
-		"mode":       obs.Mode,
-		"status":     obs.Status,
-		"reason":     obs.Reason,
-		"result":     toolAuditResult(obs),
+		"session_id":  sessionID,
+		"message_id":  messageID,
+		"tool_code":   obs.ToolCode,
+		"allowed":     obs.Allowed,
+		"mode":        obs.Mode,
+		"status":      obs.Status,
+		"reason":      obs.Reason,
+		"evidence_id": obs.EvidenceID,
+		"result":      toolAuditResult(obs),
 	})
 }

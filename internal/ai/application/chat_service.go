@@ -27,6 +27,7 @@ const (
 
 	chatToolAlarmAnalyze     = "alarm.analyze"
 	chatToolMetricsQuery     = "metrics.query"
+	chatToolAlertRulesList   = "alert.rules.list"
 	chatToolExecutionPropose = "execution.tasks.propose"
 
 	chatStatusOK                  = "ok"
@@ -111,6 +112,8 @@ type ChatService struct {
 	chat     toolgateway.ChatClient
 	evidence MetricEvidencePort
 	audit    AuditRecorder
+	// alertRules 为可选的告警规则查询能力；nil 表示规则体检工具不可用。
+	alertRules AlertRuleListPort
 	// memory 为可选的相似案例记忆能力；nil 表示关闭（回答与未接入记忆时一致）。
 	memory MemoryCaseStore
 	// knowledge 为可选的知识沉淀能力；nil 表示关闭（回答与未接入知识时一致）。

@@ -122,7 +122,7 @@ func TestLatestMigrationVersionMatchesFiles(t *testing.T) {
 	if len(files) == 0 {
 		t.Fatal("no migration files found")
 	}
-	if got, want := files[len(files)-1].Version, "0053"; got != want {
+	if got, want := files[len(files)-1].Version, "0055"; got != want {
 		t.Fatalf("latest migration version = %s, want %s", got, want)
 	}
 }

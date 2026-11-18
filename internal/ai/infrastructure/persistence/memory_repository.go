@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/734965549/aiops/internal/ai/domain"
 	"github.com/734965549/aiops/pkg/database"
@@ -230,6 +231,97 @@ func (r *MemoryCaseRepository) ListForAggregation(ctx context.Context, userID, a
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// List 是管理端分页列表：支持归属用户、状态、应用/资源与关键词过滤。
+func (r *MemoryCaseRepository) List(ctx context.Context, filter domain.MemoryCaseListFilter) ([]domain.MemoryCase, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("ai memory repository is not configured")
+	}
+	limit := filter.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	query := r.db.WithContext(ctx).Model(&memoryCaseModel{})
+	if userID := strings.TrimSpace(filter.UserID); userID != "" {
+		query = query.Where("user_id = ?", userID)
+	}
+	if applicationID := strings.TrimSpace(filter.ApplicationID); applicationID != "" {
+		query = query.Where("application_id = ?", applicationID)
+	}
+	if resourceID := strings.TrimSpace(filter.ResourceID); resourceID != "" {
+		query = query.Where("resource_id = ?", resourceID)
+	}
+	if filter.Status != nil {
+		query = query.Where("status = ?", string(*filter.Status))
+	}
+	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
+		like := "%" + keyword + "%"
+		query = query.Where(
+			"(summary ILIKE ? OR keywords ILIKE ? OR application_id ILIKE ? OR resource_id ILIKE ?)",
+			like, like, like, like,
+		)
+	}
+	var rows []memoryCaseModel
+	if err := query.Order("updated_at DESC").Limit(limit).Offset(offset).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]domain.MemoryCase, 0, len(rows))
+	for i := range rows {
+		c, err := toMemoryCaseDomain(&rows[i])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// Get 按业务 ID 读取案例；不存在返回 domain.ErrMemoryCaseNotFound。
+func (r *MemoryCaseRepository) Get(ctx context.Context, caseID string) (*domain.MemoryCase, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("ai memory repository is not configured")
+	}
+	caseID = strings.TrimSpace(caseID)
+	if caseID == "" {
+		return nil, domain.ErrMemoryCaseNotFound
+	}
+	var row memoryCaseModel
+	if err := r.db.WithContext(ctx).Where("case_id = ?", caseID).First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, domain.ErrMemoryCaseNotFound
+		}
+		return nil, err
+	}
+	c, err := toMemoryCaseDomain(&row)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// UpdateStatus 只更新状态与时间；case_id 是业务唯一键。
+func (r *MemoryCaseRepository) UpdateStatus(ctx context.Context, caseID string, status domain.MemoryCaseStatus, updatedAt time.Time) error {
+	if r == nil || r.db == nil {
+		return errors.New("ai memory repository is not configured")
+	}
+	res := r.db.WithContext(ctx).Model(&memoryCaseModel{}).
+		Where("case_id = ?", strings.TrimSpace(caseID)).
+		Updates(map[string]any{
+			"status":     string(status),
+			"updated_at": updatedAt,
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return domain.ErrMemoryCaseNotFound
+	}
+	return nil
 }
 
 func toMemoryCaseDomain(row *memoryCaseModel) (domain.MemoryCase, error) {

@@ -212,15 +212,20 @@ func (p *Provider) ListAlertRules(_ context.Context, pctx domain.ProviderContext
 	if ns == "" {
 		ns = "SYS.ECS"
 	}
+	threshold := 80.0
 	rules := []domain.AlertRule{
 		{
-			RuleID:      fmt.Sprintf("rule-fake-%s-cpu", p.providerType),
-			Name:        "High CPU Utilization",
-			Namespace:   ns,
-			Severity:    "major",
-			Enabled:     true,
-			Description: "fake provider placeholder rule",
-			Labels:      map[string]string{"provider": p.providerType, "account_id": pctx.Account.AccountID},
+			RuleID:        fmt.Sprintf("rule-fake-%s-cpu", p.providerType),
+			Name:          "High CPU Utilization",
+			Namespace:     ns,
+			Severity:      "major",
+			Enabled:       true,
+			Description:   "fake provider placeholder rule",
+			Metric:        "cpu_util",
+			Operator:      ">",
+			Threshold:     &threshold,
+			WindowSeconds: 300,
+			Labels:        map[string]string{"provider": p.providerType, "account_id": pctx.Account.AccountID},
 		},
 	}
 	return rules[:min(len(rules), limit)], nil

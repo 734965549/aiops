@@ -327,11 +327,13 @@ type fakeEvidenceCollector struct {
 	userID string
 	result *MetricEvidenceResult
 	err    error
+	calls  int
 }
 
 func (f *fakeEvidenceCollector) Collect(_ context.Context, userID string, q MetricEvidenceQuery) (*MetricEvidenceResult, error) {
 	f.got = q
 	f.userID = userID
+	f.calls++
 	return f.result, f.err
 }
 

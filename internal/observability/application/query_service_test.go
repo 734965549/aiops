@@ -510,3 +510,34 @@ func TestQueryService_ListAllResourcesUnsupportedProviderReturnsCapabilityError(
 		t.Fatalf("expected CodeFailedPrecondition, got %s", apperr.CodeOf(err))
 	}
 }
+
+func TestNormalizeMetricQueryLongWindow(t *testing.T) {
+	base := domain.MetricQuery{
+		AccountID: "acc-1", Metric: "cpu_util", From: 1700000000,
+	}
+	cases := []struct {
+		name      string
+		window    int64
+		period    int
+		allowLong bool
+		wantErr   bool
+	}{
+		{name: "8d default rejected", window: 8 * 24 * 3600, period: 86400, allowLong: false, wantErr: true},
+		{name: "8d daily allowed", window: 8 * 24 * 3600, period: 86400, allowLong: true, wantErr: false},
+		{name: "8d minute rejected", window: 8 * 24 * 3600, period: 300, allowLong: true, wantErr: true},
+		{name: "30d daily allowed", window: 30 * 24 * 3600, period: 86400, allowLong: true, wantErr: false},
+		{name: "31d daily rejected", window: 31 * 24 * 3600, period: 86400, allowLong: true, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := base
+			q.To = q.From + tc.window
+			q.Period = tc.period
+			q.AllowLongWindow = tc.allowLong
+			_, err := normalizeMetricQuery(q)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}

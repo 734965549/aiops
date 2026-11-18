@@ -112,6 +112,8 @@ func (a *CollectorAdapter) Collect(ctx context.Context, userID string, q aiapp.M
 		To:         q.To,
 		Period:     q.Period,
 		Aggregator: q.Aggregator,
+		// AI 只读工具允许日聚合 30 天窗口；HTTP 查询不设置该字段，仍为 7 天。
+		AllowLongWindow: true,
 	})
 	if err != nil {
 		reason := evidenceErrorReason(err, "metric query failed")

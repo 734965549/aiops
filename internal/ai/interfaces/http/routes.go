@@ -14,6 +14,7 @@ type Registrar struct {
 	handler          *Handler
 	chatHandler      *ChatHandler
 	knowledgeHandler *KnowledgeHandler
+	memoryHandler    *MemoryHandler
 	authorizer       routeAuthorizer
 }
 
@@ -51,8 +52,11 @@ func (a authorizationMiddlewareAdapter) Authorize(ctx context.Context, in middle
 	}, nil
 }
 
-func NewRegistrar(handler *Handler, chatHandler *ChatHandler, knowledgeHandler *KnowledgeHandler, authorizer routeAuthorizer) *Registrar {
-	return &Registrar{handler: handler, chatHandler: chatHandler, knowledgeHandler: knowledgeHandler, authorizer: authorizer}
+func NewRegistrar(handler *Handler, chatHandler *ChatHandler, knowledgeHandler *KnowledgeHandler, memoryHandler *MemoryHandler, authorizer routeAuthorizer) *Registrar {
+	return &Registrar{
+		handler: handler, chatHandler: chatHandler, knowledgeHandler: knowledgeHandler,
+		memoryHandler: memoryHandler, authorizer: authorizer,
+	}
 }
 
 func (r *Registrar) RegisterRoutes(groups server.RouteGroups) {
@@ -95,6 +99,11 @@ func (r *Registrar) RegisterRoutes(groups server.RouteGroups) {
 			authed.DELETE("/knowledge/items/:item_id", middleware.AuthorizeStatic(authz, "ai", "knowledge:manage"), r.knowledgeHandler.Delete)
 			// 反馈聚合：把某应用下已确认有效的案例聚合成 draft（幂等，不覆盖 active 条目）。
 			authed.POST("/knowledge/aggregate", middleware.AuthorizeStatic(authz, "ai", "knowledge:manage"), r.knowledgeHandler.Aggregate)
+		}
+		// 记忆管理：只读检索 + 手动停用/启用；回答注入仍严格按归属用户过滤（契约 §10.14/§10.19）。
+		if r.memoryHandler != nil {
+			authed.GET("/memory/cases", middleware.AuthorizeStatic(authz, "ai", "memory:manage"), r.memoryHandler.List)
+			authed.POST("/memory/cases/:case_id/status", middleware.AuthorizeStatic(authz, "ai", "memory:manage"), r.memoryHandler.UpdateStatus)
 		}
 		return
 	}
