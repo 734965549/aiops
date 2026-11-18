@@ -264,6 +264,9 @@ const TOOL_LABELS: Record<string, string> = {
   'alarm.analyze': '读取告警快照',
   'metrics.query': '查询指标证据',
   'alert.rules.list': '查询告警规则',
+  'accounts.list': '列出集成账号',
+  'resource.analyze': '读取资源上下文',
+  'resources.list': '发现云同步资源',
   'execution.tasks.propose': '生成执行计划权限'
 }
 

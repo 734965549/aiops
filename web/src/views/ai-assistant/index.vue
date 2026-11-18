@@ -237,6 +237,8 @@ onMounted(async () => {
 
 .workbench-card {
   flex: 1;
+  /* 会话标题改为提问全文（nowrap）后 min-content 变宽，没有 min-width:0 时卡片会被撑破、横穿中间列 */
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;

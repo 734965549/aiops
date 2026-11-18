@@ -46,7 +46,7 @@ export const STATUS_LABELS: Record<ChatUIStatus, string> = {
   ok: '回答完成',
   needs_confirm: 'AI 建议需人工确认',
   not_executable: 'AI 建议不可执行',
-  insufficient_context: 'AI 无足够上下文',
+  insufficient_context: 'AI 上下文不足，需补充信息',
   failed: 'AI 回答失败'
 }
 

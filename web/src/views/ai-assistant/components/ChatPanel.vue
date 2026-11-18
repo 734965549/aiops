@@ -91,7 +91,18 @@
         type="warning"
         :show-icon="true"
       >
-        当前上下文不足，请先打开告警或资源详情，或在提问中补充应用、资源与时间范围。
+        {{ contextHint?.text }}
+        <template
+          v-if="contextHint?.path"
+          #action
+        >
+          <a-button
+            size="mini"
+            @click="navigateContextHint"
+          >
+            {{ contextHint?.label }}
+          </a-button>
+        </template>
       </a-alert>
       <a-alert
         v-else-if="status === 'not_executable'"
@@ -165,7 +176,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { IconRobot } from '@arco-design/web-vue/es/icon'
 import type { ChatAnswer, ChatMessage } from '@/api/ai'
 import AnswerCard from './AnswerCard.vue'
@@ -198,6 +209,65 @@ const emit = defineEmits<{
 const input = ref('')
 const scrollRef = ref<HTMLElement | null>(null)
 const placeholder = props.placeholder || '请输入你的问题，例如：帮我分析当前告警并给出排查步骤'
+
+interface ContextHint {
+  text: string
+  path?: string
+  label?: string
+}
+
+/** 上下文缺失原因 -> 具体补全指引（reason 码由服务端工具观测返回）。 */
+const CONTEXT_HINT_RULES: Array<{ reasons: string[]; hint: ContextHint }> = [
+  {
+    reasons: ['no_account'],
+    hint: {
+      text: '缺少集成账号：请到云账号接入确认可用账号，或在提问中写明账号 ID；也可打开告警/资产详情后自动带入上下文。',
+      path: '/integrations',
+      label: '打开云账号接入'
+    }
+  },
+  {
+    reasons: ['no_namespace', 'no_dimensions'],
+    hint: {
+      text: '缺少命名空间或实例维度：在资产管理选中对应云资源后提问，或在提问中给出实例 ID。',
+      path: '/assets',
+      label: '打开资产管理'
+    }
+  },
+  {
+    reasons: ['no_region'],
+    hint: {
+      text: '缺少区域上下文：请在提问中补充 region，或从资产/观测页带入上下文。',
+      path: '/assets',
+      label: '打开资产管理'
+    }
+  },
+  {
+    reasons: ['no_metric'],
+    hint: {
+      text: '缺少指标名：请在提问中给出指标名，例如 SYS.RDS 的 cpu_util。'
+    }
+  }
+]
+
+const contextHint = computed<ContextHint | null>(() => {
+  if (props.status !== 'insufficient_context') return null
+  const lastAssistant = [...props.messages].reverse().find((message) => message.role === 'assistant')
+  const reasons = new Set(
+    (lastAssistant?.tool_calls ?? [])
+      .filter((call) => call.status === 'skipped' && call.reason)
+      .map((call) => call.reason as string)
+  )
+  for (const rule of CONTEXT_HINT_RULES) {
+    if (rule.reasons.some((reason) => reasons.has(reason))) return rule.hint
+  }
+  return { text: '当前上下文不足，请先打开告警或资源详情，或在提问中补充应用、资源与时间范围。' }
+})
+
+function navigateContextHint() {
+  const path = contextHint.value?.path
+  if (path) emit('navigate', path)
+}
 
 watch(
   () => props.messages.length,
