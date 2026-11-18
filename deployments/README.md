@@ -133,9 +133,13 @@ AIOPS_CORS__ALLOW_CREDENTIALS=true
 
 ```text
 浏览器 axios（analyzeAlert 单请求 90s）
-  > nginx proxy_read_timeout（web.conf，120s）
-  > 服务器 write_timeout_s（120s）
+  < nginx proxy_read_timeout / proxy_send_timeout（web.conf，660s）
+  == 服务器 read/write_timeout_s（660s）
   > AI 分析内层：证据采集 5s + 模型调用（provider timeout_ms，建议 60s）
+
+AI 助手 SSE 对话：
+  ai.turn_budget_s（默认 600s）+ 60s 余量 <= nginx / 服务器 660s
+  服务端每 15s 写 `: ping` 注释心跳，避免长思考被代理判为空闲。
 ```
 
 **配置要点：**

@@ -521,15 +521,17 @@ go run ./cmd/migrate
 
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
-| 9.12.1 | SSE 事件流 | `curl -N -X POST http://127.0.0.1:8080/api/ai/chat/sessions/{session_id}/messages/stream -H "Authorization: Bearer <token>" -H "Content-Type: application/json" -d '{"content":"分析这个告警","context":{"alert_id":"<alert_id>"}}'` | 响应头含 `Content-Type: text/event-stream`、`Cache-Control: no-cache`、`X-Accel-Buffering: no`；依次收到 `stage:gathering`、`tool`（有告警上下文时）、`stage:thinking`、`stage:answering`、`answer`；每条为 `data: <json>` + 空行 |
+| 9.12.1 | SSE 事件流 | `curl -N -X POST http://127.0.0.1:8080/api/ai/chat/sessions/{session_id}/messages/stream -H "Authorization: Bearer <token>" -H "Content-Type: application/json" -d '{"content":"分析这个告警","context":{"alert_id":"<alert_id>"}}'` | 响应头含 `Content-Type: text/event-stream`、`Cache-Control: no-cache`、`X-Accel-Buffering: no`；依次收到 `stage:gathering`、`tool`（有告警上下文时）、`stage:thinking`、`delta(thinking)`、`delta(answer)`、`stage:answering`、`answer`；每条事件为 `data: <json>` + 空行，心跳为 `: ping` 注释 |
 | 9.12.2 | 工具事件 | 用有 `alarm.analyze` 权限的账号发起 9.12.1 | 收到 `type=tool`、`tool_code=alarm.analyze`、`allowed=true`、`status=ok`；无权限账号收到 `allowed=false` 且带 `reason`，回答仍返回 |
 | 9.12.3 | 业务错误转事件 | 对已归档会话调用流式接口 | HTTP 200，收到 `{"type":"error","code":"FAILED_PRECONDITION",...}`；无 `answer` 事件；不落 assistant 消息 |
 | 9.12.4 | 缺 content | 请求体为空 | 写 SSE 之前返回 400（统一响应结构），无事件下发 |
 | 9.12.5 | 客户端断开 / 停止 | 收到首个事件后终止 curl（或前端点「停止生成」） | 会话只剩用户消息、无 assistant 消息；审计 `chat_canceled` 含 `phase` 与 `result=canceled`；同步接口不受影响 |
 | 9.12.6 | 幂等重放 | 同一 `client_message_id` 先调同步接口，再调流式接口 | 流式只收到 `gathering` + `answer`，`message_id` 与首次一致；不新增消息、不再次调用模型；审计 `chat_message` 带 `replayed=true` |
-| 9.12.7 | 前端阶段提示与停止 | AI 助手页发送长问题；发送中点击「停止生成」 | 阶段提示按服务端事件切换（思考 → 查询工具 → 生成回答），不再依赖固定定时器；停止后输入区恢复、无半成品回答、提示「已停止生成」 |
+| 9.12.7 | 前端阶段提示与停止 | AI 助手页发送长问题；发送中点击「停止生成」 | 阶段提示按服务端事件切换（思考 → 查询工具 → 生成回答），不再依赖固定定时器；`delta` 只展示“已生成 N 字”；停止后输入区恢复、无半成品回答、提示「已停止生成」 |
+| 9.12.8 | SSE 心跳 | 让模型调用持续 >15s（或临时调小 `sseHeartbeatInterval`） | 事件之间出现 `: ping` 注释且连接不断；客户端解析器忽略注释行 |
+| 9.12.9 | 回合时间预算 | 临时设置 `AIOPS_AI__TURN_BUDGET_S=2`，让模型调用阻塞超过预算 | 返回 `status=degraded`、`degraded_reason=turn_budget_exceeded`；保留已获取的只读观测；审计 `chat_message` 记录该原因 |
 
-> 前置：契约见 `ops/ai-contract.md` §10.17。E2E 脚本：`scripts/e2e-ai-stream.ps1`（通过脚本化 mock 模型自动覆盖 9.12.1/9.12.3/9.12.4/9.12.5/9.12.6；9.12.2 工具事件需要告警上下文，9.12.7 前端阶段提示与停止仍需人工抽检）。
+> 前置：契约见 `ops/ai-contract.md` §10.17；`ai.turn_budget_s` 默认 600s，服务端 read/write timeout 必须 ≥ 预算+60s。E2E 脚本：`scripts/e2e-ai-stream.ps1`（通过脚本化 mock 模型自动覆盖 9.12.1/9.12.3/9.12.4/9.12.5/9.12.6，含 `delta(thinking/answer)` 断言；9.12.2 工具事件需要告警上下文，9.12.7/9.12.8 前端与心跳需人工抽检，9.12.9 由单测覆盖）。
 
 ### 9.13 会话只读分享（migration 0053，契约 §10.18）
 
