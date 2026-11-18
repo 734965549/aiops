@@ -263,6 +263,33 @@ func (r *assetHTTPTestResRepo) ListByApplicationIDPaged(_ context.Context, appli
 	return out, total, nil
 }
 
+func (r *assetHTTPTestResRepo) ListByCloudResourceID(_ context.Context, cloudResourceID string) ([]assetdomain.Resource, error) {
+	out := make([]assetdomain.Resource, 0)
+	for _, row := range r.rows {
+		if row.Source == assetdomain.ResourceSourceCloudSync && row.CloudResourceID == cloudResourceID {
+			out = append(out, row)
+		}
+	}
+	return out, nil
+}
+
+func (r *assetHTTPTestResRepo) ListCloudResourcesPaged(_ context.Context, filter assetdomain.CloudResourceFilter) ([]assetdomain.Resource, error) {
+	out := make([]assetdomain.Resource, 0)
+	for _, row := range r.rows {
+		if row.Source != assetdomain.ResourceSourceCloudSync || row.IntegrationAccountID != filter.IntegrationAccountID {
+			continue
+		}
+		if filter.CloudResourceType != "" && row.CloudResourceType != filter.CloudResourceType {
+			continue
+		}
+		if filter.Region != "" && row.Region != filter.Region {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
 func (r *assetHTTPTestResRepo) FindBestMatch(_ context.Context, q assetdomain.ResourceMatchQuery) (*assetdomain.Resource, error) {
 	for i := range r.rows {
 		row := r.rows[i]

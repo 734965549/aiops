@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/734965549/aiops/internal/asset/domain"
+	apperr "github.com/734965549/aiops/pkg/errors"
 )
 
 type fakeAppRepo struct {
@@ -259,6 +260,45 @@ func (r *fakeResRepo) GetByID(_ context.Context, id string) (*domain.Resource, e
 		}
 	}
 	return nil, domain.ErrNotFound
+}
+
+func (r *fakeResRepo) ListByCloudResourceID(_ context.Context, cloudResourceID string) ([]domain.Resource, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cloudResourceID = strings.TrimSpace(cloudResourceID)
+	out := make([]domain.Resource, 0)
+	for _, row := range r.rows {
+		if row.Source == domain.ResourceSourceCloudSync && strings.EqualFold(strings.TrimSpace(row.CloudResourceID), cloudResourceID) {
+			out = append(out, row)
+		}
+	}
+	return out, nil
+}
+
+func (r *fakeResRepo) ListCloudResourcesPaged(_ context.Context, filter domain.CloudResourceFilter) ([]domain.Resource, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	accountID := strings.TrimSpace(filter.IntegrationAccountID)
+	if accountID == "" {
+		return nil, nil
+	}
+	out := make([]domain.Resource, 0)
+	for _, row := range r.rows {
+		if row.Source != domain.ResourceSourceCloudSync || row.IntegrationAccountID != accountID {
+			continue
+		}
+		if filter.CloudResourceType != "" && !strings.EqualFold(row.CloudResourceType, filter.CloudResourceType) {
+			continue
+		}
+		if filter.Region != "" && row.Region != filter.Region {
+			continue
+		}
+		out = append(out, row)
+		if filter.Limit > 0 && len(out) >= filter.Limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 func (r *fakeResRepo) Update(_ context.Context, res *domain.Resource) error {
@@ -668,5 +708,146 @@ func TestAssetService_CreateResourceApplicationNotFound(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for missing application")
+	}
+}
+
+type fakeResourceAuthz struct {
+	allowed bool
+	err     error
+	input   AuthorizationInput
+	teams   []string
+	hasAll  bool
+}
+
+func (f *fakeResourceAuthz) Authorize(_ context.Context, in AuthorizationInput) (*AuthorizationResult, error) {
+	f.input = in
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &AuthorizationResult{Allowed: f.allowed}, nil
+}
+
+func (f *fakeResourceAuthz) ResolveAccessibleOwnerTeams(context.Context, string) ([]string, bool, error) {
+	return f.teams, f.hasAll, nil
+}
+
+type fakeAccountScope struct {
+	ownerTeam string
+	regions   []string
+	err       error
+}
+
+func (f *fakeAccountScope) ResolveAccountScope(context.Context, string) (string, []string, error) {
+	return f.ownerTeam, f.regions, f.err
+}
+
+func newAnalysisAssetService(resources *fakeResRepo) *AssetService {
+	return NewAssetService(&fakeAppRepo{}, resources, nil, nil, nil, nil)
+}
+
+func cloudSyncedResource() domain.Resource {
+	return domain.Resource{
+		ID: "res-business", ApplicationID: "app-1", Name: "orders-rds",
+		ResourceType: "database", Source: domain.ResourceSourceCloudSync,
+		IntegrationAccountID: "acc-1", CloudResourceID: "cluster-1",
+		CloudResourceType: "rds", Region: "cn-north-4",
+		Labels: map[string]string{"namespace": "SYS.RDS", "dim_name": "rds_cluster_id"},
+	}
+}
+
+func TestGetResourceForAnalysisByBusinessID(t *testing.T) {
+	resources := &fakeResRepo{rows: []domain.Resource{cloudSyncedResource()}}
+	svc := newAnalysisAssetService(resources)
+	authz := &fakeResourceAuthz{allowed: true}
+	svc.SetDataScope(authz, &fakeAccountScope{ownerTeam: "sre"})
+
+	snapshot, err := svc.GetResourceForAnalysis(context.Background(), "u-1", "res-business")
+	if err != nil {
+		t.Fatalf("get resource: %v", err)
+	}
+	if snapshot.ResourceID != "res-business" || snapshot.IntegrationAccountID != "acc-1" {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+	if authz.input.UserID != "u-1" || authz.input.ObjectTeam != "sre" || authz.input.ObjectRegion != "cn-north-4" {
+		t.Fatalf("authz input = %+v", authz.input)
+	}
+}
+
+func TestGetResourceForAnalysisByCloudResourceID(t *testing.T) {
+	resources := &fakeResRepo{rows: []domain.Resource{cloudSyncedResource()}}
+	svc := newAnalysisAssetService(resources)
+	svc.SetDataScope(&fakeResourceAuthz{allowed: true}, &fakeAccountScope{ownerTeam: "sre"})
+
+	snapshot, err := svc.GetResourceForAnalysis(context.Background(), "u-1", "cluster-1")
+	if err != nil {
+		t.Fatalf("get resource by cloud id: %v", err)
+	}
+	if snapshot.ResourceID != "res-business" || snapshot.CloudResourceID != "cluster-1" {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+}
+
+func TestGetResourceForAnalysisScopeDenied(t *testing.T) {
+	resources := &fakeResRepo{rows: []domain.Resource{cloudSyncedResource()}}
+	svc := newAnalysisAssetService(resources)
+	svc.SetDataScope(&fakeResourceAuthz{allowed: false}, &fakeAccountScope{ownerTeam: "dba"})
+
+	_, err := svc.GetResourceForAnalysis(context.Background(), "u-1", "cluster-1")
+	if err == nil || apperr.CodeOf(err) != apperr.CodePermissionDenied {
+		t.Fatalf("expected permission denied, got %v", err)
+	}
+}
+
+func TestGetResourceForAnalysisFailsClosedWithoutGuard(t *testing.T) {
+	resources := &fakeResRepo{rows: []domain.Resource{cloudSyncedResource()}}
+	svc := newAnalysisAssetService(resources)
+
+	_, err := svc.GetResourceForAnalysis(context.Background(), "u-1", "res-business")
+	if err == nil || apperr.CodeOf(err) != apperr.CodeUnavailable {
+		t.Fatalf("expected unavailable, got %v", err)
+	}
+}
+
+func TestGetResourceForAnalysisNotFound(t *testing.T) {
+	svc := newAnalysisAssetService(&fakeResRepo{})
+	svc.SetDataScope(&fakeResourceAuthz{allowed: true}, &fakeAccountScope{})
+
+	_, err := svc.GetResourceForAnalysis(context.Background(), "u-1", "missing")
+	if err == nil || apperr.CodeOf(err) != apperr.CodeNotFound {
+		t.Fatalf("expected not found, got %v", err)
+	}
+}
+
+func TestListCloudResourcesForAgent(t *testing.T) {
+	rows := []domain.Resource{
+		cloudSyncedResource(),
+		{ID: "res-2", Source: domain.ResourceSourceCloudSync, IntegrationAccountID: "acc-1", CloudResourceType: "ecs", CloudResourceID: "i-1", Region: "cn-north-4"},
+		{ID: "manual", Source: domain.ResourceSourceManual, IntegrationAccountID: "acc-1"},
+	}
+	resources := &fakeResRepo{rows: rows}
+	svc := newAnalysisAssetService(resources)
+	svc.SetDataScope(&fakeResourceAuthz{
+		allowed: true, teams: []string{"sre"}, hasAll: false,
+	}, &fakeAccountScope{ownerTeam: "sre", regions: []string{"cn-north-4"}})
+
+	snapshots, err := svc.ListCloudResourcesForAgent(context.Background(), "u-1", ListCloudResourcesQuery{
+		AccountID: "acc-1", ResourceType: "rds", Limit: 20,
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(snapshots) != 1 || snapshots[0].CloudResourceID != "cluster-1" {
+		t.Fatalf("snapshots = %+v", snapshots)
+	}
+}
+
+func TestListCloudResourcesForAgentScopeDenied(t *testing.T) {
+	resources := &fakeResRepo{rows: []domain.Resource{cloudSyncedResource()}}
+	svc := newAnalysisAssetService(resources)
+	svc.SetDataScope(&fakeResourceAuthz{allowed: false, hasAll: true}, &fakeAccountScope{ownerTeam: "dba"})
+
+	_, err := svc.ListCloudResourcesForAgent(context.Background(), "u-1", ListCloudResourcesQuery{AccountID: "acc-1"})
+	if err == nil || apperr.CodeOf(err) != apperr.CodePermissionDenied {
+		t.Fatalf("expected permission denied, got %v", err)
 	}
 }

@@ -117,7 +117,7 @@ func (h *MemoryHandler) UpdateStatus(c *gin.Context) {
 	var req struct {
 		Status string `json:"status" binding:"required"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "status is required")
 		return
 	}

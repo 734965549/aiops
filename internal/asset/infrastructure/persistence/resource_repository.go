@@ -195,6 +195,72 @@ func (r *ResourceRepository) GetByID(ctx context.Context, id string) (*domain.Re
 	return &out, nil
 }
 
+// ListByCloudResourceID 按云厂商稳定 ID 查询云同步资源（跨账号/区域可能命中多条）。
+func (r *ResourceRepository) ListByCloudResourceID(ctx context.Context, cloudResourceID string) ([]domain.Resource, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("asset resource repository is not configured")
+	}
+	cloudResourceID = strings.TrimSpace(cloudResourceID)
+	if cloudResourceID == "" {
+		return nil, nil
+	}
+	var rows []resourceModel
+	if err := r.db.WithContext(ctx).
+		Where("source = ? AND cloud_resource_id = ?", domain.ResourceSourceCloudSync, cloudResourceID).
+		Order("created_at ASC, id ASC").Limit(20).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]domain.Resource, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toResourceDomain(&row))
+	}
+	return out, nil
+}
+
+// ListCloudResourcesPaged 按账号发现云同步资源；limit 上限 50，排序稳定便于复现。
+func (r *ResourceRepository) ListCloudResourcesPaged(ctx context.Context, filter domain.CloudResourceFilter) ([]domain.Resource, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("asset resource repository is not configured")
+	}
+	accountID := strings.TrimSpace(filter.IntegrationAccountID)
+	if accountID == "" {
+		return nil, nil
+	}
+	q := r.db.WithContext(ctx).Model(&resourceModel{}).
+		Where("source = ?", domain.ResourceSourceCloudSync).
+		Where("integration_account_id = ?", accountID)
+	if cloudType := strings.TrimSpace(filter.CloudResourceType); cloudType != "" {
+		q = q.Where("cloud_resource_type = ?", cloudType)
+	}
+	if region := strings.TrimSpace(filter.Region); region != "" {
+		q = q.Where("region = ?", region)
+	}
+	if len(filter.OwnerTeams) > 0 {
+		q = q.Where("integration_account_id IN (SELECT account_id FROM integration_account WHERE owner_team IN ?)", filter.OwnerTeams)
+	}
+	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
+		pattern := "%" + escapeLikePattern(keyword) + "%"
+		q = q.Where(`(name ILIKE ? OR cloud_resource_id ILIKE ? OR cloud_resource_type ILIKE ? OR region ILIKE ?)`,
+			pattern, pattern, pattern, pattern)
+	}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	var rows []resourceModel
+	if err := q.Order("created_at ASC, id ASC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]domain.Resource, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toResourceDomain(&row))
+	}
+	return out, nil
+}
+
 func (r *ResourceRepository) Update(ctx context.Context, res *domain.Resource) error {
 	if r == nil || r.db == nil {
 		return errors.New("asset resource repository is not configured")

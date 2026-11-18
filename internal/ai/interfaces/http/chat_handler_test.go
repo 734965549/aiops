@@ -20,6 +20,8 @@ import (
 type fakeChatUseCase struct {
 	created     aiapp.CreateChatSessionInput
 	sent        aiapp.SendChatMessageInput
+	createCalls int
+	sendCalls   int
 	feedback    [3]string
 	createErr   error
 	sendErr     error
@@ -40,6 +42,7 @@ type fakeChatUseCase struct {
 }
 
 func (f *fakeChatUseCase) CreateSession(_ context.Context, in aiapp.CreateChatSessionInput) (*aiapp.ChatSessionView, error) {
+	f.createCalls++
 	f.created = in
 	if f.createErr != nil {
 		return nil, f.createErr
@@ -66,6 +69,7 @@ func (f *fakeChatUseCase) GetSession(_ context.Context, _ string, _ string) (*ai
 }
 
 func (f *fakeChatUseCase) SendMessage(_ context.Context, in aiapp.SendChatMessageInput) (*aiapp.SendChatMessageResult, error) {
+	f.sendCalls++
 	f.sent = in
 	if f.sendErr != nil {
 		return nil, f.sendErr
@@ -645,5 +649,53 @@ func TestChatHandlerCreateSessionContextNormalized(t *testing.T) {
 	// 会话上下文类型仍可安全序列化，用于前端展示。
 	if _, err := json.Marshal(domain.SessionContext{Page: "alerts"}); err != nil {
 		t.Fatalf("marshal context: %v", err)
+	}
+}
+
+// gbkInvalidBody 构造含 GBK「告警」字节的 JSON body，用于验证原始字节校验。
+func gbkInvalidBody(field string) []byte {
+	raw := []byte(`{"` + field + `":"`)
+	raw = append(raw, 0xB8, 0xE6, 0xBE, 0xAF)
+	return append(raw, '"', '}')
+}
+
+func TestChatHandlerCreateSessionRejectsInvalidUTF8(t *testing.T) {
+	usecase := &fakeChatUseCase{}
+	h := NewChatHandler(usecase)
+	c, w := newChatHandlerTestContext(http.MethodPost, "/chat/sessions", nil, nil, "u-1")
+	c.Request = httptest.NewRequest(http.MethodPost, "/chat/sessions", bytes.NewReader(gbkInvalidBody("title")))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.CreateSession(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"code":"INVALID_ARGUMENT"`)) {
+		t.Fatalf("expected INVALID_ARGUMENT, got: %s", w.Body.String())
+	}
+	if usecase.createCalls != 0 {
+		t.Fatalf("session must not be created on invalid utf-8, calls=%d", usecase.createCalls)
+	}
+}
+
+func TestChatHandlerSendMessageRejectsInvalidUTF8(t *testing.T) {
+	usecase := &fakeChatUseCase{}
+	h := NewChatHandler(usecase)
+	c, w := newChatHandlerTestContext(http.MethodPost, "/chat/sessions/s-1/messages", nil,
+		gin.Params{{Key: "session_id", Value: "s-1"}}, "u-1")
+	c.Request = httptest.NewRequest(http.MethodPost, "/chat/sessions/s-1/messages", bytes.NewReader(gbkInvalidBody("content")))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.SendMessage(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"code":"INVALID_ARGUMENT"`)) {
+		t.Fatalf("expected INVALID_ARGUMENT, got: %s", w.Body.String())
+	}
+	if usecase.sendCalls != 0 {
+		t.Fatalf("message must not be sent on invalid utf-8, calls=%d", usecase.sendCalls)
 	}
 }

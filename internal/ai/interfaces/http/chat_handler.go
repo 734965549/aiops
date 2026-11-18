@@ -98,7 +98,7 @@ func (h *ChatHandler) CreateSession(c *gin.Context) {
 		return
 	}
 	var req createChatSessionRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "invalid chat session request")
 		return
 	}
@@ -163,7 +163,7 @@ func (h *ChatHandler) SendMessage(c *gin.Context) {
 		return
 	}
 	var req sendChatMessageRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "content is required")
 		return
 	}
@@ -195,7 +195,7 @@ func (h *ChatHandler) SendMessageStream(c *gin.Context) {
 		return
 	}
 	var req sendChatMessageRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "content is required")
 		return
 	}
@@ -279,7 +279,7 @@ func (h *ChatHandler) SubmitFeedback(c *gin.Context) {
 		return
 	}
 	var req chatFeedbackRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "feedback is required")
 		return
 	}
@@ -351,7 +351,7 @@ func (h *ChatHandler) CreateShare(c *gin.Context) {
 	}
 	var req createChatShareRequest
 	if c.Request.ContentLength > 0 {
-		if err := c.ShouldBindJSON(&req); err != nil {
+		if err := httpx.BindJSON(c, &req); err != nil {
 			httpx.FailWith(c, apperr.CodeInvalidArgument, "invalid share payload")
 			return
 		}

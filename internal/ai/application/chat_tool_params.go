@@ -27,9 +27,16 @@ const (
 	chatRulesMaxKeywordRune = 100
 	chatRuleDescriptionRune = 300
 	chatRuleMaxLabels       = 20
+
+	chatResourceListDefaultLimit   = 20
+	chatResourceListMaxLimit       = 50
+	chatResourceListMaxKeywordRune = 100
 )
 
-var chatNamespacePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)
+var (
+	chatNamespacePattern    = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)
+	chatResourceTypePattern = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
+)
 
 type chatMetricParams struct {
 	AccountID  string            `json:"account_id"`
@@ -52,6 +59,14 @@ type chatAlertRulesParams struct {
 	Limit     int    `json:"limit"`
 }
 
+type chatResourceListParams struct {
+	AccountID    string `json:"account_id"`
+	ResourceType string `json:"resource_type"`
+	Region       string `json:"region"`
+	Keyword      string `json:"keyword"`
+	Limit        int    `json:"limit"`
+}
+
 func decodeToolParams(raw map[string]any, out any) (bool, error) {
 	if len(raw) == 0 {
 		return false, nil
@@ -66,14 +81,15 @@ func decodeToolParams(raw map[string]any, out any) (bool, error) {
 	return true, nil
 }
 
-// buildMetricEvidenceQuery 合并模型参数与告警推导值，并执行 §10.12.1 的边界校验。
+// buildMetricEvidenceQuery 合并模型参数、告警推导与资源上下文推导，并执行 §10.12.1 的边界校验。
+// 优先级：模型参数 > 告警推导 > 资源上下文推导。
 // 返回 status 非空表示不应发起取数：skipped（上下文缺失）或 invalid_argument（参数非法）。
-func buildMetricEvidenceQuery(alert *AlertContext, raw map[string]any, now int64) (MetricEvidenceQuery, string, string) {
-	var derived MetricEvidenceQuery
-	derivedSkip := "no_alert"
+func buildMetricEvidenceQuery(alert *AlertContext, resource *AssetContext, raw map[string]any, now int64) (MetricEvidenceQuery, string, string) {
+	alertQuery, alertSkip := MetricEvidenceQuery{}, "no_alert"
 	if alert != nil {
-		derived, derivedSkip = deriveMetricEvidenceQuery(alert)
+		alertQuery, alertSkip = deriveMetricEvidenceQuery(alert)
 	}
+	resourceQuery, resourceSkip := deriveResourceMetricQuery(resource)
 
 	params := chatMetricParams{}
 	hasParams, err := decodeToolParams(raw, &params)
@@ -86,11 +102,19 @@ func buildMetricEvidenceQuery(alert *AlertContext, raw map[string]any, now int64
 	params.Namespace = strings.TrimSpace(params.Namespace)
 	params.Metric = strings.TrimSpace(params.Metric)
 	params.Aggregator = strings.TrimSpace(params.Aggregator)
-	if !hasParams && derivedSkip != "" {
-		return MetricEvidenceQuery{}, "skipped", derivedSkip
+	if !hasParams && alertSkip != "" && resourceSkip != "" {
+		reason := "no_alert"
+		if alert != nil {
+			reason = alertSkip
+		} else if resource != nil {
+			reason = resourceSkip
+		}
+		return MetricEvidenceQuery{}, "skipped", reason
 	}
 
-	query := derived
+	query := MetricEvidenceQuery{}
+	mergeMetricQueryFields(&query, resourceQuery)
+	mergeMetricQueryFields(&query, alertQuery)
 	if params.AccountID != "" {
 		query.AccountID = params.AccountID
 	}
@@ -151,14 +175,57 @@ func buildMetricEvidenceQuery(alert *AlertContext, raw map[string]any, now int64
 	}
 
 	// 阈值只在指标与告警推导指标一致时继承，避免模型换指标后仍套用旧阈值。
-	if strings.EqualFold(query.Metric, derived.Metric) {
-		query.Threshold = derived.Threshold
-		query.Operator = derived.Operator
+	if alertQuery.Metric != "" && strings.EqualFold(query.Metric, alertQuery.Metric) {
+		query.Threshold = alertQuery.Threshold
+		query.Operator = alertQuery.Operator
 	} else {
 		query.Threshold = nil
 		query.Operator = ""
 	}
 	return query, "", ""
+}
+
+// mergeMetricQueryFields 把 src 的非空推导字段覆盖到 dst；用于资源上下文（低）与告警（中）的逐层回退。
+func mergeMetricQueryFields(dst *MetricEvidenceQuery, src MetricEvidenceQuery) {
+	if dst == nil {
+		return
+	}
+	if src.AccountID != "" {
+		dst.AccountID = src.AccountID
+	}
+	if src.Region != "" {
+		dst.Region = src.Region
+	}
+	if src.ProjectID != "" {
+		dst.ProjectID = src.ProjectID
+	}
+	if src.Namespace != "" {
+		dst.Namespace = src.Namespace
+	}
+	if src.Metric != "" {
+		dst.Metric = src.Metric
+	}
+	if len(src.Dimensions) > 0 {
+		dst.Dimensions = src.Dimensions
+	}
+	if src.From > 0 {
+		dst.From = src.From
+	}
+	if src.To > 0 {
+		dst.To = src.To
+	}
+	if src.Period > 0 {
+		dst.Period = src.Period
+	}
+	if src.Aggregator != "" {
+		dst.Aggregator = src.Aggregator
+	}
+	if src.Threshold != nil {
+		dst.Threshold = src.Threshold
+	}
+	if src.Operator != "" {
+		dst.Operator = src.Operator
+	}
 }
 
 func validateMetricToolQuery(q MetricEvidenceQuery) string {
@@ -213,8 +280,9 @@ func validateMetricToolQuery(q MetricEvidenceQuery) string {
 	return ""
 }
 
-// buildAlertRuleQuery 合并模型参数与告警标签；namespace 必须显式提供或可从告警推导。
-func buildAlertRuleQuery(alert *AlertContext, raw map[string]any) (AlertRuleQuery, string, string) {
+// buildAlertRuleQuery 合并模型参数、告警标签与资源上下文；namespace 必须显式提供或可推导。
+// 优先级：模型参数 > 告警标签 > 资源上下文。
+func buildAlertRuleQuery(alert *AlertContext, resource *AssetContext, raw map[string]any) (AlertRuleQuery, string, string) {
 	params := chatAlertRulesParams{}
 	if _, err := decodeToolParams(raw, &params); err != nil {
 		return AlertRuleQuery{}, chatObservationStatusInvalidArgument, "invalid alert.rules.list params"
@@ -226,23 +294,40 @@ func buildAlertRuleQuery(alert *AlertContext, raw map[string]any) (AlertRuleQuer
 		Keyword:   strings.TrimSpace(params.Keyword),
 		Limit:     params.Limit,
 	}
+	fallback := AlertRuleQuery{}
+	if resource != nil {
+		selector := deriveResourceCloudSelector(resource)
+		fallback.AccountID = strings.TrimSpace(resource.AccountID)
+		fallback.Region = strings.TrimSpace(resource.Region)
+		fallback.Namespace = selector.Namespace
+	}
 	if alert != nil {
 		labels := alert.Labels
 		if labels == nil {
 			labels = map[string]string{}
 		}
-		if query.AccountID == "" {
-			query.AccountID = strings.TrimSpace(labels["account_id"])
+		if v := strings.TrimSpace(labels["account_id"]); v != "" {
+			fallback.AccountID = v
 		}
-		if query.Region == "" {
-			query.Region = strings.TrimSpace(labels["region"])
+		if v := strings.TrimSpace(labels["region"]); v != "" {
+			fallback.Region = v
 		}
-		if query.Namespace == "" {
-			query.Namespace = strings.TrimSpace(labels["ces_namespace"])
+		namespace := strings.TrimSpace(labels["ces_namespace"])
+		if namespace == "" {
+			namespace = evidenceAnnotationString(alert.Annotations, "ces_namespace")
 		}
-		if query.Namespace == "" {
-			query.Namespace = evidenceAnnotationString(alert.Annotations, "ces_namespace")
+		if namespace != "" {
+			fallback.Namespace = namespace
 		}
+	}
+	if query.AccountID == "" {
+		query.AccountID = fallback.AccountID
+	}
+	if query.Region == "" {
+		query.Region = fallback.Region
+	}
+	if query.Namespace == "" {
+		query.Namespace = fallback.Namespace
 	}
 	if query.AccountID == "" {
 		return AlertRuleQuery{}, "skipped", "no_account"
@@ -265,6 +350,49 @@ func buildAlertRuleQuery(alert *AlertContext, raw map[string]any) (AlertRuleQuer
 	}
 	if query.Limit > chatRulesMaxLimit {
 		return AlertRuleQuery{}, chatObservationStatusInvalidArgument, "limit must be at most 50"
+	}
+	return query, "", ""
+}
+
+// buildResourceListQuery 校验 resources.list 参数；account_id 必填，可回退当前资源上下文。
+func buildResourceListQuery(resource *AssetContext, raw map[string]any) (ResourceQuery, string, string) {
+	params := chatResourceListParams{}
+	if _, err := decodeToolParams(raw, &params); err != nil {
+		return ResourceQuery{}, chatObservationStatusInvalidArgument, "invalid resources.list params"
+	}
+	query := ResourceQuery{
+		AccountID:    strings.TrimSpace(params.AccountID),
+		ResourceType: strings.ToLower(strings.TrimSpace(params.ResourceType)),
+		Region:       strings.TrimSpace(params.Region),
+		Keyword:      strings.TrimSpace(params.Keyword),
+		Limit:        params.Limit,
+	}
+	if resource != nil {
+		if query.AccountID == "" {
+			query.AccountID = strings.TrimSpace(resource.AccountID)
+		}
+		if query.Region == "" {
+			query.Region = strings.TrimSpace(resource.Region)
+		}
+	}
+	if query.AccountID == "" {
+		return ResourceQuery{}, "skipped", "no_account"
+	}
+	if utf8.RuneCountInString(query.AccountID) > chatMetricMaxIdentityRunes ||
+		utf8.RuneCountInString(query.Region) > chatMetricMaxIdentityRunes {
+		return ResourceQuery{}, chatObservationStatusInvalidArgument, "account_id or region is too long"
+	}
+	if query.ResourceType != "" && !chatResourceTypePattern.MatchString(query.ResourceType) {
+		return ResourceQuery{}, chatObservationStatusInvalidArgument, "invalid resource_type"
+	}
+	if utf8.RuneCountInString(query.Keyword) > chatResourceListMaxKeywordRune {
+		return ResourceQuery{}, chatObservationStatusInvalidArgument, "keyword exceeds 100 characters"
+	}
+	if query.Limit <= 0 {
+		query.Limit = chatResourceListDefaultLimit
+	}
+	if query.Limit > chatResourceListMaxLimit {
+		return ResourceQuery{}, chatObservationStatusInvalidArgument, "limit must be at most 50"
 	}
 	return query, "", ""
 }

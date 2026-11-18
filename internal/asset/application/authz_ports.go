@@ -25,3 +25,8 @@ type AuthorizationPort interface {
 	Authorize(ctx context.Context, in AuthorizationInput) (*AuthorizationResult, error)
 	ResolveAccessibleOwnerTeams(ctx context.Context, userID string) ([]string, bool, error)
 }
+
+// AccountScopePort 读取集成账号的归属团队与区域，用于资源对象级数据范围校验。
+type AccountScopePort interface {
+	ResolveAccountScope(ctx context.Context, accountID string) (ownerTeam string, regions []string, err error)
+}

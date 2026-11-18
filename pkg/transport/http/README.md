@@ -24,6 +24,7 @@ identity/interfaces/http
 | `OK` | Gin Context、data | 成功响应 |
 | `Fail` | Gin Context、error | 按统一错误码失败响应 |
 | `FailWith` | Gin Context、code、message | 直接返回指定业务错误 |
+| `BindJSON` | Gin Context、目标对象 | 解码前校验原始字节 UTF-8，非法直接 `INVALID_ARGUMENT` |
 | health | 依赖检查结果 | 健康/就绪接口使用 |
 
 ## 出参

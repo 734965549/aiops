@@ -115,4 +115,7 @@ func mapAccountError(err error) error {
 	return apperr.Wrap(err, apperr.CodeInternal, "load integration account failed")
 }
 
-var _ assetapp.IntegrationAccountPort = (*AccountAdapter)(nil)
+var (
+	_ assetapp.IntegrationAccountPort = (*AccountAdapter)(nil)
+	_ assetapp.AccountScopePort       = (*AccountAdapter)(nil)
+)

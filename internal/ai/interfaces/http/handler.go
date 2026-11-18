@@ -109,7 +109,7 @@ func (h *Handler) UpsertProvider(c *gin.Context) {
 		return
 	}
 	var req providerRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "invalid provider request")
 		return
 	}
@@ -170,7 +170,7 @@ func (h *Handler) Invoke(c *gin.Context) {
 		return
 	}
 	var req invokeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "invalid invoke request")
 		return
 	}
@@ -223,7 +223,7 @@ func (h *Handler) AnalyzeAlert(c *gin.Context) {
 		return
 	}
 	var req analyzeAlertRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "alert_id is required")
 		return
 	}

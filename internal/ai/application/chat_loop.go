@@ -239,6 +239,18 @@ func (s *ChatService) runLoopToolRequests(ctx context.Context, userID string, se
 			if s.refreshAlertRulesObservation(ctx, userID, session, data, req.Params) {
 				executed++
 			}
+		case chatToolAccountsList:
+			if s.refreshAccountsObservation(ctx, userID, session, data) {
+				executed++
+			}
+		case chatToolResourceAnalyze:
+			if s.refreshResourceObservation(ctx, userID, session, data) {
+				executed++
+			}
+		case chatToolResourcesList:
+			if s.refreshResourcesObservation(ctx, userID, session, data, req.Params) {
+				executed++
+			}
 		}
 	}
 	return executed
@@ -280,7 +292,7 @@ func (s *ChatService) refreshMetricObservation(ctx context.Context, userID strin
 		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
 		return false
 	}
-	query, status, reason := buildMetricEvidenceQuery(data.Alert, params, s.now().Unix())
+	query, status, reason := buildMetricEvidenceQuery(data.Alert, data.Resource, params, s.now().Unix())
 	if status != "" {
 		obs.Status = status
 		obs.Reason = reason
@@ -317,7 +329,7 @@ func (s *ChatService) refreshAlertRulesObservation(ctx context.Context, userID s
 		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
 		return false
 	}
-	query, status, reason := buildAlertRuleQuery(data.Alert, params)
+	query, status, reason := buildAlertRuleQuery(data.Alert, data.Resource, params)
 	if status != "" {
 		obs.Status = status
 		obs.Reason = reason
@@ -358,4 +370,120 @@ func (s *ChatService) refreshAlertRulesObservation(ctx context.Context, userID s
 	obs.Summary = "告警规则查询 " + obs.Status
 	s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
 	return false
+}
+
+// refreshAccountsObservation 在循环内重新执行账号发现；未装配时返回 skipped 观测。
+func (s *ChatService) refreshAccountsObservation(ctx context.Context, userID string, session *domain.Session, data *chatContextData) bool {
+	obs := s.checkTool(ctx, userID, chatToolAccountsList)
+	if !obs.Allowed {
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	if s.accounts == nil {
+		obs.Status = "skipped"
+		obs.Reason = "account discovery is not configured"
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	return s.loadAccountObservation(ctx, userID, session, "", data, obs)
+}
+
+// refreshResourceObservation 在循环内重新读取资源上下文；缺上下文/未装配时返回 skipped 观测。
+func (s *ChatService) refreshResourceObservation(ctx context.Context, userID string, session *domain.Session, data *chatContextData) bool {
+	obs := s.checkTool(ctx, userID, chatToolResourceAnalyze)
+	if !obs.Allowed {
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	resourceID := strings.TrimSpace(session.Context.ResourceID)
+	if resourceID == "" {
+		obs.Status = "skipped"
+		obs.Reason = "no_resource"
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	if s.assets == nil {
+		obs.Status = "skipped"
+		obs.Reason = "resource reader is not configured"
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	return s.loadResourceObservation(ctx, userID, session, "", data, resourceID, obs)
+}
+
+// refreshResourcesObservation 按账号发现云同步资源，供模型获取实例维度。
+func (s *ChatService) refreshResourcesObservation(ctx context.Context, userID string, session *domain.Session, data *chatContextData, params map[string]any) bool {
+	obs := s.checkTool(ctx, userID, chatToolResourcesList)
+	if !obs.Allowed {
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	if s.resources == nil {
+		obs.Status = "skipped"
+		obs.Reason = "resource discovery is not configured"
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	query, status, reason := buildResourceListQuery(data.Resource, params)
+	if status != "" {
+		obs.Status = status
+		obs.Reason = reason
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	result, err := s.resources.List(ctx, userID, query)
+	if err != nil {
+		logger.From(ctx).Warn("ai chat resource discovery failed", logger.Error(err))
+		obs.Status = EvidenceStatusError
+		obs.Reason = "resource discovery failed"
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	if result == nil {
+		obs.Status = EvidenceStatusError
+		obs.Reason = "empty resource list result"
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	obs.Status = result.Status
+	if obs.Status == "" {
+		obs.Status = EvidenceStatusOK
+	}
+	obs.Reason = result.Reason
+	if obs.Status != EvidenceStatusOK {
+		obs.Summary = "资源发现 " + obs.Status
+		s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+		return false
+	}
+	resources := make([]ResourceSummary, 0, len(result.Resources))
+	for _, item := range result.Resources {
+		resources = append(resources, enrichResourceSummary(item))
+	}
+	obs.Summary = fmt.Sprintf("云同步资源 %d 个（账号 %s）", len(resources), query.AccountID)
+	obs.Data = map[string]any{
+		"account_id": query.AccountID, "resource_type": query.ResourceType,
+		"region": query.Region, "resource_count": len(resources), "resources": resources,
+	}
+	s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
+	return true
+}
+
+// enrichResourceSummary 用服务端推导结果补齐 namespace/主维度，并清空仅供推导的标签。
+func enrichResourceSummary(item ResourceSummary) ResourceSummary {
+	selector := deriveResourceCloudSelector(&AssetContext{
+		CloudResourceType: item.CloudResourceType,
+		CloudResourceID:   item.CloudResourceID,
+		Labels:            item.Labels,
+	})
+	if item.Namespace == "" {
+		item.Namespace = selector.Namespace
+	}
+	if item.DimensionName == "" {
+		item.DimensionName = selector.DimensionName
+	}
+	if item.DimensionValue == "" {
+		item.DimensionValue = selector.DimensionValue
+	}
+	item.Labels = nil
+	return item
 }

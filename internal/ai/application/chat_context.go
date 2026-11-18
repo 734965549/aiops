@@ -15,6 +15,7 @@ import (
 // chatContextData 是对话上下文与只读观测的聚合结果。
 type chatContextData struct {
 	Alert        *AlertContext
+	Resource     *AssetContext
 	Evidence     *MetricEvidenceResult
 	Observations []ChatObservation
 	ToolCalls    []domain.ToolCall
@@ -40,8 +41,12 @@ type chatContextData struct {
 // 无权用户通过拒绝原因探测告警是否存在。
 func (s *ChatService) gatherContext(ctx context.Context, userID string, session *domain.Session, userMessageID string) chatContextData {
 	var data chatContextData
+	// 账号发现不依赖页面上下文：无告警/资源时也执行，让模型第 0 轮就能拿到可见 account_id 清单。
+	s.gatherAccounts(ctx, userID, session, userMessageID, &data)
 	alertID := strings.TrimSpace(session.Context.AlertID)
 	if alertID == "" || s.alerts == nil {
+		// 无告警上下文时尝试按资源上下文推导账号/区域/命名空间/维度。
+		s.gatherResourceContext(ctx, userID, session, userMessageID, &data)
 		return data
 	}
 	alertObs := s.checkTool(ctx, userID, chatToolAlarmAnalyze)
@@ -77,6 +82,118 @@ func (s *ChatService) gatherContext(ctx context.Context, userID string, session 
 		appendMetricEvidenceReferences(&data, data.Evidence)
 	}
 	return data
+}
+
+// gatherAccounts 执行 accounts.list 工具并把可见账号写入观测；返回是否真正执行。
+// 清单为空也是合法结果：模型据此提示用户到云账号接入页确认。
+func (s *ChatService) gatherAccounts(ctx context.Context, userID string, session *domain.Session, userMessageID string, data *chatContextData) bool {
+	if s.accounts == nil {
+		return false
+	}
+	obs := s.checkTool(ctx, userID, chatToolAccountsList)
+	if !obs.Allowed {
+		s.appendToolResult(ctx, userID, session.SessionID, userMessageID, data, obs)
+		return false
+	}
+	return s.loadAccountObservation(ctx, userID, session, userMessageID, data, obs)
+}
+
+// loadAccountObservation 在工具权限已通过后执行账号发现并写入观测。
+func (s *ChatService) loadAccountObservation(ctx context.Context, userID string, session *domain.Session, userMessageID string, data *chatContextData, obs ChatObservation) bool {
+	result, err := s.accounts.List(ctx, userID)
+	if err != nil {
+		logger.From(ctx).Warn("ai chat account discovery failed", logger.Error(err))
+		obs.Status = EvidenceStatusError
+		obs.Reason = "account list failed"
+		s.appendToolResult(ctx, userID, session.SessionID, userMessageID, data, obs)
+		return false
+	}
+	if result == nil {
+		obs.Status = EvidenceStatusError
+		obs.Reason = "empty account list result"
+		s.appendToolResult(ctx, userID, session.SessionID, userMessageID, data, obs)
+		return false
+	}
+	obs.Status = result.Status
+	if obs.Status == "" {
+		obs.Status = EvidenceStatusOK
+	}
+	obs.Reason = result.Reason
+	if obs.Status != EvidenceStatusOK {
+		obs.Summary = "账号发现 " + obs.Status
+		s.appendToolResult(ctx, userID, session.SessionID, userMessageID, data, obs)
+		return false
+	}
+	obs.Summary = fmt.Sprintf("可见集成账号 %d 个（共 %d 个）", len(result.Accounts), result.Total)
+	obs.Data = map[string]any{"accounts": result.Accounts, "total": result.Total}
+	s.appendToolResult(ctx, userID, session.SessionID, userMessageID, data, obs)
+	return true
+}
+
+// gatherResourceContext 读取会话资源上下文并注入账号/区域/命名空间/维度推导结果。
+// 仅在没有告警上下文时执行；读取失败按 denied/error 观测降级，不阻断对话。
+func (s *ChatService) gatherResourceContext(ctx context.Context, userID string, session *domain.Session, userMessageID string, data *chatContextData) bool {
+	resourceID := strings.TrimSpace(session.Context.ResourceID)
+	if resourceID == "" || s.assets == nil {
+		return false
+	}
+	obs := s.checkTool(ctx, userID, chatToolResourceAnalyze)
+	if !obs.Allowed {
+		s.appendToolResult(ctx, userID, session.SessionID, userMessageID, data, obs)
+		return false
+	}
+	return s.loadResourceObservation(ctx, userID, session, userMessageID, data, resourceID, obs)
+}
+
+// loadResourceObservation 在工具权限已通过后读取资源并写入观测。
+func (s *ChatService) loadResourceObservation(ctx context.Context, userID string, session *domain.Session, userMessageID string, data *chatContextData, resourceID string, obs ChatObservation) bool {
+	resource, err := s.assets.GetForAnalysis(ctx, userID, resourceID)
+	if err != nil {
+		obs.Status = "error"
+		obs.Reason = "resource_load_failed"
+		switch apperr.CodeOf(err) {
+		case apperr.CodePermissionDenied:
+			obs.Status = "denied"
+			obs.Reason = "data_scope_denied"
+		case apperr.CodeNotFound:
+			obs.Reason = "resource_not_found"
+		case apperr.CodeFailedPrecondition:
+			obs.Reason = "resource_not_cloud_linked"
+		}
+		logger.From(ctx).Warn("ai chat resource context load failed",
+			logger.String("resource_id", resourceID),
+			logger.String("status", obs.Status),
+			logger.String("reason", obs.Reason),
+			logger.Error(err))
+		s.appendToolResult(ctx, userID, session.SessionID, userMessageID, data, obs)
+		return false
+	}
+	if resource == nil {
+		obs.Status = "error"
+		obs.Reason = "empty resource context"
+		s.appendToolResult(ctx, userID, session.SessionID, userMessageID, data, obs)
+		return false
+	}
+	data.Resource = resource
+	selector := deriveResourceCloudSelector(resource)
+	obs.Status = EvidenceStatusOK
+	obs.Summary = fmt.Sprintf("已读取资源 %s（%s）",
+		firstNonEmptyValue(resource.Name, resource.CloudResourceID, resource.ResourceID),
+		firstNonEmptyValue(resource.CloudResourceType, resource.ResourceType))
+	obs.Data = map[string]any{
+		"resource_id": resource.ResourceID, "name": resource.Name,
+		"application_id":      resource.ApplicationID,
+		"resource_type":       resource.ResourceType,
+		"cloud_resource_type": resource.CloudResourceType,
+		"cloud_resource_id":   resource.CloudResourceID,
+		"account_id":          resource.AccountID, "region": resource.Region,
+		"namespace": selector.Namespace,
+	}
+	if selector.DimensionName != "" && selector.DimensionValue != "" {
+		obs.Data["dimensions"] = map[string]string{selector.DimensionName: selector.DimensionValue}
+	}
+	s.appendToolResult(ctx, userID, session.SessionID, userMessageID, data, obs)
+	return true
 }
 
 // appendAlertLoadFailure 把告警读取失败降级为一次工具观测：数据范围拒绝标记 denied，
@@ -237,6 +354,15 @@ func (s *ChatService) checkTool(ctx context.Context, userID, toolCode string) Ch
 	obs.Mode = resp.Mode
 	obs.Status = "ok"
 	return obs
+}
+
+func firstNonEmptyValue(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (s *ChatService) appendToolResult(ctx context.Context, userID, sessionID, messageID string, data *chatContextData, obs ChatObservation) {

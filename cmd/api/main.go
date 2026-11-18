@@ -18,9 +18,11 @@ import (
 
 	aiapp "github.com/734965549/aiops/internal/ai/application"
 	aialert "github.com/734965549/aiops/internal/ai/infrastructure/alert"
+	aiasset "github.com/734965549/aiops/internal/ai/infrastructure/asset"
 	aiaudit "github.com/734965549/aiops/internal/ai/infrastructure/audit"
 	aicred "github.com/734965549/aiops/internal/ai/infrastructure/credential"
 	aiidentity "github.com/734965549/aiops/internal/ai/infrastructure/identity"
+	aiintegration "github.com/734965549/aiops/internal/ai/infrastructure/integration"
 	aiobs "github.com/734965549/aiops/internal/ai/infrastructure/observability"
 	aipg "github.com/734965549/aiops/internal/ai/infrastructure/persistence"
 	aihttp "github.com/734965549/aiops/internal/ai/interfaces/http"
@@ -36,6 +38,7 @@ import (
 	alerthttp "github.com/734965549/aiops/internal/alert/interfaces/http"
 	assetapp "github.com/734965549/aiops/internal/asset/application"
 	assetaudit "github.com/734965549/aiops/internal/asset/infrastructure/audit"
+	assetauthz "github.com/734965549/aiops/internal/asset/infrastructure/authz"
 	assetinteg "github.com/734965549/aiops/internal/asset/infrastructure/integration"
 	assetobs "github.com/734965549/aiops/internal/asset/infrastructure/observability"
 	assetpg "github.com/734965549/aiops/internal/asset/infrastructure/persistence"
@@ -409,6 +412,14 @@ func main() {
 		aiAuditRecorder,
 	)
 	aiChatSvc.SetAlertRules(aiRulesCollector)
+	// 上下文不足修复：账号发现 + 资源上下文 + 云资源发现（ops/ai-contract.md §10.12.1）。
+	aiChatSvc.SetAccounts(aiintegration.NewAccountDiscovery(
+		integAccountSvc, aiAccountAccess, app.Cfg.AI.EvidenceTimeout(),
+	))
+	aiChatSvc.SetAssets(aiasset.NewReaderAdapter(assetSvc))
+	aiChatSvc.SetResources(aiasset.NewDiscoveryAdapter(
+		assetSvc, obsAccountAdapter, aiAccountAccess, app.Cfg.AI.EvidenceTimeout(),
+	))
 	aiChatSvc.SetTurnBudget(app.Cfg.AI.TurnBudgetTimeout())
 	// 相似案例记忆（阶段 1）：反馈沉淀 + 对话/分析前检索注入。
 	// 检索失败只降级（memory_status=error），不阻断回答主链路。
@@ -450,6 +461,8 @@ func main() {
 	assetSyncBatchRepo := assetpg.NewSyncBatchRepository(app.DB)
 	assetDiscoveryAdapter := assetobs.NewDiscoveryAdapter(obsQuerySvc)
 	assetIntegAdapter := assetinteg.NewAccountAdapter(integAccountRepo, integCapabilityRepo)
+	// AI 资源读取/发现的对象级数据范围与指标取数同口径。
+	assetSvc.SetDataScope(assetauthz.NewAdapter(authorizationSvc), assetIntegAdapter)
 	// 注入进程级 context 与数据范围授权端口，使用单一强制依赖构造器完成装配。
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()

@@ -57,6 +57,18 @@ type ResourceFilterOptions struct {
 	Regions            []string
 }
 
+// CloudResourceFilter 云同步资源发现过滤（AI resources.list）。
+// IntegrationAccountID 必填；OwnerTeams 非空时仅返回账号 owner_team 在集合内的资源，
+// 通过子查询 integration_account 过滤，不在 asset 层 join 模型。
+type CloudResourceFilter struct {
+	IntegrationAccountID string
+	CloudResourceType    string
+	Region               string
+	Keyword              string
+	OwnerTeams           []string
+	Limit                int
+}
+
 // ResourceRepository 资源注册表持久化接口。
 type ResourceRepository interface {
 	Create(ctx context.Context, res *Resource) error
@@ -66,6 +78,10 @@ type ResourceRepository interface {
 	// ListFilterOptions 返回当前应用下 cloud_resource_type / region 的去重字典值，按字典序升序。
 	ListFilterOptions(ctx context.Context, applicationID string) (ResourceFilterOptions, error)
 	GetByID(ctx context.Context, id string) (*Resource, error)
+	// ListByCloudResourceID 按云厂商稳定 ID 查询云同步资源（可能跨账号/区域命中多条）。
+	ListByCloudResourceID(ctx context.Context, cloudResourceID string) ([]Resource, error)
+	// ListCloudResourcesPaged 按账号发现云同步资源（仅 source=cloud_sync），按创建时间稳定排序。
+	ListCloudResourcesPaged(ctx context.Context, filter CloudResourceFilter) ([]Resource, error)
 	Update(ctx context.Context, res *Resource) error
 	Delete(ctx context.Context, id string) error
 	CountByApplicationID(ctx context.Context, applicationID string) (int64, error)

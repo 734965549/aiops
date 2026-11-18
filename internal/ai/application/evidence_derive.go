@@ -32,6 +32,164 @@ var metricEvidenceMetaLabels = map[string]struct{}{
 	"cloud_resource_id": {},
 }
 
+// chatResourceNamespaceByType 对齐 observability 侧 CES namespace 映射；
+// AI 侧保留独立表，避免依赖 provider 实现（ops/ai-contract.md §10.12.1）。
+var chatResourceNamespaceByType = map[string]string{
+	"ecs":       "SYS.ECS",
+	"evs":       "SYS.EVS",
+	"vpc":       "SYS.VPC",
+	"eip":       "SYS.VPC",
+	"bandwidth": "SYS.VPC",
+	"subnet":    "SYS.VPC",
+	"peering":   "SYS.VPC",
+	"elb":       "SYS.ELB",
+	"rds":       "SYS.RDS",
+	"obs":       "SYS.OBS",
+	"dcs":       "SYS.DCS",
+	"dms":       "SYS.DMS",
+	"cce":       "SYS.CCE",
+	"cbr":       "SYS.CBR",
+	"vpcep":     "SYS.VPCEP",
+	"nat":       "SYS.NAT",
+	"sfs":       "SYS.SFS",
+	"apm":       "SYS.APM",
+	"ces":       "SYS.CES",
+}
+
+// chatResourceDimensionByType 是各云资源类型的 CES 主维度名，与资产同步的优选维度一致。
+var chatResourceDimensionByType = map[string]string{
+	"ecs":       "instance_id",
+	"evs":       "disk_name",
+	"eip":       "publicip_id",
+	"bandwidth": "bandwidth_id",
+	"subnet":    "subnet_id",
+	"peering":   "peering_id",
+	"vpc":       "vpc_id",
+	"elb":       "loadbalancer_id",
+	"rds":       "rds_cluster_id",
+	"obs":       "bucket_name",
+	"dcs":       "dcs_instance_id",
+	"dms":       "dms_instance_id",
+	"cce":       "cluster_id",
+	"cbr":       "instance_id",
+	"vpcep":     "vpcep_id",
+	"nat":       "nat_gateway_id",
+	"sfs":       "share_id",
+}
+
+// chatResourceDimensionByNamespace 在云资源类型缺失时按 namespace 兜底主维度。
+var chatResourceDimensionByNamespace = map[string]string{
+	"SYS.ECS":               "instance_id",
+	"SYS.EVS":               "disk_name",
+	"SYS.VPC":               "publicip_id",
+	"SYS.ELB":               "loadbalancer_id",
+	"SYS.RDS":               "rds_cluster_id",
+	"SYS.RDS_MYSQL_CLUSTER": "rds_cluster_id",
+	"SYS.OBS":               "bucket_name",
+	"SYS.DCS":               "dcs_instance_id",
+	"SYS.DMS":               "dms_instance_id",
+	"SYS.CCE":               "cluster_id",
+	"SYS.CBR":               "instance_id",
+	"SYS.VPCEP":             "vpcep_id",
+	"SYS.NAT":               "nat_gateway_id",
+	"SYS.SFS":               "share_id",
+}
+
+type resourceCloudSelector struct {
+	Namespace      string
+	DimensionName  string
+	DimensionValue string
+}
+
+func containsDimension(dims []string, want string) bool {
+	for _, dim := range dims {
+		if strings.EqualFold(dim, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// deriveResourceCloudSelector 从资产标签与云资源类型推导 CES namespace 与主维度。
+// namespace：labels.namespace > 云类型映射。
+// 维度名：云类型映射命中 labels.dim_name（云同步实际维度）时优先，否则取实际维度首项，
+// 再回退云类型映射与 namespace 映射（RDS 单机/集群、VPC 子类型维度不同，以实际维度为准）。
+// 维度值：labels[主维度] > labels.instance_id > cloud_resource_id（云同步写入的稳定 ID）。
+func deriveResourceCloudSelector(resource *AssetContext) resourceCloudSelector {
+	if resource == nil {
+		return resourceCloudSelector{}
+	}
+	labels := resource.Labels
+	cloudType := strings.ToLower(strings.TrimSpace(resource.CloudResourceType))
+	namespace := strings.TrimSpace(labels["namespace"])
+	if namespace == "" {
+		namespace = chatResourceNamespaceByType[cloudType]
+	}
+	actualDims := make([]string, 0, 2)
+	for _, item := range strings.Split(labels["dim_name"], ",") {
+		if name := strings.TrimSpace(item); name != "" {
+			actualDims = append(actualDims, name)
+		}
+	}
+	dimensionName := ""
+	if typeDim := chatResourceDimensionByType[cloudType]; typeDim != "" && containsDimension(actualDims, typeDim) {
+		dimensionName = typeDim
+	}
+	if dimensionName == "" && len(actualDims) > 0 {
+		dimensionName = actualDims[0]
+	}
+	if dimensionName == "" {
+		dimensionName = chatResourceDimensionByType[cloudType]
+	}
+	if dimensionName == "" {
+		dimensionName = chatResourceDimensionByNamespace[namespace]
+	}
+	dimensionValue := ""
+	if dimensionName != "" {
+		dimensionValue = strings.TrimSpace(labels[dimensionName])
+	}
+	if dimensionValue == "" {
+		dimensionValue = strings.TrimSpace(labels["instance_id"])
+	}
+	if dimensionValue == "" {
+		dimensionValue = strings.TrimSpace(resource.CloudResourceID)
+	}
+	return resourceCloudSelector{
+		Namespace: namespace, DimensionName: dimensionName, DimensionValue: dimensionValue,
+	}
+}
+
+// deriveResourceMetricQuery 从资源上下文推导指标取数请求（指标名不可推导，留给模型指定）。
+// 返回非空 skip 原因表示关键维度缺失；query 中仍保留已推导字段供模型参数回填。
+func deriveResourceMetricQuery(resource *AssetContext) (MetricEvidenceQuery, string) {
+	query := MetricEvidenceQuery{Period: defaultEvidencePeriod, Aggregator: "average"}
+	if resource == nil {
+		return query, "no_resource"
+	}
+	query.AccountID = strings.TrimSpace(resource.AccountID)
+	if query.AccountID == "" {
+		return query, "no_account"
+	}
+	query.Region = strings.TrimSpace(resource.Region)
+	if query.Region == "" {
+		return query, "no_region"
+	}
+	selector := deriveResourceCloudSelector(resource)
+	query.Namespace = selector.Namespace
+	if query.Namespace == "" {
+		return query, "no_namespace"
+	}
+	if selector.DimensionName != "" && selector.DimensionValue != "" {
+		query.Dimensions = map[string]string{selector.DimensionName: selector.DimensionValue}
+	}
+	if len(query.Dimensions) == 0 {
+		return query, "no_dimensions"
+	}
+	now := time.Now().Unix()
+	query.From, query.To = now-evidenceMinWindow, now
+	return query, ""
+}
+
 // deriveMetricEvidenceQuery 从告警快照推导只读指标取数请求。
 // 返回非空 skip 原因表示证据不可取，调用方应注入 skipped 状态而不是发起查询。
 func deriveMetricEvidenceQuery(alert *AlertContext) (MetricEvidenceQuery, string) {

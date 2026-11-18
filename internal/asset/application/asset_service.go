@@ -24,6 +24,9 @@ type AssetService struct {
 	refChecker     ApplicationReferenceChecker
 	deleteExecutor ApplicationDeleteExecutor
 	audit          AuditRecorder
+	// authz / accountScopes 用于 AI 资源读取与发现的对象级数据范围校验；nil 时相关能力 fail-closed。
+	authz         AuthorizationPort
+	accountScopes AccountScopePort
 }
 
 // NewAssetService 构造资产管理服务。

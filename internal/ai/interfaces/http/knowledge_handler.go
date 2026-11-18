@@ -129,7 +129,7 @@ func (h *KnowledgeHandler) Create(c *gin.Context) {
 		return
 	}
 	var req knowledgeItemRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "invalid knowledge item request")
 		return
 	}
@@ -149,7 +149,7 @@ func (h *KnowledgeHandler) Update(c *gin.Context) {
 		return
 	}
 	var req knowledgeItemRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "invalid knowledge item request")
 		return
 	}
@@ -171,7 +171,7 @@ func (h *KnowledgeHandler) Review(c *gin.Context) {
 	var req struct {
 		Action string `json:"action" binding:"required"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "action is required")
 		return
 	}
@@ -210,7 +210,7 @@ func (h *KnowledgeHandler) Aggregate(c *gin.Context) {
 		ApplicationID string `json:"application_id" binding:"required"`
 		MinCases      int    `json:"min_cases"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "application_id is required")
 		return
 	}

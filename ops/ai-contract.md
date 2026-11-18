@@ -206,7 +206,7 @@ HTTP 200 且 `code` 为 `"OK"` 时，`data` 内仍可能 `allowed = false`（业
 - AI 生成的命令必须匹配 Execution 模块中的 Command Spec，并由运维人员确认后才能执行。
 - 执行介体、代理、租约和日志回传契约见 `ops/execution-agent-contract.md`。
 
-> 状态（2026-11）：cloud.* 系列与 `execution.tasks.propose` 工具化保持推迟（§10.12.2 / §10.12.3）。对话链路当前可用的只读工具为 `alarm.analyze` / `metrics.query`（§10.6.3）/ `alert.rules.list`（规则体检 MVP，§10.12.1）。
+> 状态（2026-11）：cloud.* 系列与 `execution.tasks.propose` 工具化保持推迟（§10.12.2 / §10.12.3）。对话链路当前可用的只读工具为 `alarm.analyze` / `metrics.query`（§10.6.3）/ `alert.rules.list`（规则体检 MVP）/ `accounts.list` / `resource.analyze` / `resources.list`（上下文发现，§10.12.1）。
 
 ## 7. Provider 类型说明
 
@@ -359,6 +359,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 执行类入口只返回「生成执行计划」动作，前端调用既有 `POST /api/executions/tasks`（`source_type=ai_conversation`），任务进入 Execution `pending_confirm`，需人工输入 `CONFIRM` 后才会执行。
 - 凭据、`api_key`、AK/SK、Token 不进入 prompt、日志、审计明文或前端持久化状态。
 - 工具调用继承当前用户身份，服务端二次校验 RBAC 与工具权限；`allowed=false` 是业务拒绝，前端必须展示 `reason`。
+- AI 模块所有 JSON 请求体必须为有效 UTF-8；服务端在解码前校验原始字节，含非法字节（如 GBK 控制台编码污染）直接返回 `INVALID_ARGUMENT`，防止 `encoding/json` 静默替换为 U+FFFD 后损坏入库。
 
 ### 10.2 权限码
 
@@ -494,14 +495,16 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 #### 10.6.3 工具调用与审计
 
+- 每条消息在 gather 阶段先执行 `accounts.list`（未配置时跳过），把当前用户可见的集成账号清单注入观测，供模型选择 `account_id`。
 - 上下文中的 `alert_id` 会触发告警快照读取：先做 `alarm.analyze` 的 RBAC 与工具权限校验，再由 `AlertReader.GetForAnalysis` 按当前用户的数据范围校验对象（映射见 §10.6.4）；可推导指标查询条件时触发 `metrics.query` 权限校验并采集只读指标证据。
-- 模型可在 Agent Loop 中申请 `metrics.query`（自由参数，§10.12.1）与 `alert.rules.list`（规则体检）；执行类工具仍在白名单之外。
+- 无 `alert_id` 但会话带 `resource_id` 时触发 `resource.analyze`：读取资源并推导 `account_id/region/namespace/dimensions`；资源数据范围由 Asset 应用层按账号归属团队/区域收口（拒绝记为 `status=denied`、`reason=data_scope_denied`）。
+- 模型可在 Agent Loop 中申请 `metrics.query`（自由参数）、`alert.rules.list`（规则体检）、`accounts.list`、`resource.analyze` 与 `resources.list`（资源发现）；执行类工具仍在白名单之外。
 - 每次工具校验/调用都写入审计：`resource_type=ai`、`resource_id=session_id`、`action=tool_invoke`，payload 含 `tool_code/allowed/mode/status/reason/evidence_id/result`，不含 prompt 与凭据。
 - 回答写入审计：`action=chat_message`，含 `status/risk_level/require_confirm/tool_codes/tool_denied/reference_count/provider_id/tokens/degraded_reason`。
 - 数据范围校验口径：
   - 告警快照的对象级数据范围在 `AlertReader` 收口（`POST /api/ai/analyze-alert` 与对话共用同一入口），拒绝时返回 `PERMISSION_DENIED`，不返回任何告警字段；
-  - 对话路径把拒绝降级为一次观测：`alarm.analyze` 的 `allowed=false`、`status=denied`、`reason=data_scope_denied`，不产生告警 `references`，也不返回 `view.alert` 跳转入口，模型仍可基于其它上下文（或降级结果）作答；
-  - 工具校验固定 `SkipDataScope=true` 且排在对象读取之前：告警的数据范围由读取端口判断，而 `metrics.query`、`alert.rules.list`、`execution.tasks.propose` 没有对象上下文（账号级范围由观测取数/规则查询端口二次校验），在此强制数据范围会把正常对话误判为“缺少对象上下文”，也会让无权用户靠拒绝原因探测对象是否存在。
+  - 对话路径把拒绝降级为一次观测：`alarm.analyze` 的 `allowed=true`、`status=denied`、`reason=data_scope_denied`（工具权限本身已通过，拒绝来自对象数据范围），不产生告警 `references`，也不返回 `view.alert` 跳转入口，模型仍可基于其它上下文（或降级结果）作答；
+  - 工具校验固定 `SkipDataScope=true` 且排在对象读取之前：告警/资源的数据范围由各自读取端口判断，而 `metrics.query`、`alert.rules.list`、`accounts.list`、`resources.list`、`execution.tasks.propose` 没有对象上下文（账号级范围由观测取数、规则/资源查询、账号发现端口二次校验），在此强制数据范围会把正常对话误判为“缺少对象上下文”，也会让无权用户靠拒绝原因探测对象是否存在。
   - 分析路径在读取通过后会把同一份对象上下文随 `alarm.analyze` 工具请求下发，由网关复核（纵深防御）。
 - 对话历史最多取最近 12 条送入模型；单条历史内容截断，不读取全量会话。
 
@@ -616,17 +619,18 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - **流式与取消已完成**：见 §10.17（SSE 事件级推送、取消不落回答并写 `chat_canceled` 审计）；同步接口 §10.6 保留不变。
 - **会话分享已完成**：见 §10.18（对内只读链接 + 1–720 小时有效期 + owner 撤销；不提供匿名/对外访问）。
 - **记忆手动管理已完成**：见 §10.19（migration `0054`，管理员检索与手动停用/启用，写 `memory_review` 审计）；回答注入范围不因管理接口扩大。
-- **工具范围扩展（规则体检 MVP）已重启**：当前只读工具为 `alarm.analyze` / `metrics.query`（自由参数）/ `alert.rules.list`（§10.12.1）；日志、资产、变更类只读工具仍推迟接入。
+- **工具范围扩展已落地**：当前只读工具为 `alarm.analyze` / `metrics.query`（自由参数）/ `alert.rules.list` / `accounts.list` / `resource.analyze` / `resources.list`（§10.12.1）；日志、变更类与 `cloud.*` 只读工具仍推迟接入。
 
-### 10.12 演进方向与推迟项（2026-11 决策，规则体检 MVP 已重启）
+### 10.12 演进方向与推迟项（2026-11 决策，规则体检与上下文发现已落地）
 
-2026-11 的「规则体检」场景重启了 §10.12.1 的第一阶段：只落地 `alert.rules.list` 与自由参数 `metrics.query`，其余日志/资产/变更工具、`cloud.*` 系列与 `execution.tasks.propose` 工具化仍保持**推迟**。重启前已在 §10.12.1 补齐工具清单、参数 schema、权限、降级语义与审计口径。
+2026-11 的「规则体检」场景先落地了 `alert.rules.list` 与自由参数 `metrics.query`；「上下文不足」场景随后补齐 `accounts.list` / `resource.analyze` / `resources.list`（migration `0056`）。日志/变更工具、`cloud.*` 系列与 `execution.tasks.propose` 工具化仍保持**推迟**。工具清单、参数 schema、权限、降级语义与审计口径见 §10.12.1。
 
-#### 10.12.1 规则体检只读工具（MVP，已重启）
+#### 10.12.1 规则体检与上下文发现只读工具
 
-- **本次落地**：向对话与 Agent Loop 新增 `alert.rules.list`；`metrics.query` 从“仅按告警推导参数”扩展为“模型可传自由参数、服务端校验并兜底推导”。执行类工具仍不可达。
-- **仍推迟什么**：`logs.search`、`assets.get/list`、`changes.list`、`cloud.*` 系列；资产/变更的对象级数据范围口径未统一前不接入。
-- **为什么先做规则体检**：告警规则查询 Port 已存在（`AlertRuleQueryPort`），指标查询已有成熟证据链与数据范围校验；用 namespace 过滤即可覆盖数据库类规则的 MVP 场景，无需先做 `assets.list`。
+- **已落地**：`alert.rules.list`、自由参数 `metrics.query`、上下文发现三件套 `accounts.list` / `resource.analyze` / `resources.list`。执行类工具仍不可达。
+- **上下文发现解决的问题**：无告警上下文时模型拿不到 `account_id/region/namespace/instance_id`；`accounts.list` 提供账号清单，`resource.analyze` 从资产页/观测页带入资源上下文，`resources.list` 让模型在纯对话场景发现实例。
+- **仍推迟什么**：`logs.search`、`changes.list`、`assets.get`（非云资源详情）、`cloud.*` 系列。资产资源只读范围已按集成账号数据范围收口，但变更类对象仍无统一口径。
+- **为什么先做规则体检**：告警规则查询 Port 已存在（`AlertRuleQueryPort`），指标查询已有成熟证据链与数据范围校验；用 namespace 过滤即可覆盖数据库类规则的 MVP 场景。
 
 **工具与权限**
 
@@ -635,20 +639,23 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | `alert.rules.list` | read_only | AI 工具权限 `alert.rules.list`（migration `0055`，仅 admin） | 按 namespace 查询告警规则及阈值字段 |
 | `metrics.query` | read_only | AI 工具权限 `metrics.query`（既有种子） | 自由参数，服务端校验后取指标证据 |
 | `alarm.analyze` | read_only | AI 工具权限 `alarm.analyze`（既有种子） | 重新读取当前告警快照，无参数 |
+| `accounts.list` | read_only | AI 工具权限 `accounts.list`（migration `0056`，仅 admin） | 列出当前用户可见的启用账号（脱敏摘要，上限 10 条） |
+| `resource.analyze` | read_only | AI 工具权限 `resource.analyze`（migration `0056`，仅 admin） | 读取会话选中的资源（业务 ID 或 cloud_resource_id），推导账号/区域/namespace/主维度 |
+| `resources.list` | read_only | AI 工具权限 `resources.list`（migration `0056`，仅 admin） | 按账号查询本地云同步资源（source=cloud_sync） |
 
-执行路径：`alarm.analyze` 仍由 provider 执行；`metrics.query` / `alert.rules.list` 由 AI application 经 `MetricEvidencePort` / `AlertRuleListPort` 本地执行，不经 `ProviderRegistry` 转发。`toolgateway` 负责工具权限校验与内置工具清单登记（`internal/ai/toolgateway/builtin.go`），两套工具权限均落在 `iam_ai_tool_permission` + `iam_role_ai_tool_permission`。
+执行路径：`alarm.analyze` 仍由 provider 执行；`metrics.query` / `alert.rules.list` 由 AI application 经 `MetricEvidencePort` / `AlertRuleListPort` 本地执行；`accounts.list` 经 `AccountListPort`（Integration `AccountService.List` + 账号数据范围），`resource.analyze` / `resources.list` 经 `AssetReader` / `ResourceDiscoveryPort`（Asset 应用层数据范围）本地执行，均不经 `ProviderRegistry` 转发。`toolgateway` 负责工具权限校验与内置工具清单登记（`internal/ai/toolgateway/builtin.go`），工具权限均落在 `iam_ai_tool_permission` + `iam_role_ai_tool_permission`。
 
 **`metrics.query` 参数 schema（`tool_requests[].params`）**
 
 | 字段 | 类型 | 必填 | 约束 |
 | --- | --- | --- | --- |
-| `account_id` | string | 否 | 缺省取当前告警标签 `account_id`；最终仍缺失则 `status=skipped`、`reason=no_account` |
-| `region` | string | 否 | 缺省取告警 `region`；≤128 字符 |
+| `account_id` | string | 否 | 缺省依次回退告警标签 `account_id` 与资源上下文；最终仍缺失则 `status=skipped`、`reason=no_account` |
+| `region` | string | 否 | 缺省依次回退告警 `region` 与资源 `region`；≤128 字符 |
 | `project_id` | string | 否 | 缺省取告警 `project_id`；≤128 字符 |
-| `namespace` | string | 否 | 缺省取告警 `ces_namespace`；匹配 `^[A-Za-z0-9_.:-]{1,128}$` |
-| `metric` | string | 否 | 缺省取告警 `metric_name`；≤128 字符 |
-| `dimensions` | object<string,string> | 否 | 提供时**替换**告警推导维度；≤20 对，key≤64、value≤128；最终不能为空 |
-| `from` / `to` | int64 Unix 秒 | 否 | 必须同时提供或同时省略；缺省取告警证据窗口，再无告警时取最近 1 小时；`from < to` |
+| `namespace` | string | 否 | 缺省依次回退告警 `ces_namespace`、资源 `labels.namespace` 与云类型映射；匹配 `^[A-Za-z0-9_.:-]{1,128}$` |
+| `metric` | string | 否 | 缺省取告警 `metric_name`；资源上下文不推导指标名（模型必须指定）；≤128 字符 |
+| `dimensions` | object<string,string> | 否 | 提供时**替换**推导维度；缺省先取告警标签维度，再取资源主维度（如 `rds_cluster_id`）；≤20 对，key≤64、value≤128；最终不能为空 |
+| `from` / `to` | int64 Unix 秒 | 否 | 必须同时提供或同时省略；缺省取告警证据窗口；无告警时取最近 1 小时（告警与资源上下文同优先级窗口均由告警优先）；`from < to` |
 | `period` | int 秒 | 否 | 默认 300，最小 10 |
 | `aggregator` | string | 否 | 缺省沿用告警注解 `ces_filter` |
 
@@ -661,9 +668,9 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 | 字段 | 类型 | 必填 | 约束 |
 | --- | --- | --- | --- |
-| `account_id` | string | 否 | 缺省取告警标签 `account_id`；最终缺失则 `status=skipped`、`reason=no_account` |
-| `region` | string | 否 | 缺省取告警 `region`；≤128 字符 |
-| `namespace` | string | **是**（可回退告警 `ces_namespace`） | 匹配 `^[A-Za-z0-9_.:-]{1,128}$`；数据库类规则示例 `SYS.RDS` |
+| `account_id` | string | 否 | 缺省依次回退告警标签与资源上下文；最终缺失则 `status=skipped`、`reason=no_account` |
+| `region` | string | 否 | 缺省依次回退告警 `region` 与资源 `region`；≤128 字符 |
+| `namespace` | string | **是**（可回退告警 `ces_namespace` 或资源 namespace） | 匹配 `^[A-Za-z0-9_.:-]{1,128}$`；数据库类规则示例 `SYS.RDS` |
 | `keyword` | string | 否 | ≤100 字符，按规则名/描述过滤（provider 支持时） |
 | `limit` | int | 否 | 默认 **50**，最大 **50**；超过上限返回 `status=invalid_argument` |
 
@@ -675,12 +682,41 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 数据范围：`region` 不在账号区域列表中返回 `status=error`（invalid_argument），由 AI 层映射为 `status=error` 而非 unsupported。
 - 证据：观测 `data` 含 `namespace`、`rule_count`、`evidence_id`；最终回答 `references` 含 `observability_evidence`。
 
+**`accounts.list` 参数与观测**
+
+- 无参数；gather 阶段每条消息自动执行一次，Agent Loop 也可再次申请（会话中途新增账号时刷新清单）。
+- 只返回启用账号，且逐个过 `AccountAccessAuthorizer`（与 `metrics.query` 同口径）；不可见账号不返回。
+- 观测 `data={accounts:[{account_id,name,provider,regions}],total}`；`total` 为真实账号数，`accounts` 最多 10 条。
+- 脱敏边界：不返回 `auth_type`、`extra_config`、`project_id` 或任何凭据。
+
+**`resource.analyze` 参数与观测**
+
+- 无参数；读取会话上下文 `resource_id`（资产页写业务 ID，观测页写云维度值 `instance_id/cloud_resource_id`）。
+- 读取顺序：资产业务 ID → 未命中再按 `cloud_resource_id` 查询云同步资源；命中多条时按数据范围取第一条（其余仅记 warn）。
+- 观测 `data` 含 `resource_id` / `name` / `cloud_resource_type` / `cloud_resource_id` / `account_id` / `region` / `namespace` / `dimensions`。
+- 数据范围由 Asset 应用层按账号 `owner_team` + region 校验；拒绝记 `status=denied`、`reason=data_scope_denied`；资源不存在记 `reason=resource_not_found`；手工资源无账号归属，无法参与云参数推导。
+
+**`resources.list` 参数 schema（`tool_requests[].params`）**
+
+| 字段 | 类型 | 必填 | 约束 |
+| --- | --- | --- | --- |
+| `account_id` | string | **是**（可回退资源上下文） | ≤128 字符；最终缺失则 `status=skipped`、`reason=no_account` |
+| `resource_type` | string | 否 | 小写云类型（rds/ecs/dcs…），匹配 `^[a-z0-9_-]{1,64}$` |
+| `region` | string | 否 | ≤128 字符 |
+| `keyword` | string | 否 | ≤100 字符，按名称/cloud_resource_id/类型/区域过滤 |
+| `limit` | int | 否 | 默认 20，最大 50；超过返回 `status=invalid_argument` |
+
+- 数据源为本地 `asset_resource`（`source=cloud_sync`），不实时调用云 API；账号尚未同步时返回 `status=ok` 且列表为空。
+- 观测 `data={account_id,resource_type,region,resource_count,resources:[...]}`；每条资源含 `resource_id` / `name` / `cloud_resource_type` / `cloud_resource_id` / `region` / `account_id` / `namespace` / `dimension_name` / `dimension_value`，不回传原始 labels。
+- 数据范围：账号解析 + `AccountAccessAuthorizer` + Asset `owner_team` 过滤三重收口；拒绝时 `status=permission_denied`、`reason=no access to integration account for evidence`。
+
 **通用语义**
 
 - 参数非法：`allowed=true`、`status=invalid_argument`、`reason` 说明字段约束，不执行取数；模型可在后续轮次修正。
-- 上下文缺失：`allowed=true`、`status=skipped`；常见 reason：`no_account` / `no_region` / `no_namespace` / `no_metric` / `no_dimensions`。
+- 上下文缺失：`allowed=true`、`status=skipped`；常见 reason：`no_alert` / `no_account` / `no_region` / `no_namespace` / `no_metric` / `no_dimensions`。
+- 资源上下文缺失/不可用：`resource_not_found` / `resource_not_cloud_linked` / `resource_load_failed` / `data_scope_denied`。
 - 审计：每次执行写 `tool_invoke`，payload 含 `tool_code/allowed/mode/status/reason/evidence_id/result`；`evidence_id` 仅在成功取数时出现。`chat_message` 仍含 `tool_codes` / `tool_denied` / `loop_rounds`。
-- Agent Loop 白名单扩展为 `alarm.analyze` / `metrics.query` / `alert.rules.list`；其余约束（≤3 轮、20000 token、单轮≤3 个申请、同名去重、每轮 RBAC、执行类拒绝）不变（§10.16）。
+- Agent Loop 白名单扩展为 `alarm.analyze` / `metrics.query` / `alert.rules.list` / `accounts.list` / `resource.analyze` / `resources.list`；其余约束（≤3 轮、20000 token、单轮≤3 个申请、同名去重、每轮 RBAC、执行类拒绝）不变（§10.16）。
 
 #### 10.12.2 云厂商只读观测工具（cloud.* 系列）— 推迟
 
@@ -864,7 +900,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 | 控制点 | 要求 |
 | --- | --- |
-| 工具白名单 | 仅 `alarm.analyze`、`metrics.query` 与 `alert.rules.list` 可被申请；其它工具（含 `execution.tasks.propose` / `dispatch` / `command.run`）一律拒绝并记 `allowed=false`、`reason=tool is not allowed in agent loop` |
+| 工具白名单 | 仅 `alarm.analyze`、`metrics.query`、`alert.rules.list`、`accounts.list`、`resource.analyze`、`resources.list` 可被申请；其它工具（含 `execution.tasks.propose` / `dispatch` / `command.run`）一律拒绝并记 `allowed=false`、`reason=tool is not allowed in agent loop` |
 | 参数透传 | `tool_requests[].params` 按 §10.12.1 校验；非法参数记 `status=invalid_argument` 并反馈给模型，不执行取数 |
 | 权限 | 每轮每个工具独立过 RBAC + 工具权限（与首轮同一套校验），`allowed=false` 时把原因反馈给模型而不中断 |
 | 预算 | 追加轮数 ≤ **3**；累计 token ≥ **20000** 即终止；单轮最多受理 **3** 个申请（同轮同名工具去重）；单次对话总时间预算 `ai.turn_budget_s`（默认 600s），超时立即终止并返回 `turn_budget_exceeded` |
@@ -885,7 +921,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | 工具被拒绝 | 回答仍正常返回；拒绝原因在 `tool_calls[].reason` 与审计中可见 |
 | 未装配知识/记忆 | 循环本身不受影响 |
 
-- 提示词约束：system prompt 明确「只在现有只读观测不足时申请；可申请 `alarm.analyze` / `metrics.query` / `alert.rules.list`；参数边界见 §10.12.1；最多 3 轮；不得申请执行类工具」。
+- 提示词约束：system prompt 明确「只在现有只读观测不足时申请；可申请 `alarm.analyze` / `metrics.query` / `alert.rules.list` / `accounts.list` / `resource.analyze` / `resources.list`；`account_id` 优先来自 `accounts.list` 清单（不可用时回退告警/资源上下文），不得臆造；参数边界见 §10.12.1；最多 3 轮；不得申请执行类工具」。
 - 前端无需改动：多轮调用会自然出现在 `tool_calls`；`loop_rounds` 仅用于审计与排查。
 - 循环只影响取数与证据丰富度，不改变权限判断、`actions` 生成或执行链路。
 

@@ -30,6 +30,9 @@ const (
 	chatToolAlarmAnalyze     = "alarm.analyze"
 	chatToolMetricsQuery     = "metrics.query"
 	chatToolAlertRulesList   = "alert.rules.list"
+	chatToolAccountsList     = "accounts.list"
+	chatToolResourceAnalyze  = "resource.analyze"
+	chatToolResourcesList    = "resources.list"
 	chatToolExecutionPropose = "execution.tasks.propose"
 
 	chatStatusOK                  = "ok"
@@ -116,6 +119,12 @@ type ChatService struct {
 	audit    AuditRecorder
 	// alertRules 为可选的告警规则查询能力；nil 表示规则体检工具不可用。
 	alertRules AlertRuleListPort
+	// accounts 为可选的集成账号发现能力；nil 表示关闭 accounts.list。
+	accounts AccountListPort
+	// assets 为可选的资源上下文读取能力；nil 表示关闭 resource.analyze。
+	assets AssetReader
+	// resources 为可选的云资源发现能力；nil 表示关闭 resources.list。
+	resources ResourceDiscoveryPort
 	// memory 为可选的相似案例记忆能力；nil 表示关闭（回答与未接入记忆时一致）。
 	memory MemoryCaseStore
 	// knowledge 为可选的知识沉淀能力；nil 表示关闭（回答与未接入知识时一致）。

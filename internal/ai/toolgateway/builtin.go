@@ -14,6 +14,9 @@ var builtinChatToolSpecs = []BuiltinToolSpec{
 	{Code: "alarm.analyze", Name: "读取告警快照", Mode: "read_only"},
 	{Code: "metrics.query", Name: "查询指标证据", Mode: "read_only"},
 	{Code: "alert.rules.list", Name: "查询告警规则", Mode: "read_only"},
+	{Code: "accounts.list", Name: "列出可用集成账号", Mode: "read_only"},
+	{Code: "resource.analyze", Name: "读取资源上下文", Mode: "read_only"},
+	{Code: "resources.list", Name: "列出云同步资源", Mode: "read_only"},
 }
 
 // BuiltinChatToolSpecs 返回内置对话工具清单副本。

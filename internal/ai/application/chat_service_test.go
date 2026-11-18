@@ -263,6 +263,7 @@ func (f *fakeChatToolGateway) Validate(_ context.Context, req toolgateway.ToolRe
 func allowAllChatTools() *fakeChatToolGateway {
 	return &fakeChatToolGateway{allowed: map[string]bool{
 		chatToolAlarmAnalyze: true, chatToolMetricsQuery: true, chatToolAlertRulesList: true,
+		chatToolAccountsList: true, chatToolResourceAnalyze: true, chatToolResourcesList: true,
 		chatToolExecutionPropose: true,
 	}}
 }
@@ -1884,5 +1885,276 @@ func TestSendMessageStreamAbortsWhenDeltaSinkFails(t *testing.T) {
 	}
 	if !canceled {
 		t.Fatal("missing chat_canceled audit")
+	}
+}
+
+type fakeAccountListPort struct {
+	result *AccountListResult
+	err    error
+	userID string
+	calls  int
+}
+
+func (f *fakeAccountListPort) List(_ context.Context, userID string) (*AccountListResult, error) {
+	f.userID = userID
+	f.calls++
+	return f.result, f.err
+}
+
+type fakeAssetReader struct {
+	resource   *AssetContext
+	err        error
+	userID     string
+	resourceID string
+	calls      int
+}
+
+func (f *fakeAssetReader) GetForAnalysis(_ context.Context, userID, resourceID string) (*AssetContext, error) {
+	f.userID = userID
+	f.resourceID = resourceID
+	f.calls++
+	return f.resource, f.err
+}
+
+type fakeResourceDiscoveryPort struct {
+	got    ResourceQuery
+	userID string
+	result *ResourceListResult
+	err    error
+	calls  int
+}
+
+func (f *fakeResourceDiscoveryPort) List(_ context.Context, userID string, q ResourceQuery) (*ResourceListResult, error) {
+	f.userID = userID
+	f.got = q
+	f.calls++
+	return f.result, f.err
+}
+
+func testAssetContext() *AssetContext {
+	return &AssetContext{
+		ResourceID: "res-1", Name: "orders-rds", ApplicationID: "app-1",
+		ResourceType: "database", CloudResourceType: "rds", CloudResourceID: "cluster-1",
+		Region: "cn-north-4", AccountID: "acc-1",
+		Labels: map[string]string{"namespace": "SYS.RDS", "dim_name": "rds_cluster_id"},
+	}
+}
+
+func TestSendMessageGathersAccountsWithoutAlert(t *testing.T) {
+	svc, repo, _, chat, _, _ := newChatTestService(t)
+	svc.SetAccounts(&fakeAccountListPort{result: &AccountListResult{
+		Status: EvidenceStatusOK, Total: 2,
+		Accounts: []AccountSummary{{
+			AccountID: "acc-1", Name: "生产账号", Provider: "huawei_cloud",
+			Regions: []string{"cn-north-4"},
+		}},
+	}})
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "dashboard"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "有哪些可用账号",
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if !hasToolCall(result.ToolCalls, chatToolAccountsList, EvidenceStatusOK) {
+		t.Fatalf("missing accounts.list observation: %+v", result.ToolCalls)
+	}
+	if !strings.Contains(chat.user, "acc-1") || !strings.Contains(chat.user, "accounts") {
+		t.Fatalf("account list not injected into prompt: %s", chat.user)
+	}
+}
+
+func TestSendMessageGathersResourceContext(t *testing.T) {
+	svc, repo, _, chat, _, _ := newChatTestService(t)
+	reader := &fakeAssetReader{resource: testAssetContext()}
+	svc.SetAssets(reader)
+	seedChatSession(t, repo, "u-1", domain.SessionContext{
+		Page: "assets", ResourceID: "res-1", ResourceType: "rds",
+	})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "这个 RDS 指标正常吗",
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if reader.calls != 1 || reader.resourceID != "res-1" || reader.userID != "u-1" {
+		t.Fatalf("resource reader not used: %+v", reader)
+	}
+	if !hasToolCall(result.ToolCalls, chatToolResourceAnalyze, EvidenceStatusOK) {
+		t.Fatalf("missing resource.analyze observation: %+v", result.ToolCalls)
+	}
+	for _, want := range []string{"acc-1", "cn-north-4", "SYS.RDS", "rds_cluster_id", "cluster-1"} {
+		if !strings.Contains(chat.user, want) {
+			t.Fatalf("resource context %q not injected into prompt: %s", want, chat.user)
+		}
+	}
+}
+
+func TestSendMessageResourceScopeDenied(t *testing.T) {
+	svc, repo, _, _, audit, _ := newChatTestService(t)
+	svc.SetAssets(&fakeAssetReader{err: apperr.New(apperr.CodePermissionDenied, "no access to resource")})
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "assets", ResourceID: "res-1"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析这个资源",
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	var call *domain.ToolCall
+	for i := range result.ToolCalls {
+		if result.ToolCalls[i].ToolCode == chatToolResourceAnalyze {
+			call = &result.ToolCalls[i]
+		}
+	}
+	if call == nil || call.Status != "denied" || call.Reason != "data_scope_denied" {
+		t.Fatalf("resource tool call = %+v", call)
+	}
+	denied := 0
+	for _, row := range audit.rows {
+		// 数据范围拒绝属于业务降级：allowed=true、status=denied、result=partial。
+		if row.Action == AuditToolInvoke && row.Payload["tool_code"] == chatToolResourceAnalyze &&
+			row.Payload["status"] == "denied" && row.Payload["reason"] == "data_scope_denied" {
+			denied++
+		}
+	}
+	if denied != 1 {
+		t.Fatalf("expected one denied resource audit, got %+v", audit.rows)
+	}
+}
+
+func TestSendMessageAgentLoopDiscoversResources(t *testing.T) {
+	svc, repo, _, chat, _, _ := newChatTestService(t)
+	port := &fakeResourceDiscoveryPort{result: &ResourceListResult{
+		Status: EvidenceStatusOK,
+		Resources: []ResourceSummary{{
+			ResourceID: "res-1", Name: "orders-rds", CloudResourceType: "rds",
+			CloudResourceID: "cluster-1", Region: "cn-north-4", AccountID: "acc-1",
+			Labels: map[string]string{"namespace": "SYS.RDS", "dim_name": "rds_cluster_id"},
+		}},
+	}}
+	svc.SetResources(port)
+	chat.script = []string{
+		`{"tool_requests":[{"tool_code":"resources.list","reason":"发现 RDS 实例","params":{"account_id":"acc-1","resource_type":"rds"}}]}`,
+		chatAnswerJSON("已找到 RDS 实例"),
+	}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "dashboard"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "有哪些 RDS 实例",
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if port.calls != 1 || port.got.AccountID != "acc-1" || port.got.ResourceType != "rds" {
+		t.Fatalf("resource discovery query = %+v", port.got)
+	}
+	if !hasToolCall(result.ToolCalls, chatToolResourcesList, EvidenceStatusOK) {
+		t.Fatalf("missing resources.list observation: %+v", result.ToolCalls)
+	}
+	if !strings.Contains(chat.user, "SYS.RDS") || !strings.Contains(chat.user, "rds_cluster_id") {
+		t.Fatalf("resource list not enriched in prompt: %s", chat.user)
+	}
+}
+
+func TestSendMessageAgentLoopUsesResourceMetricFallback(t *testing.T) {
+	svc, repo, _, chat, _, evidence := newChatTestService(t)
+	svc.SetAssets(&fakeAssetReader{resource: testAssetContext()})
+	chat.script = []string{
+		`{"tool_requests":[{"tool_code":"metrics.query","reason":"看 CPU","params":{"metric":"cpu_util"}}]}`,
+		chatAnswerJSON("已按资源上下文取数"),
+	}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "assets", ResourceID: "res-1"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "看下这个实例 CPU",
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if result.Status != chatStatusOK {
+		t.Fatalf("status = %q", result.Status)
+	}
+	if evidence.got.AccountID != "acc-1" || evidence.got.Region != "cn-north-4" ||
+		evidence.got.Namespace != "SYS.RDS" || evidence.got.Metric != "cpu_util" {
+		t.Fatalf("resource fallback not used: %+v", evidence.got)
+	}
+	if evidence.got.Dimensions["rds_cluster_id"] != "cluster-1" {
+		t.Fatalf("dimensions = %+v", evidence.got.Dimensions)
+	}
+	if evidence.got.Threshold != nil {
+		t.Fatalf("resource fallback must not invent thresholds: %+v", evidence.got)
+	}
+	if !hasToolCall(result.ToolCalls, chatToolMetricsQuery, "ok") {
+		t.Fatalf("missing metrics.query call: %+v", result.ToolCalls)
+	}
+}
+
+func TestSendMessageAgentLoopAccountsWithoutPortReturnsSkipped(t *testing.T) {
+	svc, repo, _, chat, _, _ := newChatTestService(t)
+	chat.script = []string{
+		`{"tool_requests":[{"tool_code":"accounts.list","reason":"确认账号"}]}`,
+		chatAnswerJSON("当前未接入账号发现能力"),
+	}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "有哪些账号",
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	var call *domain.ToolCall
+	for i := range result.ToolCalls {
+		if result.ToolCalls[i].ToolCode == chatToolAccountsList && result.ToolCalls[i].Status == "skipped" {
+			call = &result.ToolCalls[i]
+		}
+	}
+	if call == nil || call.Reason != "account discovery is not configured" {
+		t.Fatalf("skipped accounts call = %+v", call)
+	}
+}
+
+func TestSendMessageAgentLoopResourceWithoutContextReturnsSkipped(t *testing.T) {
+	svc, repo, _, chat, _, _ := newChatTestService(t)
+	svc.SetAssets(&fakeAssetReader{resource: testAssetContext()})
+	chat.script = []string{
+		`{"tool_requests":[{"tool_code":"resource.analyze","reason":"读取资源"}]}`,
+		chatAnswerJSON("当前页面没有资源上下文"),
+	}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "dashboard"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析资源",
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	var call *domain.ToolCall
+	for i := range result.ToolCalls {
+		if result.ToolCalls[i].ToolCode == chatToolResourceAnalyze && result.ToolCalls[i].Status == "skipped" {
+			call = &result.ToolCalls[i]
+		}
+	}
+	if call == nil || call.Reason != "no_resource" {
+		t.Fatalf("skipped resource call = %+v", call)
+	}
+}
+
+func TestSendMessageSkipsAccountsWhenPortMissing(t *testing.T) {
+	svc, repo, _, _, _, _ := newChatTestService(t)
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "你好",
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	for _, call := range result.ToolCalls {
+		if call.ToolCode == chatToolAccountsList || call.ToolCode == chatToolResourceAnalyze {
+			t.Fatalf("unexpected discovery tool call without ports: %+v", call)
+		}
 	}
 }
