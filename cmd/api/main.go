@@ -140,6 +140,23 @@ func main() {
 		logger.String("commit", version.Get().Commit),
 		logger.String("build_at", version.Get().BuildAt),
 	)
+	// SSE 对话回合可能持续到 turn_budget_s；服务端超时过短会在模型返回前截断响应。
+	requiredServerTimeout := int(app.Cfg.AI.TurnBudgetTimeout().Seconds()) + 60
+	for _, item := range []struct {
+		key   string
+		value int
+	}{
+		{"server.read_timeout_s", app.Cfg.Server.ReadTimeoutS},
+		{"server.write_timeout_s", app.Cfg.Server.WriteTimeoutS},
+	} {
+		if item.value > 0 && item.value < requiredServerTimeout {
+			logger.L().Warn("server timeout is shorter than AI turn budget + 60s; SSE may be truncated",
+				logger.String("config_key", item.key),
+				logger.Int("configured_s", item.value),
+				logger.Int("required_s", requiredServerTimeout),
+			)
+		}
+	}
 
 	// ---- 装配 JWT / Authenticator ----
 	jwtMgr, err := auth.NewJWTManager(auth.Options{
@@ -392,6 +409,7 @@ func main() {
 		aiAuditRecorder,
 	)
 	aiChatSvc.SetAlertRules(aiRulesCollector)
+	aiChatSvc.SetTurnBudget(app.Cfg.AI.TurnBudgetTimeout())
 	// 相似案例记忆（阶段 1）：反馈沉淀 + 对话/分析前检索注入。
 	// 检索失败只降级（memory_status=error），不阻断回答主链路。
 	aiMemoryRepo := aipg.NewMemoryCaseRepository(app.DB)

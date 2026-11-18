@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoadReadsRedisPasswordFromEnv(t *testing.T) {
 	t.Setenv("AIOPS_REDIS__ADDR", "10.51.2.220:6379")
@@ -193,5 +196,14 @@ func prodConfigFixture() *Config {
 		Integration: IntegrationConfig{CredentialEncryptionKey: strongCredentialEncryptionKey, CredentialEncryptionKeyVersion: 1},
 		CORS:        CORSConfig{AllowOrigins: []string{"https://app.example.com"}, AllowCredentials: true},
 		Execution:   ExecutionConfig{AgentRegisterToken: strongJWTSecret},
+	}
+}
+
+func TestAITurnBudgetTimeout(t *testing.T) {
+	if got := (AIConfig{}).TurnBudgetTimeout(); got != 10*time.Minute {
+		t.Fatalf("default turn budget = %v", got)
+	}
+	if got := (AIConfig{TurnBudgetS: 120}).TurnBudgetTimeout(); got != 2*time.Minute {
+		t.Fatalf("explicit turn budget = %v", got)
 	}
 }

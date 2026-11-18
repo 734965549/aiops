@@ -279,6 +279,8 @@ type AIConfig struct {
 	OutboundAllowLoopback bool               `mapstructure:"outbound_allow_loopback"`
 	// EvidenceTimeoutMS 控制告警分析注入指标证据的取数预算（毫秒），0 使用默认 5000ms。
 	EvidenceTimeoutMS int64 `mapstructure:"evidence_timeout_ms"`
+	// TurnBudgetS 是单次对话（含 Agent Loop 多轮）的总时间预算，0 使用默认 600s。
+	TurnBudgetS int `mapstructure:"turn_budget_s"`
 }
 
 // EvidenceTimeout 返回指标证据取数预算。
@@ -287,6 +289,14 @@ func (c AIConfig) EvidenceTimeout() time.Duration {
 		return 5 * time.Second
 	}
 	return time.Duration(c.EvidenceTimeoutMS) * time.Millisecond
+}
+
+// TurnBudgetTimeout 返回单次对话总时间预算。
+func (c AIConfig) TurnBudgetTimeout() time.Duration {
+	if c.TurnBudgetS <= 0 {
+		return 10 * time.Minute
+	}
+	return time.Duration(c.TurnBudgetS) * time.Second
 }
 
 // AIProviderConfig 描述单个 provider 的配置。
@@ -575,6 +585,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.login_rate_limit.lockout_s", 900)
 
 	v.SetDefault("ai.evidence_timeout_ms", 5000)
+	v.SetDefault("ai.turn_budget_s", 600)
 
 	v.SetDefault("cors.allow_credentials", true)
 }

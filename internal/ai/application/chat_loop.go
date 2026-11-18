@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/734965549/aiops/internal/ai/domain"
 	"github.com/734965549/aiops/internal/ai/toolgateway"
+	apperr "github.com/734965549/aiops/pkg/errors"
 	"github.com/734965549/aiops/pkg/logger"
 )
 
@@ -83,22 +85,55 @@ func (s *ChatService) generateWithLoop(ctx context.Context, userID, question str
 		systemPrompt = chatSystemPrompt + "\n\n" + appendix
 	}
 
+	budget := s.turnBudget
+	if budget <= 0 {
+		budget = chatDefaultTurnBudget
+	}
+	deadline := time.Now().Add(budget)
 	tokens := 0
+	budgetExceeded := func() chatGeneration {
+		logger.From(ctx).Warn("ai chat turn budget exceeded",
+			logger.String("provider_id", providerID),
+			logger.Int("tokens", tokens),
+			logger.Int("loop_rounds", data.LoopRounds))
+		return chatGeneration{
+			Answer: degradedChatAnswer(chatDegradedTurnBudgetExceeded, observationEvidenceLines(*data)),
+			Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
+		}
+	}
+
 	rounds := 0
 	// deniedRounds 统计连续「申请了但一个都没执行」的轮数，用于给模型一次纠正机会。
 	deniedRounds := 0
 	for {
+		if time.Until(deadline) <= 0 {
+			return budgetExceeded()
+		}
 		prompt := buildChatUserPrompt(ChatPromptInput{
 			Question: question, Context: session.Context, TimeRange: session.Context.TimeRange,
 			Alert: alertSnapshot(data.Alert), Observations: data.Observations, History: history,
 			Memory: memoryPromptCases(data.Memories),
 		})
-		result, err := s.chat.Complete(ctx, providerID, systemPrompt, prompt)
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return budgetExceeded()
+		}
+		callCtx, cancel := context.WithTimeout(ctx, remaining)
+		result, err := s.completeModel(callCtx, providerID, systemPrompt, prompt)
+		cancel()
 		if err != nil {
 			logger.From(ctx).Warn("ai chat completion failed",
-				logger.String("provider_id", providerID), logger.Error(err))
+				logger.String("provider_id", providerID),
+				logger.Int64("turn_remaining_ms", time.Until(deadline).Milliseconds()),
+				logger.Error(err))
+			if apperr.CodeOf(err) == apperr.CodeAborted {
+				return chatGeneration{Aborted: true, ProviderID: providerID, Tokens: tokens}
+			}
+			if time.Until(deadline) <= 0 {
+				return budgetExceeded()
+			}
 			return chatGeneration{
-				Answer: degradedChatAnswer(chatDegradedModelFailed, evidence),
+				Answer: degradedChatAnswer(chatDegradedModelFailed, observationEvidenceLines(*data)),
 				Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
 			}
 		}
@@ -115,7 +150,7 @@ func (s *ChatService) generateWithLoop(ctx context.Context, userID, question str
 			logger.From(ctx).Warn("ai chat answer invalid",
 				logger.String("provider_id", providerID))
 			return chatGeneration{
-				Answer: degradedChatAnswer(chatDegradedOutputInvalid, evidence),
+				Answer: degradedChatAnswer(chatDegradedOutputInvalid, observationEvidenceLines(*data)),
 				Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
 			}
 		}
@@ -129,6 +164,9 @@ func (s *ChatService) generateWithLoop(ctx context.Context, userID, question str
 				Answer: degradedChatAnswer(chatDegradedLoopExhausted, evidence),
 				Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
 			}
+		}
+		if time.Until(deadline) <= 0 {
+			return budgetExceeded()
 		}
 		executed := s.runLoopToolRequests(ctx, userID, session, data, requests)
 		data.LoopRounds = rounds + 1
@@ -151,6 +189,16 @@ func (s *ChatService) generateWithLoop(ctx context.Context, userID, question str
 			deniedRounds = 0
 		}
 	}
+}
+
+// completeModel 在流式请求（存在 SSE sink）时走模型增量；同步路径保持原 Complete。
+func (s *ChatService) completeModel(ctx context.Context, providerID, systemPrompt, prompt string) (*toolgateway.ChatCompletionResult, error) {
+	if _, ok := ctx.Value(ChatEventSinkKey{}).(ChatEventSink); !ok {
+		return s.chat.Complete(ctx, providerID, systemPrompt, prompt)
+	}
+	return s.chat.CompleteStream(ctx, providerID, systemPrompt, prompt, func(phase, text string) error {
+		return emitChatModelDelta(ctx, phase, text)
+	})
 }
 
 // runLoopToolRequests 逐个执行模型申请的只读工具，返回真正执行的数量。

@@ -477,7 +477,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | status | 说明 |
 | --- | --- |
 | `ok` | 模型正常返回并通过结构校验 |
-| `degraded` | 模型未配置、调用失败或输出非法；`answer.degraded=true` 且 `answer.degraded_reason` 为 `model_unavailable` / `model_failed` / `model_output_invalid`，保留已获取的只读上下文 |
+| `degraded` | 模型未配置、调用失败或输出非法；`answer.degraded=true` 且 `answer.degraded_reason` 为 `model_unavailable` / `model_failed` / `model_output_invalid` / `agent_loop_exhausted` / `turn_budget_exceeded`，保留已获取的只读上下文 |
 | `insufficient_context` | 模型显式声明上下文不足（`answer.insufficient_context=true`） |
 
 #### 10.6.2 `answer` 字段
@@ -867,7 +867,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | 工具白名单 | 仅 `alarm.analyze`、`metrics.query` 与 `alert.rules.list` 可被申请；其它工具（含 `execution.tasks.propose` / `dispatch` / `command.run`）一律拒绝并记 `allowed=false`、`reason=tool is not allowed in agent loop` |
 | 参数透传 | `tool_requests[].params` 按 §10.12.1 校验；非法参数记 `status=invalid_argument` 并反馈给模型，不执行取数 |
 | 权限 | 每轮每个工具独立过 RBAC + 工具权限（与首轮同一套校验），`allowed=false` 时把原因反馈给模型而不中断 |
-| 预算 | 追加轮数 ≤ **3**；累计 token ≥ **20000** 即终止；单轮最多受理 **3** 个申请（同轮同名工具去重） |
+| 预算 | 追加轮数 ≤ **3**；累计 token ≥ **20000** 即终止；单轮最多受理 **3** 个申请（同轮同名工具去重）；单次对话总时间预算 `ai.turn_budget_s`（默认 600s），超时立即终止并返回 `turn_budget_exceeded` |
 | 收敛 | 连续两轮「申请了但一个工具都没真正执行」才终止，给模型一次看到拒绝原因后自我纠正的机会 |
 | 审计 | 每轮工具调用写 `tool_invoke`（与现状同结构）；`chat_message` 新增 `loop_rounds`（实际追加轮数） |
 | 契约 | 接口仍同步返回；`tool_calls` 数组容纳多轮调用记录；流式与取消见 §10.17 |
@@ -878,6 +878,8 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | 场景 | 行为 |
 | --- | --- |
 | 轮数或 token 预算耗尽 | `status=degraded`、`degraded_reason=agent_loop_exhausted`，保留已获取的 observations 作为证据 |
+| 回合总时间预算耗尽 | `status=degraded`、`degraded_reason=turn_budget_exceeded`，停止后续模型/工具调用并保留已获取的 observations |
+| 流式客户端断开 | 模型调用随 ctx 取消而中止；不落 assistant 消息，记 `chat_canceled` |
 | 连续两轮无实际取数 | 同上（`agent_loop_exhausted`） |
 | 模型输出既非 answer 也非 tool_requests | `degraded_reason=model_output_invalid`（与 §10.6.1 一致） |
 | 工具被拒绝 | 回答仍正常返回；拒绝原因在 `tool_calls[].reason` 与审计中可见 |
@@ -889,7 +891,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 ### 10.17 流式对话（SSE）与取消语义
 
-同步接口 §10.6 保留不变；另提供流式接口。回答是结构化 JSON（summary/actions/references），token 级流式对渲染没有价值，因此按**事件级**推送：阶段、工具观测、最终回答与错误分别下发。
+同步接口 §10.6 保留不变；另提供流式接口。回答是结构化 JSON（summary/actions/references），最终答案仍整体下发；模型调用期间额外推送 `delta` 增量（思考链/回答片段）用于进度反馈，阶段、工具观测、最终回答与错误按**事件级**推送。
 
 #### 10.17.1 接口
 
@@ -910,10 +912,14 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | --- | --- | --- |
 | `stage` | `stage`: `gathering` / `thinking` / `answering` | 编排阶段：取数与权限校验 → 模型调用 → 组装回答 |
 | `tool` | `tool`: `{tool_code, allowed, status, reason?, summary?}` | 一次工具校验/执行摘要，与 `tool_calls` 同源；不含 prompt、凭据与告警正文 |
+| `delta` | `phase`: `thinking` / `answer`；`text`: string | 模型增量：`thinking` 来自 `reasoning_content`，`answer` 来自 `content`。`answer` 增量只用于“已生成 N 字”进度，不改变最终 JSON 解析 |
 | `answer` | `result`: 与 §10.6 响应 `data` 同构 | 最终结构化回答；收到即表示本轮结束 |
 | `error` | `code` / `message` | 业务错误；此时 HTTP 状态已是 200 |
 
-正常顺序：`gathering` → `tool`* → `thinking` → `tool`*（Agent Loop 追加轮）→ `answering` → `answer`。任一事件都可能因取消或错误提前结束。
+正常顺序：`gathering` → `tool`* → `thinking` → `delta(thinking)`* → `delta(answer)`* → `tool`*（Agent Loop 追加轮）→ `answering` → `answer`。任一事件都可能因取消或错误提前结束。
+
+- 心跳：服务端每 **15s** 写入一条 `: ping\n\n` SSE 注释（不属于 `data` 事件），防止代理/网关把长时间思考误判为空闲连接；客户端解析器必须忽略 `:` 注释行。
+- 模型增量不落库：`delta` 只存在于本次流；最终回答仍以完整 JSON 的 `answer` 事件为准。
 
 #### 10.17.3 状态码与错误
 
@@ -940,7 +946,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 #### 10.17.6 前端接入约定
 
 - 使用 `fetch` + `ReadableStream` 读取，不用 `EventSource`（需要 POST 与 Bearer 头）；实现见 `web/src/api/sse.ts` 与 `web/src/api/ai.ts` 的 `streamChatMessage`。
-- `stage` 事件驱动阶段提示，`tool` 事件用于即时展示工具校验结果，`answer.result` 走与同步接口相同的渲染与 `actions` 权限判断。
+- `stage` 事件驱动阶段提示，`tool` 事件用于即时展示工具校验结果，`delta` 事件只做“已生成 N 字”进度（不渲染半成品 JSON），`answer.result` 走与同步接口相同的渲染与 `actions` 权限判断；`:` 注释心跳必须忽略，未知事件类型优雅忽略。
 - 发送中允许「停止生成」：`AbortController.abort()` 中断读取；服务端按 §10.17.4 不落回答。停止后应回读会话，避免本地乐观消息与服务端不一致。
 
 ### 10.18 会话只读分享

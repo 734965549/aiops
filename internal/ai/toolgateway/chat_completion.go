@@ -44,6 +44,8 @@ type chatRequest struct {
 		Type string `json:"type"`
 	} `json:"response_format"`
 	Temperature float64 `json:"temperature"`
+	// Stream 为 true 时请求 OpenAI 兼容 SSE 流式响应；同步与分析路径保持 false。
+	Stream bool `json:"stream,omitempty"`
 }
 
 type chatResponse struct {
@@ -61,6 +63,53 @@ type analysisOutput struct {
 	Recommendations []string `json:"recommendations"`
 	References      []string `json:"references"`
 	Uncertainties   []string `json:"uncertainties"`
+}
+
+// chatStreamDelta 是一行 "data: {...}" 的解析结果。
+// reasoning_content 只透传给前端思考进度；只有 content 累积成最终回答 JSON。
+type chatStreamDelta struct {
+	Reasoning string
+	Content   string
+	Usage     int
+	Done      bool
+}
+
+// parseChatStreamLine 解析单行 SSE；非 data 行/注释/非法 JSON 返回 ok=false。
+func parseChatStreamLine(line []byte) (chatStreamDelta, bool) {
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) == 0 || trimmed[0] == ':' {
+		return chatStreamDelta{}, false
+	}
+	if !bytes.HasPrefix(trimmed, []byte("data:")) {
+		return chatStreamDelta{}, false
+	}
+	payload := bytes.TrimSpace(trimmed[len("data:"):])
+	if len(payload) == 0 {
+		return chatStreamDelta{}, false
+	}
+	if bytes.Equal(payload, []byte("[DONE]")) {
+		return chatStreamDelta{Done: true}, true
+	}
+	var chunk struct {
+		Choices []struct {
+			Delta struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"delta"`
+		} `json:"choices"`
+		Usage struct {
+			TotalTokens int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(payload, &chunk); err != nil {
+		return chatStreamDelta{}, false
+	}
+	delta := chatStreamDelta{Usage: chunk.Usage.TotalTokens}
+	if len(chunk.Choices) > 0 {
+		delta.Content = chunk.Choices[0].Delta.Content
+		delta.Reasoning = chunk.Choices[0].Delta.ReasoningContent
+	}
+	return delta, true
 }
 
 // ChatCompletionExecutor 是 type b 的平台直连模型执行器：

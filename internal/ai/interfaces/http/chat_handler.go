@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	aiapp "github.com/734965549/aiops/internal/ai/application"
 	"github.com/734965549/aiops/internal/ai/domain"
@@ -15,13 +17,16 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// sseHeartbeatInterval 是 SSE 注释心跳间隔；测试可临时调小。
+var sseHeartbeatInterval = 15 * time.Second
+
 // ChatUseCase 是 AI 助手对话用例端口（*application.ChatService 实现），便于 HTTP 层单测。
 type ChatUseCase interface {
 	CreateSession(ctx context.Context, in aiapp.CreateChatSessionInput) (*aiapp.ChatSessionView, error)
 	ListSessions(ctx context.Context, userID string, limit int) ([]aiapp.ChatSessionView, error)
 	GetSession(ctx context.Context, userID, sessionID string) (*aiapp.ChatSessionDetail, error)
 	SendMessage(ctx context.Context, in aiapp.SendChatMessageInput) (*aiapp.SendChatMessageResult, error)
-	// SendMessageStream 以事件流方式执行同一编排（emit 收到 stage/tool/answer/error 事件）。
+	// SendMessageStream 以事件流方式执行同一编排（emit 收到 stage/tool/delta/answer/error 事件）。
 	SendMessageStream(ctx context.Context, in aiapp.SendChatMessageInput, emit aiapp.ChatEventSink) (*aiapp.SendChatMessageResult, error)
 	SubmitFeedback(ctx context.Context, userID, sessionID, messageID, feedback string) (*aiapp.ChatMessageView, error)
 	ArchiveSession(ctx context.Context, userID, sessionID string) (*aiapp.ChatSessionView, error)
@@ -180,7 +185,8 @@ func (h *ChatHandler) SendMessage(c *gin.Context) {
 
 // SendMessageStream POST /api/ai/chat/sessions/:session_id/messages/stream
 //
-// 以 SSE 推送事件：stage（阶段）、tool（工具观测）、answer（最终结构化回答）、error（业务错误）。
+// 以 SSE 推送事件：stage（阶段）、tool（工具观测）、delta（模型增量）、answer（最终结构化回答）、error（业务错误）。
+// 每 15s 写一条 ": ping" 注释心跳，避免代理/网关把长时间思考误判为空闲连接。
 // 客户端断开（HTTP ctx 取消）时服务端停止后续工作，不落 assistant 消息，并记 chat_canceled 审计。
 func (h *ChatHandler) SendMessageStream(c *gin.Context) {
 	svc, ok := h.service()
@@ -208,12 +214,12 @@ func (h *ChatHandler) SendMessageStream(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no")
 	flusher, _ := c.Writer.(http.Flusher)
 
-	writeEvent := func(event aiapp.ChatEvent) error {
-		raw, err := json.Marshal(event)
-		if err != nil {
-			return err
-		}
-		if _, err := c.Writer.WriteString("data: " + string(raw) + "\n\n"); err != nil {
+	// 心跳 goroutine 与业务事件共享 ResponseWriter，写入必须串行化。
+	var writeMu sync.Mutex
+	writeRaw := func(payload string) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if _, err := c.Writer.WriteString(payload); err != nil {
 			return err
 		}
 		if flusher != nil {
@@ -221,6 +227,37 @@ func (h *ChatHandler) SendMessageStream(c *gin.Context) {
 		}
 		return nil
 	}
+	writeEvent := func(event aiapp.ChatEvent) error {
+		raw, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		return writeRaw("data: " + string(raw) + "\n\n")
+	}
+
+	stopHeartbeat := make(chan struct{})
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		ticker := time.NewTicker(sseHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopHeartbeat:
+				return
+			case <-c.Request.Context().Done():
+				return
+			case <-ticker.C:
+				if err := writeRaw(": ping\n\n"); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	defer func() {
+		close(stopHeartbeat)
+		<-heartbeatDone
+	}()
 
 	if _, err := svc.SendMessageStream(c.Request.Context(), in, writeEvent); err != nil {
 		// 客户端已断开：HTTP 状态与响应体都已成形，直接结束。

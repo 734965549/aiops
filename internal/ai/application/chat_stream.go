@@ -12,6 +12,7 @@ import (
 const (
 	ChatEventStage  = "stage"
 	ChatEventTool   = "tool"
+	ChatEventDelta  = "delta"
 	ChatEventAnswer = "answer"
 	ChatEventError  = "error"
 
@@ -19,6 +20,10 @@ const (
 	ChatStageGathering = "gathering"
 	ChatStageThinking  = "thinking"
 	ChatStageAnswering = "answering"
+
+	// ChatDeltaPhaseThinking / ChatDeltaPhaseAnswer 是模型增量事件的阶段取值。
+	ChatDeltaPhaseThinking = "thinking"
+	ChatDeltaPhaseAnswer   = "answer"
 )
 
 // ChatToolEvent 是一次工具校验/执行的流式摘要（不含凭据与 prompt）。
@@ -34,6 +39,8 @@ type ChatToolEvent struct {
 type ChatEvent struct {
 	Type    string                 `json:"type"`
 	Stage   string                 `json:"stage,omitempty"`
+	Phase   string                 `json:"phase,omitempty"`
+	Text    string                 `json:"text,omitempty"`
 	Tool    *ChatToolEvent         `json:"tool,omitempty"`
 	Result  *SendChatMessageResult `json:"result,omitempty"`
 	Code    string                 `json:"code,omitempty"`
@@ -66,6 +73,14 @@ func emitChatEvent(ctx context.Context, event ChatEvent) error {
 // emitChatStage 推送阶段事件。
 func emitChatStage(ctx context.Context, stage string) error {
 	return emitChatEvent(ctx, ChatEvent{Type: ChatEventStage, Stage: stage})
+}
+
+// emitChatModelDelta 推送模型增量；thinking 来自 reasoning_content，answer 来自 content。
+func emitChatModelDelta(ctx context.Context, phase, text string) error {
+	if text == "" {
+		return nil
+	}
+	return emitChatEvent(ctx, ChatEvent{Type: ChatEventDelta, Phase: phase, Text: text})
 }
 
 // toolEventFromObservation 把观测转成流式工具事件。

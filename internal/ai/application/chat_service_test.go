@@ -189,6 +189,8 @@ type fakeChatClient struct {
 	user         string
 	calls        int
 	lastProvider string
+	// block 为 true 时模拟模型挂起，直到 ctx 截止（回合预算测试）。
+	block bool
 }
 
 func (f *fakeChatClient) ChatProviderID() (string, bool) {
@@ -198,11 +200,15 @@ func (f *fakeChatClient) ChatProviderID() (string, bool) {
 	return f.providerID, true
 }
 
-func (f *fakeChatClient) Complete(_ context.Context, providerID, systemPrompt, userPrompt string) (*toolgateway.ChatCompletionResult, error) {
+func (f *fakeChatClient) Complete(ctx context.Context, providerID, systemPrompt, userPrompt string) (*toolgateway.ChatCompletionResult, error) {
 	f.calls++
 	f.lastProvider = providerID
 	f.system = systemPrompt
 	f.user = userPrompt
+	if f.block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -212,6 +218,24 @@ func (f *fakeChatClient) Complete(_ context.Context, providerID, systemPrompt, u
 		f.script = f.script[1:]
 	}
 	return &toolgateway.ChatCompletionResult{Content: content, Tokens: 42}, nil
+}
+
+func (f *fakeChatClient) CompleteStream(ctx context.Context, providerID, systemPrompt, userPrompt string, onDelta toolgateway.ChatModelDelta) (*toolgateway.ChatCompletionResult, error) {
+	if onDelta != nil {
+		if err := onDelta("thinking", "正在分析上下文"); err != nil {
+			return nil, apperr.Wrap(err, apperr.CodeAborted, "client closed the stream")
+		}
+	}
+	result, err := f.Complete(ctx, providerID, systemPrompt, userPrompt)
+	if err != nil {
+		return nil, err
+	}
+	if onDelta != nil {
+		if err := onDelta("answer", result.Content); err != nil {
+			return nil, apperr.Wrap(err, apperr.CodeAborted, "client closed the stream")
+		}
+	}
+	return result, nil
 }
 
 type fakeChatToolGateway struct {
@@ -1757,5 +1781,108 @@ func TestListSessions(t *testing.T) {
 	}
 	if _, err := svc.ListSessions(context.Background(), "", 10); err == nil {
 		t.Fatal("expected unauthenticated error")
+	}
+}
+
+func TestSendMessageTurnBudgetExceeded(t *testing.T) {
+	svc, repo, _, chat, audit, _ := newChatTestService(t)
+	chat.block = true
+	svc.SetTurnBudget(50 * time.Millisecond)
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+
+	started := time.Now()
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "需要长时间推理的问题",
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatalf("turn budget did not stop the model call")
+	}
+	if result.Status != chatStatusDegraded || result.Answer.DegradedReason != chatDegradedTurnBudgetExceeded {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("model calls = %d", chat.calls)
+	}
+	var chatAudit *AuditRecord
+	for i := range audit.rows {
+		if audit.rows[i].Action == AuditChatMessage {
+			chatAudit = &audit.rows[i]
+		}
+	}
+	if chatAudit == nil || chatAudit.Payload["degraded_reason"] != chatDegradedTurnBudgetExceeded {
+		t.Fatalf("unexpected audit: %+v", chatAudit)
+	}
+}
+
+func TestSendMessageStreamEmitsModelDeltas(t *testing.T) {
+	svc, repo, _, _, _, _ := newChatTestService(t)
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+	var events []ChatEvent
+	_, err := svc.SendMessageStream(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析当前告警",
+	}, func(event ChatEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("send stream: %v", err)
+	}
+	phases := map[string]bool{}
+	answerEvents := 0
+	for _, event := range events {
+		switch event.Type {
+		case ChatEventDelta:
+			if event.Text == "" {
+				t.Fatalf("delta event without text: %+v", event)
+			}
+			phases[event.Phase] = true
+		case ChatEventAnswer:
+			answerEvents++
+		}
+	}
+	if !phases[ChatDeltaPhaseThinking] || !phases[ChatDeltaPhaseAnswer] {
+		t.Fatalf("missing delta phases: %+v", phases)
+	}
+	if answerEvents != 1 {
+		t.Fatalf("answer events = %d", answerEvents)
+	}
+}
+
+func TestSendMessageStreamAbortsWhenDeltaSinkFails(t *testing.T) {
+	svc, repo, _, _, audit, _ := newChatTestService(t)
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := svc.SendMessageStream(ctx, SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析当前告警",
+	}, func(event ChatEvent) error {
+		if event.Type == ChatEventDelta {
+			return errors.New("client closed")
+		}
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected aborted error")
+	}
+	detail, detailErr := svc.GetSession(context.Background(), "u-1", "s-1")
+	if detailErr != nil {
+		t.Fatalf("get session: %v", detailErr)
+	}
+	for _, message := range detail.Messages {
+		if message.Role == string(domain.RoleAssistant) {
+			t.Fatalf("canceled stream must not persist assistant message: %+v", message)
+		}
+	}
+	canceled := false
+	for i := range audit.rows {
+		if audit.rows[i].Action == AuditChatCanceled {
+			canceled = true
+		}
+	}
+	if !canceled {
+		t.Fatal("missing chat_canceled audit")
 	}
 }

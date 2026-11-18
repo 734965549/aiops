@@ -15,6 +15,8 @@ type chatGeneration struct {
 	Status     string
 	ProviderID string
 	Tokens     int
+	// Aborted 表示流式回调失败（通常是客户端断开），调用方不得落 assistant 消息。
+	Aborted bool
 }
 
 // generateAnswer 调用平台直连模型；模型可在预算内追加只读取数（受限 Agent Loop）。

@@ -3,6 +3,7 @@ package toolgateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -78,5 +79,109 @@ func TestProviderRegistryChatCompletionDisabledProvider(t *testing.T) {
 	if _, err := registry.Complete(context.Background(), "ark", "sys", "user"); err == nil ||
 		apperr.FromError(err).Code != apperr.CodeFailedPrecondition {
 		t.Fatalf("expected failed precondition, got %v", err)
+	}
+}
+
+func TestParseChatStreamLine(t *testing.T) {
+	cases := []struct {
+		name  string
+		line  string
+		ok    bool
+		delta chatStreamDelta
+	}{
+		{name: "reasoning", line: `data: {"choices":[{"delta":{"reasoning_content":"思考中"}}]}`, ok: true, delta: chatStreamDelta{Reasoning: "思考中"}},
+		{name: "content", line: `data: {"choices":[{"delta":{"content":"答案"}}]}`, ok: true, delta: chatStreamDelta{Content: "答案"}},
+		{name: "usage", line: `data: {"choices":[],"usage":{"total_tokens":42}}`, ok: true, delta: chatStreamDelta{Usage: 42}},
+		{name: "done", line: `data: [DONE]`, ok: true, delta: chatStreamDelta{Done: true}},
+		{name: "comment", line: `: ping`, ok: false},
+		{name: "blank", line: ``, ok: false},
+		{name: "garbage", line: `data: not-json`, ok: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseChatStreamLine([]byte(tc.line))
+			if ok != tc.ok || got != tc.delta {
+				t.Fatalf("got %+v ok=%v, want %+v ok=%v", got, ok, tc.delta, tc.ok)
+			}
+		})
+	}
+}
+
+func TestProviderRegistryCompleteStream(t *testing.T) {
+	var captured chatRequest
+	var accept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		accept = r.Header.Get("Accept")
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &captured)
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		for _, line := range []string{
+			`data: {"choices":[{"delta":{"reasoning_content":"思考"}}]}`,
+			`data: {"choices":[{"delta":{"content":"{\"summary\":"}}]}`,
+			`data: {"choices":[{"delta":{"content":"\"ok\"}"}}]}`,
+			`data: {"choices":[],"usage":{"total_tokens":42}}`,
+			`data: [DONE]`,
+		} {
+			_, _ = io.WriteString(w, line+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	registry := chatTestRegistry(t, srv.URL)
+	type deltaEvent struct{ phase, text string }
+	var deltas []deltaEvent
+	result, err := registry.CompleteStream(context.Background(), "ark", "sys", "user", func(phase, text string) error {
+		deltas = append(deltas, deltaEvent{phase: phase, text: text})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("complete stream: %v", err)
+	}
+	if !captured.Stream || accept != "text/event-stream" {
+		t.Fatalf("unexpected stream request: stream=%v accept=%q", captured.Stream, accept)
+	}
+	if result.Content != `{"summary":"ok"}` || result.Tokens != 42 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(deltas) != 3 || deltas[0].phase != "thinking" || deltas[1].phase != "answer" || deltas[1].text != `{"summary":` {
+		t.Fatalf("unexpected deltas: %+v", deltas)
+	}
+}
+
+func TestCompleteStreamAbortsOnDeltaError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"部分"}}]}`+"\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	registry := chatTestRegistry(t, srv.URL)
+	_, err := registry.CompleteStream(context.Background(), "ark", "sys", "user", func(_, _ string) error {
+		return errors.New("client closed")
+	})
+	if err == nil || apperr.CodeOf(err) != apperr.CodeAborted {
+		t.Fatalf("expected aborted error, got %v", err)
+	}
+}
+
+func TestCompleteStreamEmptyResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	registry := chatTestRegistry(t, srv.URL)
+	_, err := registry.CompleteStream(context.Background(), "ark", "sys", "user", nil)
+	if err == nil || apperr.CodeOf(err) != apperr.CodeUnavailable {
+		t.Fatalf("expected unavailable error, got %v", err)
 	}
 }

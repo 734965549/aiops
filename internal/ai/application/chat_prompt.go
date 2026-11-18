@@ -213,6 +213,8 @@ func degradedChatAnswer(reason string, evidence []string) ChatAnswer {
 		uncertainties = append(uncertainties, "模型输出无法通过平台结构校验，已丢弃并降级")
 	case chatDegradedLoopExhausted:
 		uncertainties = append(uncertainties, "模型在追加只读取数的预算内仍未给出结论，已按已获取上下文保守回答")
+	case chatDegradedTurnBudgetExceeded:
+		uncertainties = append(uncertainties, "本轮对话已超过总时间预算，已停止继续取数与模型调用；请缩小问题范围或稍后重试")
 	}
 	if len(evidence) == 0 {
 		evidence = []string{"暂无可用只读观测数据，请结合告警详情与监控页面人工判断"}

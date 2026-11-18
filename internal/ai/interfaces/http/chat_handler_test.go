@@ -86,6 +86,9 @@ func (f *fakeChatUseCase) SendMessageStream(ctx context.Context, in aiapp.SendCh
 	if err := emit(aiapp.ChatEvent{Type: aiapp.ChatEventStage, Stage: aiapp.ChatStageThinking}); err != nil {
 		return nil, err
 	}
+	if err := emit(aiapp.ChatEvent{Type: aiapp.ChatEventDelta, Phase: aiapp.ChatDeltaPhaseThinking, Text: "分析中"}); err != nil {
+		return nil, err
+	}
 	if err := emit(aiapp.ChatEvent{Type: aiapp.ChatEventTool, Tool: &aiapp.ChatToolEvent{
 		ToolCode: "alarm.analyze", Allowed: true, Status: "ok",
 	}}); err != nil {
@@ -382,14 +385,50 @@ func TestChatHandlerSendMessageStream(t *testing.T) {
 		t.Fatalf("unexpected stream input: %+v", usecase.streamed)
 	}
 	body := w.Body.String()
-	for _, want := range []string{`"type":"stage"`, `"stage":"thinking"`, `"type":"tool"`, `"tool_code":"alarm.analyze"`, `"type":"answer"`, `"summary":"CPU 持续升高"`} {
+	for _, want := range []string{`"type":"stage"`, `"stage":"thinking"`, `"type":"delta"`, `"phase":"thinking"`, `"text":"分析中"`, `"type":"tool"`, `"tool_code":"alarm.analyze"`, `"type":"answer"`, `"summary":"CPU 持续升高"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %s in SSE body: %s", want, body)
 		}
 	}
 	// 每条事件都以 data: 前缀 + 空行结尾。
-	if strings.Count(body, "data: ") != 3 {
-		t.Fatalf("expected 3 SSE events, got body: %s", body)
+	if strings.Count(body, "data: ") != 4 {
+		t.Fatalf("expected 4 SSE events, got body: %s", body)
+	}
+}
+
+type blockingStreamUseCase struct {
+	*fakeChatUseCase
+	release chan struct{}
+}
+
+func (f *blockingStreamUseCase) SendMessageStream(ctx context.Context, in aiapp.SendChatMessageInput, emit aiapp.ChatEventSink) (*aiapp.SendChatMessageResult, error) {
+	<-f.release
+	return f.fakeChatUseCase.SendMessageStream(ctx, in, emit)
+}
+
+func TestChatHandlerSendMessageStreamHeartbeat(t *testing.T) {
+	oldInterval := sseHeartbeatInterval
+	sseHeartbeatInterval = 5 * time.Millisecond
+	defer func() { sseHeartbeatInterval = oldInterval }()
+
+	release := make(chan struct{})
+	usecase := &blockingStreamUseCase{fakeChatUseCase: &fakeChatUseCase{}, release: release}
+	h := NewChatHandler(usecase)
+	c, w := newChatHandlerTestContext(http.MethodPost, "/chat/sessions/s-1/messages/stream", map[string]any{
+		"content": "长问题",
+	}, gin.Params{{Key: "session_id", Value: "s-1"}}, "u-1")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.SendMessageStream(c)
+	}()
+	time.Sleep(30 * time.Millisecond)
+	close(release)
+	<-done
+
+	if !strings.Contains(w.Body.String(), ": ping\n\n") {
+		t.Fatalf("missing heartbeat comment, body: %s", w.Body.String())
 	}
 }
 

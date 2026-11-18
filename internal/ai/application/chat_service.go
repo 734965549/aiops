@@ -21,9 +21,11 @@ const (
 	// chatMaxClientMessageIDRunes 幂等键长度上限（与 ai_session_message.client_message_id 列宽对齐）。
 	chatMaxClientMessageIDRunes = 64
 
-	chatDegradedModelUnavailable = "model_unavailable"
-	chatDegradedModelFailed      = "model_failed"
-	chatDegradedOutputInvalid    = "model_output_invalid"
+	chatDegradedModelUnavailable   = "model_unavailable"
+	chatDegradedModelFailed        = "model_failed"
+	chatDegradedOutputInvalid      = "model_output_invalid"
+	chatDegradedTurnBudgetExceeded = "turn_budget_exceeded"
+	chatDefaultTurnBudget          = 10 * time.Minute
 
 	chatToolAlarmAnalyze     = "alarm.analyze"
 	chatToolMetricsQuery     = "metrics.query"
@@ -120,7 +122,9 @@ type ChatService struct {
 	knowledge KnowledgeStore
 	// shares 为可选的会话只读分享能力；nil 表示未接入（分享接口返回 503）。
 	shares domain.SessionShareRepository
-	now    func() time.Time
+	// turnBudget 是单次对话（含 Agent Loop 多轮）的总时间预算；<=0 时使用默认值。
+	turnBudget time.Duration
+	now        func() time.Time
 }
 
 // NewChatService 构造对话服务；可选依赖为 nil 时对应能力降级。
@@ -137,8 +141,16 @@ func NewChatService(
 	}
 	return &ChatService{
 		sessions: sessions, alerts: alerts, tools: tools, chat: chat,
-		evidence: evidence, audit: audit, now: time.Now,
+		evidence: evidence, audit: audit, turnBudget: chatDefaultTurnBudget, now: time.Now,
 	}
+}
+
+// SetTurnBudget 设置单次对话（含 Agent Loop）的总时间预算；<=0 时保持默认值。
+func (s *ChatService) SetTurnBudget(budget time.Duration) {
+	if s == nil || budget <= 0 {
+		return
+	}
+	s.turnBudget = budget
 }
 
 // CreateSession 创建会话并写入 AI 审计。
@@ -326,6 +338,11 @@ func (s *ChatService) sendMessage(ctx context.Context, in SendChatMessageInput, 
 		return nil, apperr.Wrap(err, apperr.CodeAborted, "client closed the stream")
 	}
 	generation := s.generateAnswer(ctx, userID, content, session, history, &contextData)
+	// 流式回调失败（客户端断开）：模型调用已中止，不落 assistant 消息。
+	if generation.Aborted {
+		s.recordChatCanceled(ctx, userID, session, userMessageID, "before_persist")
+		return nil, apperr.New(apperr.CodeAborted, "client closed the stream")
+	}
 	// 客户端断开或请求超时：不落 assistant 消息，避免出现「无证据的半成品回答」。
 	if canceledErr := chatCanceledErr(ctx); canceledErr != nil {
 		s.recordChatCanceled(ctx, userID, session, userMessageID, "before_persist")
