@@ -6,6 +6,8 @@
 //   - MOCK_TOOL_INFINITE：每轮都申请 alarm.analyze，用于验证 Agent Loop 预算耗尽降级；
 //   - MOCK_TOOL_RULES：从标记后的 JSON 读取账号/命名空间/指标参数，首轮同时申请
 //     alert.rules.list 与 metrics.query，用于规则体检 E2E；
+//   - MOCK_TOOL_DISCOVERY：从标记后的 JSON 读取账号，首轮申请 accounts.list 与
+//     resources.list，用于上下文发现 E2E；
 //   - [SLOW]：延迟响应，用于验证流式取消。
 //
 // 该工具仅供 scripts/e2e-ai-*.ps1 在 dev 环境使用，不参与生产构建。
@@ -34,6 +36,12 @@ const infiniteToolRequests = `{"tool_requests":[{"tool_code":"alarm.analyze","re
 const ruleToolRequestsTemplate = `{"tool_requests":[{"tool_code":"alert.rules.list","reason":"规则体检","params":{"account_id":%q,"region":%q,"namespace":%q,"limit":10}},{"tool_code":"metrics.query","reason":"趋势与破限点核对","params":{"account_id":%q,"region":%q,"namespace":%q,"metric":%q,"dimensions":%s,"from":%d,"to":%d,"period":%d}}]}`
 
 const ruleInspectionAnswer = `{"summary":"E2E 规则体检：已读取告警规则与指标证据。","evidence":["rule-fake","observability evidence"],"impact":["规则阈值需要结合趋势复核"],"recommendations":["核对阈值与破限点","观察 10 分钟"],"risk_level":"low","require_confirm":false,"actions":[],"rollback":"无变更动作","uncertainties":[],"insufficient_context":false}`
+
+const discoveryToolRequestsTemplate = `{"tool_requests":[{"tool_code":"accounts.list","reason":"确认可用账号"},{"tool_code":"resources.list","reason":"发现云同步资源","params":{"account_id":%q,"resource_type":"rds","limit":5}}]}`
+
+type discoveryScenarioParams struct {
+	AccountID string `json:"account_id"`
+}
 
 type ruleScenarioParams struct {
 	AccountID  string            `json:"account_id"`
@@ -209,6 +217,20 @@ func (s *scenarioState) nextContent(messages []chatMessage) (string, string) {
 	}
 	if strings.Contains(target, "MOCK_TOOL_INFINITE") {
 		return infiniteToolRequests, "infinite"
+	}
+	if idx := strings.Index(target, "MOCK_TOOL_DISCOVERY"); idx >= 0 {
+		s.seen["discovery"]++
+		if s.seen["discovery"] == 1 {
+			var params discoveryScenarioParams
+			decoder := json.NewDecoder(strings.NewReader(target[idx+len("MOCK_TOOL_DISCOVERY"):]))
+			// 允许标记后不带参数（环境尚无账号）：EOF 按空参数处理。
+			if err := decoder.Decode(&params); err != nil && err != io.EOF {
+				log.Printf("discovery scenario params invalid: %v", err)
+				return answerContent, "discovery_params_invalid"
+			}
+			return fmt.Sprintf(discoveryToolRequestsTemplate, params.AccountID), "discovery"
+		}
+		return answerContent, "answer_after_discovery"
 	}
 	if idx := strings.Index(target, "MOCK_TOOL_RULES"); idx >= 0 {
 		s.seen["rules"]++
