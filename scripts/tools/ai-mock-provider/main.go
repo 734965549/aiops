@@ -8,6 +8,10 @@
 //     alert.rules.list 与 metrics.query，用于规则体检 E2E；
 //   - MOCK_TOOL_DISCOVERY：从标记后的 JSON 读取账号，首轮申请 accounts.list 与
 //     resources.list，用于上下文发现 E2E；
+//   - MOCK_STREAM_429：首次返回 429（Retry-After: 1），用于验证退避重试；
+//   - MOCK_STREAM_429_ALWAYS：每次返回 429，响应体含 quota resets in 2h；
+//   - MOCK_STREAM_PARTIAL：输出一段内容后断开连接，用于验证部分保留；
+//   - MOCK_STREAM_SLOW：慢速输出（约 45s），用于验证流式不再使用 30s 总超时；
 //   - [SLOW]：延迟响应，用于验证流式取消。
 //
 // 该工具仅供 scripts/e2e-ai-*.ps1 在 dev 环境使用，不参与生产构建。
@@ -105,6 +109,19 @@ func main() {
 			return
 		}
 		prompt := joinPrompt(req.Messages)
+		// 限流/断流场景在模型调用前直接处理，便于稳定触发。
+		if strings.Contains(prompt, "MOCK_STREAM_429_ALWAYS") {
+			writeRateLimited(w, "quota resets in 2h", "1")
+			return
+		}
+		if strings.Contains(prompt, "MOCK_STREAM_429") && state.markOnce("stream_429") {
+			writeRateLimited(w, "quota resets in 1s", "1")
+			return
+		}
+		if strings.Contains(prompt, "MOCK_STREAM_PARTIAL") && state.markOnce("stream_partial") {
+			serveInterruptedStream(w)
+			return
+		}
 		if strings.Contains(prompt, "[SLOW]") {
 			select {
 			case <-time.After(*slow):
@@ -116,6 +133,10 @@ func main() {
 		log.Printf("completion served: scenario=%s stream=%t prompt_runes=%d", scenario, req.Stream, len([]rune(prompt)))
 
 		if req.Stream {
+			if strings.Contains(prompt, "MOCK_STREAM_SLOW") {
+				serveStreamWithDelay(w, r, content, 3*time.Second)
+				return
+			}
 			serveStream(w, r, content)
 			return
 		}
@@ -138,7 +159,39 @@ func main() {
 	}
 }
 
+func writeRateLimited(w http.ResponseWriter, message, retryAfter string) {
+	w.Header().Set("Content-Type", "application/json")
+	if retryAfter != "" {
+		w.Header().Set("Retry-After", retryAfter)
+	}
+	w.WriteHeader(http.StatusTooManyRequests)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"message": message}})
+}
+
+// serveInterruptedStream 输出一段内容后直接关闭连接，模拟生成中断。
+func serveInterruptedStream(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	flusher, _ := w.(http.Flusher)
+	_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"{\"summary\":\"部分"}}]}`+"\n\n")
+	if flusher != nil {
+		flusher.Flush()
+	}
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		panic(http.ErrAbortHandler)
+	}
+	conn, _, err := hijacker.Hijack()
+	if err != nil {
+		panic(http.ErrAbortHandler)
+	}
+	_ = conn.Close()
+}
+
 func serveStream(w http.ResponseWriter, r *http.Request, content string) {
+	serveStreamWithDelay(w, r, content, 0)
+}
+
+func serveStreamWithDelay(w http.ResponseWriter, r *http.Request, content string, delay time.Duration) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	flusher, _ := w.(http.Flusher)
@@ -168,6 +221,13 @@ func serveStream(w http.ResponseWriter, r *http.Request, content string) {
 	runes := []rune(content)
 	const contentChunkRunes = 24
 	for start := 0; start < len(runes); start += contentChunkRunes {
+		if delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if r.Context().Err() != nil {
 			return
 		}
@@ -195,6 +255,14 @@ func serveStream(w http.ResponseWriter, r *http.Request, content string) {
 type scenarioState struct {
 	mu   sync.Mutex
 	seen map[string]int
+}
+
+// markOnce 返回 key 是否首次命中，用于限流/断流场景只触发一次。
+func (s *scenarioState) markOnce(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seen[key]++
+	return s.seen[key] == 1
 }
 
 func (s *scenarioState) nextContent(messages []chatMessage) (string, string) {

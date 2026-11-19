@@ -19,7 +19,9 @@ param(
     [string]$Username = "admin",
     [string]$Password = "admin123",
     [int]$MockPort = 18081,
-    [string]$MockBaseUrl = ""
+    [string]$MockBaseUrl = "",
+    # 慢流场景需约 45s，例行回归可跳过；限流/断流场景始终执行。
+    [switch]$SkipSlow
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,6 +78,30 @@ function Wait-ForText([string]$Path, [string]$Needle, [int]$TimeoutMs = 20000) {
         Start-Sleep -Milliseconds 100
     }
     return $false
+}
+
+function Send-StreamMessage {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionId,
+        [Parameter(Mandatory = $true)][string]$Content,
+        [Parameter(Mandatory = $true)][string]$Prefix
+    )
+    $bodyFile = Join-Path $tempDir "$Prefix-body.json"
+    $headersFile = Join-Path $tempDir "$Prefix-headers.txt"
+    $eventsFile = Join-Path $tempDir "$Prefix-events.txt"
+    Write-Utf8File $bodyFile (@{ content = $Content; context = $context } | ConvertTo-Json -Depth 8 -Compress)
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    Invoke-StreamRequest -Curl $curl -Url ("$ApiBase/api/ai/chat/sessions/$SessionId/messages/stream") -Token $token `
+        -BodyFile $bodyFile -HeadersFile $headersFile -EventsFile $eventsFile
+    $stopwatch.Stop()
+    return [pscustomobject]@{
+        Events    = @(Read-SseEvents $eventsFile)
+        ElapsedMs = $stopwatch.ElapsedMilliseconds
+    }
+}
+
+function Find-AnswerEvent($StreamResult) {
+    return @($StreamResult.Events | Where-Object { $_.type -eq "answer" })[0]
 }
 
 $curl = (Get-Command curl.exe -ErrorAction SilentlyContinue).Source
@@ -154,6 +180,81 @@ try {
         throw "normal stream must persist exactly one assistant message"
     }
     Write-Host ("    events=" + $events.Count + " stages=" + ($stages -join " -> "))
+
+    Step "429 retry: first attempt rate-limited, retry succeeds"
+    $retrySession = Invoke-AiApi -ApiBase $ApiBase -Method POST -Path "/api/ai/chat/sessions" -Headers $auth -Body @{
+        title = "E2E 限流重试会话"
+        context = $context
+    }
+    $retry = Send-StreamMessage -SessionId $retrySession.session_id -Content "限流重试测试。MOCK_STREAM_429" -Prefix "retry"
+    $retryAnswer = Find-AnswerEvent $retry
+    if (-not $retryAnswer) { throw "429 retry scenario produced no answer event" }
+    if ([string]$retryAnswer.result.status -eq "degraded") {
+        throw ("429 retry should recover, got degraded: " + ($retryAnswer.result | ConvertTo-Json -Depth 6 -Compress))
+    }
+    if (-not $retryAnswer.result.answer.summary) { throw "429 retry answer missing summary" }
+    Write-Host ("    429 retry recovered in " + $retry.ElapsedMs + "ms")
+
+    Step "429 quota: retries exhausted, degraded with reset hint"
+    $quotaSession = Invoke-AiApi -ApiBase $ApiBase -Method POST -Path "/api/ai/chat/sessions" -Headers $auth -Body @{
+        title = "E2E 配额耗尽会话"
+        context = $context
+    }
+    $quota = Send-StreamMessage -SessionId $quotaSession.session_id -Content "配额耗尽测试。MOCK_STREAM_429_ALWAYS" -Prefix "quota"
+    $quotaAnswer = Find-AnswerEvent $quota
+    if (-not $quotaAnswer) { throw "429 quota scenario produced no answer event" }
+    if ([string]$quotaAnswer.result.status -ne "degraded") {
+        throw ("expected degraded for quota exhaustion, got " + $quotaAnswer.result.status)
+    }
+    if ([string]$quotaAnswer.result.answer.degraded_reason -ne "provider_rate_limited") {
+        throw ("expected provider_rate_limited, got " + $quotaAnswer.result.answer.degraded_reason)
+    }
+    $quotaUncertainties = @($quotaAnswer.result.answer.uncertainties) -join " "
+    if ($quotaUncertainties -notmatch "约 2 小时后恢复") {
+        throw ("missing quota reset hint in answer: " + $quotaUncertainties)
+    }
+    Write-Host "    provider_rate_limited with reset hint"
+
+    Step "partial stream: incomplete answer retained"
+    $partialSession = Invoke-AiApi -ApiBase $ApiBase -Method POST -Path "/api/ai/chat/sessions" -Headers $auth -Body @{
+        title = "E2E 断流会话"
+        context = $context
+    }
+    $partial = Send-StreamMessage -SessionId $partialSession.session_id -Content "断流测试。MOCK_STREAM_PARTIAL" -Prefix "partial"
+    $partialAnswer = Find-AnswerEvent $partial
+    if (-not $partialAnswer) { throw "partial stream produced no answer event" }
+    if ([string]$partialAnswer.result.status -ne "incomplete") {
+        throw ("expected incomplete status, got " + $partialAnswer.result.status)
+    }
+    if (-not $partialAnswer.result.answer.incomplete) {
+        throw ("expected answer.incomplete=true, got: " + ($partialAnswer.result.answer | ConvertTo-Json -Depth 6 -Compress))
+    }
+    $partialDetail = Invoke-AiApi -ApiBase $ApiBase -Method GET -Path ("/api/ai/chat/sessions/" + $partialSession.session_id) -Headers $auth
+    $partialAssistants = @($partialDetail.messages | Where-Object { $_.role -eq "assistant" })
+    if ($partialAssistants.Count -ne 1 -or -not $partialAssistants[0].answer.incomplete) {
+        throw "partial answer must be persisted with incomplete flag"
+    }
+    Write-Host ("    incomplete answer retained (reason=" + $partialAnswer.result.answer.incomplete_reason + ")")
+
+    if (-not $SkipSlow) {
+        Step "slow stream >30s: no total timeout cutoff"
+        $slowSession = Invoke-AiApi -ApiBase $ApiBase -Method POST -Path "/api/ai/chat/sessions" -Headers $auth -Body @{
+            title = "E2E 慢流会话"
+            context = $context
+        }
+        $slow = Send-StreamMessage -SessionId $slowSession.session_id -Content "慢流测试。MOCK_STREAM_SLOW" -Prefix "slow"
+        $slowAnswer = Find-AnswerEvent $slow
+        if (-not $slowAnswer) { throw "slow stream produced no answer event" }
+        if ([string]$slowAnswer.result.status -ne "ok") {
+            throw ("slow stream should succeed, got " + $slowAnswer.result.status)
+        }
+        if ($slow.ElapsedMs -lt 30000) {
+            throw ("slow stream finished too fast to validate timeout semantics: " + $slow.ElapsedMs + "ms")
+        }
+        Write-Host ("    slow stream completed in " + $slow.ElapsedMs + "ms without 30s cutoff")
+    } else {
+        Write-Host "    SKIP: slow stream scenario (-SkipSlow)"
+    }
 
     Step "archived session: HTTP 200 + error event, no answer"
     $archivedSession = Invoke-AiApi -ApiBase $ApiBase -Method POST -Path "/api/ai/chat/sessions" -Headers $auth -Body @{ title = "E2E 已归档流式会话" }
