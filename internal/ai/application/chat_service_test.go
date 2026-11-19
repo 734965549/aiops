@@ -1326,8 +1326,13 @@ func TestSendMessageAgentLoopRejectsExecutionTools(t *testing.T) {
 
 func TestSendMessageAgentLoopExhaustsRounds(t *testing.T) {
 	svc, repo, _, chat, audit, _ := newChatTestService(t)
-	// 模型无限申请指标证据：轮数用尽后必须降级收敛，不能悬挂。
-	chat.content = `{"tool_requests":[{"tool_code":"metrics.query","reason":"还需要指标"}]}`
+	// 模型每轮申请不同时间窗口的指标证据：轮数用尽后必须降级收敛，不能悬挂。
+	chat.script = []string{
+		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700000000,"to":1700003600}}]}`,
+		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700003600,"to":1700007200}}]}`,
+		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700007200,"to":1700010800}}]}`,
+		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700010800,"to":1700014400}}]}`,
+	}
 	seedChatSession(t, repo, "u-1", domain.SessionContext{AlertID: "a1", Page: "alerts"})
 
 	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
@@ -1351,6 +1356,65 @@ func TestSendMessageAgentLoopExhaustsRounds(t *testing.T) {
 	}
 	if chatAudit == nil || chatAudit.Payload["loop_rounds"] != chatMaxLoopRounds {
 		t.Fatalf("unexpected loop audit: %+v", chatAudit)
+	}
+}
+
+func TestSendMessageAgentLoopDuplicateDoesNotConsumeRounds(t *testing.T) {
+	svc, repo, _, chat, audit, _ := newChatTestService(t)
+	// 每轮「先重复上一轮申请、再换新窗口」：重复申请回 denied 且不占有效轮数，
+	// 3 个不同窗口后仍留有轮次让模型输出结论。
+	chat.script = []string{
+		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700000000,"to":1700003600}}]}`,
+		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700000000,"to":1700003600}}]}`,
+		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700003600,"to":1700007200}}]}`,
+		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700003600,"to":1700007200}}]}`,
+		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700007200,"to":1700010800}}]}`,
+		chatAnswerJSON("基于三个窗口得出结论"),
+	}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{AlertID: "a1", Page: "alerts"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "连续对比三段窗口",
+		Context: &domain.SessionContext{AlertID: "a1", Page: "alerts"},
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if result.Status != chatStatusOK || !strings.Contains(result.Answer.Summary, "三个窗口") {
+		t.Fatalf("duplicate rounds must not exhaust budget: %+v", result)
+	}
+	if chat.calls != 6 {
+		t.Fatalf("expected 6 model calls, got %d", chat.calls)
+	}
+	if auditChatLoopRounds(audit) != chatMaxLoopRounds {
+		t.Fatalf("loop_rounds = %d", auditChatLoopRounds(audit))
+	}
+	if !hasToolCallReason(result.ToolCalls, chatObservationReasonDuplicateRequest) {
+		t.Fatalf("missing duplicate denied observation: %+v", result.ToolCalls)
+	}
+}
+
+func TestSendMessageAgentLoopStopsOnRepeatedIdenticalRequests(t *testing.T) {
+	svc, repo, _, chat, _, _ := newChatTestService(t)
+	// 模型反复申请同一查询：第一次执行，后续回 denied；连续两轮无进展即收敛。
+	chat.content = `{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700000000,"to":1700003600}}]}`
+	seedChatSession(t, repo, "u-1", domain.SessionContext{AlertID: "a1", Page: "alerts"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "继续查",
+		Context: &domain.SessionContext{AlertID: "a1", Page: "alerts"},
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if result.Status != chatStatusDegraded || result.Answer.DegradedReason != chatDegradedLoopExhausted {
+		t.Fatalf("expected agent_loop_exhausted, got %+v", result)
+	}
+	if chat.calls != 3 {
+		t.Fatalf("expected 3 model calls, got %d", chat.calls)
+	}
+	if !hasToolCallReason(result.ToolCalls, chatObservationReasonDuplicateRequest) {
+		t.Fatalf("missing duplicate denied observation: %+v", result.ToolCalls)
 	}
 }
 
@@ -1535,6 +1599,15 @@ func TestSendMessageAgentLoopRulesUnsupportedDoesNotBlock(t *testing.T) {
 func hasToolCall(calls []domain.ToolCall, code, status string) bool {
 	for _, call := range calls {
 		if call.ToolCode == code && call.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func hasToolCallReason(calls []domain.ToolCall, reason string) bool {
+	for _, call := range calls {
+		if call.Reason == reason {
 			return true
 		}
 	}

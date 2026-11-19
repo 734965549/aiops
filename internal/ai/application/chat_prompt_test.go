@@ -119,6 +119,9 @@ func TestChatSystemPromptEnforcesTimeAndReadability(t *testing.T) {
 		"未映射",
 		"推荐操作必须逐条结构化",
 		"point_count 为 0",
+		"收敛要求",
+		"必须立即输出最终 answer",
+		"重复申请会收到 denied",
 	} {
 		if !strings.Contains(chatSystemPrompt, want) {
 			t.Fatalf("system prompt missing %q", want)

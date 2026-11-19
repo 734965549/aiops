@@ -619,7 +619,8 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | --- | --- |
 | AI 思考中 / 查询工具中 / 生成回答中 | 流式接口按 `stage` / `tool` 事件即时切换；同步接口按请求进行中提示 |
 | 用户取消 / 连接中断 | 流提前结束且无 `answer` / `error`；服务端不落回答，记 `chat_canceled` 审计（§10.17.4） |
-| AI 回答失败 | `status=degraded`，展示 `degraded_reason` 与可重试入口 |
+| AI 回答失败 | `status=degraded` 且 `degraded_reason` 为 `model_unavailable` / `model_failed` / `model_output_invalid` / `provider_rate_limited`，展示原因与可重试入口 |
+| AI 未得出结论 | `status=degraded` 且 `degraded_reason` 为 `agent_loop_exhausted` / `turn_budget_exceeded`，橙色提示「取数预算内未得出结论」，按普通回答卡渲染已获取证据并保留重新提问入口 |
 | AI 回答生成中断 | `status=incomplete` 或 `answer.incomplete=true`，橙色提示 + 重新提问入口；按普通回答卡渲染已保留内容，不展示为失败 |
 | AI 无足够上下文 | `status=insufficient_context` 或 `answer.insufficient_context=true` |
 | AI 建议需人工确认 | `answer.require_confirm=true` |
@@ -932,6 +933,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | 参数透传 | `tool_requests[].params` 按 §10.12.1 校验；非法参数记 `status=invalid_argument` 并反馈给模型，不执行取数 |
 | 权限 | 每轮每个工具独立过 RBAC + 工具权限（与首轮同一套校验），`allowed=false` 时把原因反馈给模型而不中断 |
 | 预算 | 追加轮数 ≤ **3**；累计 token ≥ **20000** 即终止；单轮最多受理 **3** 个申请（同轮同名工具去重）；单次对话总时间预算 `ai.turn_budget_s`（默认 600s），超时立即终止并返回 `turn_budget_exceeded` |
+| 去重 | 跨轮按 `tool_code + params` 去重：已成功执行过的组合重复申请时返回 `status=denied`、`reason=duplicate tool request: identical parameters already executed in this turn`，不再取数且不占用有效轮数；连续两轮无实际取数仍按收敛规则终止 |
 | 收敛 | 连续两轮「申请了但一个工具都没真正执行」才终止，给模型一次看到拒绝原因后自我纠正的机会 |
 | 审计 | 每轮工具调用写 `tool_invoke`（与现状同结构）；`chat_message` 新增 `loop_rounds`（实际追加轮数） |
 | 契约 | 接口仍同步返回；`tool_calls` 数组容纳多轮调用记录；流式与取消见 §10.17 |
@@ -949,8 +951,8 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | 工具被拒绝 | 回答仍正常返回；拒绝原因在 `tool_calls[].reason` 与审计中可见 |
 | 未装配知识/记忆 | 循环本身不受影响 |
 
-- 提示词约束：system prompt 明确「只在现有只读观测不足时申请；可申请 `alarm.analyze` / `metrics.query` / `alert.rules.list` / `accounts.list` / `resource.analyze` / `resources.list`；`account_id` 优先来自 `accounts.list` 清单（不可用时回退告警/资源上下文），不得臆造；参数边界见 §10.12.1；最多 3 轮；不得申请执行类工具」。
-- 前端无需改动：多轮调用会自然出现在 `tool_calls`；`loop_rounds` 仅用于审计与排查。
+- 提示词约束：system prompt 明确「只在现有只读观测不足时申请；可申请 `alarm.analyze` / `metrics.query` / `alert.rules.list` / `accounts.list` / `resource.analyze` / `resources.list`；`account_id` 优先来自 `accounts.list` 清单（不可用时回退告警/资源上下文），不得臆造；参数边界见 §10.12.1；最多 3 轮且单轮最多 3 个申请；现有观测足以作答时必须立即输出 answer；同工具同参数重复申请无意义（服务端跨轮去重拒绝）；不得申请执行类工具」。
+- 前端按 §10.9 映射 `status`；多轮调用会自然出现在 `tool_calls`；`loop_rounds` 仅用于审计与排查。
 - 循环只影响取数与证据丰富度，不改变权限判断、`actions` 生成或执行链路。
 
 ### 10.17 流式对话（SSE）与取消语义

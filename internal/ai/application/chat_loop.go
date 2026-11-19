@@ -24,6 +24,8 @@ const (
 	chatLoopMaxRequestsPerRound = 3
 	// chatDegradedLoopExhausted 轮数/预算耗尽仍未产出 answer 时的降级原因。
 	chatDegradedLoopExhausted = "agent_loop_exhausted"
+	// chatObservationReasonDuplicateRequest 是跨轮重复申请已执行查询时的稳定原因码。
+	chatObservationReasonDuplicateRequest = "duplicate tool request: identical parameters already executed in this turn"
 )
 
 // loopAllowedTools 是模型只能在回合内申请的只读工具白名单（toolgateway 内置工具清单）。
@@ -101,6 +103,8 @@ func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, 
 	}
 
 	rounds := 0
+	// executedRequests 记录本轮对话已成功执行的 tool_code+params，跨轮重复申请只回 denied。
+	executedRequests := make(map[string]struct{})
 	// deniedRounds 统计连续「申请了但一个都没执行」的轮数，用于给模型一次纠正机会。
 	deniedRounds := 0
 	for {
@@ -177,25 +181,31 @@ func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, 
 		if time.Until(deadline) <= 0 {
 			return budgetExceeded()
 		}
-		executed := s.runLoopToolRequests(ctx, userID, session, data, requests)
-		data.LoopRounds = rounds + 1
-		rounds++
-		if executed == 0 {
-			// 本轮没有任何工具真正执行：把拒绝原因反馈给模型后允许一次纠正机会，
-			// 连续两轮都无实际取数才收敛，避免模型陷入无效申请的死循环。
-			deniedRounds++
-			if deniedRounds > 1 {
-				logger.From(ctx).Warn("ai chat agent loop made no progress",
-					logger.String("session_id", session.SessionID),
-					logger.Int("rounds", rounds), logger.Int("denied_rounds", deniedRounds))
-				evidence = observationEvidenceLines(*data)
-				return chatGeneration{
-					Answer: degradedChatAnswer(chatDegradedLoopExhausted, evidence),
-					Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
-				}
-			}
-		} else {
+		executed, duplicated := s.runLoopToolRequests(ctx, userID, session, data, executedRequests, requests)
+		if executed > 0 {
+			data.LoopRounds = rounds + 1
+			rounds++
 			deniedRounds = 0
+			continue
+		}
+		// 纯重复申请不占用有效轮数，避免模型用重复查询挤掉本可得出结论的轮次；
+		// 其余无效轮（拒绝/参数非法/取数失败）仍按原口径计轮。
+		if duplicated == 0 {
+			data.LoopRounds = rounds + 1
+			rounds++
+		}
+		// 本轮没有任何工具真正执行：把拒绝原因反馈给模型后允许一次纠正机会，
+		// 连续两轮都无实际取数才收敛，避免模型陷入无效申请的死循环。
+		deniedRounds++
+		if deniedRounds > 1 {
+			logger.From(ctx).Warn("ai chat agent loop made no progress",
+				logger.String("session_id", session.SessionID),
+				logger.Int("rounds", rounds), logger.Int("denied_rounds", deniedRounds))
+			evidence = observationEvidenceLines(*data)
+			return chatGeneration{
+				Answer: degradedChatAnswer(chatDegradedLoopExhausted, evidence),
+				Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
+			}
 		}
 	}
 }
@@ -268,11 +278,30 @@ func (s *ChatService) completeModel(ctx context.Context, providerID, systemPromp
 	})
 }
 
-// runLoopToolRequests 逐个执行模型申请的只读工具，返回真正执行的数量。
+// chatToolRequestKey 生成跨轮去重键：无参工具按工具名，其余按 tool_code + 规范化 params。
+func chatToolRequestKey(req chatToolRequest) string {
+	code := strings.TrimSpace(req.ToolCode)
+	switch code {
+	case chatToolAlarmAnalyze, chatToolAccountsList, chatToolResourceAnalyze:
+		return code
+	}
+	if len(req.Params) == 0 {
+		return code
+	}
+	raw, err := json.Marshal(req.Params)
+	if err != nil {
+		return code
+	}
+	return code + "|" + string(raw)
+}
+
+// runLoopToolRequests 逐个执行模型申请的只读工具，返回（真正执行数, 重复申请数）。
 //
 // 每轮每个工具独立过 RBAC + 工具权限；拒绝原因反馈给模型（denied 观测），不中断循环。
-func (s *ChatService) runLoopToolRequests(ctx context.Context, userID string, session *domain.Session, data *chatContextData, requests []chatToolRequest) int {
+// 已成功执行过的 tool_code+params 组合再次申请时只回 denied，不重复取数。
+func (s *ChatService) runLoopToolRequests(ctx context.Context, userID string, session *domain.Session, data *chatContextData, executedRequests map[string]struct{}, requests []chatToolRequest) (int, int) {
 	executed := 0
+	duplicated := 0
 	seen := make(map[string]struct{}, len(requests))
 	for _, req := range requests {
 		if len(seen) >= chatLoopMaxRequestsPerRound {
@@ -286,6 +315,7 @@ func (s *ChatService) runLoopToolRequests(ctx context.Context, userID string, se
 			continue
 		}
 		seen[code] = struct{}{}
+		key := chatToolRequestKey(req)
 		if _, ok := loopAllowedTools[code]; !ok {
 			// 执行类或未登记工具：明确拒绝并把原因反馈给模型。
 			s.appendToolResult(ctx, userID, session.SessionID, "", data, ChatObservation{
@@ -293,34 +323,34 @@ func (s *ChatService) runLoopToolRequests(ctx context.Context, userID string, se
 			})
 			continue
 		}
+		if _, ok := executedRequests[key]; ok {
+			duplicated++
+			s.appendToolResult(ctx, userID, session.SessionID, "", data, ChatObservation{
+				ToolCode: code, Status: "denied", Reason: chatObservationReasonDuplicateRequest,
+			})
+			continue
+		}
+		ok := false
 		switch code {
 		case chatToolAlarmAnalyze:
-			if s.refreshAlertObservation(ctx, userID, session, data) {
-				executed++
-			}
+			ok = s.refreshAlertObservation(ctx, userID, session, data)
 		case chatToolMetricsQuery:
-			if s.refreshMetricObservation(ctx, userID, session, data, req.Params) {
-				executed++
-			}
+			ok = s.refreshMetricObservation(ctx, userID, session, data, req.Params)
 		case chatToolAlertRulesList:
-			if s.refreshAlertRulesObservation(ctx, userID, session, data, req.Params) {
-				executed++
-			}
+			ok = s.refreshAlertRulesObservation(ctx, userID, session, data, req.Params)
 		case chatToolAccountsList:
-			if s.refreshAccountsObservation(ctx, userID, session, data) {
-				executed++
-			}
+			ok = s.refreshAccountsObservation(ctx, userID, session, data)
 		case chatToolResourceAnalyze:
-			if s.refreshResourceObservation(ctx, userID, session, data) {
-				executed++
-			}
+			ok = s.refreshResourceObservation(ctx, userID, session, data)
 		case chatToolResourcesList:
-			if s.refreshResourcesObservation(ctx, userID, session, data, req.Params) {
-				executed++
-			}
+			ok = s.refreshResourcesObservation(ctx, userID, session, data, req.Params)
+		}
+		if ok {
+			executed++
+			executedRequests[key] = struct{}{}
 		}
 	}
-	return executed
+	return executed, duplicated
 }
 
 // refreshAlertObservation 重新读取告警快照（数据范围在读取端口统一校验）。
