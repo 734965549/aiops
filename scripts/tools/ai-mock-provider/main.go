@@ -3,7 +3,8 @@
 // 它只监听 loopback，按用户问题中的标记返回固定结构化回答或工具申请：
 //   - MOCK_TOOL_LOOP：首轮申请 alarm.analyze + metrics.query，后续轮返回正常回答；
 //   - MOCK_TOOL_DENY：首轮申请 execution.tasks.propose（服务端应拒绝），后续轮返回回答；
-//   - MOCK_TOOL_INFINITE：每轮都申请 alarm.analyze，用于验证 Agent Loop 预算耗尽降级；
+//   - MOCK_TOOL_INFINITE：先申请 alarm.analyze、之后每轮申请不同时间窗口的 metrics.query，
+//     用于验证 Agent Loop 轮数预算耗尽降级（相同参数会被跨轮去重，不能验证预算）；
 //   - MOCK_TOOL_RULES：从标记后的 JSON 读取账号/命名空间/指标参数，首轮同时申请
 //     alert.rules.list 与 metrics.query，用于规则体检 E2E；
 //   - MOCK_TOOL_DISCOVERY：从标记后的 JSON 读取账号，首轮申请 accounts.list 与
@@ -35,7 +36,10 @@ const loopToolRequests = `{"tool_requests":[{"tool_code":"alarm.analyze","reason
 
 const denyToolRequests = `{"tool_requests":[{"tool_code":"execution.tasks.propose","reason":"尝试申请执行类工具"}]}`
 
-const infiniteToolRequests = `{"tool_requests":[{"tool_code":"alarm.analyze","reason":"持续申请追加观测"}]}`
+const infiniteAlarmRequest = `{"tool_requests":[{"tool_code":"alarm.analyze","reason":"持续申请追加观测"}]}`
+
+// infiniteMetricRequestsTemplate 每轮换时间窗口，避免命中服务端跨轮去重后无法验证轮数预算。
+const infiniteMetricRequestsTemplate = `{"tool_requests":[{"tool_code":"metrics.query","reason":"持续申请追加观测","params":{"from":%d,"to":%d}}]}`
 
 const ruleToolRequestsTemplate = `{"tool_requests":[{"tool_code":"alert.rules.list","reason":"规则体检","params":{"account_id":%q,"region":%q,"namespace":%q,"limit":10}},{"tool_code":"metrics.query","reason":"趋势与破限点核对","params":{"account_id":%q,"region":%q,"namespace":%q,"metric":%q,"dimensions":%s,"from":%d,"to":%d,"period":%d}}]}`
 
@@ -284,7 +288,12 @@ func (s *scenarioState) nextContent(messages []chatMessage) (string, string) {
 		}
 	}
 	if strings.Contains(target, "MOCK_TOOL_INFINITE") {
-		return infiniteToolRequests, "infinite"
+		s.seen["infinite"]++
+		if s.seen["infinite"] == 1 {
+			return infiniteAlarmRequest, "infinite"
+		}
+		from := int64(1700000000) + int64(s.seen["infinite"]-2)*3600
+		return fmt.Sprintf(infiniteMetricRequestsTemplate, from, from+3600), "infinite"
 	}
 	if idx := strings.Index(target, "MOCK_TOOL_DISCOVERY"); idx >= 0 {
 		s.seen["discovery"]++
