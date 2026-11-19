@@ -467,7 +467,7 @@ go run ./cmd/migrate
 | 9.8.19 | 资源级上下文（资产） | 资产页选中应用并高亮某个资源后打开 AI 助手 | 上下文展示应用/资源 ID；`POST .../messages` 请求体 `context` 含 `application_id`、`resource_id`、`resource_type` |
 | 9.8.20 | 资源级上下文（执行 / 观测） | 执行页打开任务详情、观测页执行一次指标查询后分别唤起 AI 助手 | 执行页上下文含 `execution_id`（告警来源另带 `alert_id`、资源目标另带 `resource_id`）；观测页上下文含 `resource_id` 与 `time_range`；关闭详情或查询后字段随页面切换清理 |
 | 9.8.21 | 可选模型列表 | 普通账号（仅 `app:ai:chat`）调用 `GET /api/ai/chat/models` | 返回启用中的类型 b 模型数组，含 `provider_id/name/model`；不含 `base_url/api_key/headers/timeout_ms`；管理员 provider 管理接口权限不因此放开 |
-| 9.8.22 | 会话级模型选择 | 新建会话前切换模型并发送首条消息；再尝试切换 | 首条消息请求 `context.provider_id`/`provider_id` 为所选模型，审计实际 `provider_id` 一致；首条消息后选择器只读；新建会话可重新选择 |
+| 9.8.22 | 会话内模型切换 | 新建会话前切换模型并发送首条消息；回答完成后再次切换并发送下一条消息 | 每次请求 `context.provider_id`/`provider_id` 为当前所选模型，审计实际 `provider_id` 一致；已有消息时选择器仍可用，仅生成回答期间禁用 |
 | 9.8.23 | 模型不可用回退 | 请求已删除/禁用 provider 的 `provider_id` | 请求不失败，回退默认模型；`answer.uncertainties` 首条含“所选模型 … 不可用，已回退 …”；审计 `provider_fallback=true` |
 | 9.8.24 | 消息复制 | 悬停用户消息气泡；点击 AI 回答头部「复制全文」 | 用户消息复制原文；AI 回答复制 Markdown（摘要/依据/影响/建议/回滚/不确定性）；提示“已复制”；非安全上下文回退成功 |
 
