@@ -231,7 +231,8 @@ func TestCapAlertRulesForObservation(t *testing.T) {
 		labels["k"+strings.Repeat("x", i+1)] = "v"
 	}
 	rules := capAlertRulesForObservation([]AlertRuleSummary{{
-		RuleID: "rule-1", Description: strings.Repeat("描", chatRuleDescriptionRune+10), Labels: labels,
+		RuleID: "rule-1", Metric: "rds002_mem_util",
+		Description: strings.Repeat("描", chatRuleDescriptionRune+10), Labels: labels,
 	}})
 	if len(rules) != 1 {
 		t.Fatalf("rules = %+v", rules)
@@ -241,6 +242,9 @@ func TestCapAlertRulesForObservation(t *testing.T) {
 	}
 	if len(rules[0].Labels) != chatRuleMaxLabels {
 		t.Fatalf("labels = %d", len(rules[0].Labels))
+	}
+	if rules[0].MetricLabel != "内存使用率" {
+		t.Fatalf("metric_label = %q", rules[0].MetricLabel)
 	}
 }
 

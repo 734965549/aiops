@@ -403,6 +403,7 @@ func capAlertRulesForObservation(rules []AlertRuleSummary) []AlertRuleSummary {
 	for _, rule := range rules {
 		rule.Description = truncateRunes(rule.Description, chatRuleDescriptionRune)
 		rule.Labels = sanitizeRuleLabels(rule.Labels)
+		rule.MetricLabel = chatMetricLabel(rule.Metric)
 		out = append(out, rule)
 	}
 	return out

@@ -252,6 +252,8 @@ func (s *ChatService) executeMetricObservation(ctx context.Context, userID strin
 			Status: EvidenceStatusError, Reason: "evidence_collect_failed",
 		}, nil
 	}
+	// point_count 在裁剪前统计：capEvidencePayload 可能丢弃 points 但不应丢失点数事实。
+	pointCount := metricEvidencePointCount(result)
 	result = capEvidencePayload(result)
 	if result == nil {
 		return &ChatObservation{
@@ -264,13 +266,23 @@ func (s *ChatService) executeMetricObservation(ctx context.Context, userID strin
 		status = EvidenceStatusOK
 	}
 	ids := evidenceIDs(result)
+	display := chatMetricDisplay(query.Metric)
+	summary := "指标证据 " + status + "（" + display + "）"
+	if status == EvidenceStatusOK {
+		if pointCount == 0 {
+			summary = "指标证据 ok（" + display + "，无数据点）"
+		} else {
+			summary = fmt.Sprintf("指标证据 ok（%s，%d 点）", display, pointCount)
+		}
+	}
 	obs := &ChatObservation{
 		ToolCode: chatToolMetricsQuery, Allowed: true,
 		Status: status, Reason: result.Reason,
-		Summary: "指标证据 " + status + "（" + query.Metric + "）",
+		Summary: summary,
 		Data: map[string]any{
 			"status": status, "reason": result.Reason,
-			"metric": query.Metric, "metric_count": len(result.Metrics),
+			"metric": query.Metric, "metric_label": chatMetricLabel(query.Metric),
+			"metric_count": len(result.Metrics), "point_count": pointCount,
 			"evidence_ids": ids,
 		},
 	}

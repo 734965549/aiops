@@ -366,6 +366,18 @@ func evidencePayloadSize(evidence *MetricEvidenceResult) int {
 	return len(raw)
 }
 
+// metricEvidencePointCount 汇总所有指标序列的数据点数（裁剪前统计）。
+func metricEvidencePointCount(evidence *MetricEvidenceResult) int {
+	if evidence == nil {
+		return 0
+	}
+	total := 0
+	for _, metric := range evidence.Metrics {
+		total += len(metric.Points)
+	}
+	return total
+}
+
 func evidenceIDs(evidence *MetricEvidenceResult) []string {
 	if evidence == nil {
 		return nil

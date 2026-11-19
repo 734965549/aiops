@@ -104,6 +104,28 @@ func TestBuildChatUserPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildChatUserPromptIncludesServerTime(t *testing.T) {
+	prompt := buildChatUserPrompt(ChatPromptInput{Question: "分析当前时间附近的指标", Now: 1700005000})
+	if !strings.Contains(prompt, `"now":1700005000`) {
+		t.Fatalf("prompt missing server time: %s", prompt)
+	}
+}
+
+func TestChatSystemPromptEnforcesTimeAndReadability(t *testing.T) {
+	for _, want := range []string{
+		"以 now 为基准",
+		"不得从规则 ID",
+		"metric_label",
+		"未映射",
+		"推荐操作必须逐条结构化",
+		"point_count 为 0",
+	} {
+		if !strings.Contains(chatSystemPrompt, want) {
+			t.Fatalf("system prompt missing %q", want)
+		}
+	}
+}
+
 func TestDegradedChatAnswer(t *testing.T) {
 	answer := degradedChatAnswer(chatDegradedModelUnavailable, nil)
 	if !answer.Degraded || answer.DegradedReason != chatDegradedModelUnavailable {

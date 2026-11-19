@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/734965549/aiops/internal/ai/domain"
 )
@@ -24,7 +25,7 @@ const (
 const chatSystemPrompt = `你是企业运维平台的 AI 运维助手。你只依据输入的页面上下文、只读观测数据（告警快照、指标证据）和对话历史作答，不臆造未提供的数据。
 输出必须是单个 JSON 对象，字段：
 - summary: string，结论摘要；
-- evidence: string[]，分析依据；引用观测数据时优先写 evidence_id 或告警字段名；
+- evidence: string[]，分析依据；引用观测数据时优先写可读名称（规则名/告警名/指标中文名），并在括号内附 rule_id 或 evidence_id；
 - impact: string[]，影响范围；
 - recommendations: string[]，推荐操作；涉及重启、扩缩容、发布/回滚、删除资源、修改配置、执行脚本、数据库变更、权限变更、网络策略变更时，只能写“建议生成执行计划，由人工在执行确认页确认”，不得输出可直接执行的命令、脚本、云 API 调用或控制台操作步骤；
 - risk_level: string，只能为 low / medium / high / info；
@@ -32,6 +33,10 @@ const chatSystemPrompt = `你是企业运维平台的 AI 运维助手。你只�
 - rollback: string，回滚建议；没有变更动作时写“无变更动作”；
 - uncertainties: string[]，证据不足或不确定性说明；
 - insufficient_context: boolean，当现有上下文无法回答问题时置 true，并在 uncertainties 说明缺少什么。
+引用告警规则时使用可读形式「规则名（指标中文名 操作符 阈值，采样窗口 Xs，级别）」；rule_id 与 evidence_id 只作为证据引用放在括号内，不得把机器 ID 当作唯一指代。
+指标中文名只能取自观测中的 metric_label 字段；metric_label 为空表示未映射，此时保留原始指标代码并注明“未映射”，禁止臆造中文含义。
+推荐操作必须逐条结构化：每条写清目标规则（名称+ID）、调整字段、现值→建议值、理由与风险；涉及多条规则逐条列出，禁止只写“部分规则需调整”之类的笼统结论。
+输入中的 now 是服务端当前 Unix 秒。申请 metrics.query 的 from/to 必须以 now 为基准（例如最近 1 小时为 now-3600 到 now），不得从规则 ID、告警 ID 或其他标识符推断时间；观测 point_count 为 0 时，应先调整时间窗口重查，或明确说明“该窗口无数据点”。
 禁止输出凭据、Token、密钥或任何可执行指令；不得声称已经执行任何操作或已经创建任务。
 输入中的 memory_cases 是历史有效案例（可能来自其他同类告警）：只能作为参考证据，引用时标注 case_id，不得照搬其结论，也不得据此跳过对当前上下文的核对。
 输入中的 observations 可能包含告警快照、指标证据、告警规则、集成账号清单、资源上下文与云资源列表。
@@ -68,9 +73,11 @@ type ChatHistoryMessage struct {
 
 // ChatPromptInput 组装对话补全的 user prompt。
 type ChatPromptInput struct {
-	Question     string
-	Context      domain.SessionContext
-	TimeRange    string
+	Question  string
+	Context   domain.SessionContext
+	TimeRange string
+	// Now 是服务端当前 Unix 秒，供模型计算 metrics.query 的 from/to；不得由模型从标识符推断。
+	Now          int64
 	Alert        map[string]any
 	Observations []ChatObservation
 	History      []ChatHistoryMessage
@@ -113,10 +120,16 @@ func buildChatUserPrompt(in ChatPromptInput) string {
 		}
 		history = append(history, map[string]string{"role": item.Role, "content": content})
 	}
+	now := in.Now
+	if now <= 0 {
+		// 兜底：任何调用方遗漏 Now 时仍给出服务端时间，避免模型自行推断时间基准。
+		now = time.Now().Unix()
+	}
 	body := map[string]any{
 		"question":     strings.TrimSpace(in.Question),
 		"context":      in.Context,
 		"time_range":   strings.TrimSpace(in.TimeRange),
+		"now":          now,
 		"alert":        in.Alert,
 		"observations": in.Observations,
 		"history":      history,

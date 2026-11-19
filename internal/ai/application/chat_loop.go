@@ -111,6 +111,7 @@ func (s *ChatService) generateWithLoop(ctx context.Context, userID, question str
 		}
 		prompt := buildChatUserPrompt(ChatPromptInput{
 			Question: question, Context: session.Context, TimeRange: session.Context.TimeRange,
+			Now:   s.now().Unix(),
 			Alert: alertSnapshot(data.Alert), Observations: data.Observations, History: history,
 			Memory: memoryPromptCases(data.Memories),
 		})

@@ -13,13 +13,15 @@ type AlertRuleQuery struct {
 
 // AlertRuleSummary 是注入对话观测的规则摘要；阈值字段由 provider 可选提供。
 type AlertRuleSummary struct {
-	RuleID        string            `json:"rule_id"`
-	Name          string            `json:"name"`
-	Namespace     string            `json:"namespace,omitempty"`
-	Severity      string            `json:"severity,omitempty"`
-	Enabled       bool              `json:"enabled"`
-	Description   string            `json:"description,omitempty"`
-	Metric        string            `json:"metric,omitempty"`
+	RuleID      string `json:"rule_id"`
+	Name        string `json:"name"`
+	Namespace   string `json:"namespace,omitempty"`
+	Severity    string `json:"severity,omitempty"`
+	Enabled     bool   `json:"enabled"`
+	Description string `json:"description,omitempty"`
+	Metric      string `json:"metric,omitempty"`
+	// MetricLabel 是指标中文名；空表示未映射，模型必须保留原始指标代码并注明未映射。
+	MetricLabel   string            `json:"metric_label,omitempty"`
 	Operator      string            `json:"operator,omitempty"`
 	Threshold     *float64          `json:"threshold,omitempty"`
 	WindowSeconds int               `json:"window_seconds,omitempty"`

@@ -539,6 +539,13 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 未提供 `client_message_id`：行为与之前一致（每次都是新消息），不承诺幂等。
 - 边界：本能力只保证「同一会话内同一幂等键最多一条用户消息 + 至多返回一次相同结果」，不是端到端 exactly-once；模型调用仍可能因超时被重试一次（服务端内部不重试）。
 
+#### 10.6.6 Prompt 时间基准与可读引用
+
+- user prompt 顶层固定带 `now`（服务端当前 Unix 秒，Agent Loop 每轮重新取值）；system prompt 要求 `metrics.query` 的 `from/to` 必须以 `now` 为基准，禁止从规则 ID、告警 ID 或其他标识符推断时间。
+- 指标观测 `summary` / `data` 带 `metric_label`（常见 CES 指标中文名映射；未映射时为空，模型必须保留原始指标代码并注明“未映射”，禁止臆造含义）与 `point_count`（裁剪前统计的数据点数）。`point_count=0` 时 summary 明确写“无数据点”，模型应先调整时间窗口重查或说明该窗口无数据。
+- 规则观测每条规则带 `metric_label`；回答引用规则时使用可读形式「规则名（指标中文名 操作符 阈值，采样窗口 Xs，级别）」，`rule_id` / `evidence_id` 只作为括号内的证据引用，不得把机器 ID 当作唯一指代。
+- 推荐操作必须逐条结构化：目标规则（名称+ID）、调整字段、现值→建议值、理由与风险；涉及多条规则逐条列出，禁止只写“部分规则需调整”式笼统结论。
+
 ### 10.7 提交回答反馈
 
 - Method: `POST`
@@ -662,7 +669,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 窗口：普通查询最大 **7 天**；`period >= 86400` 的日聚合允许最大 **30 天**；任何情况下点数（`window/period + 1`）不得超过 **1440**。服务端在 AI 层先校验，观测 QueryService 再校验一次（纵深防御）。
 - 阈值语义：`threshold` / `operator` 只从告警结构化条件继承；当模型覆盖 `metric` 且与告警 `metric_name` 不同时，证据不再携带告警阈值，避免破限点误判。
 - 数据范围：取数前按 `account_id` 解析账号并过 `AccountAccessAuthorizer`；拒绝时工具权限本身已通过，观测记为 `allowed=true`、`status=permission_denied`、`reason=no access to integration account for evidence`，审计 `result=partial`。
-- 证据：观测 `data` 含 `metric`、`metric_count`、`evidence_ids`、`evidence_id`；最终回答 `references` 含 `observability_evidence`。
+- 证据：观测 `summary` 含指标中文名与数据点数（`无数据点` / `N 点`）；`data` 含 `metric`、`metric_label`、`metric_count`、`point_count`、`evidence_ids`、`evidence_id`；最终回答 `references` 含 `observability_evidence`。
 
 **`alert.rules.list` 参数 schema（`tool_requests[].params`）**
 
@@ -674,13 +681,13 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | `keyword` | string | 否 | ≤100 字符，按规则名/描述过滤（provider 支持时） |
 | `limit` | int | 否 | 默认 **50**，最大 **50**；超过上限返回 `status=invalid_argument` |
 
-- 返回规则字段：`rule_id`、`name`、`namespace`、`severity`、`enabled`、`description`（≤300 runes）、`metric`、`operator`、`threshold`、`window_seconds`、`labels`（≤20 对）。
+- 返回规则字段：`rule_id`、`name`、`namespace`、`severity`、`enabled`、`description`（≤300 runes）、`metric`、`metric_label`（常见 CES 指标中文名，未映射为空）、`operator`、`threshold`、`window_seconds`、`labels`（≤20 对）。
 - provider 支持矩阵（2026-11）：
   - huawei `ak_sk`：✅ 真实 CES V2 `ListAlarmRules`（单页 100、最多 10 页）；`region` 缺省取账号第一个区域，`project_id` 按 `extra_config.region_projects` / 账号配置解析；`keyword` 由服务端本地过滤（先取上限 500 条再截断到 `limit`）。
   - huawei `auth_type=none`：✅ fake provider（联调/CI）。
   - huawei `agency`：❌ 返回 `status=unsupported` 与稳定 reason，不视为内部错误。
 - 数据范围：`region` 不在账号区域列表中返回 `status=error`（invalid_argument），由 AI 层映射为 `status=error` 而非 unsupported。
-- 证据：观测 `data` 含 `namespace`、`rule_count`、`evidence_id`；最终回答 `references` 含 `observability_evidence`。
+- 证据：观测 `data` 含 `namespace`、`rule_count`、`evidence_id`，每条规则含 `metric_label`；最终回答 `references` 含 `observability_evidence`。
 
 **`accounts.list` 参数与观测**
 

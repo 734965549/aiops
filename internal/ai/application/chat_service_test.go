@@ -2143,6 +2143,39 @@ func TestSendMessageAgentLoopResourceWithoutContextReturnsSkipped(t *testing.T) 
 	}
 }
 
+func TestExecuteMetricObservationReportsPointCountAndLabel(t *testing.T) {
+	svc, _, _, _, _, evidence := newChatTestService(t)
+	evidence.result = &MetricEvidenceResult{Status: EvidenceStatusOK, Metrics: []MetricEvidence{{
+		Metric: "rds002_mem_util",
+		Points: [][2]float64{{1700000000, 60}, {1700000300, 75}, {1700000600, 91}},
+	}}}
+
+	obs, result := svc.executeMetricObservation(context.Background(), "u-1", MetricEvidenceQuery{
+		AccountID: "acc-1", Region: "cn-north-4", Namespace: "SYS.RDS",
+		Metric: "rds002_mem_util", Dimensions: map[string]string{"rds_cluster_id": "c-1"},
+	})
+	if obs == nil || result == nil {
+		t.Fatal("expected observation and evidence")
+	}
+	if obs.Data["point_count"] != 3 || obs.Data["metric_label"] != "内存使用率" {
+		t.Fatalf("observation data = %+v", obs.Data)
+	}
+	if !strings.Contains(obs.Summary, "3 点") || !strings.Contains(obs.Summary, "内存使用率") {
+		t.Fatalf("summary = %q", obs.Summary)
+	}
+
+	evidence.result = &MetricEvidenceResult{Status: EvidenceStatusOK, Metrics: []MetricEvidence{{
+		Metric: "rds002_mem_util",
+	}}}
+	zero, _ := svc.executeMetricObservation(context.Background(), "u-1", MetricEvidenceQuery{Metric: "rds002_mem_util"})
+	if zero == nil || zero.Data["point_count"] != 0 {
+		t.Fatalf("zero-point observation = %+v", zero)
+	}
+	if !strings.Contains(zero.Summary, "无数据点") {
+		t.Fatalf("zero-point summary = %q", zero.Summary)
+	}
+}
+
 func TestSendMessageSkipsAccountsWhenPortMissing(t *testing.T) {
 	svc, repo, _, _, _, _ := newChatTestService(t)
 	seedChatSession(t, repo, "u-1", domain.SessionContext{})
