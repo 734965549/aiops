@@ -62,7 +62,9 @@ func (c *CESClient) QueryMetricData(
 		return MetricDataResult{}, err
 	}
 
-	response, err := client.ShowMetricData(request)
+	response, err := callWithContext(ctx, func() (*model.ShowMetricDataResponse, error) {
+		return client.ShowMetricData(request)
+	})
 	if err != nil {
 		mapped := mapCESError(err)
 		fields := []logger.Field{

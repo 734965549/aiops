@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	integdomain "github.com/734965549/aiops/internal/integration/domain"
 	"github.com/734965549/aiops/internal/observability/domain"
@@ -216,6 +217,26 @@ func TestCESAlarmRuleListClientMapsSDKError(t *testing.T) {
 	_, err := client.ListRules(context.Background(), AKSKCredential{}, "p-1", "cn-south-1", "SYS.RDS", 10)
 	if !errors.Is(err, domain.ErrProviderUnavailable) {
 		t.Fatalf("expected ErrProviderUnavailable, got %v", err)
+	}
+}
+
+func TestCESAlarmRuleListClientReturnsOnContextDeadline(t *testing.T) {
+	release := make(chan struct{})
+	api := &fakeRuleListAPI{ruleFn: func(*cesv2model.ListAlarmRulesRequest) (*cesv2model.ListAlarmRulesResponse, error) {
+		<-release
+		return &cesv2model.ListAlarmRulesResponse{}, nil
+	}}
+	client := &CESAlarmRuleListClient{newAPI: func(AKSKCredential, string, string) (ruleListAPI, error) { return api, nil }}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := client.ListRules(ctx, AKSKCredential{}, "p-1", "cn-south-1", "SYS.RDS", 10)
+	close(release)
+	if !errors.Is(err, domain.ErrProviderUnavailable) {
+		t.Fatalf("expected ErrProviderUnavailable, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("ListRules blocked %s on a hanging SDK call", elapsed)
 	}
 }
 

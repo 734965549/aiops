@@ -295,9 +295,11 @@ func (c *CESAlarmHistoryClient) lookupAlarmRule(ctx context.Context, api alarmHi
 		return entry.rule, "ok"
 	}
 	limit := int32(10)
-	resp, err := api.ListAlarmRules(&cesv2model.ListAlarmRulesRequest{
-		AlarmId: &alarmID,
-		Limit:   &limit,
+	resp, err := callWithContext(ctx, func() (*cesv2model.ListAlarmRulesResponse, error) {
+		return api.ListAlarmRules(&cesv2model.ListAlarmRulesRequest{
+			AlarmId: &alarmID,
+			Limit:   &limit,
+		})
 	})
 	if err != nil {
 		reason := "error"

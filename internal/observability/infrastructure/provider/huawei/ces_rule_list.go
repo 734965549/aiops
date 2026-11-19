@@ -61,9 +61,15 @@ func (c *CESAlarmRuleListClient) ListRules(ctx context.Context, cred AKSKCredent
 	rules := make([]domain.AlertRule, 0, 16)
 	offset := int32(0)
 	for page := 0; page < ruleListMaxPages && len(rules) < maxRules; page++ {
+		if err := ctx.Err(); err != nil {
+			return nil, mapCESError(err)
+		}
 		limit := int32(ruleListPageLimit)
-		resp, err := api.ListAlarmRules(&cesv2model.ListAlarmRulesRequest{
+		req := &cesv2model.ListAlarmRulesRequest{
 			Namespace: &ns, Offset: &offset, Limit: &limit,
+		}
+		resp, err := callWithContext(ctx, func() (*cesv2model.ListAlarmRulesResponse, error) {
+			return api.ListAlarmRules(req)
 		})
 		if err != nil {
 			return nil, mapCESError(err)

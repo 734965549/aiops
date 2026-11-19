@@ -923,7 +923,7 @@ func callCESWithRetry[T any](ctx context.Context, region, op string, call func()
 		if err := ctx.Err(); err != nil {
 			return nil, mapCESError(err)
 		}
-		resp, err := call()
+		resp, err := callWithContext(ctx, call)
 		if err == nil {
 			return resp, nil
 		}

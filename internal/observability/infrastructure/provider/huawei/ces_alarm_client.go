@@ -143,7 +143,9 @@ func (c *CESAlarmHistoryClient) listWindow(ctx context.Context, api alarmHistory
 			v := time.Unix(to, 0).UTC().Format(time.RFC3339)
 			req.To = &v
 		}
-		resp, err := api.ListAlarmHistories(req)
+		resp, err := callWithContext(ctx, func() (*cesv2model.ListAlarmHistoriesResponse, error) {
+			return api.ListAlarmHistories(req)
+		})
 		if err != nil {
 			code := "UPSTREAM_ERROR"
 			if isTimeoutError(ctx, err) {
@@ -251,7 +253,8 @@ func isTimeoutError(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
 	}
-	if ctx.Err() == context.DeadlineExceeded {
+	// ctx 中断会由 callWithContext 直接透出，与循环顶部的 UPSTREAM_TIMEOUT 口径保持一致。
+	if ctx.Err() != nil {
 		return true
 	}
 	type timeout interface{ Timeout() bool }
