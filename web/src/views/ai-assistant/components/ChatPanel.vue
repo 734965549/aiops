@@ -25,16 +25,19 @@
           class="message-row message-row--user"
         >
           <div class="message-bubble message-bubble--user">
+            {{ message.content }}
+          </div>
+          <div class="message-meta">
+            <span class="message-time">{{ formatTime(message.created_at) }}</span>
             <button
               type="button"
               class="message-copy"
               title="复制消息"
+              aria-label="复制消息"
               @click="copyUserMessage(message.content)"
             >
               <IconCopy :size="12" />
             </button>
-            {{ message.content }}
-            <span class="message-time">{{ formatTime(message.created_at) }}</span>
           </div>
         </div>
         <div
@@ -537,6 +540,7 @@ function formatTime(value: string) {
 
 .message-row--user {
   align-items: flex-end;
+  gap: 2px;
 }
 
 .message-row--assistant {
@@ -555,17 +559,19 @@ function formatTime(value: string) {
 }
 
 .message-bubble--user {
-  position: relative;
-  padding-right: 26px;
   color: #ffffff;
   background: #51663f;
   border-bottom-right-radius: 4px;
 }
 
+.message-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+}
+
 .message-copy {
-  position: absolute;
-  top: 4px;
-  right: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -574,19 +580,17 @@ function formatTime(value: string) {
   padding: 0;
   border: none;
   border-radius: 4px;
-  color: rgba(255, 255, 255, 0.9);
+  color: var(--color-text-3);
   background: transparent;
-  opacity: 0;
+  opacity: 0.75;
   cursor: pointer;
   transition: opacity 0.15s ease;
 }
 
-.message-bubble--user:hover .message-copy {
-  opacity: 0.9;
-}
-
 .message-copy:hover {
-  background: rgba(255, 255, 255, 0.16);
+  color: var(--color-text-1);
+  background: var(--color-fill-2);
+  opacity: 1;
 }
 
 .message-bubble--assistant {
@@ -600,6 +604,10 @@ function formatTime(value: string) {
   margin-top: 2px;
   color: var(--color-text-3);
   font-size: 10px;
+}
+
+.message-meta .message-time {
+  margin-top: 0;
 }
 
 .stage-indicator {
