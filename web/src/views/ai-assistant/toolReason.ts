@@ -32,6 +32,7 @@ const TOOL_REASON_LABELS: Record<string, string> = {
   'authorization failed': '权限校验失败，请稍后重试',
   'tool gateway is not configured': '工具网关未配置',
   'tool is not allowed in agent loop': '该工具不允许在 Agent Loop 中调用',
+  'duplicate tool request: identical parameters already executed in this turn': '相同参数的查询已执行过，结果已在观测中',
   'no access to integration account for evidence': '该集成账号不在当前数据范围内',
   evidence_collect_failed: '指标证据查询失败，已降级',
   'empty evidence result': '指标证据为空',

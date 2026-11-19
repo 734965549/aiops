@@ -167,6 +167,22 @@
         </template>
       </a-alert>
       <a-alert
+        v-else-if="status === 'inconclusive'"
+        type="warning"
+        :show-icon="true"
+      >
+        取数预算内未得出结论，以下为已获取的只读证据；可缩小问题范围或换模型重问。
+        <template #action>
+          <a-button
+            size="mini"
+            :disabled="!lastUserContent || sending"
+            @click="emit('retry')"
+          >
+            重新提问
+          </a-button>
+        </template>
+      </a-alert>
+      <a-alert
         v-else-if="status === 'insufficient_context'"
         type="warning"
         :show-icon="true"
@@ -233,30 +249,13 @@
       />
       <div class="input-foot">
         <div class="input-foot-main">
-          <template v-if="modelOptions.length">
-            <a-select
-              v-if="modelPickerVisible"
-              :model-value="modelValue"
-              size="mini"
-              class="model-select"
-              @change="onSelectModel"
-            >
-              <a-option
-                v-for="model in modelOptions"
-                :key="model.provider_id"
-                :value="model.provider_id"
-              >
-                {{ formatModelLabel(model) }}
-              </a-option>
-            </a-select>
-            <a-tag
-              v-else
-              class="model-tag"
-              :title="modelTagHint"
-            >
-              模型 {{ modelTagLabel }}
-            </a-tag>
-          </template>
+          <ModelControl
+            v-if="modelOptions.length"
+            :models="modelOptions"
+            :model-value="modelValue"
+            :model-locked="modelLocked"
+            @select-model="onSelectModel"
+          />
           <span
             class="input-hint"
             title="Enter 发送 · Shift + Enter 换行 · 执行类动作需人工确认"
@@ -291,9 +290,10 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { IconCopy, IconRobot } from '@arco-design/web-vue/es/icon'
 import type { ChatAnswer, ChatMessage, ChatModelInfo, ChatToolCall } from '@/api/ai'
 import AnswerCard from './AnswerCard.vue'
+import ModelControl from './ModelControl.vue'
 import { copyText } from '../composables/useCopy'
 import { toolLabel, toolReasonLabel, toolStatusLabel } from '../toolReason'
-import { STAGE_LABELS, formatModelLabel, type ChatStage, type ChatUIStatus } from '../composables/useChat'
+import { STAGE_LABELS, type ChatStage, type ChatUIStatus } from '../composables/useChat'
 
 const props = defineProps<{
   messages: ChatMessage[]
@@ -331,15 +331,6 @@ const input = ref('')
 const scrollRef = ref<HTMLElement | null>(null)
 const placeholder = props.placeholder || '请输入你的问题，例如：帮我分析当前告警并给出排查步骤'
 const modelOptions = computed(() => props.models ?? [])
-// 仅未锁定且存在多个可选模型时渲染下拉；锁定或单模型时用只读 Tag 呈现当前模型。
-const modelPickerVisible = computed(() => !props.modelLocked && modelOptions.value.length > 1)
-const selectedModelInfo = computed(
-  () => modelOptions.value.find((model) => model.provider_id === props.modelValue) ?? modelOptions.value[0] ?? null
-)
-const modelTagLabel = computed(() => formatModelLabel(selectedModelInfo.value))
-const modelTagHint = computed(() =>
-  modelOptions.value.length < 2 ? '可在 AI 配置中启用更多平台直连模型' : '切换模型需新建会话'
-)
 
 // 实时思考过程：思考阶段默认展开，进入回答生成阶段自动折叠；有新增量时自动滚到底部。
 const thinkingOpen = ref(true)
@@ -738,19 +729,6 @@ function formatTime(value: string) {
   gap: 6px;
   padding-top: 8px;
   border-top: 1px solid rgba(81, 102, 63, 0.14);
-}
-
-.model-select {
-  flex: none;
-  width: 200px;
-}
-
-.model-tag {
-  flex: none;
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .quick-questions {

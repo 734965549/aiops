@@ -37,6 +37,7 @@ export type ChatUIStatus =
   | 'not_executable'
   | 'insufficient_context'
   | 'incomplete'
+  | 'inconclusive'
   | 'failed'
 
 export const STAGE_LABELS: Record<Exclude<ChatStage, 'idle'>, string> = {
@@ -52,6 +53,7 @@ export const STATUS_LABELS: Record<ChatUIStatus, string> = {
   not_executable: 'AI 建议不可执行',
   insufficient_context: 'AI 上下文不足，需补充信息',
   incomplete: 'AI 回答生成中断',
+  inconclusive: 'AI 未得出结论',
   failed: 'AI 回答失败'
 }
 
@@ -196,7 +198,12 @@ export function useChat() {
 
   function deriveUIStatus(status: ChatResultStatus, answer?: ChatAnswer): ChatUIStatus {
     if (status === 'incomplete' || answer?.incomplete) return 'incomplete'
-    if (status === 'degraded') return 'failed'
+    if (status === 'degraded') {
+      // 取数预算耗尽属于「已保留证据但未收敛」，按橙色未结论呈现，不当作模型失败。
+      const reason = (answer?.degraded_reason || '').trim()
+      if (reason === 'agent_loop_exhausted' || reason === 'turn_budget_exceeded') return 'inconclusive'
+      return 'failed'
+    }
     if (status === 'insufficient_context' || answer?.insufficient_context) return 'insufficient_context'
     const execution = answer?.actions?.find((action) => action.code === 'execution.propose')
     if (execution && !execution.allowed) return 'not_executable'
