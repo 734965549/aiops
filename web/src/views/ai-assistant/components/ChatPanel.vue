@@ -253,7 +253,7 @@
             v-if="modelOptions.length"
             :models="modelOptions"
             :model-value="modelValue"
-            :model-locked="modelLocked"
+            :disabled="sending"
             @select-model="onSelectModel"
           />
           <span
@@ -310,7 +310,6 @@ const props = defineProps<{
   placeholder?: string
   models?: ChatModelInfo[]
   modelValue?: string
-  modelLocked?: boolean
   /** 发送中的实时工具调用过程（SSE tool 事件），结束后由最终回答的工具标签接管。 */
   liveTools?: ChatToolCall[]
   /** 发送中的模型思考增量（reasoning_content），仅流中展示，不落库。 */

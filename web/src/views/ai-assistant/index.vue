@@ -81,7 +81,6 @@
             :quick-questions="quickQuestions"
             :models="modelOptions"
             :model-value="selectedModel?.provider_id || ''"
-            :model-locked="modelLocked"
             @select-model="selectModel"
             @send="onSend"
             @retry="retry"
@@ -158,7 +157,6 @@ const {
   contextSummary,
   modelOptions,
   selectedModel,
-  modelLocked,
   selectModel,
   loadSessions,
   selectSession,

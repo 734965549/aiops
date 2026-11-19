@@ -76,7 +76,7 @@ export function useChat() {
   const contextStore = useAIContextStore()
 
   const sessions = ref<ChatSession[]>([])
-  // 可选模型列表与当前选择；会话开始后锁定（见 modelLocked）。
+  // 可选模型列表与当前选择；切换后从下一条消息生效。
   const models = ref<ChatModelInfo[]>([])
   const selectedProviderID = ref('')
   const activeSessionId = ref('')
@@ -111,9 +111,6 @@ export function useChat() {
   const selectedModel = computed(
     () => models.value.find((model) => model.provider_id === selectedProviderID.value) ?? null
   )
-  // 会话级锁定：首条消息发出后不允许切换模型，避免上下文风格在会话中途突变。
-  const modelLocked = computed(() => messages.value.length > 0 || sending.value)
-
   /** 拉取可选模型；失败时隐藏选择器（单模型用户无感知）。 */
   async function loadModels() {
     try {
@@ -134,7 +131,7 @@ export function useChat() {
   }
 
   function selectModel(providerID: string) {
-    if (modelLocked.value) return
+    if (sending.value) return
     selectedProviderID.value = providerID
     if (activeSession.value) {
       activeSession.value = {
@@ -215,7 +212,7 @@ export function useChat() {
     activeSession.value = detail.session
     activeSessionId.value = detail.session.session_id
     messages.value = detail.messages
-    // 会话级模型：优先展示会话锁定的 provider，列表未加载或模型已删除时回退默认。
+    // 优先展示会话上下文保存的 provider，列表未加载或模型已删除时回退默认。
     const sessionProvider = detail.session.context?.provider_id || ''
     if (sessionProvider && (models.value.length === 0 || models.value.some(
       (model) => model.provider_id === sessionProvider
@@ -580,7 +577,6 @@ export function useChat() {
     hasSession,
     modelOptions,
     selectedModel,
-    modelLocked,
     selectModel,
     loadSessions,
     selectSession,
