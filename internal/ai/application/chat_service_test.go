@@ -1864,6 +1864,100 @@ func TestSendMessageStreamPartialKeepsParseableAnswer(t *testing.T) {
 	}
 }
 
+type fakeChatCatalog struct {
+	*fakeChatClient
+	models []toolgateway.ChatModel
+}
+
+func (f *fakeChatCatalog) ChatModels() []toolgateway.ChatModel { return f.models }
+
+func (f *fakeChatCatalog) ChatProviderByID(providerID string) (toolgateway.ChatModel, bool) {
+	for _, model := range f.models {
+		if model.ProviderID == providerID {
+			return model, true
+		}
+	}
+	return toolgateway.ChatModel{}, false
+}
+
+func TestListChatModels(t *testing.T) {
+	svc, _, _, chat, _, _ := newChatTestService(t)
+	svc.chat = &fakeChatCatalog{fakeChatClient: chat, models: []toolgateway.ChatModel{
+		{ProviderID: "provider-1", Name: "默认模型", Model: "model-1"},
+		{ProviderID: "provider-2", Name: "备用模型", Model: "model-2"},
+	}}
+	models := svc.ListChatModels()
+	if len(models) != 2 || models[1].ProviderID != "provider-2" || models[1].Model != "model-2" {
+		t.Fatalf("models = %+v", models)
+	}
+}
+
+func TestSendMessageUsesRequestedProviderAndLocksSession(t *testing.T) {
+	svc, repo, _, chat, audit, _ := newChatTestService(t)
+	svc.chat = &fakeChatCatalog{fakeChatClient: chat, models: []toolgateway.ChatModel{
+		{ProviderID: "provider-1", Name: "默认模型", Model: "model-1"},
+		{ProviderID: "provider-2", Name: "备用模型", Model: "model-2"},
+	}}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警", ProviderID: "provider-2",
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if chat.lastProvider != "provider-2" {
+		t.Fatalf("provider = %q", chat.lastProvider)
+	}
+	if result.Status != chatStatusOK || len(result.Answer.Uncertainties) != 1 {
+		t.Fatalf("unexpected answer: %+v", result.Answer)
+	}
+	// 首次消息显式选择会写入会话上下文，后续轮次沿用。
+	if repo.sessions["s-1"].Context.ProviderID != "provider-2" {
+		t.Fatalf("provider not locked in session context: %+v", repo.sessions["s-1"].Context)
+	}
+	var chatAudit *AuditRecord
+	for i := range audit.rows {
+		if audit.rows[i].Action == AuditChatMessage {
+			chatAudit = &audit.rows[i]
+		}
+	}
+	if chatAudit == nil || chatAudit.Payload["provider_id"] != "provider-2" || chatAudit.Payload["requested_provider_id"] != "provider-2" {
+		t.Fatalf("unexpected provider audit: %+v", chatAudit)
+	}
+}
+
+func TestSendMessageFallsBackWhenProviderUnavailable(t *testing.T) {
+	svc, repo, _, chat, audit, _ := newChatTestService(t)
+	svc.chat = &fakeChatCatalog{fakeChatClient: chat, models: []toolgateway.ChatModel{
+		{ProviderID: "provider-1", Name: "默认模型", Model: "model-1"},
+	}}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警", ProviderID: "missing-provider",
+	})
+	if err != nil {
+		t.Fatalf("fallback must not fail the request: %v", err)
+	}
+	if chat.lastProvider != "provider-1" || result.Status != chatStatusOK {
+		t.Fatalf("fallback provider = %q status=%q", chat.lastProvider, result.Status)
+	}
+	if len(result.Answer.Uncertainties) == 0 || !strings.Contains(result.Answer.Uncertainties[0], "已回退 默认模型") {
+		t.Fatalf("missing fallback uncertainty: %+v", result.Answer.Uncertainties)
+	}
+	var chatAudit *AuditRecord
+	for i := range audit.rows {
+		if audit.rows[i].Action == AuditChatMessage {
+			chatAudit = &audit.rows[i]
+		}
+	}
+	if chatAudit == nil || chatAudit.Payload["provider_fallback"] != true ||
+		chatAudit.Payload["requested_provider_id"] != "missing-provider" {
+		t.Fatalf("unexpected fallback audit: %+v", chatAudit)
+	}
+}
+
 func TestSendMessageRateLimitShowsResetHint(t *testing.T) {
 	svc, repo, _, chat, audit, _ := newChatTestService(t)
 	chat.err = apperr.Wrap(&toolgateway.RateLimitError{

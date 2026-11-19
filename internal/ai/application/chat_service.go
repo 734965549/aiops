@@ -20,6 +20,8 @@ const (
 	chatMaxContentRunes = 4000
 	// chatMaxClientMessageIDRunes 幂等键长度上限（与 ai_session_message.client_message_id 列宽对齐）。
 	chatMaxClientMessageIDRunes = 64
+	// chatMaxProviderIDRunes 模型 provider_id 长度上限（与 ai_provider.provider_id 对齐）。
+	chatMaxProviderIDRunes = 64
 
 	chatDegradedModelUnavailable   = "model_unavailable"
 	chatDegradedModelFailed        = "model_failed"
@@ -94,6 +96,8 @@ type SendChatMessageInput struct {
 	Content   string
 	// Context 非 nil 时覆盖会话上下文（浮层在任意页面唤起）。
 	Context *domain.SessionContext
+	// ProviderID 为可选对话模型（ai_provider.provider_id）；空时回退会话上下文与默认模型。
+	ProviderID string
 	// ClientMessageID 是可选幂等键：同一会话内重复提交相同值时返回首次结果，
 	// 用于客户端超时重试（migration 0050 的部分唯一索引兜底并发）。
 	ClientMessageID string
@@ -192,10 +196,11 @@ func (s *ChatService) CreateSession(ctx context.Context, in CreateChatSessionInp
 		return nil, apperr.Wrap(err, apperr.CodeInternal, "create ai chat session failed")
 	}
 	s.recordAudit(ctx, userID, "ai", session.SessionID, AuditChatSession, map[string]any{
-		"session_id": session.SessionID,
-		"page":       session.Context.Page,
-		"alert_id":   session.Context.AlertID,
-		"result":     "success",
+		"session_id":  session.SessionID,
+		"page":        session.Context.Page,
+		"alert_id":    session.Context.AlertID,
+		"provider_id": session.Context.ProviderID,
+		"result":      "success",
 	})
 	view := toSessionView(session)
 	return &view, nil
@@ -280,6 +285,10 @@ func (s *ChatService) sendMessage(ctx context.Context, in SendChatMessageInput, 
 	if len([]rune(clientMessageID)) > chatMaxClientMessageIDRunes {
 		return nil, apperr.Newf(apperr.CodeInvalidArgument, "client_message_id exceeds %d characters", chatMaxClientMessageIDRunes)
 	}
+	providerID := strings.TrimSpace(in.ProviderID)
+	if len([]rune(providerID)) > chatMaxProviderIDRunes {
+		return nil, apperr.Newf(apperr.CodeInvalidArgument, "provider_id exceeds %d characters", chatMaxProviderIDRunes)
+	}
 	session, err := s.loadOwnedSession(ctx, userID, in.SessionID)
 	if err != nil {
 		return nil, err
@@ -311,8 +320,23 @@ func (s *ChatService) sendMessage(ctx context.Context, in SendChatMessageInput, 
 	}
 	if in.Context != nil {
 		normalized := in.Context.Normalize()
+		// 上下文覆盖不应清空会话已锁定的模型（前端可能只回传页面字段）。
+		if normalized.ProviderID == "" {
+			normalized.ProviderID = strings.TrimSpace(session.Context.ProviderID)
+		}
 		session.Context = normalized
 		touch.Context = &normalized
+	}
+	// 会话级模型锁定：首次消息显式指定时写入会话上下文，后续轮次沿用；
+	// 本轮实际使用的模型优先级为 请求 provider_id > 会话 provider_id > 默认模型。
+	if providerID != "" && strings.TrimSpace(session.Context.ProviderID) == "" {
+		session.Context.ProviderID = providerID
+		contextCopy := session.Context
+		touch.Context = &contextCopy
+	}
+	requestedProviderID := providerID
+	if requestedProviderID == "" {
+		requestedProviderID = strings.TrimSpace(session.Context.ProviderID)
 	}
 	userMessage := domain.Message{
 		MessageID: userMessageID, SessionID: session.SessionID, Role: domain.RoleUser,
@@ -349,7 +373,7 @@ func (s *ChatService) sendMessage(ctx context.Context, in SendChatMessageInput, 
 		s.recordChatCanceled(ctx, userID, session, userMessageID, "before_model")
 		return nil, apperr.Wrap(err, apperr.CodeAborted, "client closed the stream")
 	}
-	generation := s.generateAnswer(ctx, userID, content, session, history, &contextData)
+	generation := s.generateAnswer(ctx, userID, content, session, history, &contextData, requestedProviderID)
 	// 流式回调失败（客户端断开）：模型调用已中止，不落 assistant 消息。
 	if generation.Aborted {
 		s.recordChatCanceled(ctx, userID, session, userMessageID, "before_persist")
@@ -383,23 +407,25 @@ func (s *ChatService) sendMessage(ctx context.Context, in SendChatMessageInput, 
 	// 命中统计：注入过的知识条目 hit_count +1（失败只记日志）。
 	s.recordKnowledgeInjection(ctx, contextData.KnowledgeItems)
 	s.recordAudit(ctx, userID, "ai", session.SessionID, AuditChatMessage, map[string]any{
-		"session_id":       session.SessionID,
-		"message_id":       assistantID,
-		"status":           generation.Status,
-		"risk_level":       generation.Answer.RiskLevel,
-		"require_confirm":  generation.Answer.RequireConfirm,
-		"tool_codes":       toolCodes(contextData.ToolCalls),
-		"tool_denied":      deniedToolCodes(contextData.ToolCalls),
-		"reference_count":  len(contextData.References),
-		"provider_id":      generation.ProviderID,
-		"tokens":           generation.Tokens,
-		"degraded_reason":  generation.Answer.DegradedReason,
-		"memory_used":      len(contextData.Memories),
-		"memory_status":    contextData.MemoryStatus,
-		"knowledge_used":   len(contextData.KnowledgeItems),
-		"knowledge_status": contextData.KnowledgeStatus,
-		"loop_rounds":      contextData.LoopRounds,
-		"result":           auditResult(generation.Status),
+		"session_id":            session.SessionID,
+		"message_id":            assistantID,
+		"status":                generation.Status,
+		"risk_level":            generation.Answer.RiskLevel,
+		"require_confirm":       generation.Answer.RequireConfirm,
+		"tool_codes":            toolCodes(contextData.ToolCalls),
+		"tool_denied":           deniedToolCodes(contextData.ToolCalls),
+		"reference_count":       len(contextData.References),
+		"provider_id":           generation.ProviderID,
+		"requested_provider_id": requestedProviderID,
+		"provider_fallback":     generation.FallbackNote != "",
+		"tokens":                generation.Tokens,
+		"degraded_reason":       generation.Answer.DegradedReason,
+		"memory_used":           len(contextData.Memories),
+		"memory_status":         contextData.MemoryStatus,
+		"knowledge_used":        len(contextData.KnowledgeItems),
+		"knowledge_status":      contextData.KnowledgeStatus,
+		"loop_rounds":           contextData.LoopRounds,
+		"result":                auditResult(generation.Status),
 	})
 	result := &SendChatMessageResult{
 		SessionID: session.SessionID, MessageID: assistantID, Status: generation.Status,

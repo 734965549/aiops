@@ -547,6 +547,23 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 规则观测每条规则带 `metric_label`；回答引用规则时使用可读形式「规则名（指标中文名 操作符 阈值，采样窗口 Xs，级别）」，`rule_id` / `evidence_id` 只作为括号内的证据引用，不得把机器 ID 当作唯一指代。
 - 推荐操作必须逐条结构化：目标规则（名称+ID）、调整字段、现值→建议值、理由与风险；涉及多条规则逐条列出，禁止只写“部分规则需调整”式笼统结论。
 
+#### 10.6.7 可选模型列表与切换
+
+- Method: `GET`
+- Path: `/api/ai/chat/models`
+- 鉴权：是（`app:ai:chat`，普通用户可调）
+
+响应 `data`：`[{ "provider_id": "...", "name": "...", "model": "..." }]`，仅**启用中的类型 b**，按 `provider_id` 升序；不含 `base_url` / `api_key` / `headers` / `timeout_ms` 等运维字段。
+
+切换语义：
+
+- 创建会话时 `context.provider_id` 可选，写入会话上下文；发送消息时 `body.provider_id` 可选。
+- 优先级：请求 `provider_id` > 会话 `context.provider_id` > 默认（第一个启用的类型 b）。
+- 所选模型不存在/被禁用时**不失败**：回退默认模型，`answer.uncertainties` 首条写入「所选模型 X 不可用，已回退 Y」。
+- 审计：`chat_message` 同时记录 `provider_id`（实际使用）、`requested_provider_id`（请求/会话选择）与 `provider_fallback`（是否回退）。
+- 会话级锁定由前端实现：首条消息发出后选择器只读，切换需新建会话；后端仍接受每次请求的 `provider_id`，便于自动化与后续策略扩展。
+- 换模型不改变 RBAC、工具权限与审计口径；工具调用继续继承当前用户身份。
+
 ### 10.7 提交回答反馈
 
 - Method: `POST`
@@ -566,7 +583,8 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
   "resource_id": "i-001",
   "resource_type": "ecs",
   "execution_id": "task-1",
-  "time_range": "30m"
+  "time_range": "30m",
+  "provider_id": "ark-primary"
 }
 ```
 
@@ -579,6 +597,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | `resource_type` | 64 | 资源类型（如 `ecs` / `pod`），缺失时不传 |
 | `execution_id` | 64 | 执行任务详情 |
 | `time_range` | 32 | 时间范围标签（如 `30m` / `2h`），仅用于提示 |
+| `provider_id` | 64 | 会话选定的对话模型（§10.6.7）；首条消息前可切换，之后只读 |
 
 - 字段均为可选业务标识；服务端只做长度裁剪与去空白，不信任前端做权限判断。
 - 前端按页面写入资源级上下文，其余页面只写页面级上下文；发送消息时随请求携带，会话创建时也会保存一份。写入方：

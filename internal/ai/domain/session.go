@@ -86,6 +86,8 @@ type SessionContext struct {
 	ResourceType  string `json:"resource_type"`
 	ExecutionID   string `json:"execution_id"`
 	TimeRange     string `json:"time_range"`
+	// ProviderID 是会话选定的对话模型（ai_provider.provider_id）；空表示使用默认模型。
+	ProviderID string `json:"provider_id,omitempty"`
 }
 
 // IsEmpty 表示没有可用于 AI 推理的上下文。
@@ -107,6 +109,7 @@ func (c SessionContext) Normalize() SessionContext {
 		ResourceType:  truncate(strings.TrimSpace(c.ResourceType), 64),
 		ExecutionID:   truncate(strings.TrimSpace(c.ExecutionID), 64),
 		TimeRange:     truncate(strings.TrimSpace(c.TimeRange), 32),
+		ProviderID:    truncate(strings.TrimSpace(c.ProviderID), 64),
 	}
 }
 

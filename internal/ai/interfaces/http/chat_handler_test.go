@@ -39,6 +39,14 @@ type fakeChatUseCase struct {
 	// shareInput / shareToken 记录分享入参，便于断言 handler 绑定。
 	shareInput aiapp.CreateChatShareInput
 	shareToken string
+	models     []aiapp.ChatModelOption
+}
+
+func (f *fakeChatUseCase) ListChatModels() []aiapp.ChatModelOption {
+	if f.models == nil {
+		return []aiapp.ChatModelOption{{ProviderID: "provider-1", Name: "默认模型", Model: "model-1"}}
+	}
+	return f.models
 }
 
 func (f *fakeChatUseCase) CreateSession(_ context.Context, in aiapp.CreateChatSessionInput) (*aiapp.ChatSessionView, error) {
@@ -201,7 +209,7 @@ func TestChatHandlerCreateSession(t *testing.T) {
 	c, w := newChatHandlerTestContext(http.MethodPost, "/chat/sessions", map[string]any{
 		"title": " 生产告警分析 ",
 		"context": map[string]any{
-			"page": "alerts", "alert_id": " a1 ", "time_range": "30m",
+			"page": "alerts", "alert_id": " a1 ", "time_range": "30m", "provider_id": " provider-b2 ",
 		},
 	}, nil, "u-1")
 
@@ -212,6 +220,9 @@ func TestChatHandlerCreateSession(t *testing.T) {
 	}
 	if usecase.created.UserID != "u-1" || usecase.created.Context.AlertID != "a1" {
 		t.Fatalf("unexpected input: %+v", usecase.created)
+	}
+	if usecase.created.Context.ProviderID != "provider-b2" {
+		t.Fatalf("provider_id not normalized: %+v", usecase.created.Context)
 	}
 	if !bytes.Contains(w.Body.Bytes(), []byte(`"code":"OK"`)) {
 		t.Fatalf("expected OK response: %s", w.Body.String())
@@ -228,6 +239,31 @@ func TestChatHandlerCreateSessionInvalidBody(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestChatHandlerListChatModels(t *testing.T) {
+	usecase := &fakeChatUseCase{models: []aiapp.ChatModelOption{
+		{ProviderID: "provider-b2", Name: "生产模型", Model: "ep-2024"},
+	}}
+	h := NewChatHandler(usecase)
+	c, w := newChatHandlerTestContext(http.MethodGet, "/chat/models", nil, nil, "u-1")
+
+	h.ListChatModels(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{`"provider_id":"provider-b2"`, `"name":"生产模型"`, `"model":"ep-2024"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %s in body: %s", want, body)
+		}
+	}
+	for _, forbidden := range []string{"api_key", "base_url", "headers"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("models response must not expose %s: %s", forbidden, body)
+		}
 	}
 }
 
@@ -273,7 +309,8 @@ func TestChatHandlerSendMessage(t *testing.T) {
 	h := NewChatHandler(usecase)
 	c, w := newChatHandlerTestContext(http.MethodPost, "/chat/sessions/s-1/messages", map[string]any{
 		"content":           "帮我分析这个告警",
-		"context":           map[string]any{"page": "alerts", "alert_id": "a1"},
+		"provider_id":       "provider-b2",
+		"context":           map[string]any{"page": "alerts", "alert_id": "a1", "provider_id": "provider-b2"},
 		"client_message_id": "cm-1",
 	}, gin.Params{{Key: "session_id", Value: "s-1"}}, "u-1")
 
@@ -290,6 +327,9 @@ func TestChatHandlerSendMessage(t *testing.T) {
 	}
 	if usecase.sent.Context == nil || usecase.sent.Context.AlertID != "a1" {
 		t.Fatalf("context not propagated: %+v", usecase.sent.Context)
+	}
+	if usecase.sent.ProviderID != "provider-b2" || usecase.sent.Context.ProviderID != "provider-b2" {
+		t.Fatalf("provider_id not propagated: %+v", usecase.sent)
 	}
 	if !bytes.Contains(w.Body.Bytes(), []byte(`"summary":"CPU 持续升高"`)) {
 		t.Fatalf("unexpected body: %s", w.Body.String())

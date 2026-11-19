@@ -69,16 +69,13 @@ func parseChatToolRequests(content string) []chatToolRequest {
 //	轮数/token 预算耗尽且仍无 answer -> degraded(agent_loop_exhausted)
 //
 // 任何执行类工具都不会被执行；模型申请它们只会得到一条 denied 观测。
-func (s *ChatService) generateWithLoop(ctx context.Context, userID, question string, session *domain.Session, history []ChatHistoryMessage, data *chatContextData) chatGeneration {
+func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, question string, session *domain.Session, history []ChatHistoryMessage, data *chatContextData) chatGeneration {
 	if data == nil {
 		return chatGeneration{}
 	}
 	evidence := observationEvidenceLines(*data)
-	if s.chat == nil {
-		return chatGeneration{Answer: degradedChatAnswer(chatDegradedModelUnavailable, evidence), Status: chatStatusDegraded}
-	}
-	providerID, ok := s.chat.ChatProviderID()
-	if !ok {
+	providerID = strings.TrimSpace(providerID)
+	if s.chat == nil || providerID == "" {
 		return chatGeneration{Answer: degradedChatAnswer(chatDegradedModelUnavailable, evidence), Status: chatStatusDegraded}
 	}
 	systemPrompt := chatSystemPrompt

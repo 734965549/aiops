@@ -107,6 +107,42 @@ func TestParseChatStreamLine(t *testing.T) {
 	}
 }
 
+func TestProviderRegistryChatModelsAndLookup(t *testing.T) {
+	registry := NewProviderRegistryWithPolicy(OutboundPolicy{AllowLoopback: true})
+	registry.RegisterExecutor(NewHTTPToolExecutor(ProviderTypeA, "/v1/tools/invoke"))
+	registry.RegisterExecutor(NewChatCompletionExecutor(ProviderTypeB, "/chat/completions"))
+	for _, cfg := range []ProviderConfig{
+		{ID: "provider-b1", Name: "默认模型", Type: ProviderTypeB, BaseURL: "http://127.0.0.1:9", Model: "model-1", APIKey: "secret", Enabled: true},
+		{ID: "provider-b2", Name: "备用模型", Type: ProviderTypeB, BaseURL: "http://127.0.0.1:9", Model: "model-2", APIKey: "secret", Enabled: true},
+		{ID: "provider-disabled", Name: "禁用模型", Type: ProviderTypeB, BaseURL: "http://127.0.0.1:9", Model: "model-3", APIKey: "secret", Enabled: false},
+		{ID: "provider-a", Name: "工具提供方", Type: ProviderTypeA, BaseURL: "http://127.0.0.1:9", APIKey: "secret", Enabled: true},
+	} {
+		if err := registry.UpsertProvider(cfg); err != nil {
+			t.Fatalf("upsert %s: %v", cfg.ID, err)
+		}
+	}
+
+	models := registry.ChatModels()
+	if len(models) != 2 || models[0].ProviderID != "provider-b1" || models[1].ProviderID != "provider-b2" {
+		t.Fatalf("models = %+v", models)
+	}
+	if models[0].Name != "默认模型" || models[1].Model != "model-2" {
+		t.Fatalf("model fields = %+v", models)
+	}
+	if _, ok := registry.ChatProviderByID("provider-b2"); !ok {
+		t.Fatal("enabled type b provider must be selectable")
+	}
+	if _, ok := registry.ChatProviderByID("provider-disabled"); ok {
+		t.Fatal("disabled provider must not be selectable")
+	}
+	if _, ok := registry.ChatProviderByID("provider-a"); ok {
+		t.Fatal("type a provider must not be selectable")
+	}
+	if _, ok := registry.ChatProviderByID("missing"); ok {
+		t.Fatal("missing provider must not be selectable")
+	}
+}
+
 func TestProviderRegistryCompleteStream(t *testing.T) {
 	var captured chatRequest
 	var accept string

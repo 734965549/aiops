@@ -40,6 +40,20 @@ type ChatClient interface {
 	CompleteStream(ctx context.Context, providerID, systemPrompt, userPrompt string, onDelta ChatModelDelta) (*ChatCompletionResult, error)
 }
 
+// ChatModel 是对外可选的对话模型摘要；不含 base_url、api_key、headers 等运维字段。
+type ChatModel struct {
+	ProviderID string `json:"provider_id"`
+	Name       string `json:"name"`
+	Model      string `json:"model"`
+}
+
+// ChatModelCatalog 是可选能力：列出/解析启用中的类型 b 模型。
+// application 层通过类型断言使用，未实现时回退单模型默认路径。
+type ChatModelCatalog interface {
+	ChatModels() []ChatModel
+	ChatProviderByID(providerID string) (ChatModel, bool)
+}
+
 // Complete 是 ChatCompleter 在类型 b 执行器上的实现：
 // 复用 callModel 的超时、出站校验与“deadline 不重试”策略。
 func (e *ChatCompletionExecutor) Complete(ctx context.Context, cfg ProviderConfig, systemPrompt, userPrompt string, policy OutboundPolicy) (*ChatCompletionResult, error) {
@@ -167,22 +181,52 @@ func (e *ChatCompletionExecutor) CompleteStream(ctx context.Context, cfg Provide
 
 // ChatProviderID 返回可用于对话补全的 provider：仅启用中的类型 b。
 func (r *ProviderRegistry) ChatProviderID() (string, bool) {
-	if r == nil {
+	models := r.ChatModels()
+	if len(models) == 0 {
 		return "", false
+	}
+	return models[0].ProviderID, true
+}
+
+// ChatModels 返回启用中的类型 b 模型摘要，按 provider_id 升序，便于前端稳定选择。
+func (r *ProviderRegistry) ChatModels() []ChatModel {
+	if r == nil {
+		return nil
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	ids := make([]string, 0, len(r.providers))
+	out := make([]ChatModel, 0, len(r.providers))
 	for id, p := range r.providers {
-		if p.Enabled && p.Type == ProviderTypeB {
-			ids = append(ids, id)
+		if !p.Enabled || p.Type != ProviderTypeB {
+			continue
 		}
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
+			name = id
+		}
+		out = append(out, ChatModel{ProviderID: id, Name: name, Model: p.Model})
 	}
-	if len(ids) == 0 {
-		return "", false
+	sort.Slice(out, func(i, j int) bool { return out[i].ProviderID < out[j].ProviderID })
+	return out
+}
+
+// ChatProviderByID 校验指定 provider 是否为启用中的类型 b；不可用时返回 false。
+func (r *ProviderRegistry) ChatProviderByID(providerID string) (ChatModel, bool) {
+	providerID = strings.TrimSpace(providerID)
+	if r == nil || providerID == "" {
+		return ChatModel{}, false
 	}
-	sort.Strings(ids)
-	return ids[0], true
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.providers[providerID]
+	if !ok || !p.Enabled || p.Type != ProviderTypeB {
+		return ChatModel{}, false
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		name = providerID
+	}
+	return ChatModel{ProviderID: providerID, Name: name, Model: p.Model}, true
 }
 
 // CompleteStream 通过指定 provider 完成一次流式对话补全。

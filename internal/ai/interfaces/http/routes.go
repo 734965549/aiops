@@ -71,6 +71,7 @@ func (r *Registrar) RegisterRoutes(groups server.RouteGroups) {
 		}), r.handler.Invoke)
 		authed.POST("/analyze-alert", middleware.AuthorizeStatic(authz, "ai.analysis", "analyze"), r.handler.AnalyzeAlert)
 		if r.chatHandler != nil {
+			authed.GET("/chat/models", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.ListChatModels)
 			authed.POST("/chat/sessions", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.CreateSession)
 			authed.GET("/chat/sessions", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.ListSessions)
 			authed.GET("/chat/sessions/:session_id", middleware.AuthorizeStatic(authz, "ai", "chat"), r.chatHandler.GetSession)
@@ -112,6 +113,7 @@ func (r *Registrar) RegisterRoutes(groups server.RouteGroups) {
 	authed.DELETE("/providers/:id", r.handler.DeleteProvider)
 	authed.POST("/tools/invoke", r.handler.Invoke)
 	if r.chatHandler != nil {
+		authed.GET("/chat/models", r.chatHandler.ListChatModels)
 		authed.POST("/chat/sessions", r.chatHandler.CreateSession)
 		authed.GET("/chat/sessions", r.chatHandler.ListSessions)
 		authed.GET("/chat/sessions/:session_id", r.chatHandler.GetSession)

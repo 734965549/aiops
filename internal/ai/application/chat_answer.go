@@ -17,12 +17,27 @@ type chatGeneration struct {
 	Tokens     int
 	// Aborted 表示流式回调失败（通常是客户端断开），调用方不得落 assistant 消息。
 	Aborted bool
+	// FallbackNote 非空表示所选模型不可用、已回退默认模型；最终写入 answer.uncertainties。
+	FallbackNote string
 }
 
-// generateAnswer 调用平台直连模型；模型可在预算内追加只读取数（受限 Agent Loop）。
-// 模型不可用、调用失败、输出非法或循环耗尽时降级。
-func (s *ChatService) generateAnswer(ctx context.Context, userID, question string, session *domain.Session, history []ChatHistoryMessage, data *chatContextData) chatGeneration {
-	return s.generateWithLoop(ctx, userID, question, session, history, data)
+// generateAnswer 解析本次使用的模型并调用受限 Agent Loop。
+// 所选模型不可用/禁用时回退默认模型，并在回答不确定性中说明，不直接让请求失败。
+func (s *ChatService) generateAnswer(ctx context.Context, userID, question string, session *domain.Session, history []ChatHistoryMessage, data *chatContextData, requestedProviderID string) chatGeneration {
+	providerID, fallbackNote, ok := s.resolveChatProvider(requestedProviderID)
+	if !ok {
+		var evidence []string
+		if data != nil {
+			evidence = observationEvidenceLines(*data)
+		}
+		return chatGeneration{
+			Answer: degradedChatAnswer(chatDegradedModelUnavailable, evidence),
+			Status: chatStatusDegraded, FallbackNote: fallbackNote,
+		}
+	}
+	generation := s.generateWithLoop(ctx, providerID, userID, question, session, history, data)
+	generation.FallbackNote = fallbackNote
+	return generation
 }
 
 // finalizeAnswer 由服务端补齐动作、证据与确认语义（模型输出的 actions 一律忽略）。
@@ -45,6 +60,10 @@ func (s *ChatService) finalizeAnswer(ctx context.Context, userID string, session
 	}
 	if answer.Uncertainties == nil {
 		answer.Uncertainties = []string{}
+	}
+	// 模型回退说明放在最前，确保用户/审计能看到“所选模型不可用”的事实。
+	if note := strings.TrimSpace(gen.FallbackNote); note != "" {
+		answer.Uncertainties = append([]string{note}, answer.Uncertainties...)
 	}
 
 	actions := make([]ChatAction, 0, 3)

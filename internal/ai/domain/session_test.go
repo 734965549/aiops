@@ -65,10 +65,14 @@ func TestSessionContextNormalizeAndIsEmpty(t *testing.T) {
 		ResourceType:  " pod ",
 		ExecutionID:   " exec-1 ",
 		TimeRange:     " 30m ",
+		ProviderID:    " provider-b1 ",
 	}.Normalize()
 	if got.Page != "alerts" || got.AlertID != "alert-1" || got.ApplicationID != "app-1" ||
 		got.ResourceID != "res-1" || got.ResourceType != "pod" || got.TimeRange != "30m" {
 		t.Fatalf("unexpected normalized context: %+v", got)
+	}
+	if got.ProviderID != "provider-b1" {
+		t.Fatalf("provider_id not normalized: %+v", got)
 	}
 	if got.ExecutionID != "exec-1" {
 		t.Fatalf("execution_id not normalized: %+v", got)
@@ -85,5 +89,12 @@ func TestSessionContextNormalizeAndIsEmpty(t *testing.T) {
 	}
 	if len([]rune((SessionContext{ExecutionID: strings.Repeat("e", 100)}).Normalize().ExecutionID)) != 64 {
 		t.Fatal("execution_id must be truncated to 64 runes")
+	}
+	if len([]rune((SessionContext{ProviderID: strings.Repeat("p", 100)}).Normalize().ProviderID)) != 64 {
+		t.Fatal("provider_id must be truncated to 64 runes")
+	}
+	// 仅模型选择不算资源上下文，避免前端误判“已带入告警/资源”。
+	if !(SessionContext{ProviderID: "provider-b1"}).IsEmpty() {
+		t.Fatal("provider_id alone must not make the context non-empty")
 	}
 }

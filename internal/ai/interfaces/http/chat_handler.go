@@ -28,6 +28,8 @@ type ChatUseCase interface {
 	SendMessage(ctx context.Context, in aiapp.SendChatMessageInput) (*aiapp.SendChatMessageResult, error)
 	// SendMessageStream 以事件流方式执行同一编排（emit 收到 stage/tool/delta/answer/error 事件）。
 	SendMessageStream(ctx context.Context, in aiapp.SendChatMessageInput, emit aiapp.ChatEventSink) (*aiapp.SendChatMessageResult, error)
+	// ListChatModels 返回启用中的对话模型摘要（provider_id/name/model）。
+	ListChatModels() []aiapp.ChatModelOption
 	SubmitFeedback(ctx context.Context, userID, sessionID, messageID, feedback string) (*aiapp.ChatMessageView, error)
 	ArchiveSession(ctx context.Context, userID, sessionID string) (*aiapp.ChatSessionView, error)
 	UnarchiveSession(ctx context.Context, userID, sessionID string) (*aiapp.ChatSessionView, error)
@@ -57,6 +59,7 @@ type chatContextRequest struct {
 	ResourceType  string `json:"resource_type"`
 	ExecutionID   string `json:"execution_id"`
 	TimeRange     string `json:"time_range"`
+	ProviderID    string `json:"provider_id"`
 }
 
 func (r chatContextRequest) toDomain() domain.SessionContext {
@@ -64,6 +67,7 @@ func (r chatContextRequest) toDomain() domain.SessionContext {
 		Page: r.Page, PageTitle: r.PageTitle, AlertID: r.AlertID,
 		ApplicationID: r.ApplicationID, ResourceID: r.ResourceID,
 		ResourceType: r.ResourceType, ExecutionID: r.ExecutionID, TimeRange: r.TimeRange,
+		ProviderID: r.ProviderID,
 	}.Normalize()
 }
 
@@ -75,6 +79,8 @@ type createChatSessionRequest struct {
 type sendChatMessageRequest struct {
 	Content string              `json:"content" binding:"required"`
 	Context *chatContextRequest `json:"context"`
+	// ProviderID 为可选对话模型；空时回退会话上下文与默认模型（ops/ai-contract.md §10.6.7）。
+	ProviderID string `json:"provider_id"`
 	// ClientMessageID 为可选幂等键，客户端超时重试时复用同一值（ops/ai-contract.md §10.6.5）。
 	ClientMessageID string `json:"client_message_id"`
 }
@@ -140,6 +146,18 @@ func (h *ChatHandler) ListSessions(c *gin.Context) {
 	httpx.OK(c, items)
 }
 
+// ListChatModels GET /api/ai/chat/models
+//
+// 普通用户可调（app:ai:chat）：只返回启用中的类型 b 模型摘要，不含 base_url/api_key/headers。
+func (h *ChatHandler) ListChatModels(c *gin.Context) {
+	svc, ok := h.service()
+	if !ok {
+		httpx.FailWith(c, apperr.CodeUnavailable, "ai chat service is not enabled")
+		return
+	}
+	httpx.OK(c, svc.ListChatModels())
+}
+
 // GetSession GET /api/ai/chat/sessions/:session_id
 func (h *ChatHandler) GetSession(c *gin.Context) {
 	svc, ok := h.service()
@@ -169,7 +187,7 @@ func (h *ChatHandler) SendMessage(c *gin.Context) {
 	}
 	in := aiapp.SendChatMessageInput{
 		UserID: c.GetString(middleware.CtxKeyUserID), SessionID: c.Param("session_id"), Content: req.Content,
-		ClientMessageID: req.ClientMessageID,
+		ProviderID: req.ProviderID, ClientMessageID: req.ClientMessageID,
 	}
 	if req.Context != nil {
 		context := req.Context.toDomain()
@@ -201,7 +219,7 @@ func (h *ChatHandler) SendMessageStream(c *gin.Context) {
 	}
 	in := aiapp.SendChatMessageInput{
 		UserID: c.GetString(middleware.CtxKeyUserID), SessionID: c.Param("session_id"), Content: req.Content,
-		ClientMessageID: req.ClientMessageID,
+		ProviderID: req.ProviderID, ClientMessageID: req.ClientMessageID,
 	}
 	if req.Context != nil {
 		context := req.Context.toDomain()
