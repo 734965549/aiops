@@ -2498,6 +2498,45 @@ func TestSendMessageAgentLoopPromptCarriesMetricValues(t *testing.T) {
 	}
 }
 
+func TestSendMessageAgentLoopSameRoundDistinctMetricsBothExecute(t *testing.T) {
+	svc, repo, _, chat, _, evidence := newChatTestService(t)
+	evidence.result = &MetricEvidenceResult{Status: EvidenceStatusOK, Metrics: []MetricEvidence{{
+		Metric: "cpu_util", Peak: floatPtr(97.4),
+		Points: [][2]float64{{1700000000, 62.1}, {1700000300, 97.4}}, EvidenceID: "ev-1",
+	}}}
+	chat.script = []string{
+		`{"tool_requests":[` +
+			`{"tool_code":"metrics.query","reason":"cpu 趋势","params":{"account_id":"acc-1","region":"cn-north-4","namespace":"SYS.RDS","metric":"cpu_util","dimensions":{"instance_id":"i-1"},"from":1700000000,"to":1700003600,"period":300}},` +
+			`{"tool_code":"metrics.query","reason":"mem 趋势","params":{"account_id":"acc-1","region":"cn-north-4","namespace":"SYS.RDS","metric":"mem_util","dimensions":{"instance_id":"i-1"},"from":1700000000,"to":1700003600,"period":300}}` +
+			`]}`,
+		chatAnswerJSON("CPU 与内存趋势均上升"),
+	}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "看下 cpu 和内存两个指标趋势",
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if result.Status != chatStatusOK || chat.calls != 2 || evidence.calls != 2 {
+		t.Fatalf("status = %q, model calls = %d, evidence calls = %d", result.Status, chat.calls, evidence.calls)
+	}
+	metricOK := 0
+	for _, call := range result.ToolCalls {
+		if call.ToolCode == chatToolMetricsQuery && call.Status == "ok" {
+			metricOK++
+		}
+	}
+	if metricOK != 2 {
+		t.Fatalf("metrics ok calls = %d, want 2: %+v", metricOK, result.ToolCalls)
+	}
+	// 同轮不同参数的两个 metrics 都必须执行，且下一轮 prompt 带两组序列。
+	if !strings.Contains(chat.user, `"metric":"cpu_util"`) || !strings.Contains(chat.user, `"metric":"mem_util"`) {
+		t.Fatalf("round-1 prompt missing one of the metric series: %s", chat.user)
+	}
+}
+
 func TestSendMessageSkipsAccountsWhenPortMissing(t *testing.T) {
 	svc, repo, _, _, _, _ := newChatTestService(t)
 	seedChatSession(t, repo, "u-1", domain.SessionContext{})

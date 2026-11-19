@@ -745,7 +745,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 上下文缺失：`allowed=true`、`status=skipped`；常见 reason：`no_alert` / `no_account` / `no_region` / `no_namespace` / `no_metric` / `no_dimensions`。
 - 资源上下文缺失/不可用：`resource_not_found` / `resource_not_cloud_linked` / `resource_load_failed` / `data_scope_denied`。
 - 审计：每次执行写 `tool_invoke`，payload 含 `tool_code/allowed/mode/status/reason/evidence_id/result`；`evidence_id` 仅在成功取数时出现。`chat_message` 仍含 `tool_codes` / `tool_denied` / `loop_rounds`。
-- Agent Loop 白名单扩展为 `alarm.analyze` / `metrics.query` / `alert.rules.list` / `accounts.list` / `resource.analyze` / `resources.list`；其余约束（≤3 轮、20000 token、单轮≤3 个申请、同名去重、每轮 RBAC、执行类拒绝）不变（§10.16）。
+- Agent Loop 白名单扩展为 `alarm.analyze` / `metrics.query` / `alert.rules.list` / `accounts.list` / `resource.analyze` / `resources.list`；其余约束（≤3 轮、20000 token、单轮≤3 个申请、轮内/跨轮按 tool_code+params 去重、每轮 RBAC、执行类拒绝）不变（§10.16）。
 
 #### 10.12.2 云厂商只读观测工具（cloud.* 系列）— 推迟
 
@@ -932,8 +932,8 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | 工具白名单 | 仅 `alarm.analyze`、`metrics.query`、`alert.rules.list`、`accounts.list`、`resource.analyze`、`resources.list` 可被申请；其它工具（含 `execution.tasks.propose` / `dispatch` / `command.run`）一律拒绝并记 `allowed=false`、`reason=tool is not allowed in agent loop` |
 | 参数透传 | `tool_requests[].params` 按 §10.12.1 校验；非法参数记 `status=invalid_argument` 并反馈给模型，不执行取数 |
 | 权限 | 每轮每个工具独立过 RBAC + 工具权限（与首轮同一套校验），`allowed=false` 时把原因反馈给模型而不中断 |
-| 预算 | 追加轮数 ≤ **3**；累计 token ≥ **20000** 即终止；单轮最多受理 **3** 个申请（同轮同名工具去重）；单次对话总时间预算 `ai.turn_budget_s`（默认 600s），超时立即终止并返回 `turn_budget_exceeded` |
-| 去重 | 跨轮按 `tool_code + params` 去重：已成功执行过的组合重复申请时返回 `status=denied`、`reason=duplicate tool request: identical parameters already executed in this turn`，不再取数且不占用有效轮数；连续两轮无实际取数仍按收敛规则终止 |
+| 预算 | 追加轮数 ≤ **3**；累计 token ≥ **20000** 即终止；单轮最多受理 **3** 个申请（轮内相同 `tool_code+params` 去重，同工具不同参数各自执行）；单次对话总时间预算 `ai.turn_budget_s`（默认 600s），超时立即终止并返回 `turn_budget_exceeded` |
+| 去重 | 轮内相同 `tool_code + params` 只执行一次，不同参数各自执行；跨轮按 `tool_code + params` 去重：已成功执行过的组合重复申请时返回 `status=denied`、`reason=duplicate tool request: identical parameters already executed in this turn`，不再取数且不占用有效轮数；连续两轮无实际取数仍按收敛规则终止 |
 | 收敛 | 连续两轮「申请了但一个工具都没真正执行」才终止，给模型一次看到拒绝原因后自我纠正的机会 |
 | 审计 | 每轮工具调用写 `tool_invoke`（与现状同结构）；`chat_message` 新增 `loop_rounds`（实际追加轮数） |
 | 契约 | 接口仍同步返回；`tool_calls` 数组容纳多轮调用记录；流式与取消见 §10.17 |
@@ -951,7 +951,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | 工具被拒绝 | 回答仍正常返回；拒绝原因在 `tool_calls[].reason` 与审计中可见 |
 | 未装配知识/记忆 | 循环本身不受影响 |
 
-- 提示词约束：system prompt 明确「只在现有只读观测不足时申请；可申请 `alarm.analyze` / `metrics.query` / `alert.rules.list` / `accounts.list` / `resource.analyze` / `resources.list`；`account_id` 优先来自 `accounts.list` 清单（不可用时回退告警/资源上下文），不得臆造；参数边界见 §10.12.1；最多 3 轮且单轮最多 3 个申请；现有观测足以作答时必须立即输出 answer；同工具同参数重复申请无意义（服务端跨轮去重拒绝）；不得申请执行类工具」。
+- 提示词约束：system prompt 明确「只在现有只读观测不足时申请；可申请 `alarm.analyze` / `metrics.query` / `alert.rules.list` / `accounts.list` / `resource.analyze` / `resources.list`；`account_id` 优先来自 `accounts.list` 清单（不可用时回退告警/资源上下文），不得臆造；参数边界见 §10.12.1；最多 3 轮且单轮最多 3 个申请，同轮可并列申请多个不同参数的 metrics.query；现有观测足以作答时必须立即输出 answer；同工具同参数重复申请无意义（服务端跨轮去重拒绝）；不得申请执行类工具」。
 - 前端按 §10.9 映射 `status`；多轮调用会自然出现在 `tool_calls`；`loop_rounds` 仅用于审计与排查。
 - 循环只影响取数与证据丰富度，不改变权限判断、`actions` 生成或执行链路。
 

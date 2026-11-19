@@ -298,6 +298,7 @@ func chatToolRequestKey(req chatToolRequest) string {
 // runLoopToolRequests 逐个执行模型申请的只读工具，返回（真正执行数, 重复申请数）。
 //
 // 每轮每个工具独立过 RBAC + 工具权限；拒绝原因反馈给模型（denied 观测），不中断循环。
+// 轮内按 tool_code+params 去重（相同组合只执行一次），不同参数各自执行，单轮最多受理 3 个。
 // 已成功执行过的 tool_code+params 组合再次申请时只回 denied，不重复取数。
 func (s *ChatService) runLoopToolRequests(ctx context.Context, userID string, session *domain.Session, data *chatContextData, executedRequests map[string]struct{}, requests []chatToolRequest) (int, int) {
 	executed := 0
@@ -311,11 +312,13 @@ func (s *ChatService) runLoopToolRequests(ctx context.Context, userID string, se
 		if code == "" {
 			continue
 		}
-		if _, dup := seen[code]; dup {
+		key := chatToolRequestKey(req)
+		// 轮内按 tool_code+params 去重：同工具不同参数（多指标/多窗口）必须各自执行，
+		// 按工具名去重会静默丢弃申请，模型看不到数据只能空转重查。
+		if _, dup := seen[key]; dup {
 			continue
 		}
-		seen[code] = struct{}{}
-		key := chatToolRequestKey(req)
+		seen[key] = struct{}{}
 		if _, ok := loopAllowedTools[code]; !ok {
 			// 执行类或未登记工具：明确拒绝并把原因反馈给模型。
 			s.appendToolResult(ctx, userID, session.SessionID, "", data, ChatObservation{
