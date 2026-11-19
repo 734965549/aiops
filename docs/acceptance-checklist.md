@@ -516,11 +516,12 @@ go run ./cmd/migrate
 |---|--------|------|------|
 | 9.11.1 | 追加只读工具 | 配置一个会在上下文不足时输出 `tool_requests`（`metrics.query`）的模型，提问 | 服务端执行追加取数后二次调用模型；`tool_calls` 含该轮调用；审计 `chat_message` 的 `loop_rounds ≥ 1` |
 | 9.11.2 | 执行类工具不可达 | 让模型申请 `execution.command.run` / `execution.tasks.propose` | 该工具 `allowed=false`、`reason=tool is not allowed in agent loop`；**不会产生任何执行动作**，回答仍返回 |
-| 9.11.3 | 轮数预算 | 让模型持续申请 `metrics.query` | 追加轮数最多 3 轮，随后返回 `status=degraded`、`degraded_reason=agent_loop_exhausted`，保留已取观测 |
+| 9.11.3 | 轮数预算 | 让模型按不同参数持续申请 `metrics.query` | 追加轮数最多 3 轮，随后返回 `status=degraded`、`degraded_reason=agent_loop_exhausted`，保留已取观测 |
 | 9.11.4 | 无进展收敛 | 让模型持续申请被拒绝的工具 | 至多两次模型调用即收敛（一次纠正机会），不悬挂、不超时 |
 | 9.11.5 | 审计可回放 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | 每轮工具调用都有 `tool_invoke`；`chat_message` payload 含 `loop_rounds`、`tokens` |
+| 9.11.6 | 重复申请去重 | 让模型跨轮重复申请已成功的同工具同参数 | 后续申请记 `status=denied`、`reason=duplicate tool request: identical parameters already executed in this turn`，不重复取数、不占有效轮数；连续两轮无进展后返回 `agent_loop_exhausted` |
 
-> 前置：契约见 `ops/ai-contract.md` §10.16；无需新迁移。循环内不产生任何执行动作，`actions` 仍由服务端生成。E2E 脚本：`scripts/e2e-ai-agent-loop.ps1`（通过脚本化 mock 模型自动覆盖 9.11.1/9.11.2/9.11.3/9.11.5，需要一条 active 告警；无进展收敛 9.11.4 由既有单测覆盖）。
+> 前置：契约见 `ops/ai-contract.md` §10.16；无需新迁移。循环内不产生任何执行动作，`actions` 仍由服务端生成。E2E 脚本：`scripts/e2e-ai-agent-loop.ps1`（通过脚本化 mock 模型自动覆盖 9.11.1/9.11.2/9.11.3/9.11.5，需要一条 active 告警；无进展收敛 9.11.4 与重复申请去重 9.11.6 由既有单测覆盖）。
 
 ### 9.12 流式对话与取消（SSE，契约 §10.17）
 
