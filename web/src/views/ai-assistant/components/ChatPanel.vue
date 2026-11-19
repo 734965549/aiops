@@ -65,6 +65,9 @@
           <template v-if="stageDeltaChars">
             · 已生成 {{ stageDeltaChars }} 字
           </template>
+          <template v-else-if="waitSeconds > 0">
+            · 已等待 {{ waitSeconds }}s
+          </template>
         </span>
       </div>
     </div>
@@ -75,7 +78,23 @@
         type="error"
         :show-icon="true"
       >
-        AI 回答失败，平台不会基于失败回答执行任何动作。可重新提问或稍后再试。
+        {{ failedNotice || 'AI 回答失败，平台不会基于失败回答执行任何动作。可重新提问或稍后再试。' }}
+        <template #action>
+          <a-button
+            size="mini"
+            :disabled="!lastUserContent || sending"
+            @click="emit('retry')"
+          >
+            重新提问
+          </a-button>
+        </template>
+      </a-alert>
+      <a-alert
+        v-else-if="status === 'incomplete'"
+        type="warning"
+        :show-icon="true"
+      >
+        回答生成中断，以下为已保留的上下文与部分结果；可重新提问或缩小问题范围。
         <template #action>
           <a-button
             size="mini"
@@ -176,7 +195,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { IconRobot } from '@arco-design/web-vue/es/icon'
 import type { ChatAnswer, ChatMessage } from '@/api/ai'
 import AnswerCard from './AnswerCard.vue'
@@ -209,6 +228,45 @@ const emit = defineEmits<{
 const input = ref('')
 const scrollRef = ref<HTMLElement | null>(null)
 const placeholder = props.placeholder || '请输入你的问题，例如：帮我分析当前告警并给出排查步骤'
+
+// 首块前等待提示：发送期间每秒累计，收到首个回答增量后切换为“已生成 N 字”。
+const waitSeconds = ref(0)
+let waitTimer: number | null = null
+
+function stopWaitTimer() {
+  if (waitTimer !== null) {
+    window.clearInterval(waitTimer)
+    waitTimer = null
+  }
+}
+
+watch(
+  () => props.sending,
+  (sending) => {
+    stopWaitTimer()
+    waitSeconds.value = 0
+    if (sending) {
+      waitTimer = window.setInterval(() => {
+        waitSeconds.value += 1
+      }, 1000)
+    }
+  },
+  { immediate: true }
+)
+
+onUnmounted(stopWaitTimer)
+
+const lastAssistantAnswer = computed(
+  () => [...props.messages].reverse().find((message) => message.role === 'assistant')?.answer
+)
+
+/** 限流失败时直接展示预计恢复时间，避免只给“稍后重试”。 */
+const failedNotice = computed(() => {
+  if (props.status !== 'failed') return ''
+  const answer = lastAssistantAnswer.value
+  if (answer?.degraded_reason !== 'provider_rate_limited') return ''
+  return answer.uncertainties?.find((text) => text.includes('恢复')) || '模型服务当前限流，请稍后重试'
+})
 
 interface ContextHint {
   text: string

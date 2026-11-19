@@ -203,7 +203,7 @@ const emptyForm = () => ({
   base_url: '',
   model: '',
   api_key: '',
-  timeout_ms: 30000,
+  timeout_ms: 300000,
   enabled: true,
   description: ''
 })
@@ -231,7 +231,7 @@ function onSelect(record: Record<string, unknown>) {
   form.base_url = provider.base_url
   form.model = provider.model ?? ''
   form.api_key = ''
-  form.timeout_ms = provider.timeout_ms ?? 30000
+  form.timeout_ms = provider.timeout_ms ?? 300000
   form.enabled = provider.enabled
   form.description = provider.description ?? ''
 }

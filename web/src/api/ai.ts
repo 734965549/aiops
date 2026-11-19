@@ -148,6 +148,9 @@ export interface ChatAnswer {
   insufficient_context: boolean
   degraded?: boolean
   degraded_reason?: string
+  /** 流式生成中断但保留了已获取上下文；前端按“不完整回答”提示，不按失败处理。 */
+  incomplete?: boolean
+  incomplete_reason?: string
 }
 
 export interface ChatToolCall {
@@ -183,8 +186,8 @@ export interface ChatSessionDetail {
   messages: ChatMessage[]
 }
 
-/** 对话状态：ok / degraded / insufficient_context（后端 status 原值）。 */
-export type ChatResultStatus = 'ok' | 'degraded' | 'insufficient_context' | string
+/** 对话状态：ok / degraded / incomplete / insufficient_context（后端 status 原值）。 */
+export type ChatResultStatus = 'ok' | 'degraded' | 'incomplete' | 'insufficient_context' | string
 
 export interface SendChatMessageResult {
   session_id: string

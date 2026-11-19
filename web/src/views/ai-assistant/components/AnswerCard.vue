@@ -9,7 +9,13 @@
           {{ answer.require_confirm ? '需要人工确认' : '无需人工确认' }}
         </a-tag>
         <a-tag
-          v-if="answer.degraded"
+          v-if="answer.incomplete"
+          color="orange"
+        >
+          生成中断
+        </a-tag>
+        <a-tag
+          v-else-if="answer.degraded"
           color="red"
         >
           降级回答

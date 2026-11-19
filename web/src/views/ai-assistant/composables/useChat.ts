@@ -33,6 +33,7 @@ export type ChatUIStatus =
   | 'needs_confirm'
   | 'not_executable'
   | 'insufficient_context'
+  | 'incomplete'
   | 'failed'
 
 export const STAGE_LABELS: Record<Exclude<ChatStage, 'idle'>, string> = {
@@ -47,6 +48,7 @@ export const STATUS_LABELS: Record<ChatUIStatus, string> = {
   needs_confirm: 'AI 建议需人工确认',
   not_executable: 'AI 建议不可执行',
   insufficient_context: 'AI 上下文不足，需补充信息',
+  incomplete: 'AI 回答生成中断',
   failed: 'AI 回答失败'
 }
 
@@ -119,6 +121,7 @@ export function useChat() {
   }
 
   function deriveUIStatus(status: ChatResultStatus, answer?: ChatAnswer): ChatUIStatus {
+    if (status === 'incomplete' || answer?.incomplete) return 'incomplete'
     if (status === 'degraded') return 'failed'
     if (status === 'insufficient_context' || answer?.insufficient_context) return 'insufficient_context'
     const execution = answer?.actions?.find((action) => action.code === 'execution.propose')
@@ -134,7 +137,13 @@ export function useChat() {
     const lastAssistant = [...detail.messages].reverse().find((message) => message.role === 'assistant')
     if (lastAssistant?.answer) {
       uiStatus.value = deriveUIStatus(
-        lastAssistant.answer.degraded ? 'degraded' : lastAssistant.answer.insufficient_context ? 'insufficient_context' : 'ok',
+        lastAssistant.answer.incomplete
+          ? 'incomplete'
+          : lastAssistant.answer.degraded
+            ? 'degraded'
+            : lastAssistant.answer.insufficient_context
+              ? 'insufficient_context'
+              : 'ok',
         lastAssistant.answer
       )
     } else {
