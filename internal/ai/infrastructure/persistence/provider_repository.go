@@ -22,7 +22,7 @@ type providerModel struct {
 	Model           string `gorm:"column:model;type:varchar(128);not null;default:''"`
 	APIKeyEncrypted []byte `gorm:"column:api_key_encrypted;type:bytea"`
 	Headers         []byte `gorm:"column:headers;type:jsonb;not null"`
-	TimeoutMS       int64  `gorm:"column:timeout_ms;not null;default:30000"`
+	TimeoutMS       int64  `gorm:"column:timeout_ms;not null;default:300000"`
 	Enabled         bool   `gorm:"column:enabled;not null;default:true"`
 	Description     string `gorm:"column:description;type:varchar(512);not null;default:''"`
 }

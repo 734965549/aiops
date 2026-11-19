@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -133,12 +134,22 @@ func (s *ChatService) generateWithLoop(ctx context.Context, userID, question str
 			if time.Until(deadline) <= 0 {
 				return budgetExceeded()
 			}
+			var rateErr *toolgateway.RateLimitError
+			if errors.As(err, &rateErr) {
+				return chatGeneration{
+					Answer: rateLimitedChatAnswer(rateErr, observationEvidenceLines(*data)),
+					Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
+				}
+			}
 			return chatGeneration{
 				Answer: degradedChatAnswer(chatDegradedModelFailed, observationEvidenceLines(*data)),
 				Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
 			}
 		}
 		tokens += result.Tokens
+		if result.Partial {
+			return partialChatGeneration(result, observationEvidenceLines(*data), providerID, tokens)
+		}
 		if answer, parseErr := parseChatAnswer(result.Content); parseErr == nil {
 			status := chatStatusOK
 			if answer.InsufficientContext {
@@ -190,6 +201,64 @@ func (s *ChatService) generateWithLoop(ctx context.Context, userID, question str
 			deniedRounds = 0
 		}
 	}
+}
+
+// rateLimitedChatAnswer 把 provider 限流转换为带预计恢复时间的保守回答。
+func rateLimitedChatAnswer(rateErr *toolgateway.RateLimitError, evidence []string) ChatAnswer {
+	answer := degradedChatAnswer(chatDegradedRateLimited, evidence)
+	reset := time.Duration(0)
+	if rateErr != nil {
+		reset = rateErr.ResetAfter
+		if reset <= 0 {
+			reset = rateErr.RetryAfter
+		}
+	}
+	hint := "模型服务当前限流，请稍后重试。"
+	if reset > 0 {
+		hint = "模型服务当前限流，预计" + humanizeRetryAfter(reset) + "恢复，请稍后再试。"
+	}
+	answer.Uncertainties = append([]string{hint}, answer.Uncertainties...)
+	return answer
+}
+
+// humanizeRetryAfter 把等待时长转为用户可读文本（向上取整到秒/分钟/小时）。
+func humanizeRetryAfter(delay time.Duration) string {
+	if delay <= 0 {
+		return ""
+	}
+	if delay >= time.Hour {
+		return fmt.Sprintf("约 %d 小时后", int((delay+time.Hour-1)/time.Hour))
+	}
+	if delay >= time.Minute {
+		return fmt.Sprintf("约 %d 分钟后", int((delay+time.Minute-1)/time.Minute))
+	}
+	return fmt.Sprintf("约 %d 秒后", int((delay+time.Second-1)/time.Second))
+}
+
+// partialChatGeneration 把流式中断包装为“不完整回答”：部分输出可解析时优先保留结构化结论，
+// 否则返回带已获取证据的保守回答；状态为 incomplete，不按普通失败丢弃上下文。
+func partialChatGeneration(result *toolgateway.ChatCompletionResult, evidence []string, providerID string, tokens int) chatGeneration {
+	answer := degradedChatAnswer(chatDegradedStreamInterrupted, evidence)
+	if result != nil {
+		if parsed, err := parseChatAnswer(result.Content); err == nil {
+			answer = parsed
+			answer.Incomplete = true
+			answer.IncompleteReason = strings.TrimSpace(result.PartialReason)
+			if answer.IncompleteReason == "" {
+				answer.IncompleteReason = chatDegradedStreamInterrupted
+			}
+			if len(answer.Evidence) == 0 {
+				answer.Evidence = evidence
+			}
+			return chatGeneration{Answer: answer, Status: chatStatusIncomplete, ProviderID: providerID, Tokens: tokens}
+		}
+		answer.IncompleteReason = strings.TrimSpace(result.PartialReason)
+	}
+	if strings.TrimSpace(answer.IncompleteReason) == "" {
+		answer.IncompleteReason = chatDegradedStreamInterrupted
+	}
+	answer.Incomplete = true
+	return chatGeneration{Answer: answer, Status: chatStatusIncomplete, ProviderID: providerID, Tokens: tokens}
 }
 
 // completeModel 在流式请求（存在 SSE sink）时走模型增量；同步路径保持原 Complete。

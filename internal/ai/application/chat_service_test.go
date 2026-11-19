@@ -191,6 +191,9 @@ type fakeChatClient struct {
 	lastProvider string
 	// block 为 true 时模拟模型挂起，直到 ctx 截止（回合预算测试）。
 	block bool
+	// partial 模拟流式中断但已收到部分输出。
+	partial       bool
+	partialReason string
 }
 
 func (f *fakeChatClient) ChatProviderID() (string, bool) {
@@ -217,7 +220,10 @@ func (f *fakeChatClient) Complete(ctx context.Context, providerID, systemPrompt,
 		content = f.script[0]
 		f.script = f.script[1:]
 	}
-	return &toolgateway.ChatCompletionResult{Content: content, Tokens: 42}, nil
+	return &toolgateway.ChatCompletionResult{
+		Content: content, Tokens: 42,
+		Partial: f.partial, PartialReason: f.partialReason,
+	}, nil
 }
 
 func (f *fakeChatClient) CompleteStream(ctx context.Context, providerID, systemPrompt, userPrompt string, onDelta toolgateway.ChatModelDelta) (*toolgateway.ChatCompletionResult, error) {
@@ -966,6 +972,9 @@ func TestChatResultStatusFromAnswer(t *testing.T) {
 	}
 	if got := chatResultStatus(ChatAnswer{Degraded: true, DegradedReason: "model_failed"}); got != chatStatusDegraded {
 		t.Fatalf("status = %q", got)
+	}
+	if got := chatResultStatus(ChatAnswer{Degraded: true, Incomplete: true}); got != chatStatusIncomplete {
+		t.Fatalf("incomplete status = %q", got)
 	}
 	if got := chatResultStatus(ChatAnswer{InsufficientContext: true}); got != chatStatusInsufficientContext {
 		t.Fatalf("status = %q", got)
@@ -1782,6 +1791,121 @@ func TestListSessions(t *testing.T) {
 	}
 	if _, err := svc.ListSessions(context.Background(), "", 10); err == nil {
 		t.Fatal("expected unauthenticated error")
+	}
+}
+
+func TestSendMessageStreamPartialRetention(t *testing.T) {
+	svc, repo, _, chat, audit, _ := newChatTestService(t)
+	chat.partial = true
+	chat.partialReason = "stream_idle_timeout"
+	chat.content = `{"summary":"半成品结论"` // 中断的 JSON 无法解析，退回保守回答
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "alerts", AlertID: "a1"})
+
+	result, err := svc.SendMessageStream(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警",
+		Context: &domain.SessionContext{Page: "alerts", AlertID: "a1"},
+	}, func(ChatEvent) error { return nil })
+	if err != nil {
+		t.Fatalf("stream message: %v", err)
+	}
+	if result.Status != chatStatusIncomplete {
+		t.Fatalf("status = %q", result.Status)
+	}
+	if !result.Answer.Incomplete || result.Answer.IncompleteReason != "stream_idle_timeout" {
+		t.Fatalf("unexpected answer: %+v", result.Answer)
+	}
+	if !result.Answer.Degraded || result.Answer.DegradedReason != chatDegradedStreamInterrupted {
+		t.Fatalf("partial answer must keep degraded context: %+v", result.Answer)
+	}
+	if len(result.Answer.Evidence) == 0 {
+		t.Fatal("partial answer must retain observed evidence")
+	}
+	// 不完整回答仍需落库，重放时保留 incomplete 标记。
+	rows := repo.messages["s-1"]
+	if len(rows) != 2 || rows[1].Role != domain.RoleAssistant {
+		t.Fatalf("partial answer must be persisted: %+v", rows)
+	}
+	detail, err := svc.GetSession(context.Background(), "u-1", "s-1")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if detail.Messages[1].Answer == nil || !detail.Messages[1].Answer.Incomplete {
+		t.Fatalf("incomplete flag lost on replay: %+v", detail.Messages[1].Answer)
+	}
+	found := false
+	for _, row := range audit.rows {
+		if row.Action == AuditChatMessage && row.Payload["status"] == chatStatusIncomplete {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected incomplete chat audit, got %+v", audit.rows)
+	}
+}
+
+func TestSendMessageStreamPartialKeepsParseableAnswer(t *testing.T) {
+	svc, repo, _, chat, _, _ := newChatTestService(t)
+	chat.partial = true
+	chat.partialReason = "stream_read_error"
+	chat.content = chatAnswerJSON("中断前已生成的结论")
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+
+	result, err := svc.SendMessageStream(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警",
+	}, func(ChatEvent) error { return nil })
+	if err != nil {
+		t.Fatalf("stream message: %v", err)
+	}
+	if result.Status != chatStatusIncomplete || result.Answer.Summary != "中断前已生成的结论" {
+		t.Fatalf("parseable partial answer lost: %+v", result)
+	}
+	if !result.Answer.Incomplete || result.Answer.IncompleteReason != "stream_read_error" {
+		t.Fatalf("incomplete flags = %+v", result.Answer)
+	}
+}
+
+func TestSendMessageRateLimitShowsResetHint(t *testing.T) {
+	svc, repo, _, chat, audit, _ := newChatTestService(t)
+	chat.err = apperr.Wrap(&toolgateway.RateLimitError{
+		StatusCode: 429, RetryAfter: time.Second, ResetAfter: 2 * time.Hour,
+	}, apperr.CodeUnavailable, "model provider rate limited")
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析系统状态",
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if result.Status != chatStatusDegraded || result.Answer.DegradedReason != chatDegradedRateLimited {
+		t.Fatalf("unexpected answer: %+v", result)
+	}
+	if len(result.Answer.Uncertainties) == 0 || !strings.Contains(result.Answer.Uncertainties[0], "约 2 小时后恢复") {
+		t.Fatalf("missing reset hint: %+v", result.Answer.Uncertainties)
+	}
+	found := false
+	for _, row := range audit.rows {
+		if row.Action == AuditChatMessage && row.Payload["degraded_reason"] == chatDegradedRateLimited {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing rate-limited audit: %+v", audit.rows)
+	}
+}
+
+func TestHumanizeRetryAfter(t *testing.T) {
+	cases := map[time.Duration]string{
+		0:                "",
+		45 * time.Second: "约 45 秒后",
+		90 * time.Second: "约 2 分钟后",
+		2 * time.Hour:    "约 2 小时后",
+		61 * time.Minute: "约 2 小时后",
+	}
+	for delay, want := range cases {
+		if got := humanizeRetryAfter(delay); got != want {
+			t.Fatalf("humanizeRetryAfter(%v) = %q, want %q", delay, got, want)
+		}
 	}
 }
 

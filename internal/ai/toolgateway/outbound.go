@@ -139,9 +139,22 @@ func newOutboundHTTPClient(policy OutboundPolicy, timeout time.Duration) *http.C
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+	return newOutboundClient(policy, timeout, timeout)
+}
+
+// newOutboundStreamHTTPClient 用于 SSE 流式读取：不设置整体 Timeout（总时长由回合预算约束），
+// 仅限制建连与响应头到达时间。
+func newOutboundStreamHTTPClient(policy OutboundPolicy, headerTimeout time.Duration) *http.Client {
+	if headerTimeout <= 0 {
+		headerTimeout = 60 * time.Second
+	}
+	return newOutboundClient(policy, 0, headerTimeout)
+}
+
+func newOutboundClient(policy OutboundPolicy, clientTimeout, headerTimeout time.Duration) *http.Client {
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	return &http.Client{
-		Timeout: timeout,
+		Timeout: clientTimeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return fmt.Errorf("redirect not allowed")
 		},
@@ -161,7 +174,7 @@ func newOutboundHTTPClient(policy OutboundPolicy, timeout time.Duration) *http.C
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
-			ResponseHeaderTimeout: timeout,
+			ResponseHeaderTimeout: headerTimeout,
 		},
 	}
 }

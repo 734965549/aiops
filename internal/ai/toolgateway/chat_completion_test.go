@@ -110,6 +110,7 @@ func TestChatCompletionExecutorIgnoresPayloadPromptOverride(t *testing.T) {
 }
 
 func TestChatCompletionExecutorDegradesOnServerError(t *testing.T) {
+	withFastRetries(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "upstream unavailable", http.StatusInternalServerError)
 	}))

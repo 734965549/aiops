@@ -25,6 +25,8 @@ const (
 	chatDegradedModelFailed        = "model_failed"
 	chatDegradedOutputInvalid      = "model_output_invalid"
 	chatDegradedTurnBudgetExceeded = "turn_budget_exceeded"
+	chatDegradedStreamInterrupted  = "stream_interrupted"
+	chatDegradedRateLimited        = "provider_rate_limited"
 	chatDefaultTurnBudget          = 10 * time.Minute
 
 	chatToolAlarmAnalyze     = "alarm.analyze"
@@ -37,6 +39,7 @@ const (
 
 	chatStatusOK                  = "ok"
 	chatStatusDegraded            = "degraded"
+	chatStatusIncomplete          = "incomplete"
 	chatStatusInsufficientContext = "insufficient_context"
 
 	// chatCancelAuditTimeout 取消审计的独立预算：请求 ctx 已取消时仍要尽量落审计。

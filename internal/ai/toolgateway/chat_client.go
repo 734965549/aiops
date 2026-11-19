@@ -1,13 +1,9 @@
 package toolgateway
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -20,6 +16,10 @@ import (
 type ChatCompletionResult struct {
 	Content string
 	Tokens  int
+	// Partial 表示流式生成中断但已收到部分增量；Content 为已聚合的部分内容（可能为空）。
+	// application 层应将其包装为“不完整回答”，不得按普通失败丢弃已获取上下文。
+	Partial       bool
+	PartialReason string
 }
 
 // ChatModelDelta 是模型流式增量回调；phase 为 thinking（reasoning_content）或 answer（content）。
@@ -66,7 +66,7 @@ func (e *ChatCompletionExecutor) Complete(ctx context.Context, cfg ProviderConfi
 	}
 	timeout := time.Duration(cfg.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 300 * time.Second
 	}
 	targetURL, err := joinProviderURL(cfg.BaseURL, e.requestPath)
 	if err != nil {
@@ -86,6 +86,11 @@ func (e *ChatCompletionExecutor) Complete(ctx context.Context, cfg ProviderConfi
 				return nil, err
 			}
 			if retry {
+				if attempt < chatMaxAttempts-1 {
+					if sleepErr := chatRetrySleep(ctx, chatRetryDelay(attempt)); sleepErr != nil {
+						return nil, sleepErr
+					}
+				}
 				continue
 			}
 			return nil, err
@@ -99,7 +104,8 @@ func (e *ChatCompletionExecutor) Complete(ctx context.Context, cfg ProviderConfi
 }
 
 // CompleteStream 以 OpenAI 兼容 SSE 读取模型增量；content 聚合为最终 JSON，
-// reasoning_content 只透传给 onDelta。onDelta 返回错误时立即中止，不重试。
+// reasoning_content 只透传给 onDelta。首块/空闲超时与退避重试在 streamOnce 内处理：
+// 未输出任何增量前可重试；已输出后中断返回 Partial 结果，不重试。
 func (e *ChatCompletionExecutor) CompleteStream(ctx context.Context, cfg ProviderConfig, systemPrompt, userPrompt string, policy OutboundPolicy, onDelta ChatModelDelta) (*ChatCompletionResult, error) {
 	if err := e.Validate(cfg); err != nil {
 		return nil, err
@@ -123,10 +129,6 @@ func (e *ChatCompletionExecutor) CompleteStream(ctx context.Context, cfg Provide
 	if err != nil {
 		return nil, apperr.Wrap(err, apperr.CodeInternal, "build model request failed")
 	}
-	timeout := time.Duration(cfg.TimeoutMS) * time.Millisecond
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
 	targetURL, err := joinProviderURL(cfg.BaseURL, e.requestPath)
 	if err != nil {
 		return nil, apperr.Wrap(err, apperr.CodeFailedPrecondition, "provider base_url is invalid")
@@ -135,87 +137,32 @@ func (e *ChatCompletionExecutor) CompleteStream(ctx context.Context, cfg Provide
 		return nil, apperr.Wrap(err, apperr.CodeFailedPrecondition, "provider target url is invalid")
 	}
 
-	cctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	httpReq, err := http.NewRequestWithContext(cctx, http.MethodPost, targetURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, apperr.Wrap(err, apperr.CodeInternal, "build provider request failed")
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-	for k, v := range cfg.Headers {
-		httpReq.Header.Set(k, v)
-	}
-	client := newOutboundHTTPClient(policy, timeout)
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		if cctx.Err() != nil {
-			return nil, cctx.Err()
+	// 流式总时长只受父级回合预算约束；单次尝试使用首块/空闲超时（见 streamOnce）。
+	var lastErr error
+	for attempt := 0; attempt < chatStreamMaxAttempts; attempt++ {
+		result, retryable, retryAfter, err := e.streamOnce(ctx, cfg, policy, targetURL, body, onDelta)
+		if err == nil {
+			return result, nil
 		}
-		return nil, apperr.Wrap(err, apperr.CodeUnavailable, "model provider request failed")
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == 429 || resp.StatusCode >= 500 {
-		return nil, apperr.Newf(apperr.CodeUnavailable, "model provider returned status %d", resp.StatusCode)
-	}
-	if resp.StatusCode >= 300 {
-		return nil, apperr.Newf(apperr.CodeUnavailable, "model provider returned status %d", resp.StatusCode)
-	}
-
-	scanner := bufio.NewScanner(io.LimitReader(resp.Body, chatMaxResponseBytes+1))
-	scanner.Buffer(make([]byte, 64*1024), chatMaxResponseBytes)
-	var content strings.Builder
-	tokens := 0
-	totalBytes := 0
-	emit := func(phase, text string) error {
-		if onDelta == nil || text == "" {
-			return nil
+		lastErr = err
+		if apperr.CodeOf(err) == apperr.CodeAborted || ctx.Err() != nil {
+			return nil, err
 		}
-		if err := onDelta(phase, text); err != nil {
-			return apperr.Wrap(err, apperr.CodeAborted, "client closed the stream")
+		if !retryable || attempt >= chatStreamMaxAttempts-1 {
+			return nil, err
 		}
-		return nil
-	}
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		totalBytes += len(line) + 1
-		if totalBytes > chatMaxResponseBytes {
-			return nil, apperr.New(apperr.CodeUnavailable, "model provider response exceeds size limit")
+		delay := retryAfter
+		if delay <= 0 {
+			delay = chatRetryDelay(attempt)
 		}
-		delta, ok := parseChatStreamLine(line)
-		if !ok {
-			continue
-		}
-		if delta.Usage > 0 {
-			tokens = delta.Usage
-		}
-		if delta.Done {
-			break
-		}
-		if delta.Reasoning != "" {
-			if err := emit("thinking", delta.Reasoning); err != nil {
-				return nil, err
-			}
-		}
-		if delta.Content != "" {
-			content.WriteString(delta.Content)
-			if err := emit("answer", delta.Content); err != nil {
-				return nil, err
-			}
+		if err := chatRetrySleep(ctx, delay); err != nil {
+			return nil, err
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		if cctx.Err() != nil {
-			return nil, cctx.Err()
-		}
-		return nil, apperr.Wrap(err, apperr.CodeUnavailable, "read model provider stream failed")
+	if lastErr == nil {
+		lastErr = errors.New("model stream request failed")
 	}
-	finalContent := content.String()
-	if strings.TrimSpace(finalContent) == "" {
-		return nil, apperr.New(apperr.CodeUnavailable, "empty model response")
-	}
-	return &ChatCompletionResult{Content: finalContent, Tokens: tokens}, nil
+	return nil, lastErr
 }
 
 // ChatProviderID 返回可用于对话补全的 provider：仅启用中的类型 b。

@@ -261,7 +261,7 @@ type CORSConfig struct {
 //	      type: a
 //	      base_url: http://127.0.0.1:9000
 //	      api_key: <REPLACE_WITH_YOUR_API_KEY>  # 仅占位，禁止用于真实环境
-//	      timeout_ms: 30000
+//	      timeout_ms: 300000
 //	      headers:
 //	        X-Client-Name: aiops
 //	      enabled: true

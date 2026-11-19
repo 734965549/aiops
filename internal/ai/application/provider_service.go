@@ -213,7 +213,7 @@ func (s *ProviderService) DeleteProvider(ctx context.Context, providerID string)
 
 func normalizeProviderTimeout(ms int64) int64 {
 	if ms <= 0 {
-		return 30000
+		return 300000
 	}
 	return ms
 }

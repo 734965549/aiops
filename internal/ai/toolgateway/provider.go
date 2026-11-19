@@ -160,7 +160,7 @@ func (r *ProviderRegistry) UpsertProvider(cfg ProviderConfig) error {
 		return err
 	}
 	if cfg.TimeoutMS <= 0 {
-		cfg.TimeoutMS = int64((30 * time.Second) / time.Millisecond)
+		cfg.TimeoutMS = int64((300 * time.Second) / time.Millisecond)
 	}
 	r.mu.Lock()
 	r.providers[cfg.ID] = cfg

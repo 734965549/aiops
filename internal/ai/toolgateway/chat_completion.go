@@ -17,7 +17,8 @@ import (
 
 const (
 	chatMaxResponseBytes = 4 << 20
-	chatMaxAttempts      = 2
+	// chatMaxAttempts 为非流式请求的总尝试次数（首次 + 2 次退避重试）。
+	chatMaxAttempts = 3
 )
 
 // 平台直连模型时的默认 system prompt；analyze-alert 路径由 application 层传入固定提示词，
@@ -156,7 +157,7 @@ func (e *ChatCompletionExecutor) Invoke(ctx context.Context, cfg ProviderConfig,
 	}
 	timeout := time.Duration(cfg.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 300 * time.Second
 	}
 	targetURL, err := joinProviderURL(cfg.BaseURL, e.requestPath)
 	if err != nil {
@@ -178,6 +179,11 @@ func (e *ChatCompletionExecutor) Invoke(ctx context.Context, cfg ProviderConfig,
 				return nil, err
 			}
 			if retry {
+				if attempt < chatMaxAttempts-1 {
+					if sleepErr := chatRetrySleep(ctx, chatRetryDelay(attempt)); sleepErr != nil {
+						return nil, sleepErr
+					}
+				}
 				continue
 			}
 			return nil, err
@@ -238,7 +244,16 @@ func (e *ChatCompletionExecutor) callModel(ctx context.Context, cfg ProviderConf
 	if len(data) > chatMaxResponseBytes {
 		return "", 0, false, apperr.New(apperr.CodeUnavailable, "model provider response exceeds size limit")
 	}
-	if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := parseRetryAfterDuration(resp.Header.Get("Retry-After"))
+		resetAfter := parseQuotaResetHint(string(data))
+		if resetAfter <= 0 {
+			resetAfter = retryAfter
+		}
+		rateErr := &RateLimitError{StatusCode: resp.StatusCode, RetryAfter: retryAfter, ResetAfter: resetAfter}
+		return "", 0, true, apperr.Wrap(rateErr, apperr.CodeUnavailable, "model provider rate limited")
+	}
+	if resp.StatusCode >= 500 {
 		return "", 0, true, apperr.Newf(apperr.CodeUnavailable, "model provider returned status %d", resp.StatusCode)
 	}
 	if resp.StatusCode >= 300 {

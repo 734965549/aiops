@@ -173,6 +173,7 @@ func TestCompleteStreamAbortsOnDeltaError(t *testing.T) {
 }
 
 func TestCompleteStreamEmptyResponse(t *testing.T) {
+	withFastRetries(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")

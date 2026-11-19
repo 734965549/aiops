@@ -108,6 +108,9 @@ type ChatAnswer struct {
 	InsufficientContext bool         `json:"insufficient_context"`
 	Degraded            bool         `json:"degraded,omitempty"`
 	DegradedReason      string       `json:"degraded_reason,omitempty"`
+	// Incomplete 表示流式生成中断但保留了已获取上下文；IncompleteReason 为中断原因。
+	Incomplete       bool   `json:"incomplete,omitempty"`
+	IncompleteReason string `json:"incomplete_reason,omitempty"`
 }
 
 // buildChatUserPrompt 组装模型 user 消息：问题 + 上下文 + 只读观测 + 历史。
@@ -160,6 +163,8 @@ type chatAnswerPayload struct {
 	InsufficientContext bool     `json:"insufficient_context"`
 	Degraded            bool     `json:"degraded"`
 	DegradedReason      string   `json:"degraded_reason"`
+	Incomplete          bool     `json:"incomplete"`
+	IncompleteReason    string   `json:"incomplete_reason"`
 }
 
 // flexText 兼容模型把文本字段输出为字符串或字符串数组。
@@ -204,11 +209,16 @@ func parseChatAnswer(content string) (ChatAnswer, error) {
 		InsufficientContext: payload.InsufficientContext,
 		Degraded:            payload.Degraded,
 		DegradedReason:      strings.TrimSpace(payload.DegradedReason),
+		Incomplete:          payload.Incomplete,
+		IncompleteReason:    strings.TrimSpace(payload.IncompleteReason),
 	}, nil
 }
 
 // chatResultStatus 由结构化回答还原对外 status（重放历史回答时使用）。
 func chatResultStatus(answer ChatAnswer) string {
+	if answer.Incomplete {
+		return chatStatusIncomplete
+	}
 	if answer.Degraded {
 		return chatStatusDegraded
 	}
@@ -232,6 +242,10 @@ func degradedChatAnswer(reason string, evidence []string) ChatAnswer {
 		uncertainties = append(uncertainties, "模型在追加只读取数的预算内仍未给出结论，已按已获取上下文保守回答")
 	case chatDegradedTurnBudgetExceeded:
 		uncertainties = append(uncertainties, "本轮对话已超过总时间预算，已停止继续取数与模型调用；请缩小问题范围或稍后重试")
+	case chatDegradedStreamInterrupted:
+		uncertainties = append(uncertainties, "模型输出在生成过程中中断，未获得完整结构化回答；已保留本轮已获取的只读证据")
+	case chatDegradedRateLimited:
+		uncertainties = append(uncertainties, "模型服务当前限流，重试后仍未恢复")
 	}
 	if len(evidence) == 0 {
 		evidence = []string{"暂无可用只读观测数据，请结合告警详情与监控页面人工判断"}
