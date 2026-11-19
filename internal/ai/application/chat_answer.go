@@ -19,6 +19,8 @@ type chatGeneration struct {
 	Aborted bool
 	// FallbackNote 非空表示所选模型不可用、已回退默认模型；最终写入 answer.uncertainties。
 	FallbackNote string
+	// ForcedConvergence 表示预算耗尽后经强制收敛轮产出回答（审计可见）。
+	ForcedConvergence bool
 }
 
 // generateAnswer 解析本次使用的模型并调用受限 Agent Loop。

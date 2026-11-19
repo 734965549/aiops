@@ -1326,12 +1326,14 @@ func TestSendMessageAgentLoopRejectsExecutionTools(t *testing.T) {
 
 func TestSendMessageAgentLoopExhaustsRounds(t *testing.T) {
 	svc, repo, _, chat, audit, _ := newChatTestService(t)
-	// 模型每轮申请不同时间窗口的指标证据：轮数用尽后必须降级收敛，不能悬挂。
+	// 模型每轮申请不同时间窗口的指标证据：轮数用尽后强制收敛一轮，
+	// 强制轮仍申请工具（无 answer）才降级，不能悬挂。
 	chat.script = []string{
 		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700000000,"to":1700003600}}]}`,
 		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700003600,"to":1700007200}}]}`,
 		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700007200,"to":1700010800}}]}`,
 		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700010800,"to":1700014400}}]}`,
+		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700014400,"to":1700018000}}]}`,
 	}
 	seedChatSession(t, repo, "u-1", domain.SessionContext{AlertID: "a1", Page: "alerts"})
 
@@ -1345,8 +1347,8 @@ func TestSendMessageAgentLoopExhaustsRounds(t *testing.T) {
 	if result.Status != chatStatusDegraded || result.Answer.DegradedReason != chatDegradedLoopExhausted {
 		t.Fatalf("expected agent_loop_exhausted, got %+v", result)
 	}
-	if chat.calls != chatMaxLoopRounds+1 {
-		t.Fatalf("expected %d model calls, got %d", chatMaxLoopRounds+1, chat.calls)
+	if chat.calls != chatMaxLoopRounds+2 {
+		t.Fatalf("expected %d model calls, got %d", chatMaxLoopRounds+2, chat.calls)
 	}
 	var chatAudit *AuditRecord
 	for i := range audit.rows {
@@ -1410,8 +1412,9 @@ func TestSendMessageAgentLoopStopsOnRepeatedIdenticalRequests(t *testing.T) {
 	if result.Status != chatStatusDegraded || result.Answer.DegradedReason != chatDegradedLoopExhausted {
 		t.Fatalf("expected agent_loop_exhausted, got %+v", result)
 	}
-	if chat.calls != 3 {
-		t.Fatalf("expected 3 model calls, got %d", chat.calls)
+	// 两次无进展轮 + 一次强制收敛轮（仍输出 tool_requests，无 answer）。
+	if chat.calls != 4 {
+		t.Fatalf("expected 4 model calls, got %d", chat.calls)
 	}
 	if !hasToolCallReason(result.ToolCalls, chatObservationReasonDuplicateRequest) {
 		t.Fatalf("missing duplicate denied observation: %+v", result.ToolCalls)
@@ -1431,9 +1434,47 @@ func TestSendMessageAgentLoopStopsAfterOneRetryWithoutProgress(t *testing.T) {
 	if result.Status != chatStatusDegraded || result.Answer.DegradedReason != chatDegradedLoopExhausted {
 		t.Fatalf("expected agent_loop_exhausted, got %+v", result)
 	}
-	// 一轮申请 + 一轮纠正机会，共两次模型调用；不无限重试。
-	if chat.calls != 2 {
-		t.Fatalf("expected two model calls (one retry after denial), got %d", chat.calls)
+	// 一轮申请 + 一轮纠正机会 + 一次强制收敛轮（仍申请未授权工具），共三次模型调用；不无限重试。
+	if chat.calls != 3 {
+		t.Fatalf("expected three model calls (one retry after denial + forced convergence), got %d", chat.calls)
+	}
+}
+
+func TestSendMessageAgentLoopForcedConvergenceAnswers(t *testing.T) {
+	svc, repo, _, chat, audit, _ := newChatTestService(t)
+	// 轮数用尽后强制收敛轮必须基于已有观测产出回答，而不是丢弃证据降级。
+	chat.script = []string{
+		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700000000,"to":1700003600}}]}`,
+		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700003600,"to":1700007200}}]}`,
+		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700007200,"to":1700010800}}]}`,
+		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700010800,"to":1700014400}}]}`,
+	}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{AlertID: "a1", Page: "alerts"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "继续查",
+		Context: &domain.SessionContext{AlertID: "a1", Page: "alerts"},
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if result.Status != chatStatusOK || result.Answer.Summary != "CPU 持续升高" {
+		t.Fatalf("forced convergence must answer: %+v", result)
+	}
+	if chat.calls != chatMaxLoopRounds+2 {
+		t.Fatalf("expected %d model calls, got %d", chatMaxLoopRounds+2, chat.calls)
+	}
+	if !strings.Contains(chat.user, "取数预算已耗尽") || !strings.Contains(chat.user, "禁止再输出 tool_requests") {
+		t.Fatalf("forced prompt missing convergence instruction: %s", chat.user)
+	}
+	var chatAudit *AuditRecord
+	for i := range audit.rows {
+		if audit.rows[i].Action == AuditChatMessage {
+			chatAudit = &audit.rows[i]
+		}
+	}
+	if chatAudit == nil || chatAudit.Payload["forced_convergence"] != true || chatAudit.Payload["loop_rounds"] != chatMaxLoopRounds {
+		t.Fatalf("unexpected forced convergence audit: %+v", chatAudit)
 	}
 }
 

@@ -83,6 +83,8 @@ type ChatPromptInput struct {
 	History      []ChatHistoryMessage
 	// Memory 是命中的历史案例（阶段 1 RAG-lite），为空时不写入 prompt。
 	Memory []chatMemoryCase
+	// ForceAnswer 表示取数预算已耗尽：禁止再申请工具，必须基于现有观测立即作答。
+	ForceAnswer bool
 }
 
 // ChatAction 是回答中可执行的动作（由服务端按权限构建，不信任模型输出）。
@@ -136,7 +138,7 @@ func buildChatUserPrompt(in ChatPromptInput) string {
 		"alert":        in.Alert,
 		"observations": in.Observations,
 		"history":      history,
-		"task":         "基于上下文与只读观测回答用户问题，并按固定 JSON 结构输出。",
+		"task":         chatPromptTask(in.ForceAnswer),
 	}
 	if len(in.Memory) > 0 {
 		body["memory_cases"] = in.Memory
@@ -147,6 +149,14 @@ func buildChatUserPrompt(in ChatPromptInput) string {
 		return fmt.Sprintf(`{"question":%q}`, strings.TrimSpace(in.Question))
 	}
 	return string(raw)
+}
+
+// chatPromptTask 常规轮与强制收敛轮的任务指令。
+func chatPromptTask(forceAnswer bool) string {
+	if forceAnswer {
+		return "取数预算已耗尽，禁止再输出 tool_requests；必须仅基于现有 observations 立即输出最终 answer JSON（含 summary）；数据不足时置 insufficient_context=true 并在 uncertainties 说明缺少什么，不得臆造未提供的数据。"
+	}
+	return "基于上下文与只读观测回答用户问题，并按固定 JSON 结构输出。"
 }
 
 // chatAnswerPayload 是模型输出的 JSON 结构；actions 由服务端生成，不接受模型覆盖。

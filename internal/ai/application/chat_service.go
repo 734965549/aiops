@@ -425,6 +425,7 @@ func (s *ChatService) sendMessage(ctx context.Context, in SendChatMessageInput, 
 		"knowledge_used":        len(contextData.KnowledgeItems),
 		"knowledge_status":      contextData.KnowledgeStatus,
 		"loop_rounds":           contextData.LoopRounds,
+		"forced_convergence":    generation.ForcedConvergence,
 		"result":                auditResult(generation.Status),
 	})
 	result := &SendChatMessageResult{

@@ -922,7 +922,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
   -> 模型输出结构化 answer，或输出 tool_requests 申请追加只读数据
   -> 服务端逐个校验 RBAC + 工具权限并执行，结果作为 observations 追加
   -> 下一轮模型调用（携带全部 observations）
-  -> 轮数/token 预算耗尽仍无 answer：返回 degraded(agent_loop_exhausted)
+  -> 轮数/token 预算耗尽仍无 answer：强制收敛一轮（禁止再申请工具，仅基于现有 observations 作答）；仍失败才 degraded(agent_loop_exhausted)
 ```
 
 #### 10.16.2 硬约束
@@ -943,10 +943,10 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 | 场景 | 行为 |
 | --- | --- |
-| 轮数或 token 预算耗尽 | `status=degraded`、`degraded_reason=agent_loop_exhausted`，保留已获取的 observations 作为证据 |
+| 轮数或 token 预算耗尽 | 先追加一次强制收敛调用（prompt 禁止再申请工具、仅基于现有 observations 作答；`chat_message` 审计 `forced_convergence=true`），成功按 `ok` / `insufficient_context` 返回；该调用失败或输出非法才 `status=degraded`、`degraded_reason=agent_loop_exhausted`，保留已获取的 observations 作为证据 |
 | 回合总时间预算耗尽 | `status=degraded`、`degraded_reason=turn_budget_exceeded`，停止后续模型/工具调用并保留已获取的 observations |
 | 流式客户端断开 | 模型调用随 ctx 取消而中止；不落 assistant 消息，记 `chat_canceled` |
-| 连续两轮无实际取数 | 同上（`agent_loop_exhausted`） |
+| 连续两轮无实际取数 | 同上：先强制收敛一轮，仍失败才 `agent_loop_exhausted` |
 | 模型输出既非 answer 也非 tool_requests | `degraded_reason=model_output_invalid`（与 §10.6.1 一致） |
 | 工具被拒绝 | 回答仍正常返回；拒绝原因在 `tool_calls[].reason` 与审计中可见 |
 | 未装配知识/记忆 | 循环本身不受影响 |

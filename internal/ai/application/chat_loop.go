@@ -68,7 +68,7 @@ func parseChatToolRequests(content string) []chatToolRequest {
 //
 //	第 0 轮：常规取数后请求模型
 //	模型申请只读工具 -> 逐个过 RBAC + 工具权限并执行 -> observations 追加 -> 下一轮
-//	轮数/token 预算耗尽且仍无 answer -> degraded(agent_loop_exhausted)
+//	轮数/token 预算耗尽且仍无 answer -> 强制收敛一轮（禁止再申请工具）；仍失败才 degraded(agent_loop_exhausted)
 //
 // 任何执行类工具都不会被执行；模型申请它们只会得到一条 denied 观测。
 func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, question string, session *domain.Session, history []ChatHistoryMessage, data *chatContextData) chatGeneration {
@@ -167,16 +167,12 @@ func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, 
 				Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
 			}
 		}
-		// 预算检查：轮数或 token 超限即终止，用已有 observations 组装降级回答。
+		// 预算检查：轮数或 token 超限即停止取数，强制模型基于已有 observations 收敛作答。
 		if rounds >= chatMaxLoopRounds || tokens >= chatLoopTokenBudget {
 			logger.From(ctx).Warn("ai chat agent loop exhausted",
 				logger.String("session_id", session.SessionID),
 				logger.Int("rounds", rounds), logger.Int("tokens", tokens))
-			evidence = observationEvidenceLines(*data)
-			return chatGeneration{
-				Answer: degradedChatAnswer(chatDegradedLoopExhausted, evidence),
-				Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
-			}
+			return s.forceFinalAnswer(ctx, providerID, question, session, history, data, systemPrompt, tokens, deadline)
 		}
 		if time.Until(deadline) <= 0 {
 			return budgetExceeded()
@@ -201,12 +197,55 @@ func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, 
 			logger.From(ctx).Warn("ai chat agent loop made no progress",
 				logger.String("session_id", session.SessionID),
 				logger.Int("rounds", rounds), logger.Int("denied_rounds", deniedRounds))
-			evidence = observationEvidenceLines(*data)
-			return chatGeneration{
-				Answer: degradedChatAnswer(chatDegradedLoopExhausted, evidence),
-				Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
-			}
+			return s.forceFinalAnswer(ctx, providerID, question, session, history, data, systemPrompt, tokens, deadline)
 		}
+	}
+}
+
+// forceFinalAnswer 预算耗尽时强制模型基于已有观测收敛作答，避免丢弃已取证据直接降级；
+// 仅当强制轮也失败/输出非法时才回退 degraded(agent_loop_exhausted)。
+func (s *ChatService) forceFinalAnswer(ctx context.Context, providerID, question string, session *domain.Session, history []ChatHistoryMessage, data *chatContextData, systemPrompt string, tokens int, deadline time.Time) chatGeneration {
+	evidence := observationEvidenceLines(*data)
+	degraded := chatGeneration{
+		Answer: degradedChatAnswer(chatDegradedLoopExhausted, evidence),
+		Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return degraded
+	}
+	prompt := buildChatUserPrompt(ChatPromptInput{
+		Question: question, Context: session.Context, TimeRange: session.Context.TimeRange,
+		Now:   s.now().Unix(),
+		Alert: alertSnapshot(data.Alert), Observations: data.Observations, History: history,
+		Memory: memoryPromptCases(data.Memories), ForceAnswer: true,
+	})
+	callCtx, cancel := context.WithTimeout(ctx, remaining)
+	result, err := s.completeModel(callCtx, providerID, systemPrompt, prompt)
+	cancel()
+	if err != nil {
+		logger.From(ctx).Warn("ai chat forced convergence failed",
+			logger.String("session_id", session.SessionID), logger.Error(err))
+		return degraded
+	}
+	if result.Partial {
+		return partialChatGeneration(result, evidence, providerID, tokens+result.Tokens)
+	}
+	answer, parseErr := parseChatAnswer(result.Content)
+	if parseErr != nil {
+		logger.From(ctx).Warn("ai chat forced convergence output invalid",
+			logger.String("session_id", session.SessionID))
+		return degraded
+	}
+	status := chatStatusOK
+	if answer.InsufficientContext {
+		status = chatStatusInsufficientContext
+	}
+	logger.From(ctx).Info("ai chat forced convergence answer",
+		logger.String("session_id", session.SessionID), logger.Int("tokens", tokens+result.Tokens))
+	return chatGeneration{
+		Answer: answer, Status: status, ProviderID: providerID,
+		Tokens: tokens + result.Tokens, ForcedConvergence: true,
 	}
 }
 
