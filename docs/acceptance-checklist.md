@@ -531,8 +531,17 @@ go run ./cmd/migrate
 | 9.12.7 | 前端阶段提示与停止 | AI 助手页发送长问题；发送中点击「停止生成」 | 阶段提示按服务端事件切换（思考 → 查询工具 → 生成回答），不再依赖固定定时器；`delta` 只展示“已生成 N 字”；停止后输入区恢复、无半成品回答、提示「已停止生成」 |
 | 9.12.8 | SSE 心跳 | 让模型调用持续 >15s（或临时调小 `sseHeartbeatInterval`） | 事件之间出现 `: ping` 注释且连接不断；客户端解析器忽略注释行 |
 | 9.12.9 | 回合时间预算 | 临时设置 `AIOPS_AI__TURN_BUDGET_S=2`，让模型调用阻塞超过预算 | 返回 `status=degraded`、`degraded_reason=turn_budget_exceeded`；保留已获取的只读观测；审计 `chat_message` 记录该原因 |
+| 9.12.10 | 流式长回答超时语义 | provider `timeout_ms=30000`，mock 持续输出增量超过 30s | 不被 30s 总超时切断；首块 60s/空闲 180s 内持续输出即继续，最终 `status=ok`；总时长受 `turn_budget_s` 约束 |
+| 9.12.11 | 首块前重试 | mock 首次返回 429（带 `Retry-After`）或 5xx，随后成功 | 服务端退避后重试，最多 2 次；最终正常返回 `answer`；审计可见本轮成功 |
+| 9.12.12 | 部分保留 | mock 输出部分 `delta` 后断开/静默超过空闲阈值 | 返回 `status=incomplete`、`answer.incomplete=true`、`incomplete_reason` 有值；已获取观测保留；assistant 消息落库且重放保留标记；前端显示橙色“生成中断”与重新提问入口 |
+| 9.12.13 | 已输出不重试 | mock 输出部分内容后断开 | 不发起第二次模型请求（避免重复文本）；走 9.12.12 的部分保留路径 |
+| 9.12.14 | 非重试错误 | provider 返回 400/401/403 | 不重试，直接失败；不产生 `incomplete` 回答 |
+| 9.12.15 | 429 退避重试 | mock 首次 429（`Retry-After: 1`），随后成功 | 服务端退避后重试成功；最终 `status=ok`，耗时约 1s 以上 |
+| 9.12.16 | 429 配额恢复提示 | mock 持续 429，响应体含 `quota resets in 2h` | `status=degraded`、`degraded_reason=provider_rate_limited`；`uncertainties` 含“预计约 2 小时后恢复”；前端失败提示直接展示该文案 |
+| 9.12.17 | 慢流不被总超时切断 | mock 慢流持续输出约 45s | `status=ok` 且耗时 >30s，证明流式不再受 30s 总超时约束 |
+| 9.12.18 | 首块等待提示 | 前端发送长问题，模型 1s 内无回答增量 | 阶段提示显示“已等待 Ns”；收到首个回答增量后切换为“已生成 N 字” |
 
-> 前置：契约见 `ops/ai-contract.md` §10.17；`ai.turn_budget_s` 默认 600s，服务端 read/write timeout 必须 ≥ 预算+60s。E2E 脚本：`scripts/e2e-ai-stream.ps1`（通过脚本化 mock 模型自动覆盖 9.12.1/9.12.3/9.12.4/9.12.5/9.12.6，含 `delta(thinking/answer)` 断言；9.12.2 工具事件需要告警上下文，9.12.7/9.12.8 前端与心跳需人工抽检，9.12.9 由单测覆盖）。
+> 前置：契约见 `ops/ai-contract.md` §10.17 / §10.17.7；`ai.turn_budget_s` 默认 600s，服务端 read/write timeout 必须 ≥ 预算+60s。E2E 脚本：`scripts/e2e-ai-stream.ps1`（通过脚本化 mock 模型自动覆盖 9.12.1/9.12.3/9.12.4/9.12.5/9.12.6，含 `delta(thinking/answer)` 断言；9.12.2 工具事件需要告警上下文，9.12.7/9.12.8 前端与心跳需人工抽检，9.12.9 由单测覆盖；9.12.10–9.12.17 由 `internal/ai/toolgateway/chat_stream_retry_test.go` 与 `internal/ai/application/chat_service_test.go` 覆盖；E2E 脚本的 `MOCK_STREAM_429` / `MOCK_STREAM_429_ALWAYS` / `MOCK_STREAM_PARTIAL` / `MOCK_STREAM_SLOW` 分支覆盖 9.12.11/9.12.12/9.12.15/9.12.16/9.12.17（`-SkipSlow` 可跳过 45s 慢流）；9.12.18 需人工抽检前端）。
 
 ### 9.13 会话只读分享（migration 0053，契约 §10.18）
 
