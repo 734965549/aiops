@@ -25,6 +25,14 @@
           class="message-row message-row--user"
         >
           <div class="message-bubble message-bubble--user">
+            <button
+              type="button"
+              class="message-copy"
+              title="复制消息"
+              @click="copyUserMessage(message.content)"
+            >
+              <IconCopy :size="12" />
+            </button>
             {{ message.content }}
             <span class="message-time">{{ formatTime(message.created_at) }}</span>
           </div>
@@ -148,6 +156,33 @@
 
     <div class="chat-input">
       <div
+        v-if="modelOptions.length > 1"
+        class="model-picker"
+      >
+        <span class="model-label">模型</span>
+        <a-select
+          :model-value="modelValue"
+          size="mini"
+          :disabled="modelLocked"
+          class="model-select"
+          @change="onSelectModel"
+        >
+          <a-option
+            v-for="model in modelOptions"
+            :key="model.provider_id"
+            :value="model.provider_id"
+          >
+            {{ model.name }}<template v-if="model.model">（{{ model.model }}）</template>
+          </a-option>
+        </a-select>
+        <span
+          v-if="modelLocked"
+          class="model-hint"
+        >
+          会话已开始，切换模型请新建会话
+        </span>
+      </div>
+      <div
         v-if="quickQuestions && quickQuestions.length && !messages.length"
         class="quick-questions"
       >
@@ -196,9 +231,10 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
-import { IconRobot } from '@arco-design/web-vue/es/icon'
-import type { ChatAnswer, ChatMessage } from '@/api/ai'
+import { IconCopy, IconRobot } from '@arco-design/web-vue/es/icon'
+import type { ChatAnswer, ChatMessage, ChatModelInfo } from '@/api/ai'
 import AnswerCard from './AnswerCard.vue'
+import { copyText } from '../composables/useCopy'
 import { STAGE_LABELS, type ChatStage, type ChatUIStatus } from '../composables/useChat'
 
 const props = defineProps<{
@@ -214,6 +250,9 @@ const props = defineProps<{
   compact?: boolean
   emptyHint?: string
   placeholder?: string
+  models?: ChatModelInfo[]
+  modelValue?: string
+  modelLocked?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -223,11 +262,21 @@ const emit = defineEmits<{
   (e: 'feedback', messageId: string, feedback: 'valid' | 'invalid'): void
   (e: 'propose', answer: ChatAnswer, messageId?: string): void
   (e: 'navigate', url: string): void
+  (e: 'select-model', providerID: string): void
 }>()
 
 const input = ref('')
 const scrollRef = ref<HTMLElement | null>(null)
 const placeholder = props.placeholder || '请输入你的问题，例如：帮我分析当前告警并给出排查步骤'
+const modelOptions = computed(() => props.models ?? [])
+
+function onSelectModel(value: unknown) {
+  emit('select-model', String(value ?? ''))
+}
+
+async function copyUserMessage(content: string) {
+  await copyText(content, '已复制消息')
+}
 
 // 首块前等待提示：发送期间每秒累计，收到首个回答增量后切换为“已生成 N 字”。
 const waitSeconds = ref(0)
@@ -422,9 +471,38 @@ function formatTime(value: string) {
 }
 
 .message-bubble--user {
+  position: relative;
+  padding-right: 26px;
   color: #ffffff;
   background: #51663f;
   border-bottom-right-radius: 4px;
+}
+
+.message-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.9);
+  background: transparent;
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.message-bubble--user:hover .message-copy {
+  opacity: 0.9;
+}
+
+.message-copy:hover {
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .message-bubble--assistant {
@@ -466,6 +544,27 @@ function formatTime(value: string) {
   gap: 6px;
   padding-top: 8px;
   border-top: 1px solid rgba(81, 102, 63, 0.14);
+}
+
+.model-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-label {
+  color: var(--color-text-3);
+  font-size: 11px;
+}
+
+.model-select {
+  width: 240px;
+}
+
+.model-hint {
+  color: var(--color-text-3);
+  font-size: 10px;
 }
 
 .quick-questions {

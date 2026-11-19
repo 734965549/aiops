@@ -34,6 +34,17 @@
         <a-button
           size="mini"
           type="text"
+          :disabled="busy"
+          @click="copyAnswer"
+        >
+          <template #icon>
+            <IconCopy />
+          </template>
+          复制全文
+        </a-button>
+        <a-button
+          size="mini"
+          type="text"
           :class="{ 'is-active': feedback === 'valid' }"
           :disabled="busy"
           @click="emit('feedback', messageId, 'valid')"
@@ -218,8 +229,9 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { IconHistory, IconLink, IconThumbDown, IconThumbUp } from '@arco-design/web-vue/es/icon'
+import { IconCopy, IconHistory, IconLink, IconThumbDown, IconThumbUp } from '@arco-design/web-vue/es/icon'
 import type { ChatAction, ChatAnswer, ChatReference, ChatToolCall } from '@/api/ai'
+import { copyText } from '../composables/useCopy'
 import { toolReasonLabel } from '../toolReason'
 
 const props = defineProps<{
@@ -286,6 +298,37 @@ function riskLabel(level: string) {
 
 function toolLabel(code: string) {
   return TOOL_LABELS[code] ?? code
+}
+
+function formatMarkdownList(items?: string[]): string {
+  return (items ?? [])
+    .map((item) => (item ?? '').trim())
+    .filter(Boolean)
+    .map((item) => `- ${item}`)
+    .join('\n')
+}
+
+/** 复制全文：拼成可直接贴入工单/值班报告的 Markdown。 */
+function answerMarkdown(answer: ChatAnswer): string {
+  const sections: string[] = []
+  sections.push(
+    `# AI 运维分析\n\n风险等级：${riskLabel(answer.risk_level)}；${answer.require_confirm ? '需要人工确认' : '无需人工确认'}`
+  )
+  sections.push(`## 结论摘要\n${answer.summary || '（无）'}`)
+  const evidence = formatMarkdownList(answer.evidence)
+  if (evidence) sections.push(`## 分析依据\n${evidence}`)
+  const impact = formatMarkdownList(answer.impact)
+  if (impact) sections.push(`## 影响范围\n${impact}`)
+  const recommendations = formatMarkdownList(answer.recommendations)
+  if (recommendations) sections.push(`## 推荐操作\n${recommendations}`)
+  if (answer.rollback) sections.push(`## 回滚建议\n${answer.rollback}`)
+  const uncertainties = formatMarkdownList(answer.uncertainties)
+  if (uncertainties) sections.push(`## 不确定性\n${uncertainties}`)
+  return sections.join('\n\n')
+}
+
+async function copyAnswer() {
+  await copyText(answerMarkdown(props.answer), '已复制回答')
 }
 
 function toolTooltip(call: ChatToolCall) {

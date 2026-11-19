@@ -77,6 +77,10 @@
             :proposing="proposing"
             :last-user-content="lastUserContent"
             :quick-questions="quickQuestions"
+            :models="modelOptions"
+            :model-value="selectedModel?.provider_id || ''"
+            :model-locked="modelLocked"
+            @select-model="selectModel"
             @send="onSend"
             @retry="retry"
             @stop="stop"
@@ -100,6 +104,7 @@
         >
           <ContextPanel
             :context="contextStore.current"
+            :model-label="modelLabel"
             :tool-calls="latestToolCalls"
             :references="latestReferences"
             @navigate="onNavigate"
@@ -147,6 +152,10 @@ const {
   uiStatus,
   lastUserContent,
   contextSummary,
+  modelOptions,
+  selectedModel,
+  modelLocked,
+  selectModel,
   loadSessions,
   selectSession,
   startNewSession,
@@ -159,6 +168,10 @@ const {
   deleteSession,
   proposeExecution
 } = useChat()
+
+const modelLabel = computed(
+  () => (selectedModel.value ? `${selectedModel.value.name}（${selectedModel.value.model}）` : '')
+)
 
 const latestToolCalls = computed(() => {
   const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')

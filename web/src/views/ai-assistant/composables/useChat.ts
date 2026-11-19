@@ -1,4 +1,4 @@
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import Message from '@arco-design/web-vue/es/message'
 import {
@@ -6,12 +6,14 @@ import {
   createChatSession,
   deleteChatSession,
   getChatSession,
+  listChatModels,
   listChatSessions,
   sendChatFeedback,
   streamChatMessage,
   unarchiveChatSession,
   type ChatAnswer,
   type ChatMessage,
+  type ChatModelInfo,
   type ChatResultStatus,
   type ChatSession,
   type ChatSessionContext,
@@ -61,6 +63,9 @@ export function useChat() {
   const contextStore = useAIContextStore()
 
   const sessions = ref<ChatSession[]>([])
+  // 可选模型列表与当前选择；会话开始后锁定（见 modelLocked）。
+  const models = ref<ChatModelInfo[]>([])
+  const selectedProviderID = ref('')
   const activeSessionId = ref('')
   const activeSession = ref<ChatSession | null>(null)
   const messages = ref<ChatMessage[]>([])
@@ -85,6 +90,54 @@ export function useChat() {
   const requestContext = computed<ChatSessionContext>(() => contextStore.toRequestContext())
   const sessionList = computed(() => sessions.value)
   const hasSession = computed(() => !!activeSessionId.value)
+  const modelOptions = computed(() => models.value)
+  const selectedModel = computed(
+    () => models.value.find((model) => model.provider_id === selectedProviderID.value) ?? null
+  )
+  // 会话级锁定：首条消息发出后不允许切换模型，避免上下文风格在会话中途突变。
+  const modelLocked = computed(() => messages.value.length > 0 || sending.value)
+
+  /** 拉取可选模型；失败时隐藏选择器（单模型用户无感知）。 */
+  async function loadModels() {
+    try {
+      const list = await listChatModels()
+      const hadModels = models.value.length > 0
+      models.value = list
+      if (!selectedProviderID.value && list.length > 0) {
+        selectedProviderID.value = list[0].provider_id
+      } else if (hadModels && selectedProviderID.value && !modelOptions.value.some(
+        (model) => model.provider_id === selectedProviderID.value
+      )) {
+        // 选中的模型已被删除/禁用：回退到当前第一项，与服务端回退语义一致。
+        selectedProviderID.value = list[0]?.provider_id || ''
+      }
+    } catch {
+      models.value = []
+    }
+  }
+
+  function selectModel(providerID: string) {
+    if (modelLocked.value) return
+    selectedProviderID.value = providerID
+    if (activeSession.value) {
+      activeSession.value = {
+        ...activeSession.value,
+        context: { ...activeSession.value.context, provider_id: providerID || undefined }
+      }
+    }
+  }
+
+  /** 会话上下文 + 当前模型选择；发送消息/新建会话共用。 */
+  function chatRequestContext(): ChatSessionContext {
+    return {
+      ...requestContext.value,
+      provider_id: selectedProviderID.value || undefined
+    }
+  }
+
+  onMounted(() => {
+    void loadModels()
+  })
 
   function beginStage() {
     stage.value = 'thinking'
@@ -134,6 +187,15 @@ export function useChat() {
     activeSession.value = detail.session
     activeSessionId.value = detail.session.session_id
     messages.value = detail.messages
+    // 会话级模型：优先展示会话锁定的 provider，列表未加载或模型已删除时回退默认。
+    const sessionProvider = detail.session.context?.provider_id || ''
+    if (sessionProvider && (models.value.length === 0 || models.value.some(
+      (model) => model.provider_id === sessionProvider
+    ))) {
+      selectedProviderID.value = sessionProvider
+    } else if (models.value.length > 0) {
+      selectedProviderID.value = models.value[0].provider_id
+    }
     const lastAssistant = [...detail.messages].reverse().find((message) => message.role === 'assistant')
     if (lastAssistant?.answer) {
       uiStatus.value = deriveUIStatus(
@@ -183,7 +245,7 @@ export function useChat() {
   async function createSession(title?: string) {
     const session = await createChatSession({
       title: title?.trim() || undefined,
-      context: requestContext.value
+      context: chatRequestContext()
     })
     sessions.value = [session, ...sessions.value]
     activeSession.value = session
@@ -250,7 +312,8 @@ export function useChat() {
         sessionId,
         {
           content,
-          context: requestContext.value,
+          context: chatRequestContext(),
+          provider_id: selectedProviderID.value || undefined,
           client_message_id: clientId
         },
         {
@@ -485,6 +548,10 @@ export function useChat() {
     contextSummary,
     requestContext,
     hasSession,
+    modelOptions,
+    selectedModel,
+    modelLocked,
+    selectModel,
     loadSessions,
     selectSession,
     startNewSession,

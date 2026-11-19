@@ -116,6 +116,15 @@ export interface ChatSessionContext {
   resource_type?: string
   execution_id?: string
   time_range?: string
+  /** 会话选定的对话模型（provider_id）；空表示使用默认模型。 */
+  provider_id?: string
+}
+
+/** 可选对话模型摘要；不含 base_url/api_key/headers。 */
+export interface ChatModelInfo {
+  provider_id: string
+  name: string
+  model: string
 }
 
 export interface ChatSession {
@@ -208,6 +217,8 @@ export interface CreateChatSessionInput {
 export interface SendChatMessageInput {
   content: string
   context?: ChatSessionContext
+  /** 可选对话模型；空时回退会话上下文与默认模型。 */
+  provider_id?: string
   /** 幂等键：客户端超时重试时复用同一值，避免重复落消息与重复模型调用。 */
   client_message_id?: string
 }
@@ -217,6 +228,14 @@ export function createChatSession(input: CreateChatSessionInput) {
     url: '/api/ai/chat/sessions',
     method: 'post',
     data: input
+  })
+}
+
+/** GET /api/ai/chat/models：普通用户可见的启用中类型 b 模型。 */
+export function listChatModels() {
+  return http<ChatModelInfo[]>({
+    url: '/api/ai/chat/models',
+    method: 'get'
   })
 }
 

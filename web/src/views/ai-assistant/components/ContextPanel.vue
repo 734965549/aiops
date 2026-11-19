@@ -5,6 +5,10 @@
       <div class="context-grid">
         <span class="context-key">页面</span>
         <span class="context-value">{{ context.page_title || context.page || '未关联' }}</span>
+        <template v-if="modelLabel || context.provider_id">
+          <span class="context-key">模型</span>
+          <span class="context-value">{{ modelLabel || context.provider_id }}</span>
+        </template>
         <template v-if="context.alert_id">
           <span class="context-key">告警</span>
           <a-link @click="emit('navigate', alertURL)">
@@ -98,6 +102,7 @@ import { toolReasonLabel } from '../toolReason'
 
 const props = defineProps<{
   context: ChatSessionContext
+  modelLabel?: string
   toolCalls: ChatToolCall[]
   references: ChatReference[]
 }>()
