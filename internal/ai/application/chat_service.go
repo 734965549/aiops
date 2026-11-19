@@ -327,7 +327,7 @@ func (s *ChatService) sendMessage(ctx context.Context, in SendChatMessageInput, 
 		session.Context = normalized
 		touch.Context = &normalized
 	}
-	// 会话级模型锁定：首次消息显式指定时写入会话上下文，后续轮次沿用；
+	// 首次消息显式指定时写入会话上下文，后续未显式选择的轮次沿用；
 	// 本轮实际使用的模型优先级为 请求 provider_id > 会话 provider_id > 默认模型。
 	if providerID != "" && strings.TrimSpace(session.Context.ProviderID) == "" {
 		session.Context.ProviderID = providerID
