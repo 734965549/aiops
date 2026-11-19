@@ -69,3 +69,34 @@ export function toolReasonLabel(reason?: string): string {
   if (!key) return ''
   return TOOL_REASON_LABELS[key] ?? key
 }
+
+const TOOL_LABELS: Record<string, string> = {
+  'alarm.analyze': '读取告警快照',
+  'metrics.query': '查询指标证据',
+  'alert.rules.list': '查询告警规则',
+  'accounts.list': '列出集成账号',
+  'resource.analyze': '读取资源上下文',
+  'resources.list': '发现云同步资源',
+  'execution.tasks.propose': '生成执行计划权限'
+}
+
+/** 工具编码的中文名；未登记的编码原样透出。 */
+export function toolLabel(code?: string): string {
+  const key = (code ?? '').trim()
+  if (!key) return ''
+  return TOOL_LABELS[key] ?? key
+}
+
+const TOOL_STATUS_LABELS: Record<string, string> = {
+  ok: '完成',
+  skipped: '跳过',
+  denied: '被拒绝',
+  error: '失败'
+}
+
+/** 工具观测状态的展示文案。 */
+export function toolStatusLabel(status?: string): string {
+  const key = (status ?? '').trim()
+  if (!key) return '完成'
+  return TOOL_STATUS_LABELS[key] ?? key
+}

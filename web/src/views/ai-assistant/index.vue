@@ -72,6 +72,8 @@
             :sending="sending"
             :stage="stage"
             :stage-delta-chars="deltaChars"
+            :live-tools="liveTools"
+            :live-thinking="liveThinking"
             :status="uiStatus"
             :error="error"
             :proposing="proposing"
@@ -149,6 +151,8 @@ const {
   error,
   stage,
   deltaChars,
+  liveTools,
+  liveThinking,
   uiStatus,
   lastUserContent,
   contextSummary,

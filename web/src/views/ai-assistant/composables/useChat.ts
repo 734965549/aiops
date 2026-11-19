@@ -18,6 +18,7 @@ import {
   type ChatSession,
   type ChatSessionContext,
   type ChatStreamEvent,
+  type ChatToolCall,
   type SendChatMessageResult
 } from '@/api/ai'
 import { createExecutionTask } from '@/api/execution'
@@ -77,6 +78,10 @@ export function useChat() {
   const stage = ref<ChatStage>('idle')
   // delta 事件只做“已生成 N 字”进度提示，不渲染半成品 JSON。
   const deltaChars = ref(0)
+  // 发送中的实时过程：工具调用逐条到达（SSE tool 事件）与模型思考增量（reasoning_content）。
+  // 思考内容只在流中展示，不落库；发送开始时清空，结束后由最终回答的工具调用展示接管。
+  const liveTools = ref<ChatToolCall[]>([])
+  const liveThinking = ref('')
   const uiStatus = ref<ChatUIStatus>('idle')
   const lastUserContent = ref('')
   // 最近一次提问的幂等键，重试时复用（ops/ai-contract.md §10.6.5）。
@@ -141,6 +146,8 @@ export function useChat() {
 
   function beginStage() {
     stage.value = 'thinking'
+    liveTools.value = []
+    liveThinking.value = ''
   }
 
   function endStage() {
@@ -165,8 +172,12 @@ export function useChat() {
       // 工具观测到达即说明正在取数，先于模型阶段给出提示；新一轮模型输出重新计数。
       stage.value = 'querying_tools'
       deltaChars.value = 0
+      if (event.tool) liveTools.value = [...liveTools.value, event.tool]
     } else if (event.type === 'delta') {
-      if (event.phase === 'answer' && event.text) {
+      if (event.phase === 'thinking' && event.text) {
+        // 思考增量实时展示在过程面板中（仅流中可见，不落库）。
+        liveThinking.value += event.text
+      } else if (event.phase === 'answer' && event.text) {
         deltaChars.value += Array.from(event.text).length
       }
     }
@@ -542,6 +553,8 @@ export function useChat() {
     error,
     stage,
     deltaChars,
+    liveTools,
+    liveThinking,
     uiStatus,
     lastResult,
     lastUserContent,

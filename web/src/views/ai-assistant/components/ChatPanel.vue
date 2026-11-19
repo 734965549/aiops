@@ -64,6 +64,59 @@
       </template>
 
       <div
+        v-if="sending && ((liveTools?.length ?? 0) > 0 || !!liveThinking)"
+        class="live-process"
+      >
+        <div
+          v-if="liveTools?.length"
+          class="live-tools"
+        >
+          <div
+            v-for="(tool, index) in liveTools"
+            :key="`${tool.tool_code}-${index}`"
+            class="live-tool-row"
+          >
+            <span
+              class="live-tool-dot"
+              :class="`is-${tool.status || 'ok'}`"
+            />
+            <span class="live-tool-name">{{ toolLabel(tool.tool_code) }}</span>
+            <span
+              class="live-tool-status"
+              :class="{ 'is-bad': !!tool.status && tool.status !== 'ok' }"
+            >
+              {{ toolStatusLabel(tool.status) }}
+            </span>
+            <span
+              v-if="tool.status !== 'ok' && tool.reason"
+              class="live-tool-reason"
+            >
+              {{ toolReasonLabel(tool.reason) }}
+            </span>
+          </div>
+        </div>
+        <div
+          v-if="liveThinking"
+          class="live-thinking"
+        >
+          <button
+            type="button"
+            class="live-thinking-head"
+            @click="thinkingOpen = !thinkingOpen"
+          >
+            <span>思考过程{{ stage === 'generating' ? '（已折叠）' : '' }}</span>
+            <span class="live-thinking-meta">{{ thinkingChars }} 字</span>
+          </button>
+          <div
+            v-show="thinkingOpen"
+            ref="thinkingBody"
+            class="live-thinking-body"
+          >
+            {{ liveThinking }}
+          </div>
+        </div>
+      </div>
+      <div
         v-if="sending"
         class="stage-indicator"
       >
@@ -156,14 +209,14 @@
 
     <div class="chat-input">
       <div
-        v-if="modelOptions.length > 1"
+        v-if="modelOptions.length > 0"
         class="model-picker"
       >
         <span class="model-label">模型</span>
         <a-select
           :model-value="modelValue"
           size="mini"
-          :disabled="modelLocked"
+          :disabled="modelLocked || modelOptions.length < 2"
           class="model-select"
           @change="onSelectModel"
         >
@@ -180,6 +233,12 @@
           class="model-hint"
         >
           会话已开始，切换模型请新建会话
+        </span>
+        <span
+          v-else-if="modelOptions.length < 2"
+          class="model-hint"
+        >
+          当前仅一个可用模型；如需切换请在 AI 配置中启用更多类型 b 模型
         </span>
       </div>
       <div
@@ -232,9 +291,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { IconCopy, IconRobot } from '@arco-design/web-vue/es/icon'
-import type { ChatAnswer, ChatMessage, ChatModelInfo } from '@/api/ai'
+import type { ChatAnswer, ChatMessage, ChatModelInfo, ChatToolCall } from '@/api/ai'
 import AnswerCard from './AnswerCard.vue'
 import { copyText } from '../composables/useCopy'
+import { toolLabel, toolReasonLabel, toolStatusLabel } from '../toolReason'
 import { STAGE_LABELS, type ChatStage, type ChatUIStatus } from '../composables/useChat'
 
 const props = defineProps<{
@@ -253,6 +313,10 @@ const props = defineProps<{
   models?: ChatModelInfo[]
   modelValue?: string
   modelLocked?: boolean
+  /** 发送中的实时工具调用过程（SSE tool 事件），结束后由最终回答的工具标签接管。 */
+  liveTools?: ChatToolCall[]
+  /** 发送中的模型思考增量（reasoning_content），仅流中展示，不落库。 */
+  liveThinking?: string
 }>()
 
 const emit = defineEmits<{
@@ -269,6 +333,29 @@ const input = ref('')
 const scrollRef = ref<HTMLElement | null>(null)
 const placeholder = props.placeholder || '请输入你的问题，例如：帮我分析当前告警并给出排查步骤'
 const modelOptions = computed(() => props.models ?? [])
+
+// 实时思考过程：思考阶段默认展开，进入回答生成阶段自动折叠；有新增量时自动滚到底部。
+const thinkingOpen = ref(true)
+const thinkingBody = ref<HTMLElement | null>(null)
+const thinkingChars = computed(() => Array.from(props.liveThinking ?? '').length)
+
+watch(
+  () => props.stage,
+  (value) => {
+    if (value === 'generating') thinkingOpen.value = false
+    else if (value === 'thinking' || value === 'querying_tools') thinkingOpen.value = true
+  }
+)
+
+watch(
+  () => props.liveThinking,
+  async () => {
+    if (!thinkingOpen.value) return
+    await nextTick()
+    const el = thinkingBody.value
+    if (el) el.scrollTop = el.scrollHeight
+  }
+)
 
 function onSelectModel(value: unknown) {
   emit('select-model', String(value ?? ''))
@@ -524,6 +611,106 @@ function formatTime(value: string) {
   gap: 8px;
   color: var(--color-text-2);
   font-size: 12px;
+}
+
+.live-process {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(81, 102, 63, 0.14);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+}
+
+.live-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.live-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.live-tool-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #7d9c5c;
+}
+
+.live-tool-dot.is-skipped {
+  background: #d4a017;
+}
+
+.live-tool-dot.is-denied,
+.live-tool-dot.is-error {
+  background: #b4483f;
+}
+
+.live-tool-name {
+  color: var(--color-text-1);
+  flex: none;
+}
+
+.live-tool-status {
+  color: var(--color-text-3);
+  flex: none;
+}
+
+.live-tool-status.is-bad {
+  color: #b4483f;
+}
+
+.live-tool-reason {
+  color: var(--color-text-3);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-thinking {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.live-thinking-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-2);
+  font-size: 11px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.live-thinking-meta {
+  color: var(--color-text-3);
+}
+
+.live-thinking-body {
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: rgba(81, 102, 63, 0.06);
+  color: var(--color-text-2);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .chat-status {
