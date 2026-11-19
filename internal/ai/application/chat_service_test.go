@@ -2451,6 +2451,10 @@ func TestExecuteMetricObservationReportsPointCountAndLabel(t *testing.T) {
 	if obs.Data["point_count"] != 3 || obs.Data["metric_label"] != "内存使用率" {
 		t.Fatalf("observation data = %+v", obs.Data)
 	}
+	metrics, ok := obs.Data["metrics"].([]MetricEvidence)
+	if !ok || len(metrics) != 1 || len(metrics[0].Points) != 3 {
+		t.Fatalf("observation metrics = %+v", obs.Data["metrics"])
+	}
 	if !strings.Contains(obs.Summary, "3 点") || !strings.Contains(obs.Summary, "内存使用率") {
 		t.Fatalf("summary = %q", obs.Summary)
 	}
@@ -2464,6 +2468,33 @@ func TestExecuteMetricObservationReportsPointCountAndLabel(t *testing.T) {
 	}
 	if !strings.Contains(zero.Summary, "无数据点") {
 		t.Fatalf("zero-point summary = %q", zero.Summary)
+	}
+}
+
+func TestSendMessageAgentLoopPromptCarriesMetricValues(t *testing.T) {
+	svc, repo, _, chat, _, evidence := newChatTestService(t)
+	evidence.result = &MetricEvidenceResult{Status: EvidenceStatusOK, Metrics: []MetricEvidence{{
+		Metric: "cpu_util", Peak: floatPtr(97.4), Last: floatPtr(95.2),
+		Points: [][2]float64{{1700000000, 62.1}, {1700000300, 97.4}}, EvidenceID: "ev-1",
+	}}}
+	chat.script = []string{
+		`{"tool_requests":[{"tool_code":"metrics.query","reason":"缺少近期指标","params":{"account_id":"acc-1","region":"cn-north-4","namespace":"SYS.RDS","metric":"cpu_util","dimensions":{"instance_id":"i-1"},"from":1700000000,"to":1700003600,"period":300}}]}`,
+		chatAnswerJSON("CPU 趋势上升"),
+	}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "看下最近趋势",
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if result.Status != chatStatusOK || chat.calls != 2 {
+		t.Fatalf("status = %q, model calls = %d", result.Status, chat.calls)
+	}
+	// 第二轮 prompt 必须带上第一轮取回的数值，否则模型只看到元数据无法收敛。
+	if !strings.Contains(chat.user, `"points"`) || !strings.Contains(chat.user, "97.4") || !strings.Contains(chat.user, `"from":1700000000`) {
+		t.Fatalf("round-1 prompt missing metric values: %s", chat.user)
 	}
 }
 
