@@ -129,7 +129,7 @@ import SessionList from './components/SessionList.vue'
 import ChatPanel from './components/ChatPanel.vue'
 import ContextPanel from './components/ContextPanel.vue'
 import ShareDialog from './components/ShareDialog.vue'
-import { useChat } from './composables/useChat'
+import { useChat, formatModelLabel } from './composables/useChat'
 import { useAIContextStore } from '@/stores/aiContext'
 
 const router = useRouter()
@@ -173,9 +173,7 @@ const {
   proposeExecution
 } = useChat()
 
-const modelLabel = computed(
-  () => (selectedModel.value ? `${selectedModel.value.name}（${selectedModel.value.model}）` : '')
-)
+const modelLabel = computed(() => formatModelLabel(selectedModel.value))
 
 const latestToolCalls = computed(() => {
   const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')

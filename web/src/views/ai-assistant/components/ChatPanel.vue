@@ -209,39 +209,6 @@
 
     <div class="chat-input">
       <div
-        v-if="modelOptions.length > 0"
-        class="model-picker"
-      >
-        <span class="model-label">模型</span>
-        <a-select
-          :model-value="modelValue"
-          size="mini"
-          :disabled="modelLocked || modelOptions.length < 2"
-          class="model-select"
-          @change="onSelectModel"
-        >
-          <a-option
-            v-for="model in modelOptions"
-            :key="model.provider_id"
-            :value="model.provider_id"
-          >
-            {{ model.name }}<template v-if="model.model">（{{ model.model }}）</template>
-          </a-option>
-        </a-select>
-        <span
-          v-if="modelLocked"
-          class="model-hint"
-        >
-          会话已开始，切换模型请新建会话
-        </span>
-        <span
-          v-else-if="modelOptions.length < 2"
-          class="model-hint"
-        >
-          当前仅一个可用模型；如需切换请在 AI 配置中启用更多类型 b 模型
-        </span>
-      </div>
-      <div
         v-if="quickQuestions && quickQuestions.length && !messages.length"
         class="quick-questions"
       >
@@ -265,7 +232,38 @@
         @keydown.enter.exact.prevent="submit"
       />
       <div class="input-foot">
-        <span class="input-hint">Enter 发送 · Shift + Enter 换行 · 执行类动作需人工确认</span>
+        <div class="input-foot-main">
+          <template v-if="modelOptions.length">
+            <a-select
+              v-if="modelPickerVisible"
+              :model-value="modelValue"
+              size="mini"
+              class="model-select"
+              @change="onSelectModel"
+            >
+              <a-option
+                v-for="model in modelOptions"
+                :key="model.provider_id"
+                :value="model.provider_id"
+              >
+                {{ formatModelLabel(model) }}
+              </a-option>
+            </a-select>
+            <a-tag
+              v-else
+              class="model-tag"
+              :title="modelTagHint"
+            >
+              模型 {{ modelTagLabel }}
+            </a-tag>
+          </template>
+          <span
+            class="input-hint"
+            title="Enter 发送 · Shift + Enter 换行 · 执行类动作需人工确认"
+          >
+            Enter 发送 · Shift + Enter 换行 · 执行类动作需人工确认
+          </span>
+        </div>
         <a-button
           v-if="sending"
           size="small"
@@ -295,7 +293,7 @@ import type { ChatAnswer, ChatMessage, ChatModelInfo, ChatToolCall } from '@/api
 import AnswerCard from './AnswerCard.vue'
 import { copyText } from '../composables/useCopy'
 import { toolLabel, toolReasonLabel, toolStatusLabel } from '../toolReason'
-import { STAGE_LABELS, type ChatStage, type ChatUIStatus } from '../composables/useChat'
+import { STAGE_LABELS, formatModelLabel, type ChatStage, type ChatUIStatus } from '../composables/useChat'
 
 const props = defineProps<{
   messages: ChatMessage[]
@@ -333,6 +331,15 @@ const input = ref('')
 const scrollRef = ref<HTMLElement | null>(null)
 const placeholder = props.placeholder || '请输入你的问题，例如：帮我分析当前告警并给出排查步骤'
 const modelOptions = computed(() => props.models ?? [])
+// 仅未锁定且存在多个可选模型时渲染下拉；锁定或单模型时用只读 Tag 呈现当前模型。
+const modelPickerVisible = computed(() => !props.modelLocked && modelOptions.value.length > 1)
+const selectedModelInfo = computed(
+  () => modelOptions.value.find((model) => model.provider_id === props.modelValue) ?? modelOptions.value[0] ?? null
+)
+const modelTagLabel = computed(() => formatModelLabel(selectedModelInfo.value))
+const modelTagHint = computed(() =>
+  modelOptions.value.length < 2 ? '可在 AI 配置中启用更多平台直连模型' : '切换模型需新建会话'
+)
 
 // 实时思考过程：思考阶段默认展开，进入回答生成阶段自动折叠；有新增量时自动滚到底部。
 const thinkingOpen = ref(true)
@@ -733,25 +740,17 @@ function formatTime(value: string) {
   border-top: 1px solid rgba(81, 102, 63, 0.14);
 }
 
-.model-picker {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-
-.model-label {
-  color: var(--color-text-3);
-  font-size: 11px;
-}
-
 .model-select {
-  width: 240px;
+  flex: none;
+  width: 200px;
 }
 
-.model-hint {
-  color: var(--color-text-3);
-  font-size: 10px;
+.model-tag {
+  flex: none;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .quick-questions {
@@ -769,13 +768,25 @@ function formatTime(value: string) {
 .input-foot {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
+}
+
+.input-foot-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
   gap: 8px;
 }
 
 .input-hint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
   color: var(--color-text-3);
   font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-panel--compact .chat-stream {

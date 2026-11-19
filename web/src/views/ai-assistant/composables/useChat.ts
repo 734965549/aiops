@@ -55,6 +55,16 @@ export const STATUS_LABELS: Record<ChatUIStatus, string> = {
   failed: 'AI 回答失败'
 }
 
+/** 模型展示文案：provider 显示名与模型 ID 相同时去重，避免 "X（X）"。 */
+export function formatModelLabel(model: ChatModelInfo | null | undefined): string {
+  if (!model) return ''
+  const name = (model.name || '').trim()
+  const modelID = (model.model || '').trim()
+  const fallback = (model.provider_id || '').trim()
+  if (!modelID || modelID === name) return name || modelID || fallback
+  return name ? `${name}（${modelID}）` : modelID || fallback
+}
+
 /**
  * AI 助手对话逻辑：独立页与全局浮层共用。
  * 所有状态只在本组合式函数内维护，不写 localStorage（避免凭据/上下文泄漏）。
