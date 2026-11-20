@@ -8,8 +8,8 @@
 | 模块 | 后端 API | 前端页面 | E2E 脚本 | 说明 |
 |------|----------|----------|----------|------|
 | Identity 认证与权限 | ✅ | 登录 / 域账号导入 / 权限管理 | `e2e-identity-access.ps1` | JWT、RBAC、LDAP/OAuth、权限管理、审计 |
-| Alert 告警中心 | ✅ | `/alerts` | `e2e-alert.ps1` | Alertmanager ingest、状态流转、AI 分析入口 |
-| Asset 资源与应用 | ✅ | `/assets` | `e2e-asset.ps1` | 应用/资源 CRUD、可配置匹配规则 |
+| Alert 告警中心 | ✅ | `/alerts` | `e2e-alert.ps1`、`e2e-alert-sync.ps1` | Alertmanager/Webhook ingest、华为云 CES 告警拉取、状态流转、AI 分析入口 |
+| Asset 资源与应用 | ✅ | `/assets`、`/assets/topology` | `e2e-asset.ps1`、`e2e-asset-sync.ps1` | 应用/资源 CRUD、可配置匹配规则、云资源同步、CMDB 资源拓扑（手工 + 云派生关系） |
 | Runbook 处置预案 | ✅ | `/runbooks` | `e2e-runbook.ps1` | 模板管理、告警推荐、多步任务生成 |
 | Execution 自动化执行 | ✅ | `/executions` | `e2e-execution.ps1` | 人工确认、执行代理、时间线回写 |
 | Dashboard 首页驾驶舱 | ✅ | `/dashboard` | API 抽检 | 告警/执行/资产/Runbook 聚合摘要 |
@@ -40,6 +40,7 @@ cd web && npm run build
 
 # 业务链路 E2E
 .\scripts\e2e-alert.ps1
+.\scripts\e2e-alert-sync.ps1
 .\scripts\e2e-asset.ps1
 .\scripts\e2e-asset-sync.ps1
 .\scripts\e2e-runbook.ps1
@@ -51,6 +52,11 @@ cd web && npm run build
 .\scripts\e2e-execution-agent.ps1
 .\scripts\e2e-execution-agent-permission.ps1
 .\scripts\e2e-ai-assistant.ps1
+.\scripts\e2e-ai-memory.ps1
+.\scripts\e2e-ai-knowledge.ps1
+.\scripts\e2e-ai-stream.ps1
+.\scripts\e2e-ai-agent-loop.ps1
+.\scripts\e2e-ai-rules.ps1
 ```
 
 ## 目录结构
@@ -149,7 +155,7 @@ make migrate-up
 go run ./cmd/migrate -config configs/config.yaml
 ```
 
-当前迁移文件（`0001` -> `0045`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
+当前迁移文件（`0001` -> `0058`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -193,6 +199,18 @@ go run ./cmd/migrate -config configs/config.yaml
 | `0043` | `0043_fix_orphaned_alert_app_refs.up.sql` | Asset：修复 `DeleteApplication` 缺失跨上下文引用检查导致的孤儿告警引用；将 `alert_alert` 中指向不存在应用的 `application_id`/`application_name` 置空，移除 `inspection_policy.scope.application_ids` 中的孤儿元素；`CHECK(n=0)` 硬验收确保修复后 `v_asset_app_ref_integrity` 返回 0 行；幂等 |
 | `0044` | `0044_lock_default_admin_account.up.sql` | Identity：锁定 `username='admin'` 且 `password_hash` 仍为已知 admin123 哈希的默认管理员（`status=locked`、清空 `password_hash`）；不覆盖 DBA 已设置的强密码；dev/test 在 bootstrap 启用时由 `EnsureBootstrapUser` 重新激活，生产 bootstrap 关闭则保持锁定、须由 DBA 创建安全管理员；幂等 |
 | `0045` | `0045_inspection_policy_deleted_scope_cleanup.up.sql` | Asset：回填清空已软删除 `inspection_policy.scope.application_ids`；重建 `v_asset_app_ref_integrity` 仅检查 `deleted=false` 策略；与 `ApplicationReferenceChecker` 及运行时 `SoftDelete` 契约一致；幂等 |
+| `0046`–`0047` | `0046_alert_source_pull.up.sql`、`0047_alert_source_pull_state.up.sql` | Alert：告警源拉取接入（`delivery_mode=pull`、华为云 CES V2 告警拉取、绑定账号与区域/间隔校验）及拉取状态列（游标、租约、最近同步结果）；契约 `ops/huawei-ces-alert-sync-contract.md` |
+| `0048` | `0048_ai_provider.up.sql` | AI：provider 持久化配置，`api_key` 仅保存 AES-GCM 密文；YAML `ai.providers` 仅在表为空时作为种子写入 |
+| `0049` | `0049_ai_session.up.sql` | AI：运维助手会话与消息（多轮对话、反馈、工具调用记录）及 `app:ai:chat` 系列权限 |
+| `0050` | `0050_ai_session_message_idempotency.up.sql` | AI：消息幂等键 `client_message_id`，客户端重试去重，避免重复消息与重复模型调用 |
+| `0051` | `0051_ai_memory_case.up.sql` | AI：相似案例记忆（RAG-lite）：valid 反馈沉淀、检索注入、`memory_case` 引用 |
+| `0052` | `0052_ai_knowledge_item.up.sql` | AI：知识沉淀条目（draft/active/disabled，审核激活后注入 Prompt）+ `app:ai:knowledge:manage` 权限种子 |
+| `0053` | `0053_ai_session_share.up.sql` | AI：会话只读分享，token 只存 SHA-256，明文仅创建响应返回一次 |
+| `0054` | `0054_ai_memory_manage_permission.up.sql` | AI：记忆管理权限 `app:ai:memory:manage` 种子并绑定 admin |
+| `0055` | `0055_ai_alert_rules_tool_permission.up.sql` | AI：规则体检只读工具 `alert.rules.list` 权限种子并绑定 admin；无表结构变更 |
+| `0056` | `0056_ai_discovery_tools_permission.up.sql` | AI：上下文发现只读工具 `accounts.list` / `resource.analyze` / `resources.list` 权限种子并绑定 admin；无表结构变更 |
+| `0057` | `0057_ai_provider_reasoning_effort.up.sql` | AI：provider 增加 `reasoning_effort`（思考型模型推理强度档位） |
+| `0058` | `0058_asset_resource_relation.up.sql` | Asset：CMDB 资源关系表 `asset_resource_relation`（跨应用手工关系；查询期云派生关系见拓扑二期）；复用 `app:assets:read/write`，无新增权限 |
 
 详见 `ops/migration-contract.md`。
 
@@ -390,8 +408,9 @@ Compose 使用 `aiops-api:${AIOPS_VERSION:-dev}`、`aiops-web:${AIOPS_VERSION:-d
 | 方向 | 说明 |
 |------|------|
 | 菜单权限 | 按权限动态隐藏侧栏入口 |
-| 更多告警源 | 华为云 CES、SigNoz 等 |
-| CMDB / K8s 同步 | 资产自动发现与拓扑 |
+| 更多告警源 | SigNoz 等其他平台接入（华为云 CES Webhook/拉取已落地） |
+| K8s 同步 | K8s 资产自动发现（云资源同步与 CMDB 资源拓扑已落地） |
+| 真实日志/链路 Provider | 华为 AOM/LTS、APM 与 SigNoz 真实适配（当前为 fake，真实凭据显式 unsupported） |
 | MFA | 多因素认证 |
 
 ## 设计文档

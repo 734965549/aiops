@@ -679,6 +679,13 @@ AI 会话 AiConversation
 | 审计中心 | 操作审计、AI 审计、执行审计 |
 | 系统管理 | 用户管理、角色管理、集成配置、AI 配置 |
 
+> **实际落地对照（2026-11 更新）**：上表为第一阶段设计清单，当前实现形态如下。
+>
+> - 已按清单落地：首页驾驶舱 `/dashboard`、AI 运维助手 `/ai-assistant`（另扩展 SSE 流式与取消、只读分享、会话内模型切换）、告警中心 `/alerts`、资源与应用 `/assets`（应用/资源/匹配规则/云同步页签，另增 `/assets/topology` CMDB 拓扑）、审计中心 `/audits`（统一列表按资源类型/用户/动作筛选，覆盖操作、AI、执行审计，支持详情与 CSV 导出）、系统管理（`/identity/access-control`、`/identity/ldap-import`、`/integrations`、`/system/ai-config`）。
+> - 日志与指标：以「统一观测」`/observability` 落地，含指标/日志/链路/调用拓扑页签；真实数据目前仅华为云 CES 指标，日志/链路/运行时拓扑为 fake provider，真实凭据账号显式返回 unsupported。
+> - 自动化执行：`/executions` 覆盖任务列表、执行确认与任务详情；**脚本库未独立成页**，受控命令以 Execution Command Spec（migration 0022）形式由后端种子与 API 管理。
+> - 知识库：未作为独立一级模块落地；当前以「系统设置 → AI 配置 → 知识沉淀 / 记忆管理」页签提供知识条目与相似案例管理（migration 0051/0052/0054）。
+
 ## 9. 菜单权限建议
 
 ### 9.1 菜单权限维度

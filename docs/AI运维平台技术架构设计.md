@@ -1,5 +1,7 @@
 # AI 运维平台技术架构设计
 
+> **阅读提示（2026-11 对照）**：本文同时包含已落地架构与规划态设计，各节以「落地状态」标注为准。模块级验收口径见 `docs/acceptance-checklist.md`，稳定接口契约见 `ops/*.md`，模块清单与 E2E 见 `README.md`。
+
 ## 1. 文档概述
 
 ### 1.1 文档目的
@@ -379,6 +381,8 @@ AI 运维平台自身需要独立记录：
 
 ### 4.1 服务模块总览
 
+> **落地状态**：已落地——API 入口（Gin 单进程，无独立网关服务）、用户权限、告警、资产资源、AI 编排、执行编排、审计、集成配置；部分落地——日志指标（统一观测，真实数据仅华为云 CES 指标）、执行代理（服务端派发/租约/日志回传 + fake agent E2E，独立 agent 二进制未交付）、知识库（以 AI 配置下「知识沉淀/记忆管理」形态落地，非独立文档知识库）；规划态未落地——变更、工单、审批、通知服务。
+
 | 服务模块 | 核心职责 |
 | --- | --- |
 | API 网关 | 统一入口、鉴权、路由、限流、请求追踪 |
@@ -398,6 +402,8 @@ AI 运维平台自身需要独立记录：
 | 通知服务 | 企业微信、钉钉、飞书、邮件通知 |
 
 ### 4.2 API 网关
+
+> **落地状态**：无独立 API 网关进程。统一入口由 Gin 引擎 + 中间件实现：Trace ID 注入、JWT 鉴权、RBAC/数据权限/AI 工具权限拦截、访问日志（见 `internal/server`、`pkg/transport/http`）。IP 白名单与网关级限流/熔断组件未落地；外部 provider 调用在应用层具备超时、限流错误语义与降级处理。
 
 #### 4.2.1 职责
 
@@ -419,6 +425,8 @@ AI 运维平台自身需要独立记录：
 - 请求 TraceId 生成。
 
 ### 4.3 用户权限服务
+
+> **落地状态**：已落地（`internal/identity`）：本地账号 + LDAP/AD + OAuth2/OIDC 登录、JWT access/refresh、RBAC + 数据范围 + AI 工具权限、权限管理写接口与变更审计、域账号预置绑定导入。菜单权限（按权限动态隐藏侧栏入口）未落地，当前为静态菜单，API 全部服务端校验。
 
 #### 4.3.1 职责
 
@@ -532,6 +540,8 @@ LDAP / AD 关键配置：
 
 ### 4.4 告警服务
 
+> **落地状态**：已落地（`internal/alert`）：Alertmanager/通用 Webhook ingest、fingerprint 去重、状态流转与时间线、可配置资产匹配；华为云 CES V2 告警拉取已上线（migration 0046/0047，含游标、跨实例租约互斥、scope 级失败重放，契约 `ops/huawei-ces-alert-sync-contract.md`）。Zabbix、SigNoz 等其他告警源未接入。
+
 #### 4.4.1 职责
 
 - 接收外部告警。
@@ -577,6 +587,8 @@ stateDiagram-v2
 
 ### 4.5 资产资源服务
 
+> **落地状态**：已落地（`internal/asset`）：应用/资源注册表、可配置匹配规则、华为云 CES 资源分组同步（ces/hybrid/native 三模式）与 stale 标记、批次摘要与跨实例互斥；CMDB 资源拓扑一/二期已上线（migration 0058：跨应用手工关系 + 已验证云字段派生关系、根资源 1–3 层链路与全景，见 `docs/huawei-ces-sync-backlog.md`）。K8s 自动发现、独立标签管理模块未落地。
+
 #### 4.5.1 职责
 
 - 管理应用、服务、资源和拓扑关系。
@@ -608,6 +620,8 @@ stateDiagram-v2
 - 外部 Webhook 推送。
 
 ### 4.6 日志指标服务
+
+> **落地状态**：部分落地（`internal/observability`）：统一指标/日志/链路/拓扑查询端口、证据引用（`obs_evidence_ref`，migration 0019）与查询审计已实现；真实 Provider 仅华为云 CES 指标（`auth_type=ak_sk`），日志/链路/运行时拓扑与 SigNoz/Prometheus 为 fake，真实凭据显式返回 unsupported。错误聚合、异常区间自动识别未独立落地。
 
 #### 4.6.1 职责
 
@@ -644,6 +658,8 @@ MetricQueryRequest
 ```
 
 ### 4.7 AI 编排服务
+
+> **落地状态**：已落地（`internal/ai`）：provider 持久化与 AES-GCM 密钥加密（migration 0048）、多轮会话与消息幂等（0049/0050）、SSE 流式与取消、相似案例记忆（0051）、知识沉淀与审核（0052/0054）、会话只读分享（0053）、受限 Agent Loop（≤3 轮只读工具 + 预算控制）、规则体检与上下文发现工具（0055/0056）、provider 级 reasoning_effort（0057）。契约 `ops/ai-contract.md`，演进状态见本文 §16.2 与 `docs/ai-assistant-memory-roadmap.md`。
 
 #### 4.7.1 职责
 
@@ -758,6 +774,8 @@ AI 输出建议统一结构化，便于前端展示和后续任务生成。
 
 ### 4.8 执行编排服务
 
+> **落地状态**：已落地（`internal/execution`）：任务状态机 `pending_confirm → pending_execute → running → success|failed`、CONFIRM 文本确认、Runbook 多步骤与 dry-run、告警时间线回写、审计与幂等。自动回滚未落地，回滚方案以建议文本呈现。
+
 #### 4.8.1 职责
 
 - 管理执行任务。
@@ -852,6 +870,8 @@ RollbackPlan
 
 ### 4.9 执行代理服务
 
+> **落地状态**：部分落地：服务端已具备执行介体/代理注册与心跳、Command Spec 白名单与参数 schema 校验、租约派发、stdout/stderr 回传与二次脱敏（migration 0022，契约 `ops/execution-agent-contract.md`），E2E 使用 fake agent 验证全链路；独立真实 agent 二进制与 K8s/SSH/云 API 真实执行通道未交付。本节部署图中的任务队列（MQ）为规划态，当前实现为代理主动拉取 + 数据库租约模式。
+
 #### 4.9.1 职责
 
 执行代理负责与真实基础设施交互。
@@ -923,6 +943,8 @@ AI 建议
 详细契约见 `ops/execution-agent-contract.md`。
 
 ### 4.10 审计服务
+
+> **落地状态**：已落地（`internal/audit`）：登录、权限变更、资产变更、告警状态流转、Runbook 启停、执行确认/执行、AI 分析与工具调用等关键动作审计写入与统一查询 API（`ops/audit-contract.md`）；前端审计中心支持筛选、统计卡、详情抽屉与 CSV 导出（导出为前端实现）。审计报表与归档未落地。
 
 #### 4.10.1 职责
 
@@ -1291,6 +1313,8 @@ ResourceService -> ResourceProvider -> KubernetesProvider / CloudProvider
 
 ### 9.2 监控集成
 
+> **落地状态**：Alertmanager Webhook 与华为云 CES（告警拉取、告警规则列表、指标查询）已落地；Prometheus、Zabbix 适配器未实现，SigNoz 为 fake provider。
+
 支持：
 
 - Prometheus。
@@ -1305,6 +1329,8 @@ ResourceService -> ResourceProvider -> KubernetesProvider / CloudProvider
 - PromQL 查询指标。
 
 ### 9.3 日志集成
+
+> **落地状态**：统一日志查询端口已定义（`LogSearchPort`），但 Loki/Elasticsearch/ClickHouse/LTS 真实适配器均未落地，当前为 fake provider（真实凭据账号显式 unsupported）。平台自身日志为 zap 单进程输出，集中式日志收集未接入。
 
 支持：
 
@@ -1321,6 +1347,8 @@ ResourceService -> ResourceProvider -> KubernetesProvider / CloudProvider
 
 ### 9.4 Kubernetes 集成
 
+> **落地状态**：规划态，未落地。资产注册表支持手工登记 pod/namespace 字段，无 K8s 集群同步与操作通道。
+
 支持能力：
 
 - 集群同步。
@@ -1336,6 +1364,8 @@ ResourceService -> ResourceProvider -> KubernetesProvider / CloudProvider
 写操作必须通过执行编排服务，不允许直接从资源服务发起。
 
 ### 9.5 通知集成
+
+> **落地状态**：规划态，未落地：无 `internal/notification` 上下文，仓库不含 0021 Notification 迁移；巡检策略的 `notification_policy_id` 为预留字段，无实际发送通道。
 
 支持：
 
@@ -1367,6 +1397,8 @@ ResourceService -> ResourceProvider -> KubernetesProvider / CloudProvider
 
 ### 10.2 消息队列设计
 
+> **落地状态**：规划态，未引入消息队列。当前异步处理为进程内 worker + 数据库租约/游标/fencing token（CES 资源同步、CES 告警拉取、巡检运行），AI 消息幂等由 `client_message_id` 唯一索引保证。下列队列为后续服务化拆分时的演进候选，不要当作已有组件依赖。
+
 建议队列：
 
 ```text
@@ -1381,6 +1413,8 @@ notification.send
 ```
 
 ### 10.3 幂等设计
+
+> **落地状态**：部分落地：告警 fingerprint 去重、外部 Webhook token 校验、AI 消息 `client_message_id` 幂等、同步批次租约与 fencing token、执行确认状态机防重复流转均已实现；审批回调与通知发送随对应模块未落地。
 
 必须保证幂等的场景：
 
@@ -1401,6 +1435,8 @@ notification.send
 ## 11. 可观测性架构
 
 ### 11.1 平台自身监控
+
+> **落地状态**：部分落地：`/healthz`、`/readyz`、`/version` 健康与就绪检查、zap 结构化日志（trace_id/user_id 注入）、AI 调用耗时/token 与工具调用审计已具备；Prometheus 指标导出、队列堆积与缓存命中率等运行时指标未落地。
 
 平台自身需要监控：
 
@@ -1431,6 +1467,8 @@ notification.send
 
 ### 11.3 链路追踪
 
+> **落地状态**：规划态。当前以 `trace_id` 贯穿 HTTP 响应、日志与审计记录，未引入 OpenTelemetry SDK。
+
 建议引入 OpenTelemetry。
 
 关键链路：
@@ -1444,6 +1482,8 @@ notification.send
 ## 12. 高可用与可靠性设计
 
 ### 12.1 高可用策略
+
+> **落地状态**：部分落地：API 无状态可多副本部署，CES 资源同步与告警拉取通过数据库租约/fencing token 保证跨实例互斥；Redis 不可用时的降级语义见 `ops/health-contract.md`（`redis.required=false` 不阻塞就绪）。自动扩缩容、多机房容灾未落地。
 
 - API 服务多副本部署。
 - AI 编排服务多副本部署。
@@ -1475,6 +1515,8 @@ notification.send
 ## 13. 部署架构
 
 ### 13.1 第一阶段部署架构
+
+> **落地状态**：已落地：`deployments/` 提供 docker-compose（dev/prod/web 分离镜像）与 Kubernetes 部署参考（外挂 PostgreSQL/Redis），迁移由自研 runner 显式执行，默认不自动建表。
 
 ```mermaid
 flowchart TD
@@ -1533,6 +1575,8 @@ flowchart TD
 
 ### 14.1 第一阶段服务集
 
+> **落地状态**：除「知识库基础模块」以 AI 知识沉淀/相似案例记忆形态落地外，其余模块均已交付；另已扩展 Integration 接入账号、Observability 统一观测、Inspection 巡检、Execution Agent 介体派发与 CMDB 资源拓扑。模块清单见 `README.md`，验收明细见 `docs/acceptance-checklist.md`。
+
 第一阶段建议优先实现以下模块：
 
 - 前端 Web 控制台。
@@ -1548,6 +1592,8 @@ flowchart TD
 - 集成配置模块。
 
 ### 14.2 第一阶段数据依赖
+
+> **落地状态**：华为云 CES（指标、资源、告警规则、告警拉取）与一个大模型 API（类型 b，Ark 兼容接口）已真实接入；SigNoz 为 fake provider，LTS 与 Kubernetes 未接入；PostgreSQL/Redis 按 `ops/health-contract.md` 与部署文档落地。
 
 优先接入：
 
@@ -1581,6 +1627,8 @@ flowchart TD
 | P1 | 通知集成 | 提升协作效率 |
 | P2 | 变更管理 | 后续增强发布闭环 |
 | P2 | 工单协同 | 后续增强协作流程 |
+
+> **落地状态**：P0 行全部已交付（日志指标查询为统一观测 + CES 真实指标）；P1「知识库」以 AI 知识沉淀/相似案例记忆形态落地；P1「通知集成」、P2「变更管理/工单协同」未落地。
 
 ## 15. 关键风险与技术应对
 
