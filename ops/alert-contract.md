@@ -500,6 +500,9 @@ stateDiagram-v2
 - 云账号、项目、实例等 ID 不翻译，使用等宽字体并提供复制；敏感 key 继续按既定规则掩码，不能因新增复制或原始视图泄露。
 - 应用未匹配时显示“未匹配应用”并提供 `/assets?tab=match-rules` 排查入口；资源名称存在但未注册时明确显示“未注册资源”，不得再用统一的 `—` 混淆缺失、未匹配和未注册。
 - “友好字段 / 原始字段”切换只影响展示，不改变 API 响应、AI 上下文或审计原文。未知 key 和值必须完整保留，长 ID 不以 tooltip/title 截断兜底。
+- 指标语义目录优先于原始摘要生成可读标题与描述。`SYS.RDS / oldest_transaction_duration` 显示为“最长事务存活时长”，含义为当前数据库中存在的最长事务存活时长；`600000ms` 显示为 `10 分钟（600000ms）`。指标含义与排查建议分开展示，未知指标保留原始摘要和描述，不生成编造解释。
+- 原始资源 ID 不得作为唯一标题或资源名。详情按 `cloud_resource_id`（兼容 `postgresql_cluster_id` / `rds_cluster_id`）+ `account_id` + 可选 `region` / `cloud_resource_type` 调用 `/api/assets/resources/resolve`：唯一匹配显示真实资源名和应用名；`unregistered` 显示未同步状态及原始 ID；`ambiguous` 显示候选数量且不得默认选择。
+- 原始摘要、原始描述、指标名、原始阈值和原始资源 ID 必须在“原始摘要与描述”或“原始字段”视图中保留并可复制；语义转换只用于友好展示。
 
 ### 8.3 认领告警
 

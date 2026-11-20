@@ -630,6 +630,7 @@ CMDB 拓扑描述应用归属和资源配置关系，与 §5.4 的 Observability
 | --- | --- | --- | --- |
 | 查询应用资源拓扑 | `GET` | `/api/assets/topology?application_id=app-1` | Bearer + `app:assets:read` |
 | 查询手工关系 | `GET` | `/api/assets/resource-relations?application_id=app-1` | Bearer + `app:assets:read` |
+| 解析云资源 | `GET` | `/api/assets/resources/resolve?cloud_resource_id=rds-1&account_id=acc-1&region=cn-south-1&cloud_resource_type=rds` | Bearer + `app:assets:read` |
 | 创建手工关系 | `POST` | `/api/assets/resource-relations` | Bearer + `app:assets:write` |
 | 删除手工关系 | `DELETE` | `/api/assets/resource-relations/:relation_id` | Bearer + `app:assets:write` |
 
@@ -645,6 +646,14 @@ CMDB 拓扑描述应用归属和资源配置关系，与 §5.4 的 Observability
 - 资源仍存在源端或目标端关系时，删除资源返回 `FAILED_PRECONDITION`，必须先删除关系。
 - 关系创建/删除写 `resource_type=resource_relation`、`action=create/delete` 审计，payload 包含两端业务 ID 与关系类型，不记录敏感 labels。
 - 单次最多返回 299 个资源节点及其关联应用节点；超出时 `meta.truncated=true`，调用方必须继续用筛选或降低深度缩小范围，不得把结果描述为完整拓扑。
+
+云资源解析用于把告警中的云 ID 转换为 CMDB 真实资源：`cloud_resource_id` 与 `account_id` 必填，`region` / `cloud_resource_type` 可选但必须精确匹配。响应 `data.status`：
+
+- `matched`：唯一候选，`candidates[0]` 包含资源业务 ID、真实名称、应用业务 ID 和名称、云类型、Region 与同步状态，可跳转资产页。
+- `unregistered`：无匹配，返回空数组，前端只能显示原始云 ID 与推断资源类型，不能编造资源名。
+- `ambiguous`：多个候选，返回全部候选，前端提示需要确认，不能默认选择第一项。
+
+解析接口只读，不创建应用或资源，不返回凭据，也不把其他账号或 Region 的同名云 ID 当作匹配。
 
 拓扑响应 `data`：
 

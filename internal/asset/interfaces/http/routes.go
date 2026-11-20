@@ -55,6 +55,7 @@ func (r *Registrar) RegisterRoutes(groups server.RouteGroups) {
 	authed.DELETE("/applications/:id", middleware.AuthorizeStatic(authz, assetAuthResource, "write"), r.handler.DeleteApplication)
 	authed.GET("/applications/:application_id/resources", middleware.AuthorizeStatic(authz, assetAuthResource, "read"), r.handler.ListResources)
 	authed.GET("/applications/:application_id/resource-facets", middleware.AuthorizeStatic(authz, assetAuthResource, "read"), r.handler.ListResourceFilterOptions)
+	authed.GET("/resources/resolve", middleware.AuthorizeStatic(authz, assetAuthResource, "read"), r.handler.ResolveResource)
 	authed.POST("/resources", middleware.AuthorizeStatic(authz, assetAuthResource, "write"), r.handler.CreateResource)
 	authed.PUT("/resources/:id", middleware.AuthorizeStatic(authz, assetAuthResource, "write"), r.handler.UpdateResource)
 	authed.DELETE("/resources/:id", middleware.AuthorizeStatic(authz, assetAuthResource, "write"), r.handler.DeleteResource)
