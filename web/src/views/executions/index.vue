@@ -1,11 +1,10 @@
 <template>
   <div class="page-shell">
-    <a-card
-      title="执行任务"
-      :bordered="false"
-      class="page-card"
+    <PageHeader
+      title="自动化执行"
+      description="跟踪任务状态、执行步骤与结果，中高风险动作必须经过人工确认。"
     >
-      <template #extra>
+      <template #actions>
         <a-button
           :loading="loadingList"
           @click="loadTasks"
@@ -13,7 +12,12 @@
           刷新
         </a-button>
       </template>
+    </PageHeader>
 
+    <a-card
+      :bordered="false"
+      class="page-card"
+    >
       <a-form
         :model="filters"
         layout="inline"
@@ -60,6 +64,14 @@
           </a-space>
         </a-form-item>
       </a-form>
+
+      <div class="data-panel-heading">
+        <h3 class="data-panel-title">
+          执行任务
+          <span class="data-panel-count">共 {{ pagination.total }} 条</span>
+        </h3>
+        <span class="text-muted">中高风险需输入 CONFIRM</span>
+      </div>
 
       <a-table
         class="page-table"
@@ -254,6 +266,7 @@ import type { TableData } from '@arco-design/web-vue/es/table/interface'
 import * as executionApi from '@/api/execution'
 import type { ExecutionTask, ExecutionTaskDetail } from '@/api/execution'
 import { useAIContextStore } from '@/stores/aiContext'
+import PageHeader from '@/components/PageHeader.vue'
 
 const route = useRoute()
 const router = useRouter()

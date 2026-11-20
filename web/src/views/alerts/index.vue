@@ -1,88 +1,40 @@
 <template>
   <div class="page-shell">
-    <a-card
+    <PageHeader
       title="告警中心"
+      description="集中处理告警信号、分析上下文并跟踪处置闭环。"
+    >
+      <template #actions>
+        <a-button
+          :loading="loadingList"
+          @click="loadAlerts"
+        >
+          刷新
+        </a-button>
+        <a-button
+          v-if="canManageSources"
+          type="primary"
+          @click="openSourceModal"
+        >
+          接入源管理
+        </a-button>
+      </template>
+    </PageHeader>
+
+    <a-card
       :bordered="false"
       class="page-card"
     >
-      <template #extra>
-        <a-space>
-          <a-button
-            :loading="loadingList"
-            @click="loadAlerts"
-          >
-            刷新
-          </a-button>
-          <a-button
-            v-if="canManageSources"
-            type="primary"
-            @click="openSourceModal"
-          >
-            接入源管理
-          </a-button>
-        </a-space>
-      </template>
-
-      <a-form
-        :model="filters"
-        layout="inline"
-        class="filter-form"
-      >
-        <a-form-item label="关键词">
-          <a-input
-            v-model="filters.keyword"
-            allow-clear
-            placeholder="名称 / 摘要 / 资源"
-            style="width: 200px"
-            @press-enter="onSearch"
-          />
-        </a-form-item>
-        <a-form-item label="状态">
-          <a-select
-            v-model="filters.status"
-            allow-clear
-            placeholder="全部"
-            style="width: 140px"
-            :options="statusOptions"
-          />
-        </a-form-item>
-        <a-form-item label="级别">
-          <a-select
-            v-model="filters.severity"
-            allow-clear
-            placeholder="全部"
-            style="width: 140px"
-            :options="severityOptions"
-          />
-        </a-form-item>
-        <a-form-item label="接入源">
-          <a-select
-            v-model="filters.source_id"
-            allow-clear
-            placeholder="全部"
-            style="width: 180px"
-            :options="sourceFilterOptions"
-          />
-        </a-form-item>
-        <a-form-item>
-          <a-checkbox v-model="filters.active_only">
-            仅活跃告警
-          </a-checkbox>
-        </a-form-item>
-        <a-form-item>
-          <a-space>
-            <a-button
-              type="primary"
-              @click="onSearch"
-            >
-              查询
-            </a-button>
-            <a-button @click="onResetFilters">
-              重置
-            </a-button>
-          </a-space>
-        </a-form-item>
-      </a-form>
+      <AlertFilterForm
+        v-model:keyword="filters.keyword"
+        v-model:status="filters.status"
+        v-model:severity="filters.severity"
+        v-model:source-id="filters.source_id"
+        v-model:active-only="filters.active_only"
+        :source-options="sourceFilterOptions"
+        @search="onSearch"
+        @reset="onResetFilters"
+      />
 
       <a-alert
         v-if="listLoadError"
@@ -92,6 +44,19 @@
         style="margin-bottom: 12px"
         @close="listLoadError = ''"
       />
+
+      <div class="data-panel-heading">
+        <h3 class="data-panel-title">
+          告警记录
+          <span class="data-panel-count">共 {{ pagination.total }} 条</span>
+        </h3>
+        <a-tag
+          v-if="filters.active_only"
+          color="arcoblue"
+        >
+          仅活跃告警
+        </a-tag>
+      </div>
 
       <a-table
         class="page-table"
@@ -567,10 +532,12 @@ import type { Alert, AlertDetail, AlertEvent, AlertSource } from '@/api/alert'
 import * as executionApi from '@/api/execution'
 import * as runbookApi from '@/api/runbook'
 import type { RunbookRecommendation } from '@/api/runbook'
+import PageHeader from '@/components/PageHeader.vue'
+import AlertFilterForm from './components/AlertFilterForm.vue'
 import AlertSourceManager from './components/AlertSourceManager.vue'
 import AlertDetailEnhancement from './components/AlertDetailEnhancement.vue'
 import AlertAIAnalysisModal from './components/AlertAIAnalysisModal.vue'
-import { statusOptions, severityOptions, columns, eventTypeLabel } from './composables/alertPresentation'
+import { columns, eventTypeLabel } from './composables/alertPresentation'
 import { clearAlertAIContext, syncAlertAIContext, useAlertDeepLink } from './composables/alertAIContext'
 
 const router = useRouter()

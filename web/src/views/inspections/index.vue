@@ -1,7 +1,10 @@
 <template>
   <div class="page-shell">
-    <a-card
+    <PageHeader
       title="智能巡检"
+      description="管理巡检策略、运行记录与基于证据的发现建议。"
+    />
+    <a-card
       :bordered="false"
       class="page-card"
     >
@@ -319,6 +322,7 @@ import {
   type InspectionRun
 } from '@/api/inspection'
 import { getApiError } from '@/api/request'
+import PageHeader from '@/components/PageHeader.vue'
 
 const activeTab = ref('policies')
 const policies = ref<InspectionPolicy[]>([])

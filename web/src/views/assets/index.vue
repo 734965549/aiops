@@ -1,5 +1,16 @@
 <template>
   <div class="page-shell">
+    <PageHeader
+      title="CMDB 资产"
+      description="维护应用、资源注册表、云同步批次与告警匹配规则。"
+    >
+      <template #actions>
+        <a-button
+          type="primary"
+          @click="router.push('/assets/topology')"
+        >查看资源拓扑</a-button>
+      </template>
+    </PageHeader>
     <a-tabs
       v-model:active-key="activeTab"
       class="assets-tabs page-tabs"
@@ -374,8 +385,9 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import type { Application, Resource } from '@/api/asset'
+import PageHeader from '@/components/PageHeader.vue'
 import AssetRegistryTab from './components/AssetRegistryTab.vue'
 import CloudSyncTab from './components/CloudSyncTab.vue'
 import MatchRuleTab from './components/MatchRuleTab.vue'
@@ -387,6 +399,7 @@ import { useMatchRules } from './composables/useMatchRules'
 import { RESOURCE_FILTER_QUERY_KEYS } from './composables/assetUtils'
 
 const route = useRoute()
+const router = useRouter()
 
 const activeTab = ref('registry')
 

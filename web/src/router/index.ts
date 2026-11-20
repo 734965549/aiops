@@ -17,7 +17,7 @@ const routes: RouteRecordRaw[] = [
         path: 'dashboard',
         name: 'dashboard',
         component: () => import('@/views/dashboard/index.vue'),
-        meta: { title: '首页驾驶舱', icon: 'Odometer' }
+        meta: { title: '运维总览', icon: 'Odometer' }
       },
       {
         path: 'ai-assistant',
@@ -42,7 +42,13 @@ const routes: RouteRecordRaw[] = [
         path: 'assets',
         name: 'assets',
         component: () => import('@/views/assets/index.vue'),
-        meta: { title: '资源与应用', icon: 'Cpu' }
+        meta: { title: 'CMDB 资产', icon: 'Cpu' }
+      },
+      {
+        path: 'assets/topology',
+        name: 'asset-topology',
+        component: () => import('@/views/assets/topology/index.vue'),
+        meta: { title: 'CMDB 资源拓扑', icon: 'ShareAlt' }
       },
       {
         path: 'executions',

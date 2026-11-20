@@ -1,27 +1,20 @@
 <template>
   <div class="page-shell ai-workbench">
-    <div class="workbench-head">
-      <div class="head-copy">
-        <h2>AI 运维助手</h2>
-        <p>
-          只分析与建议，不直接执行；执行类动作只生成待确认任务，全程写入审计。
-        </p>
-      </div>
-      <a-space>
+    <PageHeader
+      title="AI 运维助手"
+      description="只分析与建议，不直接执行；执行类动作只生成待确认任务，全程写入审计。"
+    >
+      <template #actions>
         <a-button
           :loading="loadingSessions"
           @click="loadSessions"
-        >
-          刷新会话
-        </a-button>
+        >刷新会话</a-button>
         <a-button
           type="primary"
           @click="startNewSession"
-        >
-          新建会话
-        </a-button>
-      </a-space>
-    </div>
+        >新建会话</a-button>
+      </template>
+    </PageHeader>
 
     <a-row
       :gutter="12"
@@ -130,6 +123,7 @@ import ContextPanel from './components/ContextPanel.vue'
 import ShareDialog from './components/ShareDialog.vue'
 import { useChat, formatModelLabel } from './composables/useChat'
 import { useAIContextStore } from '@/stores/aiContext'
+import PageHeader from '@/components/PageHeader.vue'
 
 const router = useRouter()
 const contextStore = useAIContextStore()
@@ -212,28 +206,7 @@ onMounted(async () => {
 
 <style scoped>
 .ai-workbench {
-  gap: 10px;
-}
-
-.workbench-head {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.head-copy h2 {
-  margin: 0;
-  color: var(--color-text-1);
-  font-size: 17px;
-  font-weight: 600;
-}
-
-.head-copy p {
-  margin: 4px 0 0;
-  color: var(--color-text-3);
-  font-size: 12px;
+  gap: 0;
 }
 
 .workbench-body {
@@ -279,10 +252,6 @@ onMounted(async () => {
 }
 
 @media (max-width: 768px) {
-  .workbench-head {
-    flex-direction: column;
-  }
-
   .workbench-col {
     height: auto;
   }

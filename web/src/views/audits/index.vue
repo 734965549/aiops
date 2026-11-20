@@ -1,48 +1,16 @@
 <template>
   <div class="page-shell audit-page">
-    <!-- 顶部聚合统计指标卡片 -->
-    <a-row :gutter="16" class="stats-row">
-      <a-col :span="6">
-        <a-card class="stat-card" :bordered="false">
-          <div class="stat-header">
-            <span class="stat-label">总操作审计</span>
-            <icon-file class="stat-icon icon-primary" />
-          </div>
-          <div class="stat-value">{{ total }}</div>
-          <div class="stat-footer">当前系统记录的总操作数</div>
-        </a-card>
-      </a-col>
-      <a-col :span="6">
-        <a-card class="stat-card stat-clickable" :bordered="false" @click="quickFilterResourceType('alert')">
-          <div class="stat-header">
-            <span class="stat-label">告警动作审计</span>
-            <icon-notification class="stat-icon icon-warning" />
-          </div>
-          <div class="stat-value">{{ alertActionCount }}</div>
-          <div class="stat-footer">认领、静音、关闭等动作</div>
-        </a-card>
-      </a-col>
-      <a-col :span="6">
-        <a-card class="stat-card stat-clickable" :bordered="false" @click="quickFilterResourceType('execution')">
-          <div class="stat-header">
-            <span class="stat-label">执行确认审计</span>
-            <icon-check-circle class="stat-icon icon-success" />
-          </div>
-          <div class="stat-value">{{ execActionCount }}</div>
-          <div class="stat-footer">任务审批与操作确认</div>
-        </a-card>
-      </a-col>
-      <a-col :span="6">
-        <a-card class="stat-card stat-clickable" :bordered="false" @click="quickFilterResourceType('ai')">
-          <div class="stat-header">
-            <span class="stat-label">AI 工具与分析</span>
-            <icon-robot class="stat-icon icon-purple" />
-          </div>
-          <div class="stat-value">{{ aiActionCount }}</div>
-          <div class="stat-footer">模型推理与工具调用</div>
-        </a-card>
-      </a-col>
-    </a-row>
+    <PageHeader
+      title="审计中心"
+      description="按资源、用户和 Trace 追踪关键操作与 AI 调用证据。"
+    />
+    <AuditStatsCards
+      :total="total"
+      :alert-count="alertActionCount"
+      :execution-count="execActionCount"
+      :ai-count="aiActionCount"
+      @select="quickFilterResourceType"
+    />
 
     <!-- 主卡片：切换标签页（明细列表 vs 聚合分析） -->
     <a-card class="page-card main-card">
@@ -503,10 +471,6 @@ import {
   IconSearch,
   IconRefresh,
   IconDownload,
-  IconFile,
-  IconNotification,
-  IconCheckCircle,
-  IconRobot,
   IconUnorderedList,
   IconApps,
   IconUser,
@@ -515,6 +479,8 @@ import {
   IconInfoCircle
 } from '@arco-design/web-vue/es/icon'
 import { fetchAudits, type OperationAudit, type AuditListQuery } from '@/api/audit'
+import PageHeader from '@/components/PageHeader.vue'
+import AuditStatsCards from './components/AuditStatsCards.vue'
 
 // 标签页控制
 const activeTab = ref<'list' | 'agg-resource' | 'agg-user' | 'agg-trace'>('list')
@@ -917,10 +883,6 @@ onMounted(() => {
   gap: var(--space-4);
 }
 
-.stats-row {
-  flex-shrink: 0;
-}
-
 /* 工具条 / 筛选条按内容高度固定，剩余空间留给表格区 */
 .card-toolbar,
 .query-form,
@@ -938,69 +900,6 @@ onMounted(() => {
 
 .agg-description {
   flex-shrink: 0;
-}
-
-.main-card {
-  border-radius: 6px;
-  background: var(--color-bg-2);
-}
-
-.stat-card {
-  border-radius: 6px;
-  background: var(--color-bg-2);
-  transition: all 0.2s ease;
-}
-
-.stat-clickable {
-  cursor: pointer;
-}
-
-.stat-clickable:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
-}
-
-.stat-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.stat-label {
-  font-size: 13px;
-  color: var(--color-text-3);
-}
-
-.stat-icon {
-  font-size: 20px;
-}
-
-.icon-primary {
-  color: rgb(var(--primary-6));
-}
-
-.icon-warning {
-  color: rgb(var(--warning-6));
-}
-
-.icon-success {
-  color: rgb(var(--success-6));
-}
-
-.icon-purple {
-  color: #722ed1;
-}
-
-.stat-value {
-  font-size: 24px;
-  font-weight: 600;
-  color: var(--color-text-1);
-  margin: 8px 0 4px;
-}
-
-.stat-footer {
-  font-size: 12px;
-  color: var(--color-text-4);
 }
 
 .main-card {

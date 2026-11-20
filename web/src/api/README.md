@@ -97,6 +97,9 @@
 | `listApplications` / `createApplication` / `updateApplication` / `deleteApplication` | `/api/assets/applications` | 应用注册表 CRUD；`listApplications` 返回 `PageResult<Application>`，支持 `page` / `page_size` |
 | `listResources` / `createResource` / `updateResource` / `deleteResource` | `/api/assets/applications/:application_id/resources`、`/api/assets/resources` | 资源注册表 CRUD，云同步字段只由后端同步链路写入；`listResources` 按 `application_id` 返回 `PageResult<Resource>`，支持 `page` / `page_size`、`cloud_resource_type` / `region` / `sync_status` / `source` 精确筛选、`keyword` 跨字段模糊筛选，以及 `sort_by` / `sort_order` 服务端排序（排序字段白名单见 `ops/cloud-observability-contract.md` §5.5.4）；筛选与排序均为服务端行为，前端不做跨页本地假筛选/假排序 |
 | `getResourceFilterOptions` | `GET /api/assets/applications/:application_id/resource-facets` | 资源页云类型/Region 下拉字典；仅返回当前应用下非空去重值，按字典序升序；只作候选值，实际过滤仍走 `listResources` 的精确参数（契约 §5.5.5） |
+| `getAssetTopology` | `GET /api/assets/topology` | CMDB 真实应用归属与手工关系图；`application_id` 必填，支持区域、云类型、关键字、关系类型及 stale 过滤；超限时必须展示 `meta.truncated` |
+| `listAssetResourceRelations` | `GET /api/assets/resource-relations` | 查询同一应用内的手工资源关系 |
+| `createAssetResourceRelation` / `deleteAssetResourceRelation` | `POST/DELETE /api/assets/resource-relations` | 创建/删除手工关系；写权限和服务端校验优先，前端不伪造 `origin` 或云端关系 |
 | `listMatchRules` / `createMatchRule` / `updateMatchRule` / `deleteMatchRule` | `/api/assets/match-rules` | 匹配规则 CRUD；`listMatchRules` 返回 `PageResult<MatchRule>` |
 | `triggerAssetSync` | `POST /api/assets/sync` | 触发云资源同步，立即返回 `running` 批次 |
 | `pollSyncBatch` | 轮询 `GET /api/assets/sync/batches/:batch_id` | 触发后轮询到终态（`success`/`partial`/`failed`）或超时（默认 10 分钟）抛 `SyncStillRunningError`；`hybrid` 下只要任一增强失败就应落 `partial`；支持 `shouldStop` 取消（组件卸载） |
@@ -104,7 +107,7 @@
 | `getSyncBatchSummaryDisplay` | 纯前端辅助 | 从 `SyncBatchSummary` 提取列表页展示字段（sync_mode、resource_group、计数等），避免主列表被诊断字段淹没 |
 | `getSyncBatchNotice` | 纯前端辅助 | 按批次 `status` 生成 `SyncBatchNotice`（`success`/`warning`/`error` 类型 + 中文摘要文案） |
 
-页面：`views/assets/index.vue`。契约：`ops/cloud-observability-contract.md` §5.5、`ops/huawei-ces-sync-contract.md` §15。
+页面：`views/assets/index.vue`；拓扑 API 独立封装于 `asset-topology.ts`，页面为 `views/assets/topology/index.vue`（路由 `/assets/topology`）。契约：`ops/cloud-observability-contract.md` §5.5、`ops/huawei-ces-sync-contract.md` §15。
 
 分页约定：`page` 从 1 开始，默认 `page_size=20`，后端最大按 `100` 处理。上述 `list*` 函数只返回当前页，不能当作完整应用/资源字典；下拉选择、深链回显或跨页定位需要额外维护已选项，或后续补充按业务 ID 查询/搜索接口。
 

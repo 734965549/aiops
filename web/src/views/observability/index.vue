@@ -1,7 +1,10 @@
 <template>
   <div class="page-shell observability-page">
-    <a-card
+    <PageHeader
       title="观测查询"
+      description="按接入账号与时间范围查询指标、日志、链路和运行时调用拓扑。"
+    />
+    <a-card
       :bordered="false"
       class="page-card"
     >
@@ -276,7 +279,7 @@
 
         <a-tab-pane
           key="topology"
-          title="拓扑"
+          title="调用拓扑"
         >
           <a-form
             :model="topologyForm"
@@ -348,6 +351,7 @@ import {
   type TraceSpan
 } from '@/api/observability'
 import { getApiError } from '@/api/request'
+import PageHeader from '@/components/PageHeader.vue'
 
 const activeTab = ref('metrics')
 const accountsLoading = ref(false)

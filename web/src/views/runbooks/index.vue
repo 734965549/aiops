@@ -1,18 +1,26 @@
 <template>
   <div class="page-shell">
-    <a-card
+    <PageHeader
       title="Runbook 预案"
-      :bordered="false"
-      class="page-card"
+      description="维护结构化处置步骤、风险等级与告警匹配规则。"
     >
-      <template #extra>
+      <template #actions>
         <a-button
           :loading="loading"
           @click="loadTemplates"
-        >
-          刷新
-        </a-button>
+        >刷新</a-button>
       </template>
+    </PageHeader>
+    <a-card
+      :bordered="false"
+      class="page-card"
+    >
+      <div class="data-panel-heading">
+        <h3 class="data-panel-title">
+          预案模板
+          <span class="data-panel-count">共 {{ pagination.total }} 条</span>
+        </h3>
+      </div>
 
       <a-table
         class="page-table"
@@ -80,6 +88,7 @@ import { onMounted, reactive, ref } from 'vue'
 import Message from '@arco-design/web-vue/es/message'
 import * as runbookApi from '@/api/runbook'
 import type { RunbookTemplate, RunbookTemplateDetail } from '@/api/runbook'
+import PageHeader from '@/components/PageHeader.vue'
 
 const templates = ref<RunbookTemplate[]>([])
 const detail = ref<RunbookTemplateDetail | null>(null)

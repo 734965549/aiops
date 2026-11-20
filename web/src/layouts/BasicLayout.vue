@@ -1,46 +1,49 @@
 <template>
   <a-layout class="layout">
-    <OceanBackdrop />
     <a-layout-sider
-      :width="228"
+      :width="208"
       theme="dark"
       breakpoint="lg"
       class="sider"
     >
       <div class="logo">
-        <div class="logo-mark">
-          AI
-        </div>
+        <div class="logo-mark">AI</div>
         <div class="logo-copy">
           <span class="logo-text">AI 运维平台</span>
-          <span class="logo-sub">Safe operations</span>
+          <span class="logo-sub">OPERATIONS CONSOLE</span>
         </div>
       </div>
 
-      <div class="sider-label">
-        Control plane / 01
-      </div>
-      <a-menu
-        theme="dark"
-        :selected-keys="[activeMenuKey]"
-        @menu-item-click="onMenuClick"
-      >
-        <a-menu-item
-          v-for="item in menuItems"
-          :key="item.path"
+      <nav class="navigation" aria-label="主导航">
+        <section
+          v-for="group in navigationGroups"
+          :key="group.title"
+          class="nav-group"
         >
-          <template #icon>
-            <component :is="item.icon" />
-          </template>
-          {{ item.title }}
-        </a-menu-item>
-      </a-menu>
+          <div class="nav-group-label">{{ group.title }}</div>
+          <a-menu
+            theme="dark"
+            :selected-keys="[activeMenuKey]"
+            @menu-item-click="onMenuClick"
+          >
+            <a-menu-item
+              v-for="item in group.items"
+              :key="item.path"
+            >
+              <template #icon>
+                <component :is="item.icon" />
+              </template>
+              {{ item.title }}
+            </a-menu-item>
+          </a-menu>
+        </section>
+      </nav>
 
       <div class="sider-foot">
         <span class="sider-foot-dot" />
         <div>
-          <strong>Human in the loop</strong>
-          <span>执行始终受权限、确认与审计约束</span>
+          <strong>安全执行受控</strong>
+          <span>权限 · 确认 · 审计</span>
         </div>
       </div>
     </a-layout-sider>
@@ -48,11 +51,11 @@
     <a-layout class="content-shell">
       <a-layout-header class="header">
         <div class="header-left">
-          <span class="header-index">AIOPS / 02</span>
+          <span class="header-section">{{ currentGroup }}</span>
+          <span class="header-separator">/</span>
           <span class="header-title">{{ currentTitle }}</span>
         </div>
         <div class="header-right">
-          <span class="header-principle">SAFE · CONTROLLED · AUDITABLE</span>
           <a-tooltip content="AI 助手（Alt + A）">
             <a-button
               type="text"
@@ -66,11 +69,13 @@
               AI 助手
             </a-button>
           </a-tooltip>
-          <span class="status-dot" />
+          <span class="header-divider" />
+          <span class="user-avatar">{{ userInitial }}</span>
           <span class="user-name">{{ auth.user?.display_name || auth.user?.username || '未登录' }}</span>
           <a-button
             type="text"
             size="small"
+            class="logout-button"
             @click="onLogout"
           >
             退出
@@ -90,78 +95,52 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import {
-  IconDashboard,
-  IconRobot,
-  IconNotification,
-  IconStorage,
-  IconCommand,
-  IconBook,
-  IconFile,
-  IconCloud,
-  IconBarChart,
-  IconBulb,
-  IconTool
-} from '@arco-design/web-vue/es/icon'
+import { IconRobot } from '@arco-design/web-vue/es/icon'
 import { useAuthStore } from '@/stores/auth'
 import { useAIContextStore } from '@/stores/aiContext'
 import { fetchCurrentUser } from '@/api/system'
-import OceanBackdrop from './components/OceanBackdrop.vue'
 import AIAssistantOverlay from './components/AIAssistantOverlay.vue'
+import { navigationGroups, navigationItems } from './navigation'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const aiContext = useAIContextStore()
 
-interface MenuItem { path: string; title: string; icon: unknown }
-
-const menuItems: MenuItem[] = [
-  { path: '/dashboard', title: '首页驾驶舱', icon: IconDashboard },
-  { path: '/ai-assistant', title: 'AI 运维助手', icon: IconRobot },
-  { path: '/alerts', title: '告警中心', icon: IconNotification },
-  { path: '/assets', title: '资源与应用', icon: IconStorage },
-  { path: '/integrations', title: '云账号接入', icon: IconCloud },
-  { path: '/observability', title: '观测查询', icon: IconBarChart },
-  { path: '/inspections', title: '智能巡检', icon: IconBulb },
-  { path: '/executions', title: '自动化执行', icon: IconCommand },
-  { path: '/runbooks', title: 'Runbook 预案', icon: IconBook },
-  { path: '/audits', title: '审计中心', icon: IconFile },
-  { path: '/system', title: '系统设置', icon: IconTool }
-]
-
 const activeMenuKey = computed(() => {
   const metaMenu = route.meta.activeMenu as string | undefined
   if (metaMenu) return metaMenu
-  const hit = menuItems.find(
-    (item) => route.path === item.path || route.path.startsWith(`${item.path}/`)
-  )
+  const hit = [...navigationItems]
+    .filter((item) => route.path === item.path || route.path.startsWith(`${item.path}/`))
+    .sort((a, b) => b.path.length - a.path.length)[0]
   return hit?.path ?? route.path
 })
 
 const currentTitle = computed(() => {
   const metaTitle = typeof route.meta.title === 'string' ? route.meta.title : ''
   if (metaTitle) return metaTitle
-  const m = menuItems.find((i) => i.path === activeMenuKey.value)
-  return m?.title ?? ''
+  return navigationItems.find((item) => item.path === activeMenuKey.value)?.title ?? ''
+})
+
+const currentGroup = computed(() => {
+  return navigationGroups.find((group) => group.items.some((item) => item.path === activeMenuKey.value))?.title ?? '控制台'
+})
+
+const userInitial = computed(() => {
+  const name = auth.user?.display_name || auth.user?.username || 'U'
+  return name.trim().slice(0, 1).toUpperCase()
 })
 
 function onMenuClick(key: string) {
-  if (key && key !== route.path) {
-    router.push(key)
-  }
+  if (key && key !== route.path) router.push(key)
 }
 
-// 路由切换时刷新 AI 助手的页面上下文：任意页面都能带上当前页面；
-// 进入 AI 助手独立页时保留来源页面资源，便于继续追问。
 watch(
   () => route.path,
   (path) => {
     const title = typeof route.meta.title === 'string' ? route.meta.title : ''
     if (path === '/ai-assistant') {
-      if (!aiContext.hasResourceContext) {
-        aiContext.setPageBase('ai-assistant', title)
-      }
+      if (!aiContext.hasResourceContext) aiContext.setPageBase('ai-assistant', title)
       return
     }
     aiContext.setPageBase(path.replace(/^\//, ''), title)
@@ -185,10 +164,10 @@ onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
   if (!auth.token) return
   try {
-    const u = await fetchCurrentUser()
-    auth.setUser(u)
+    const user = await fetchCurrentUser()
+    auth.setUser(user)
   } catch {
-    /* 错误已由拦截器提示；用户信息刷新失败不阻断布局渲染。 */
+    // 请求层已提示，用户信息刷新失败不阻断布局。
   }
 })
 
@@ -197,95 +176,89 @@ onBeforeUnmount(() => {
 })
 </script>
 
-<style scoped lang="scss">
+<style scoped>
 .layout {
-  position: relative;
-  /* 锁定为视口高度：全局不产生 body 滚动条，仅 .main 内部滚动，侧边导航保持固定。 */
   height: 100vh;
   overflow: hidden;
-  background: #063b45;
+  background: var(--aiops-paper);
 }
 
 .sider {
-  position: relative;
   z-index: 3;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: rgba(3, 29, 36, 0.84) !important;
-  border-right: 1px solid rgba(193, 239, 230, 0.17);
-  box-shadow: 18px 0 44px rgba(0, 21, 29, 0.18);
-  backdrop-filter: blur(20px) saturate(1.08);
+  background: var(--aiops-nav) !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-/* Arco 会在 sider 内包一层 -children，flex 链必须从它开始：
-   logo / 菜单 / 页脚都成为 flex 子项，菜单独立滚动，页脚不再需要
-   绝对定位 + 硬编码 padding-bottom 避让。 */
 .sider :deep(.arco-layout-sider-children) {
-  flex: 1;
-  min-height: 0;
   display: flex;
+  flex: 1;
   flex-direction: column;
+  min-height: 0;
 }
 
 .logo {
-  height: 82px;
   display: flex;
+  flex-shrink: 0;
   align-items: center;
-  gap: 12px;
-  padding: 0 20px;
-  color: #effbf7;
-  border-bottom: 1px solid rgba(193, 239, 230, 0.14);
+  gap: 10px;
+  height: 64px;
+  padding: 0 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .logo-mark {
-  width: 38px;
-  height: 38px;
   display: grid;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
   place-items: center;
-  border: 1px solid rgba(214, 255, 246, 0.5);
-  border-radius: 50%;
-  color: #f6f5ef;
-  font-family: var(--aiops-display);
-  font-size: 13px;
-  font-style: italic;
+  border-radius: 8px;
+  color: #ffffff;
+  background: var(--aiops-accent);
+  font-size: 12px;
   font-weight: 700;
-  background: rgba(14, 78, 86, 0.78);
-  box-shadow: inset 0 0 18px rgba(163, 242, 226, 0.12);
 }
 
 .logo-text,
 .logo-sub {
   display: block;
+  white-space: nowrap;
 }
 
 .logo-text {
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  color: #f2f4f7;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .logo-sub {
   margin-top: 3px;
-  color: rgba(210, 238, 232, 0.62);
-  font-family: var(--aiops-display);
-  font-size: 11px;
-  font-style: italic;
+  color: #667085;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
 }
 
-.sider-label {
-  padding: 22px 20px 8px;
-  color: rgba(200, 235, 228, 0.48);
+.navigation {
+  flex: 1;
+  min-height: 0;
+  padding: 12px 0;
+  overflow-y: auto;
+}
+
+.nav-group {
+  margin-bottom: 12px;
+}
+
+.nav-group-label {
+  padding: 7px 18px 5px;
+  color: #667085;
   font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.08em;
 }
 
 .sider :deep(.arco-menu) {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
   background: transparent !important;
 }
 
@@ -294,54 +267,48 @@ onBeforeUnmount(() => {
 }
 
 .sider :deep(.arco-menu-item) {
-  width: calc(100% - 24px);
-  height: 40px;
-  margin: 3px 12px;
-  border-radius: 0;
-  color: rgba(232, 248, 244, 0.82) !important;
+  width: calc(100% - 16px);
+  height: 38px;
+  margin: 2px 8px;
+  border-radius: 6px;
+  color: #98a2b3 !important;
   background: transparent !important;
   font-size: 13px;
-  transition: color 180ms ease, background 180ms ease, padding 180ms ease;
 }
 
 .sider :deep(.arco-menu-item:hover) {
-  color: #ffffff !important;
-  background: rgba(113, 194, 187, 0.13) !important;
+  color: #f2f4f7 !important;
+  background: rgba(255, 255, 255, 0.06) !important;
 }
 
 .sider :deep(.arco-menu-selected) {
-  padding-left: 20px;
-  color: #f4fffc !important;
-  background: rgba(97, 184, 177, 0.24) !important;
-  box-shadow: inset 2px 0 #a4e5da;
+  color: #ffffff !important;
+  background: rgba(47, 111, 237, 0.24) !important;
+  box-shadow: inset 2px 0 #7aa7ff;
 }
 
-.sider :deep(.arco-menu-icon) {
-  color: rgba(190, 234, 226, 0.76) !important;
-}
-
+.sider :deep(.arco-menu-icon),
 .sider :deep(.arco-menu-selected .arco-menu-icon) {
-  color: #9af0df !important;
+  color: currentColor !important;
 }
 
 .sider-foot {
-  flex: 0 0 auto;
   display: flex;
-  gap: 10px;
-  margin: 0 16px 18px;
-  padding: 14px;
-  border-top: 1px solid rgba(193, 239, 230, 0.14);
-  color: rgba(212, 239, 233, 0.56);
+  flex-shrink: 0;
+  gap: 9px;
+  align-items: flex-start;
+  margin: 8px 14px 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .sider-foot-dot {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 auto;
-  margin-top: 4px;
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
   border-radius: 50%;
-  background: var(--aiops-accent-bright);
-  box-shadow: 0 0 0 5px rgba(125, 224, 203, 0.11), 0 0 14px rgba(125, 224, 203, 0.42);
+  background: #36cfc9;
 }
 
 .sider-foot strong,
@@ -350,142 +317,129 @@ onBeforeUnmount(() => {
 }
 
 .sider-foot strong {
-  color: rgba(236, 252, 248, 0.82);
+  color: #d0d5dd;
   font-size: 11px;
-  letter-spacing: 0.04em;
+  font-weight: 500;
 }
 
 .sider-foot span {
   margin-top: 4px;
+  color: #667085;
   font-size: 10px;
-  line-height: 1.55;
+}
+
+.sider.arco-layout-sider-collapsed .logo-copy,
+.sider.arco-layout-sider-collapsed .nav-group-label,
+.sider.arco-layout-sider-collapsed .sider-foot div {
+  display: none;
 }
 
 .content-shell {
-  position: relative;
-  z-index: 2;
   min-width: 0;
-  background: transparent;
+  background: var(--aiops-paper);
 }
 
 .header {
-  height: 66px;
-  margin: 12px 14px 0;
-  padding: 0 22px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  color: #effbf8;
-  border: 1px solid rgba(190, 239, 231, 0.2);
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  background: rgba(4, 38, 46, 0.68);
-  box-shadow: 0 18px 50px rgba(0, 25, 33, 0.13);
-  backdrop-filter: blur(20px) saturate(1.1);
-
-  .header-left,
-  .header-right {
-    display: flex;
-    align-items: center;
-  }
-
-  .header-left {
-    gap: 14px;
-  }
-
-  .header-right {
-    gap: 10px;
-    color: rgba(228, 247, 242, 0.7);
-  }
+  height: 56px;
+  padding: 0 20px;
+  color: var(--aiops-text-1);
+  background: var(--aiops-surface);
+  border-bottom: 1px solid var(--aiops-border);
 }
 
-.header-index {
-  color: rgba(202, 237, 230, 0.55);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
+.header-left,
+.header-right {
+  display: flex;
+  align-items: center;
+}
+
+.header-left {
+  gap: 9px;
+  min-width: 0;
+}
+
+.header-right {
+  gap: 8px;
+}
+
+.header-section {
+  color: var(--aiops-text-3);
+  font-size: 12px;
+}
+
+.header-separator {
+  color: #c4ccd6;
 }
 
 .header-title {
-  font-family: var(--aiops-display);
-  font-size: 19px;
-  font-style: italic;
-  font-weight: 500;
-}
-
-.header-principle {
-  margin-right: 8px;
-  color: rgba(205, 238, 232, 0.52);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-}
-
-.status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--aiops-accent-bright);
-  box-shadow: 0 0 0 4px rgba(125, 224, 203, 0.11), 0 0 12px rgba(125, 224, 203, 0.38);
-}
-
-.user-name {
-  max-width: 160px;
   overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.ai-entry {
+  color: var(--aiops-accent) !important;
+}
+
+.header-divider {
+  width: 1px;
+  height: 20px;
+  margin: 0 4px;
+  background: var(--aiops-border);
+}
+
+.user-avatar {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--aiops-accent-strong);
+  background: var(--aiops-accent-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.user-name {
+  max-width: 140px;
+  overflow: hidden;
+  color: var(--aiops-text-2);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logout-button {
+  color: var(--aiops-text-3) !important;
+}
+
 .main {
-  position: relative;
-  /* flex: 1 + min-height: 0 让内容区在固定高度内收缩并内部滚动。 */
   flex: 1;
+  min-width: 0;
   min-height: 0;
-  margin: 0 14px 14px;
-  padding: 18px;
-  border: 1px solid rgba(190, 239, 231, 0.2);
-  border-top: 0;
-  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
-  background: radial-gradient(
-    ellipse 58% 54% at 50% 42%,
-    rgba(246, 250, 248, 0.94) 0%,
-    rgba(241, 248, 245, 0.86) 58%,
-    rgba(231, 244, 241, 0.68) 100%
-  );
-  box-shadow: 0 26px 70px rgba(0, 23, 31, 0.18);
-  backdrop-filter: blur(18px) saturate(0.9);
+  padding: 16px;
   overflow: auto;
-}
-
-.header :deep(.arco-btn-text) {
-  color: rgba(236, 252, 248, 0.78);
-}
-
-.header :deep(.arco-btn-text:hover) {
-  color: #ffffff;
-  background: rgba(161, 226, 215, 0.12);
-}
-
-@media (max-width: 1080px) {
-  .header-principle {
-    display: none;
-  }
+  background: var(--aiops-paper);
 }
 
 @media (max-width: 900px) {
   .header {
-    height: 60px;
-    margin: 8px 8px 0;
-    padding: 0 14px;
+    padding: 0 12px;
   }
 
-  .header-index,
+  .header-section,
+  .header-separator,
   .user-name {
     display: none;
   }
 
   .main {
-    margin: 0 8px 8px;
-    padding: 10px;
+    padding: 12px;
   }
 }
 </style>

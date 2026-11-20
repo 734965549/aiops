@@ -1,0 +1,75 @@
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: var(--aiops-paper);
+  color: var(--aiops-text-1);
+}
+
+body {
+  min-width: 320px;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+::selection {
+  color: #ffffff;
+  background: var(--aiops-accent);
+}
+
+:focus-visible {
+  outline: 2px solid rgba(47, 111, 237, 0.55);
+  outline-offset: 2px;
+}
+
+* {
+  scrollbar-color: #c4cdd8 transparent;
+  scrollbar-width: thin;
+}
+
+.mono {
+  font-family: var(--aiops-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.numeric {
+  font-variant-numeric: tabular-nums;
+}
+
+.text-secondary {
+  color: var(--aiops-text-2);
+}
+
+.text-muted {
+  color: var(--aiops-text-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

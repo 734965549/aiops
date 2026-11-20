@@ -23,8 +23,9 @@ export default defineConfig(({ mode }) => {
     root: projectRoot,
     plugins: [
       vue(),
-      AutoImport({ resolvers: [ArcoResolver()] }),
+      AutoImport({ dts: mode === 'development', resolvers: [ArcoResolver()] }),
       Components({
+        dts: mode === 'development',
         resolvers: [
           ArcoResolver({ sideEffect: true, resolveIcons: true })
         ]
@@ -88,6 +89,9 @@ export default defineConfig(({ mode }) => {
               id.includes('b-validate')
             ) {
               return 'arco-vendor'
+            }
+            if (id.includes('@antv')) {
+              return 'topology-vendor'
             }
             if (id.includes('axios')) {
               return 'axios'

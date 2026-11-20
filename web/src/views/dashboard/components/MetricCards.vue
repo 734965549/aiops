@@ -1,37 +1,29 @@
 <template>
-  <a-row :gutter="16">
-    <a-col
-      v-for="(card, index) in cards"
+  <div class="metric-grid">
+    <a-card
+      v-for="card in cards"
       :key="card.key"
-      :xs="12"
-      :sm="8"
-      :lg="4"
+      class="metric-card"
+      :bordered="false"
+      :hoverable="Boolean(card.link)"
+      @click="emit('navigate', card.link)"
     >
-      <a-card
-        class="metric-card"
-        :bordered="false"
-        hoverable
-        @click="emit('navigate', card.link)"
+      <div class="metric-head">
+        <span class="metric-title">{{ card.title }}</span>
+        <span
+          v-if="card.link"
+          class="metric-link"
+        >↗</span>
+      </div>
+      <div
+        class="metric-value numeric"
+        :class="card.valueClass"
       >
-        <div class="metric-head">
-          <span>{{ String(index + 1).padStart(2, '0') }}</span>
-          <span>↗</span>
-        </div>
-        <div class="metric-title">
-          {{ card.title }}
-        </div>
-        <div
-          class="metric-value"
-          :class="card.valueClass"
-        >
-          {{ card.display }}
-        </div>
-        <div class="metric-tip">
-          {{ card.tip }}
-        </div>
-      </a-card>
-    </a-col>
-  </a-row>
+        {{ card.display }}
+      </div>
+      <div class="metric-tip">{{ card.tip }}</div>
+    </a-card>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -48,59 +40,59 @@ const emit = defineEmits<{
   navigate: [path: string]
 }>()
 
-function displayCount(n: number | null) {
-  return n === null ? '—' : String(n)
+function displayCount(value: number | null) {
+  return value === null ? '—' : String(value)
 }
 
 const cards = computed(() => {
-  const s = props.summary
+  const summary = props.summary
   const ready = props.readiness?.status === 'ready'
   return [
     {
       key: 'active',
       title: '活跃告警',
-      display: displayCount(s?.alerts.active_total ?? null),
-      tip: '未关闭的告警总数',
+      display: displayCount(summary?.alerts.active_total ?? null),
+      tip: '当前未关闭告警',
       link: '/alerts',
-      valueClass: s?.alerts.active_total ? 'value-warn' : ''
+      valueClass: summary?.alerts.active_total ? 'value-warn' : ''
     },
     {
       key: 'p0',
       title: 'P0 告警',
-      display: displayCount(s?.alerts.p0 ?? null),
-      tip: '最高优先级活跃告警',
+      display: displayCount(summary?.alerts.p0 ?? null),
+      tip: '最高优先级',
       link: '/alerts',
-      valueClass: s?.alerts.p0 ? 'value-danger' : ''
+      valueClass: summary?.alerts.p0 ? 'value-danger' : ''
     },
     {
       key: 'p1',
       title: 'P1 告警',
-      display: displayCount(s?.alerts.p1 ?? null),
-      tip: '高优先级活跃告警',
+      display: displayCount(summary?.alerts.p1 ?? null),
+      tip: '高优先级',
       link: '/alerts',
-      valueClass: s?.alerts.p1 ? 'value-warn' : ''
+      valueClass: summary?.alerts.p1 ? 'value-warn' : ''
     },
     {
       key: 'pending',
       title: '待确认执行',
-      display: displayCount(s?.executions.pending_confirm ?? null),
-      tip: '等待人工 CONFIRM 的任务',
+      display: displayCount(summary?.executions.pending_confirm ?? null),
+      tip: '等待人工 CONFIRM',
       link: '/executions',
-      valueClass: s?.executions.pending_confirm ? 'value-warn' : ''
+      valueClass: summary?.executions.pending_confirm ? 'value-warn' : ''
     },
     {
       key: 'assets',
       title: '注册资源',
-      display: s ? `${s.assets.resources}` : '—',
-      tip: s ? `${s.assets.applications} 个应用 · 点击管理资产` : '应用与资源注册总数',
+      display: summary ? String(summary.assets.resources) : '—',
+      tip: summary ? `${summary.assets.applications} 个应用` : '应用与资源总数',
       link: '/assets',
       valueClass: ''
     },
     {
       key: 'ready',
-      title: '平台就绪',
+      title: '平台状态',
       display: props.readiness ? (ready ? '就绪' : '未就绪') : '—',
-      tip: props.readiness ? `运行 ${Math.round((props.readiness.uptime_ms || 0) / 1000)}s` : '探测 /readyz',
+      tip: props.readiness ? `运行 ${Math.round((props.readiness.uptime_ms || 0) / 1000)}s` : '等待 /readyz',
       link: '',
       valueClass: props.readiness ? (ready ? 'value-ok' : 'value-warn') : ''
     }
@@ -109,78 +101,82 @@ const cards = computed(() => {
 </script>
 
 <style scoped>
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .metric-card {
+  min-width: 0;
+  min-height: 118px;
+  border: 1px solid var(--aiops-border);
+  cursor: default;
+}
+
+.metric-card:has(.metric-link) {
   cursor: pointer;
-  min-height: 168px;
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: rgba(255, 255, 252, 0.68) !important;
 }
-/* 卡体 flex 列 + tip 置底：tip 换行时各卡数值仍保持在同一水平线上 */
+
 .metric-card :deep(.arco-card-body) {
-  flex: 1;
   display: flex;
   flex-direction: column;
+  height: 100%;
+  padding: 14px 16px;
 }
-.metric-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  right: 0;
-  left: 0;
-  height: 3px;
-  pointer-events: none;
-  background: #50643f;
-  transform: scaleX(0.22);
-  transform-origin: left;
-  transition: transform 220ms ease;
-}
-.metric-card:hover::before {
-  transform: scaleX(1);
-}
+
 .metric-head {
-  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 20px;
-  color: #858a81;
-  font-family: var(--aiops-display);
-  font-size: 10px;
-  font-style: italic;
-}
-.metric-card .metric-title {
-  position: relative;
-  color: #646960;
+  color: var(--aiops-text-2);
   font-size: 12px;
 }
-.metric-card .metric-value {
-  position: relative;
-  margin: 7px 0 8px;
-  color: #20251f;
-  font-family: var(--aiops-display);
-  font-size: 34px;
-  font-style: italic;
-  font-weight: 500;
-  letter-spacing: -0.04em;
+
+.metric-link {
+  color: var(--aiops-text-3);
+  font-size: 13px;
 }
-.metric-card .metric-value.value-danger {
+
+.metric-value {
+  margin-top: 8px;
+  color: var(--aiops-text-1);
+  font-size: 27px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.metric-value.value-danger {
   color: rgb(var(--red-6));
 }
-.metric-card .metric-value.value-warn {
+
+.metric-value.value-warn {
   color: rgb(var(--orange-6));
 }
-.metric-card .metric-value.value-ok {
+
+.metric-value.value-ok {
   color: rgb(var(--green-6));
 }
-.metric-card .metric-tip {
-  position: relative;
+
+.metric-tip {
   margin-top: auto;
-  padding-top: 8px;
-  color: #858a81;
+  padding-top: 6px;
+  overflow: hidden;
+  color: var(--aiops-text-3);
   font-size: 11px;
-  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1399px) {
+  .metric-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 </style>

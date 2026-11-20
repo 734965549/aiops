@@ -1,79 +1,32 @@
 <template>
   <div class="page-shell">
-    <a-card
+    <PageHeader
       title="云账号接入"
+      description="管理云厂商与可观测平台连接，凭据仅由后端加密保存。"
+    >
+      <template #actions>
+        <a-button
+          :loading="loading"
+          @click="loadAccounts"
+        >刷新</a-button>
+        <a-button
+          type="primary"
+          @click="openCreate"
+        >新建账号</a-button>
+      </template>
+    </PageHeader>
+
+    <a-card
       :bordered="false"
       class="page-card"
     >
-      <template #extra>
-        <a-space>
-          <a-button
-            :loading="loading"
-            @click="loadAccounts"
-          >
-            刷新
-          </a-button>
-          <a-button
-            type="primary"
-            @click="openCreate"
-          >
-            新建账号
-          </a-button>
-        </a-space>
-      </template>
 
-      <a-form
-        :model="filters"
-        layout="inline"
-        class="filter-form"
-      >
-        <a-form-item label="Provider">
-          <a-select
-            v-model="filters.provider"
-            allow-clear
-            placeholder="全部"
-            style="width: 140px"
-          >
-            <a-option value="huawei_cloud">
-              华为云
-            </a-option>
-            <a-option value="signoz">
-              SigNoz
-            </a-option>
-            <a-option value="prometheus">
-              Prometheus
-            </a-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item label="状态">
-          <a-select
-            v-model="filters.enabled"
-            allow-clear
-            placeholder="全部"
-            style="width: 140px"
-          >
-            <a-option :value="true">
-              启用
-            </a-option>
-            <a-option :value="false">
-              禁用
-            </a-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item>
-          <a-space>
-            <a-button
-              type="primary"
-              @click="onSearch"
-            >
-              查询
-            </a-button>
-            <a-button @click="onResetFilters">
-              重置
-            </a-button>
-          </a-space>
-        </a-form-item>
-      </a-form>
+      <IntegrationFilterForm
+        v-model:provider="filters.provider"
+        v-model:enabled="filters.enabled"
+        @search="onSearch"
+        @reset="onResetFilters"
+      />
 
       <a-table
         class="page-table page-table-fit"
@@ -401,6 +354,8 @@ import {
   triggerAssetSync
 } from '@/api/asset'
 import { getApiError } from '@/api/request'
+import PageHeader from '@/components/PageHeader.vue'
+import IntegrationFilterForm from './components/IntegrationFilterForm.vue'
 import {
   extractUnknownExtraConfig,
   formatRegionProjects,
