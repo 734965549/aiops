@@ -40,6 +40,25 @@ func TestParseChatAnswerValid(t *testing.T) {
 	}
 }
 
+func TestParseChatAnswerToleratesObjectLists(t *testing.T) {
+	content := `{
+		"summary": "阈值体检",
+		"recommendations": [{"rule": "磁盘使用率", "current": 88, "suggested": 80}],
+		"evidence": ["磁盘 31 点恒定 11.29%", {"metric": "mem_util", "peak": 60.3}],
+		"risk_level": "info"
+	}`
+	answer, err := parseChatAnswer(content)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(answer.Recommendations) != 1 || !strings.Contains(answer.Recommendations[0], "磁盘使用率") {
+		t.Fatalf("recommendations = %#v", answer.Recommendations)
+	}
+	if len(answer.Evidence) != 2 || !strings.Contains(answer.Evidence[1], "mem_util") {
+		t.Fatalf("evidence = %#v", answer.Evidence)
+	}
+}
+
 func TestParseChatAnswerRejectsInvalid(t *testing.T) {
 	cases := map[string]string{
 		"not json":        "抱歉，我无法回答",

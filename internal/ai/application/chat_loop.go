@@ -159,7 +159,8 @@ func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, 
 		if result.Partial {
 			return partialChatGeneration(result, observationEvidenceLines(*data), providerID, tokens)
 		}
-		if answer, parseErr := parseChatAnswer(result.Content); parseErr == nil {
+		answer, parseErr := parseChatAnswer(result.Content)
+		if parseErr == nil {
 			status := chatStatusOK
 			if answer.InsufficientContext {
 				status = chatStatusInsufficientContext
@@ -178,7 +179,8 @@ func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, 
 				logger.Int("content_len", len(runes)),
 				logger.Int("tokens", result.Tokens),
 				logger.String("content_head", truncateRunes(result.Content, 400)),
-				logger.String("content_tail", string(tail)))
+				logger.String("content_tail", string(tail)),
+				logger.Error(parseErr))
 			return chatGeneration{
 				Answer: degradedChatAnswer(chatDegradedOutputInvalid, observationEvidenceLines(*data)),
 				Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,

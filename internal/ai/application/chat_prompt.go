@@ -164,18 +164,48 @@ func chatPromptTask(forceAnswer bool) string {
 // degraded / degraded_reason 仅在平台降级落库时写入，重放历史回答时按原值还原。
 type chatAnswerPayload struct {
 	Summary             string   `json:"summary"`
-	Evidence            []string `json:"evidence"`
-	Impact              []string `json:"impact"`
-	Recommendations     []string `json:"recommendations"`
+	Evidence            flexList `json:"evidence"`
+	Impact              flexList `json:"impact"`
+	Recommendations     flexList `json:"recommendations"`
 	RiskLevel           string   `json:"risk_level"`
 	RequireConfirm      bool     `json:"require_confirm"`
 	Rollback            flexText `json:"rollback"`
-	Uncertainties       []string `json:"uncertainties"`
+	Uncertainties       flexList `json:"uncertainties"`
 	InsufficientContext bool     `json:"insufficient_context"`
 	Degraded            bool     `json:"degraded"`
 	DegradedReason      string   `json:"degraded_reason"`
 	Incomplete          bool     `json:"incomplete"`
 	IncompleteReason    string   `json:"incomplete_reason"`
+}
+
+// flexList 兼容模型把字符串数组漂移输出为对象数组等形态，逐元素转成可读字符串。
+type flexList []string
+
+func (l *flexList) UnmarshalJSON(raw []byte) error {
+	var list []string
+	if err := json.Unmarshal(raw, &list); err == nil {
+		*l = list
+		return nil
+	}
+	var items []any
+	if err := json.Unmarshal(raw, &items); err != nil {
+		*l = nil
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+			continue
+		}
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
+		out = append(out, string(encoded))
+	}
+	*l = out
+	return nil
 }
 
 // flexText 兼容模型把文本字段输出为字符串或字符串数组。
