@@ -168,9 +168,17 @@ func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, 
 		}
 		requests := parseChatToolRequests(result.Content)
 		if len(requests) == 0 {
+			runes := []rune(result.Content)
+			tail := runes
+			if len(tail) > 200 {
+				tail = tail[len(tail)-200:]
+			}
 			logger.From(ctx).Warn("ai chat answer invalid",
 				logger.String("provider_id", providerID),
-				logger.String("content_head", truncateRunes(result.Content, 400)))
+				logger.Int("content_len", len(runes)),
+				logger.Int("tokens", result.Tokens),
+				logger.String("content_head", truncateRunes(result.Content, 400)),
+				logger.String("content_tail", string(tail)))
 			return chatGeneration{
 				Answer: degradedChatAnswer(chatDegradedOutputInvalid, observationEvidenceLines(*data)),
 				Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
