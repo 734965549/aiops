@@ -289,12 +289,14 @@ func main() {
 	// ---- 装配 Asset 限界上下文（Alert §9.1 标签匹配）----
 	assetAppRepo := assetpg.NewApplicationRepository(app.DB)
 	assetResRepo := assetpg.NewResourceRepository(app.DB)
+	assetRelationRepo := assetpg.NewResourceRelationRepository(app.DB)
 	assetRuleRepo := assetpg.NewMatchRuleRepository(app.DB)
 	assetMatcherSvc := assetapp.NewMatcherService(assetAppRepo, assetResRepo, assetRuleRepo)
 	assetRefChecker := assetpg.NewApplicationReferenceChecker(app.DB)
 	assetDeleteExecutor := assetpg.NewApplicationDeleteExecutor(app.DB)
-	assetSvc := assetapp.NewAssetService(assetAppRepo, assetResRepo, assetRuleRepo, assetRefChecker, assetDeleteExecutor, assetAuditRecorder)
+	assetSvc := assetapp.NewAssetService(assetAppRepo, assetResRepo, assetRuleRepo, assetRefChecker, assetDeleteExecutor, assetAuditRecorder, assetRelationRepo)
 	assetRuleSvc := assetapp.NewMatchRuleService(assetRuleRepo, assetAppRepo, assetResRepo, assetAuditRecorder)
+	assetTopologySvc := assetapp.NewTopologyService(assetAppRepo, assetResRepo, assetRelationRepo, assetAuditRecorder)
 
 	// ---- 装配 Alert 限界上下文（告警中心 Phase 1：接入/去重/状态流转）----
 	alertEventRepo := alertpg.NewAlertEventRepository(app.DB)
@@ -475,7 +477,7 @@ func main() {
 		assetAuditRecorder,
 	)
 	assetSyncSvc.SetLifecycle(rootCtx)
-	assetHandler := assethttp.NewHandler(assetSvc, assetRuleSvc, assetSyncSvc)
+	assetHandler := assethttp.NewHandler(assetSvc, assetRuleSvc, assetSyncSvc, assetTopologySvc)
 
 	var alertSyncWorker *alertapp.AlertSyncWorker
 	if app.Cfg.AlertSync.WorkerEnabled {

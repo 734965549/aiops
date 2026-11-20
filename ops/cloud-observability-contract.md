@@ -622,6 +622,55 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 - 字典仅作为下拉候选值，最终过滤仍必须通过 §5.5.4 的 `cloud_resource_type` / `region` 精确匹配参数下传，禁止前端用字典做本地筛选。
 - `application_id` 为空白时返回 `INVALID_ARGUMENT`。
 
+#### 5.5.6 CMDB 资源拓扑与手工关系（migration 0058）
+
+CMDB 拓扑描述应用归属和资源配置关系，与 §5.4 的 Observability 运行时调用拓扑是不同领域模型，不复用 DTO、权限或 fake Provider 数据。
+
+| 接口 | Method | Path | Auth |
+| --- | --- | --- | --- |
+| 查询应用资源拓扑 | `GET` | `/api/assets/topology?application_id=app-1` | Bearer + `app:assets:read` |
+| 查询手工关系 | `GET` | `/api/assets/resource-relations?application_id=app-1` | Bearer + `app:assets:read` |
+| 创建手工关系 | `POST` | `/api/assets/resource-relations` | Bearer + `app:assets:write` |
+| 删除手工关系 | `DELETE` | `/api/assets/resource-relations/:relation_id` | Bearer + `app:assets:write` |
+
+拓扑查询参数：`application_id` 必填；`region` / `cloud_resource_type` 精确过滤；`keyword` 匹配资源业务 ID、名称、云资源 ID 和资源类型；`relation_type` 过滤手工边；`include_stale=true` 时才包含 stale 资源，默认 false。
+
+- 应用→资源的 `contains` 边由 `asset_resource.application_id` 实时派生，`origin=registry`，不重复落库。
+- 手工关系持久化于 `asset_resource_relation`，`origin=manual`，关系类型仅支持 `depends_on` / `attached_to` / `located_in` / `routes_to`。
+- 创建时两端资源必须存在、不能相同且必须属于同一应用；`(source_resource_id, target_resource_id, relation_type)` 唯一，重复返回 `ALREADY_EXISTS`。
+- 资源仍存在源端或目标端关系时，删除资源返回 `FAILED_PRECONDITION`，必须先删除关系。
+- 关系创建/删除写 `resource_type=resource_relation`、`action=create/delete` 审计，payload 包含两端业务 ID 与关系类型，不记录敏感 labels。
+- 单次最多返回 299 个资源节点加 1 个应用节点；超出时 `meta.truncated=true`，调用方必须继续用筛选缩小范围，不得把结果描述为完整拓扑。
+
+拓扑响应 `data`：
+
+```json
+{
+  "nodes": [
+    { "node_id": "application:app-1", "entity_type": "application", "entity_id": "app-1", "name": "payment" },
+    { "node_id": "resource:res-1", "entity_type": "resource", "entity_id": "res-1", "name": "gateway", "application_id": "app-1" }
+  ],
+  "edges": [
+    { "edge_id": "contains:res-1", "source_node_id": "application:app-1", "target_node_id": "resource:res-1", "relation_type": "contains", "origin": "registry" }
+  ],
+  "meta": { "generated_at": 1760000000, "truncated": false, "node_count": 2, "edge_count": 1 }
+}
+```
+
+创建关系请求：
+
+```json
+{
+  "source_resource_id": "res-1",
+  "target_resource_id": "res-2",
+  "relation_type": "depends_on"
+}
+```
+
+关系列表响应 `data` 为 `{ "items": [], "total": 0 }`；单项包含 `relation_id`、两端资源业务 ID 和显示名、`relation_type`、`origin`、`created_at`、`updated_at`。删除成功返回 `{ "deleted": true }`。
+
+前端独立路由为 `/assets/topology?application_id=app-1`，提供 G6 画布、列表降级、节点详情和手工关系维护；观测页对应入口明确命名为“调用拓扑”。
+
 ## 6. Inspection API
 
 > **实现状态（阶段 4 第一步）**：下列 API 已落地；运行触发后同步执行 Observability 证据采集 + `EvidenceAnalyzer` 规则分析（fake/真实 provider 均可），生成 Finding/Recommendation 并引用 `evidence_id`。`Recommendation -> Execution` 接口已落地（见 §7，`POST /api/inspections/recommendations/:recommendation_id/execution`）。**定时 Worker 仍未落地**：策略 `schedule` 字段已持久化、`TriggerType="scheduled"` 枚举已定义，但尚无后台 worker 按 cron 自动触发巡检，当前仅支持手动触发。

@@ -71,6 +71,8 @@
 0054_ai_memory_manage_permission.up.sql              -> AI：种子 app:ai:memory:manage 并绑定 admin（记忆管理：检索/手动停用启用，契约 §10.19）；无表结构变更
 0055_ai_alert_rules_tool_permission.up.sql           -> AI：种子 AI 工具权限 alert.rules.list 并绑定 admin（规则体检 MVP，契约 §10.12.1）；无表结构变更
 0056_ai_discovery_tools_permission.up.sql            -> AI：种子 AI 工具权限 accounts.list / resource.analyze / resources.list 并绑定 admin（上下文发现，契约 §10.12.1）；无表结构变更
+0057_ai_provider_reasoning_effort.up.sql             -> AI：ai_provider 增加 reasoning_effort；空串不发送参数，应用层校验 low/high/max
+0058_asset_resource_relation.up.sql                  -> Asset：asset_resource_relation（CMDB 手工资源关系）；业务 ID、两端资源、关系类型、来源、唯一索引；时间戳由 Go 维护，无外键，复用 app:assets:read/write
 ```
 
 | 职责 | 0001 / 0002 / 0016 迁移 | 启动期 bootstrap（`cmd/api`） |
@@ -318,6 +320,8 @@ Integration 上下文第一阶段迁移，建表：
 | `0054` | `0054_ai_memory_manage_permission.up.sql` | AI | 仅种子权限：`app:ai:memory:manage`（记忆管理：列表检索与手动停用/启用，契约 §10.19）并绑定内置 `admin`；无表结构变更；`ON CONFLICT` 幂等；`down.sql` 删除角色绑定与权限（人工回滚参考） | 已落地 |
 | `0055` | `0055_ai_alert_rules_tool_permission.up.sql` | AI | 仅种子 AI 工具权限：`alert.rules.list`（read_only，规则体检，契约 §10.12.1）并绑定内置 `admin`；写入 `iam_ai_tool_permission` + `iam_role_ai_tool_permission`；无表结构变更；`ON CONFLICT` 幂等；`down.sql` 删除绑定与权限（人工回滚参考） | 已落地 |
 | `0056` | `0056_ai_discovery_tools_permission.up.sql` | AI | 仅种子 AI 工具权限：`accounts.list` / `resource.analyze` / `resources.list`（read_only，上下文发现，契约 §10.12.1）并绑定内置 `admin`；写入 `iam_ai_tool_permission` + `iam_role_ai_tool_permission`；无表结构变更；`ON CONFLICT` 幂等；`down.sql` 删除绑定与权限（人工回滚参考） | 已落地 |
+| `0057` | `0057_ai_provider_reasoning_effort.up.sql` | AI | `ai_provider` 增加 `reasoning_effort`；空串不发送参数，`low/high/max` 由应用层校验；`ADD COLUMN IF NOT EXISTS` 幂等 | 已落地 |
+| `0058` | `0058_asset_resource_relation.up.sql` | Asset | 新建 `asset_resource_relation`：`relation_id` 业务唯一、源/目标资源业务 ID、`relation_type`、`origin`；唯一约束防止同向同类型重复关系，源/目标索引支持拓扑查询；无外键、时间戳由 Go 维护；复用 `app:assets:read/write`，无新增权限；`down.sql` 删除关系表（人工回滚参考） | 已落地 |
 
 这些迁移必须同步种子化权限和 AI 工具权限，并把 admin 角色绑定到新增权限：
 

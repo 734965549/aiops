@@ -700,7 +700,7 @@ func TestMatcherService_NoMatchReturnsEmpty(t *testing.T) {
 }
 
 func TestAssetService_CreateResourceApplicationNotFound(t *testing.T) {
-	svc := NewAssetService(&fakeAppRepo{apps: map[string]domain.Application{}}, &fakeResRepo{}, nil, nil, nil, NoopAuditRecorder{})
+	svc := NewAssetService(&fakeAppRepo{apps: map[string]domain.Application{}}, &fakeResRepo{}, nil, nil, nil, NoopAuditRecorder{}, nil)
 	_, err := svc.CreateResource(context.Background(), Actor{}, CreateResourceInput{
 		ApplicationID: "missing-app-id",
 		Name:          "pod-1",
@@ -742,7 +742,7 @@ func (f *fakeAccountScope) ResolveAccountScope(context.Context, string) (string,
 }
 
 func newAnalysisAssetService(resources *fakeResRepo) *AssetService {
-	return NewAssetService(&fakeAppRepo{}, resources, nil, nil, nil, nil)
+	return NewAssetService(&fakeAppRepo{}, resources, nil, nil, nil, nil, nil)
 }
 
 func cloudSyncedResource() domain.Resource {

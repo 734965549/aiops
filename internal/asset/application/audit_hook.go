@@ -6,16 +6,18 @@ import "context"
 type AuditAction string
 
 const (
-	AuditCreateApplication AuditAction = "create"
-	AuditUpdateApplication AuditAction = "update"
-	AuditDeleteApplication AuditAction = "delete"
-	AuditCreateResource    AuditAction = "create"
-	AuditUpdateResource    AuditAction = "update"
-	AuditDeleteResource    AuditAction = "delete"
-	AuditCreateMatchRule   AuditAction = "create"
-	AuditUpdateMatchRule   AuditAction = "update"
-	AuditDeleteMatchRule   AuditAction = "delete"
-	AuditAssetSync         AuditAction = "sync"
+	AuditCreateApplication      AuditAction = "create"
+	AuditUpdateApplication      AuditAction = "update"
+	AuditDeleteApplication      AuditAction = "delete"
+	AuditCreateResource         AuditAction = "create"
+	AuditUpdateResource         AuditAction = "update"
+	AuditDeleteResource         AuditAction = "delete"
+	AuditCreateResourceRelation AuditAction = "create"
+	AuditDeleteResourceRelation AuditAction = "delete"
+	AuditCreateMatchRule        AuditAction = "create"
+	AuditUpdateMatchRule        AuditAction = "update"
+	AuditDeleteMatchRule        AuditAction = "delete"
+	AuditAssetSync              AuditAction = "sync"
 )
 
 // AuditRecord 审计载荷。

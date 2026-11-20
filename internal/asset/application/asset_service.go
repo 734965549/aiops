@@ -20,6 +20,7 @@ type Actor struct {
 type AssetService struct {
 	apps           domain.ApplicationRepository
 	resources      domain.ResourceRepository
+	relations      domain.ResourceRelationRepository
 	rules          domain.MatchRuleRepository
 	refChecker     ApplicationReferenceChecker
 	deleteExecutor ApplicationDeleteExecutor
@@ -31,12 +32,12 @@ type AssetService struct {
 
 // NewAssetService 构造资产管理服务。
 // deleteExecutor 用于 DeleteApplication 单事务删除；refChecker 在无 executor 时回退使用。
-func NewAssetService(apps domain.ApplicationRepository, resources domain.ResourceRepository, rules domain.MatchRuleRepository, refChecker ApplicationReferenceChecker, deleteExecutor ApplicationDeleteExecutor, audit AuditRecorder) *AssetService {
+func NewAssetService(apps domain.ApplicationRepository, resources domain.ResourceRepository, rules domain.MatchRuleRepository, refChecker ApplicationReferenceChecker, deleteExecutor ApplicationDeleteExecutor, audit AuditRecorder, relations domain.ResourceRelationRepository) *AssetService {
 	if audit == nil {
 		audit = NoopAuditRecorder{}
 	}
 	return &AssetService{
-		apps: apps, resources: resources, rules: rules,
+		apps: apps, resources: resources, rules: rules, relations: relations,
 		refChecker: refChecker, deleteExecutor: deleteExecutor, audit: audit,
 	}
 }
@@ -415,6 +416,15 @@ func (s *AssetService) DeleteResource(ctx context.Context, id string, actor Acto
 	}
 	if _, err := s.resources.GetByID(ctx, id); err != nil {
 		return wrapAssetError(err, "load resource failed")
+	}
+	if s.relations != nil {
+		count, err := s.relations.CountByResourceID(ctx, id)
+		if err != nil {
+			return wrapAssetError(err, "count resource relations failed")
+		}
+		if count > 0 {
+			return apperr.Newf(apperr.CodeFailedPrecondition, "resource has %d relation(s), delete relations first", count)
+		}
 	}
 	if s.rules != nil {
 		rn, err := s.rules.CountByResourceID(ctx, id)

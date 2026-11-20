@@ -14,11 +14,12 @@ type Handler struct {
 	assets     *assetapp.AssetService
 	matchRules *assetapp.MatchRuleService
 	sync       *assetapp.SyncService
+	topology   *assetapp.TopologyService
 }
 
 // NewHandler 构造 Handler。
-func NewHandler(assets *assetapp.AssetService, matchRules *assetapp.MatchRuleService, sync *assetapp.SyncService) *Handler {
-	return &Handler{assets: assets, matchRules: matchRules, sync: sync}
+func NewHandler(assets *assetapp.AssetService, matchRules *assetapp.MatchRuleService, sync *assetapp.SyncService, topology *assetapp.TopologyService) *Handler {
+	return &Handler{assets: assets, matchRules: matchRules, sync: sync, topology: topology}
 }
 
 type createApplicationRequest struct {
