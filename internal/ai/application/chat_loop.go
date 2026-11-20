@@ -169,7 +169,8 @@ func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, 
 		requests := parseChatToolRequests(result.Content)
 		if len(requests) == 0 {
 			logger.From(ctx).Warn("ai chat answer invalid",
-				logger.String("provider_id", providerID))
+				logger.String("provider_id", providerID),
+				logger.String("content_head", truncateRunes(result.Content, 400)))
 			return chatGeneration{
 				Answer: degradedChatAnswer(chatDegradedOutputInvalid, observationEvidenceLines(*data)),
 				Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
@@ -248,7 +249,8 @@ func (s *ChatService) forceFinalAnswer(ctx context.Context, providerID, question
 		logger.From(ctx).Warn("ai chat forced convergence output invalid",
 			logger.String("session_id", session.SessionID),
 			logger.Int("prompt_bytes", len(prompt)),
-			logger.Int64("duration_ms", time.Since(started).Milliseconds()))
+			logger.Int64("duration_ms", time.Since(started).Milliseconds()),
+			logger.String("content_head", truncateRunes(result.Content, 400)))
 		return degraded
 	}
 	status := chatStatusOK
