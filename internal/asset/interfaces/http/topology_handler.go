@@ -1,6 +1,8 @@
 package http
 
 import (
+	"strconv"
+
 	assetapp "github.com/734965549/aiops/internal/asset/application"
 	apperr "github.com/734965549/aiops/pkg/errors"
 	httpx "github.com/734965549/aiops/pkg/transport/http"
@@ -18,8 +20,20 @@ func (h *Handler) GetTopology(c *gin.Context) {
 		httpx.FailWith(c, apperr.CodeUnavailable, "asset topology service is not enabled")
 		return
 	}
+	depth := 0
+	if rawDepth := c.Query("depth"); rawDepth != "" {
+		parsed, err := strconv.Atoi(rawDepth)
+		if err != nil {
+			httpx.FailWith(c, apperr.CodeInvalidArgument, "depth must be an integer")
+			return
+		}
+		depth = parsed
+	}
 	out, err := h.topology.GetTopology(c.Request.Context(), assetapp.TopologyQuery{
 		ApplicationID:     c.Query("application_id"),
+		RootResourceID:    c.Query("root_resource_id"),
+		Depth:             depth,
+		Direction:         c.Query("direction"),
 		Region:            c.Query("region"),
 		CloudResourceType: c.Query("cloud_resource_type"),
 		RelationType:      c.Query("relation_type"),

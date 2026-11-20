@@ -6,11 +6,12 @@ import (
 )
 
 const (
-	RelationDependsOn    = "depends_on"
-	RelationAttachedTo   = "attached_to"
-	RelationLocatedIn    = "located_in"
-	RelationRoutesTo     = "routes_to"
-	RelationOriginManual = "manual"
+	RelationDependsOn       = "depends_on"
+	RelationAttachedTo      = "attached_to"
+	RelationLocatedIn       = "located_in"
+	RelationRoutesTo        = "routes_to"
+	RelationOriginManual    = "manual"
+	RelationOriginCloudSync = "cloud_sync"
 )
 
 type ResourceRelation struct {

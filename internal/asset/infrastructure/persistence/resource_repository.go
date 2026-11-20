@@ -48,6 +48,21 @@ func (r *ResourceRepository) Create(ctx context.Context, res *domain.Resource) e
 	return nil
 }
 
+func (r *ResourceRepository) ListAll(ctx context.Context) ([]domain.Resource, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("asset resource repository is not configured")
+	}
+	var rows []resourceModel
+	if err := r.db.WithContext(ctx).Order("created_at ASC, id ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]domain.Resource, 0, len(rows))
+	for i := range rows {
+		out = append(out, toResourceDomain(&rows[i]))
+	}
+	return out, nil
+}
+
 func (r *ResourceRepository) ListByApplicationID(ctx context.Context, applicationID string) ([]domain.Resource, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("asset resource repository is not configured")

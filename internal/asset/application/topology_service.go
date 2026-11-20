@@ -29,6 +29,9 @@ func NewTopologyService(apps domain.ApplicationRepository, resources domain.Reso
 
 type TopologyQuery struct {
 	ApplicationID     string
+	RootResourceID    string
+	Depth             int
+	Direction         string
 	Region            string
 	CloudResourceType string
 	RelationType      string
@@ -61,10 +64,14 @@ type TopologyEdgeDTO struct {
 }
 
 type TopologyMetaDTO struct {
-	GeneratedAt int64 `json:"generated_at"`
-	Truncated   bool  `json:"truncated"`
-	NodeCount   int   `json:"node_count"`
-	EdgeCount   int   `json:"edge_count"`
+	GeneratedAt             int64  `json:"generated_at"`
+	Truncated               bool   `json:"truncated"`
+	NodeCount               int    `json:"node_count"`
+	EdgeCount               int    `json:"edge_count"`
+	UnresolvedRelationCount int    `json:"unresolved_relation_count"`
+	RootResourceID          string `json:"root_resource_id,omitempty"`
+	Depth                   int    `json:"depth,omitempty"`
+	Direction               string `json:"direction,omitempty"`
 }
 
 type TopologyDTO struct {
@@ -74,15 +81,17 @@ type TopologyDTO struct {
 }
 
 type ResourceRelationDTO struct {
-	ID               string `json:"relation_id"`
-	SourceResourceID string `json:"source_resource_id"`
-	SourceName       string `json:"source_name"`
-	TargetResourceID string `json:"target_resource_id"`
-	TargetName       string `json:"target_name"`
-	RelationType     string `json:"relation_type"`
-	Origin           string `json:"origin"`
-	CreatedAt        int64  `json:"created_at"`
-	UpdatedAt        int64  `json:"updated_at"`
+	ID                  string `json:"relation_id"`
+	SourceResourceID    string `json:"source_resource_id"`
+	SourceName          string `json:"source_name"`
+	SourceApplicationID string `json:"source_application_id,omitempty"`
+	TargetResourceID    string `json:"target_resource_id"`
+	TargetName          string `json:"target_name"`
+	TargetApplicationID string `json:"target_application_id,omitempty"`
+	RelationType        string `json:"relation_type"`
+	Origin              string `json:"origin"`
+	CreatedAt           int64  `json:"created_at"`
+	UpdatedAt           int64  `json:"updated_at"`
 }
 
 type CreateResourceRelationInput struct {
@@ -99,6 +108,11 @@ func (s *TopologyService) GetTopology(ctx context.Context, query TopologyQuery) 
 	query.CloudResourceType = strings.TrimSpace(query.CloudResourceType)
 	query.RelationType = strings.TrimSpace(query.RelationType)
 	query.Keyword = strings.TrimSpace(query.Keyword)
+	query.RootResourceID = strings.TrimSpace(query.RootResourceID)
+	query.Direction = strings.TrimSpace(query.Direction)
+	if query.RootResourceID != "" {
+		return s.getRootTopology(ctx, query)
+	}
 	app, rows, err := s.loadApplicationResources(ctx, query.ApplicationID)
 	if err != nil {
 		return nil, err
@@ -147,11 +161,30 @@ func (s *TopologyService) GetTopology(ctx context.Context, query TopologyQuery) 
 		}
 		edges = append(edges, toTopologyRelationEdge(relation))
 	}
+	derived := deriveCloudRelations(rows)
+	for _, relation := range derived.relations {
+		if query.RelationType != "" && relation.RelationType != query.RelationType {
+			continue
+		}
+		_, sourceIncluded := included[relation.SourceResourceID]
+		_, targetIncluded := included[relation.TargetResourceID]
+		if !sourceIncluded || !targetIncluded {
+			continue
+		}
+		edges = append(edges, toTopologyRelationEdge(relation))
+	}
+	unresolved := 0
+	for _, resourceID := range derived.unresolved {
+		if _, ok := included[resourceID]; ok {
+			unresolved++
+		}
+	}
 	return &TopologyDTO{
 		Nodes: nodes, Edges: edges,
 		Meta: TopologyMetaDTO{
 			GeneratedAt: time.Now().UTC().Unix(), Truncated: truncated,
 			NodeCount: len(nodes), EdgeCount: len(edges),
+			UnresolvedRelationCount: unresolved,
 		},
 	}, nil
 }
@@ -170,25 +203,50 @@ func (s *TopologyService) ListRelations(ctx context.Context, applicationID, rela
 	}
 	ids := make([]string, 0, len(rows))
 	names := make(map[string]string, len(rows))
+	applicationIDs := make(map[string]string, len(rows))
 	for _, row := range rows {
 		ids = append(ids, row.ID)
 		names[row.ID] = topologyResourceName(row)
+		applicationIDs[row.ID] = row.ApplicationID
 	}
 	relations, err := s.relations.ListByResourceIDs(ctx, ids)
 	if err != nil {
 		return nil, wrapAssetError(err, "list resource relations failed")
+	}
+	resolveResource := func(id string) (string, string, error) {
+		if name, ok := names[id]; ok {
+			return name, applicationIDs[id], nil
+		}
+		row, err := s.resources.GetByID(ctx, id)
+		if err != nil {
+			return "", "", err
+		}
+		names[id] = topologyResourceName(*row)
+		applicationIDs[id] = row.ApplicationID
+		return names[id], applicationIDs[id], nil
 	}
 	out := make([]ResourceRelationDTO, 0, len(relations))
 	for _, relation := range relations {
 		if relationType != "" && relation.RelationType != relationType {
 			continue
 		}
-		sourceName, sourceIncluded := names[relation.SourceResourceID]
-		targetName, targetIncluded := names[relation.TargetResourceID]
-		if !sourceIncluded || !targetIncluded {
+		_, sourceIncluded := names[relation.SourceResourceID]
+		_, targetIncluded := names[relation.TargetResourceID]
+		if !sourceIncluded && !targetIncluded {
 			continue
 		}
-		out = append(out, toResourceRelationDTO(relation, sourceName, targetName))
+		sourceName, sourceApplicationID, err := resolveResource(relation.SourceResourceID)
+		if err != nil {
+			return nil, wrapAssetError(err, "load source resource failed")
+		}
+		targetName, targetApplicationID, err := resolveResource(relation.TargetResourceID)
+		if err != nil {
+			return nil, wrapAssetError(err, "load target resource failed")
+		}
+		dto := toResourceRelationDTO(relation, sourceName, targetName)
+		dto.SourceApplicationID = sourceApplicationID
+		dto.TargetApplicationID = targetApplicationID
+		out = append(out, dto)
 	}
 	return out, nil
 }
@@ -217,9 +275,6 @@ func (s *TopologyService) CreateRelation(ctx context.Context, actor Actor, input
 	if err != nil {
 		return nil, wrapAssetError(err, "load target resource failed")
 	}
-	if source.ApplicationID != target.ApplicationID {
-		return nil, apperr.New(apperr.CodeInvalidArgument, "resources must belong to the same application")
-	}
 	relation := &domain.ResourceRelation{
 		ID: uuid.NewString(), SourceResourceID: sourceID, TargetResourceID: targetID,
 		RelationType: relationType, Origin: domain.RelationOriginManual,
@@ -232,6 +287,8 @@ func (s *TopologyService) CreateRelation(ctx context.Context, actor Actor, input
 		"relation_type": relationType, "result": "success",
 	})
 	dto := toResourceRelationDTO(*relation, topologyResourceName(*source), topologyResourceName(*target))
+	dto.SourceApplicationID = source.ApplicationID
+	dto.TargetApplicationID = target.ApplicationID
 	return &dto, nil
 }
 

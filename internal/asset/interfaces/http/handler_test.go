@@ -147,6 +147,12 @@ func (r *assetHTTPTestResRepo) Count(_ context.Context) (int64, error) {
 	return int64(len(r.rows)), nil
 }
 
+func (r *assetHTTPTestResRepo) ListAll(_ context.Context) ([]assetdomain.Resource, error) {
+	out := make([]assetdomain.Resource, len(r.rows))
+	copy(out, r.rows)
+	return out, nil
+}
+
 func (r *assetHTTPTestResRepo) ListByApplicationID(_ context.Context, applicationID string) ([]assetdomain.Resource, error) {
 	out := make([]assetdomain.Resource, 0)
 	for _, row := range r.rows {

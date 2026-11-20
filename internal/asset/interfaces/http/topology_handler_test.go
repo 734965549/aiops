@@ -145,6 +145,17 @@ func TestCreateRelation_ValidationFailure(t *testing.T) {
 	}
 }
 
+func TestTopology_InvalidDepthReturnsBadRequest(t *testing.T) {
+	engine, token, _, _ := newAssetHTTPEngine(t, &fakeAssetHTTPAuthorizer{allowed: true})
+	req := httptest.NewRequest(http.MethodGet, "/api/assets/topology?root_resource_id=res-1&depth=abc", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func getTopologyForTest(t *testing.T, engine http.Handler, token string) assetapp.TopologyDTO {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/api/assets/topology?application_id=app-1", nil)

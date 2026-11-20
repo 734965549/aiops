@@ -633,14 +633,18 @@ CMDB 拓扑描述应用归属和资源配置关系，与 §5.4 的 Observability
 | 创建手工关系 | `POST` | `/api/assets/resource-relations` | Bearer + `app:assets:write` |
 | 删除手工关系 | `DELETE` | `/api/assets/resource-relations/:relation_id` | Bearer + `app:assets:write` |
 
-拓扑查询参数：`application_id` 必填；`region` / `cloud_resource_type` 精确过滤；`keyword` 匹配资源业务 ID、名称、云资源 ID 和资源类型；`relation_type` 过滤手工边；`include_stale=true` 时才包含 stale 资源，默认 false。
+拓扑查询必须指定 `application_id` 或 `root_resource_id` 之一。`region` / `cloud_resource_type` 精确过滤；`keyword` 匹配资源业务 ID、名称、云资源 ID 和资源类型；`relation_type` 过滤手工边和云派生边，不影响 `contains`；`include_stale=true` 时才包含 stale 资源，默认 false。
+
+根资源查询使用 `root_resource_id=<业务 ID>&depth=2&direction=both`：`depth` 默认 2、允许 1–3；`direction` 支持 `both` / `upstream` / `downstream`，分别表示双向、仅上游、仅下游。根节点始终保留，其他节点按层级和筛选条件扩展，支持跨应用链路。
 
 - 应用→资源的 `contains` 边由 `asset_resource.application_id` 实时派生，`origin=registry`，不重复落库。
 - 手工关系持久化于 `asset_resource_relation`，`origin=manual`，关系类型仅支持 `depends_on` / `attached_to` / `located_in` / `routes_to`。
-- 创建时两端资源必须存在、不能相同且必须属于同一应用；`(source_resource_id, target_resource_id, relation_type)` 唯一，重复返回 `ALREADY_EXISTS`。
+- 创建时两端资源必须存在且不能相同，允许跨应用；`(source_resource_id, target_resource_id, relation_type)` 唯一，重复返回 `ALREADY_EXISTS`。响应同时返回两端 `source_application_id` / `target_application_id`。
+- 云派生边 `origin=cloud_sync` 仅在查询时由已验证字段生成，不伪造持久化关系：ECS/RDS/DCS/DMS/Subnet/ELB 的 `vpc_id`、RDS 的 `subnet_id`、EVS 的 `attached_to`、EIP 的 `bandwidth_id`、Peering 的 `request_vpc_id` / `accept_vpc_id`。来源账号、Region、云资源类型和云资源 ID 必须唯一匹配；不跨账号/Region 猜边。
+- 无法唯一解析的云关系端点不创建“幽灵节点”，计入 `meta.unresolved_relation_count`；无该字段的既有空实现按 0 处理。
 - 资源仍存在源端或目标端关系时，删除资源返回 `FAILED_PRECONDITION`，必须先删除关系。
 - 关系创建/删除写 `resource_type=resource_relation`、`action=create/delete` 审计，payload 包含两端业务 ID 与关系类型，不记录敏感 labels。
-- 单次最多返回 299 个资源节点加 1 个应用节点；超出时 `meta.truncated=true`，调用方必须继续用筛选缩小范围，不得把结果描述为完整拓扑。
+- 单次最多返回 299 个资源节点及其关联应用节点；超出时 `meta.truncated=true`，调用方必须继续用筛选或降低深度缩小范围，不得把结果描述为完整拓扑。
 
 拓扑响应 `data`：
 
@@ -653,7 +657,7 @@ CMDB 拓扑描述应用归属和资源配置关系，与 §5.4 的 Observability
   "edges": [
     { "edge_id": "contains:res-1", "source_node_id": "application:app-1", "target_node_id": "resource:res-1", "relation_type": "contains", "origin": "registry" }
   ],
-  "meta": { "generated_at": 1760000000, "truncated": false, "node_count": 2, "edge_count": 1 }
+  "meta": { "generated_at": 1760000000, "truncated": false, "node_count": 2, "edge_count": 1, "unresolved_relation_count": 0 }
 }
 ```
 
@@ -667,9 +671,9 @@ CMDB 拓扑描述应用归属和资源配置关系，与 §5.4 的 Observability
 }
 ```
 
-关系列表响应 `data` 为 `{ "items": [], "total": 0 }`；单项包含 `relation_id`、两端资源业务 ID 和显示名、`relation_type`、`origin`、`created_at`、`updated_at`。删除成功返回 `{ "deleted": true }`。
+关系列表响应 `data` 为 `{ "items": [], "total": 0 }`；单项包含 `relation_id`、两端资源业务 ID、显示名和应用 ID、`relation_type`、`origin`、`created_at`、`updated_at`。跨应用关系在源应用和目标应用的关系列表中均可出现。删除成功返回 `{ "deleted": true }`。
 
-前端独立路由为 `/assets/topology?application_id=app-1`，提供 G6 画布、列表降级、节点详情和手工关系维护；观测页对应入口明确命名为“调用拓扑”。
+前端独立路由为 `/assets/topology?application_id=app-1`：默认以根资源展示上下游分层链路，支持完整路径高亮、1–3 层扩展和循环依赖保护；“全景”使用力导向网络展示应用归属与资源关系；“列表”提供可访问性降级。节点详情可切换为新的根资源，手工关系表单可分别选择源资源和目标应用/资源。观测页对应入口明确命名为“调用拓扑”。
 
 ## 6. Inspection API
 

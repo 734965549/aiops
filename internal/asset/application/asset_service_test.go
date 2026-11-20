@@ -24,7 +24,15 @@ func (r *fakeAppRepo) Create(_ context.Context, app *domain.Application) error {
 	return nil
 }
 
-func (r *fakeAppRepo) List(_ context.Context) ([]domain.Application, error) { return nil, nil }
+func (r *fakeAppRepo) List(_ context.Context) ([]domain.Application, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]domain.Application, 0, len(r.apps))
+	for _, app := range r.apps {
+		out = append(out, app)
+	}
+	return out, nil
+}
 
 func (r *fakeAppRepo) ListPaged(_ context.Context, filter domain.ApplicationFilter) ([]domain.Application, int64, error) {
 	r.mu.Lock()
@@ -181,6 +189,10 @@ func (r *fakeResRepo) Count(_ context.Context) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return int64(len(r.rows)), nil
+}
+
+func (r *fakeResRepo) ListAll(_ context.Context) ([]domain.Resource, error) {
+	return r.rowsSnapshot(), nil
 }
 
 func (r *fakeResRepo) ListByApplicationID(_ context.Context, applicationID string) ([]domain.Resource, error) {

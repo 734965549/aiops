@@ -72,6 +72,7 @@ type CloudResourceFilter struct {
 // ResourceRepository 资源注册表持久化接口。
 type ResourceRepository interface {
 	Create(ctx context.Context, res *Resource) error
+	ListAll(ctx context.Context) ([]Resource, error)
 	ListByApplicationID(ctx context.Context, applicationID string) ([]Resource, error)
 	// ListByApplicationIDPaged 按应用 + 分页过滤返回资源列表与总数。
 	ListByApplicationIDPaged(ctx context.Context, applicationID string, filter ResourceFilter) ([]Resource, int64, error)

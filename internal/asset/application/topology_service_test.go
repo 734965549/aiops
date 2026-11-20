@@ -173,13 +173,11 @@ func TestTopologyService_CreateAndDeleteRelation(t *testing.T) {
 
 func TestTopologyService_RejectsInvalidRelations(t *testing.T) {
 	apps, resources, relations := topologyTestRepos()
-	resources.rows = append(resources.rows, domain.Resource{ID: "res-other", ApplicationID: "app-2"})
 	svc := NewTopologyService(apps, resources, relations, NoopAuditRecorder{})
 
 	for name, input := range map[string]CreateResourceRelationInput{
-		"self":              {SourceResourceID: "res-1", TargetResourceID: "res-1", RelationType: domain.RelationDependsOn},
-		"type":              {SourceResourceID: "res-1", TargetResourceID: "res-2", RelationType: "calls"},
-		"cross_application": {SourceResourceID: "res-1", TargetResourceID: "res-other", RelationType: domain.RelationDependsOn},
+		"self": {SourceResourceID: "res-1", TargetResourceID: "res-1", RelationType: domain.RelationDependsOn},
+		"type": {SourceResourceID: "res-1", TargetResourceID: "res-2", RelationType: "calls"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := svc.CreateRelation(context.Background(), Actor{}, input)
