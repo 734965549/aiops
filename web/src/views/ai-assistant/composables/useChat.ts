@@ -25,6 +25,7 @@ import { createExecutionTask } from '@/api/execution'
 import { getApiError, isApiHttpError } from '@/api/request'
 import { isAbortError } from '@/api/sse'
 import { useAIContextStore } from '@/stores/aiContext'
+import { IMAGE_ONLY_PROMPT } from './imageInput'
 
 /** 请求进行中的可见阶段（同步接口，仅作进度提示）。 */
 export type ChatStage = 'idle' | 'thinking' | 'querying_tools' | 'generating'
@@ -96,6 +97,8 @@ export function useChat() {
   const liveThinking = ref('')
   const uiStatus = ref<ChatUIStatus>('idle')
   const lastUserContent = ref('')
+  // 最近一次提问的附图（data URL），重试时与幂等键一起复用。
+  const lastUserImages = ref<string[]>([])
   // 最近一次提问的幂等键，重试时复用（ops/ai-contract.md §10.6.5）。
   const lastClientMessageId = ref('')
   const lastResult = ref<SendChatMessageResult | null>(null)
@@ -300,9 +303,11 @@ export function useChat() {
     }
   }
 
-  async function send(rawContent: string, clientMessageId?: string) {
+  async function send(rawContent: string, clientMessageId?: string, images: string[] = []) {
     const content = rawContent.trim()
-    if (!content || sending.value) return
+    if ((!content && images.length === 0) || sending.value) return
+    // 纯图片消息与服务端兜底提问保持一致（ops/ai-contract.md §10.20）。
+    const effectiveContent = content || IMAGE_ONLY_PROMPT
     // 归档会话只读：服务端会返回 409，前端提前拦截避免丢失已输入内容。
     if (activeSession.value?.status === 'archived') {
       Message.warning('会话已归档，请先恢复归档或新建会话再继续提问')
@@ -314,7 +319,8 @@ export function useChat() {
     error.value = ''
     sending.value = true
     deltaChars.value = 0
-    lastUserContent.value = content
+    lastUserContent.value = effectiveContent
+    lastUserImages.value = [...images]
     // 同一条提问的重试复用同一个幂等键，服务端据此返回首次结果而不是重复落消息。
     const clientId = clientMessageId || newClientMessageId()
     lastClientMessageId.value = clientId
@@ -323,7 +329,8 @@ export function useChat() {
       message_id: `local-${Date.now()}`,
       session_id: sessionId,
       role: 'user',
-      content,
+      content: effectiveContent,
+      images: images.length > 0 ? [...images] : undefined,
       tool_calls: [],
       references: [],
       created_at: new Date().toISOString()
@@ -336,7 +343,8 @@ export function useChat() {
       const result = await streamChatMessage(
         sessionId,
         {
-          content,
+          content: effectiveContent,
+          images: images.length > 0 ? images : undefined,
           context: chatRequestContext(),
           provider_id: selectedProviderID.value || undefined,
           client_message_id: clientId
@@ -411,9 +419,9 @@ export function useChat() {
   }
 
   async function retry() {
-    if (!lastUserContent.value) return
-    // 重试复用同一幂等键：服务端已生成答案时直接回放，不会产生重复消息。
-    await send(lastUserContent.value, lastClientMessageId.value || undefined)
+    if (!lastUserContent.value && lastUserImages.value.length === 0) return
+    // 重试复用同一幂等键与附图：服务端已生成答案时直接回放，不会产生重复消息。
+    await send(lastUserContent.value, lastClientMessageId.value || undefined, lastUserImages.value)
   }
 
   async function refreshSessionList() {

@@ -74,6 +74,7 @@
             :quick-questions="quickQuestions"
             :models="modelOptions"
             :model-value="selectedModel?.provider_id || ''"
+            :vision-enabled="selectedModel?.vision_enabled ?? false"
             @select-model="selectModel"
             @send="onSend"
             @retry="retry"
@@ -186,8 +187,8 @@ function openShare(sessionId: string) {
   shareVisible.value = true
 }
 
-async function onSend(content: string) {
-  await send(content)
+async function onSend(content: string, images?: string[]) {
+  await send(content, undefined, images ?? [])
 }
 
 async function onSelectSession(sessionId: string) {

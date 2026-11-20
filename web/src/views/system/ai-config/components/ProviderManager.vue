@@ -151,6 +151,15 @@
               思考型模型降低强度可大幅缩短时延；不支持的模型留空
             </div>
           </a-form-item>
+          <a-form-item
+            v-if="form.type === 'b'"
+            label="视觉能力"
+          >
+            <a-switch v-model="form.vision_enabled" />
+            <div class="field-hint">
+              仅视觉模型开启：开启后 AI 助手可向该模型发送图片（截图提问）
+            </div>
+          </a-form-item>
           <a-form-item label="启用">
             <a-switch v-model="form.enabled" />
           </a-form-item>
@@ -219,6 +228,7 @@ const emptyForm = () => ({
   api_key: '',
   timeout_ms: 300000,
   reasoning_effort: '',
+  vision_enabled: false,
   enabled: true,
   description: ''
 })
@@ -248,6 +258,7 @@ function onSelect(record: Record<string, unknown>) {
   form.api_key = ''
   form.timeout_ms = provider.timeout_ms ?? 300000
   form.reasoning_effort = provider.reasoning_effort ?? ''
+  form.vision_enabled = provider.vision_enabled ?? false
   form.enabled = provider.enabled
   form.description = provider.description ?? ''
 }
@@ -278,6 +289,7 @@ async function onSave() {
       api_key: form.api_key.trim() || undefined,
       timeout_ms: form.timeout_ms,
       reasoning_effort: form.reasoning_effort || undefined,
+      vision_enabled: form.vision_enabled,
       enabled: form.enabled,
       description: form.description.trim() || undefined
     })

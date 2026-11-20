@@ -12,6 +12,8 @@ export interface AIProvider {
   has_api_key?: boolean
   timeout_ms?: number
   reasoning_effort?: string
+  /** 类型 b 模型是否接受图片输入（多模态）；未开启时带图消息会被后端拒绝。 */
+  vision_enabled?: boolean
   headers?: Record<string, string>
   enabled: boolean
   description?: string
@@ -26,6 +28,7 @@ export interface UpsertProviderInput {
   api_key?: string
   timeout_ms?: number
   reasoning_effort?: string
+  vision_enabled?: boolean
   headers?: Record<string, string>
   enabled?: boolean
   description?: string
@@ -127,6 +130,8 @@ export interface ChatModelInfo {
   provider_id: string
   name: string
   model: string
+  /** 该模型是否接受图片输入；false 时前端禁用图片入口。 */
+  vision_enabled?: boolean
 }
 
 export interface ChatSession {
@@ -185,6 +190,8 @@ export interface ChatMessage {
   session_id: string
   role: 'user' | 'assistant' | string
   content: string
+  /** 用户消息附图的 data URL 数组（migration 0059）。 */
+  images?: string[]
   answer?: ChatAnswer
   tool_calls: ChatToolCall[]
   references: ChatReference[]
@@ -218,6 +225,8 @@ export interface CreateChatSessionInput {
 
 export interface SendChatMessageInput {
   content: string
+  /** 可选用户附图（data URL 数组，最多 3 张、单张解码后 <=2MB）；需模型开启 vision_enabled。 */
+  images?: string[]
   context?: ChatSessionContext
   /** 可选对话模型；空时回退会话上下文与默认模型。 */
   provider_id?: string

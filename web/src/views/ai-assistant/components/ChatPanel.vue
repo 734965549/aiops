@@ -20,26 +20,10 @@
         v-for="message in messages"
         :key="message.message_id"
       >
-        <div
+        <ChatUserMessage
           v-if="message.role === 'user'"
-          class="message-row message-row--user"
-        >
-          <div class="message-bubble message-bubble--user">
-            {{ message.content }}
-          </div>
-          <div class="message-meta">
-            <span class="message-time">{{ formatTime(message.created_at) }}</span>
-            <button
-              type="button"
-              class="message-copy"
-              title="复制消息"
-              aria-label="复制消息"
-              @click="copyUserMessage(message.content)"
-            >
-              <IconCopy :size="12" />
-            </button>
-          </div>
-        </div>
+          :message="message"
+        />
         <div
           v-else
           class="message-row message-row--assistant"
@@ -62,7 +46,7 @@
           >
             {{ message.content }}
           </div>
-          <span class="message-time">{{ formatTime(message.created_at) }}</span>
+          <span class="message-time">{{ formatMessageTime(message.created_at) }}</span>
         </div>
       </template>
 
@@ -243,15 +227,33 @@
           {{ question }}
         </a-button>
       </div>
+      <ChatImagePicker
+        ref="pickerRef"
+        v-model="images"
+        v-model:attaching="attaching"
+        :sending="sending"
+        :vision-enabled="visionEnabled"
+      />
       <a-textarea
         v-model="input"
         :auto-size="{ minRows: compact ? 2 : 3, maxRows: 6 }"
         :placeholder="placeholder"
         :disabled="sending"
         @keydown.enter.exact.prevent="submit"
+        @paste="onPaste"
       />
       <div class="input-foot">
         <div class="input-foot-main">
+          <a-button
+            size="mini"
+            type="text"
+            class="attach-button"
+            :disabled="sending || !visionEnabled || attaching"
+            :title="attachHint"
+            @click="pickerRef?.onPickImages()"
+          >
+            <IconImage :size="16" />
+          </a-button>
           <ModelControl
             v-if="modelOptions.length"
             :models="modelOptions"
@@ -278,7 +280,7 @@
           v-else
           type="primary"
           size="small"
-          :disabled="!input.trim()"
+          :disabled="(!input.trim() && images.length === 0) || attaching"
           @click="submit"
         >
           发送
@@ -290,11 +292,14 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
-import { IconCopy, IconRobot } from '@arco-design/web-vue/es/icon'
+import { IconImage, IconRobot } from '@arco-design/web-vue/es/icon'
 import type { ChatAnswer, ChatMessage, ChatModelInfo, ChatToolCall } from '@/api/ai'
 import AnswerCard from './AnswerCard.vue'
 import ModelControl from './ModelControl.vue'
-import { copyText } from '../composables/useCopy'
+import ChatImagePicker from './ChatImagePicker.vue'
+import ChatUserMessage from './ChatUserMessage.vue'
+import { MAX_CHAT_IMAGES } from '../composables/imageInput'
+import { formatMessageTime } from '../composables/format'
 import { toolLabel, toolReasonLabel, toolStatusLabel } from '../toolReason'
 import { STAGE_LABELS, type ChatStage, type ChatUIStatus } from '../composables/useChat'
 
@@ -313,6 +318,8 @@ const props = defineProps<{
   placeholder?: string
   models?: ChatModelInfo[]
   modelValue?: string
+  /** 当前选中模型是否接受图片输入；false 时禁用图片按钮与粘贴。 */
+  visionEnabled?: boolean
   /** 发送中的实时工具调用过程（SSE tool 事件），结束后由最终回答的工具标签接管。 */
   liveTools?: ChatToolCall[]
   /** 发送中的模型思考增量（reasoning_content），仅流中展示，不落库。 */
@@ -320,7 +327,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'send', content: string): void
+  (e: 'send', content: string, images?: string[]): void
   (e: 'retry'): void
   (e: 'stop'): void
   (e: 'feedback', messageId: string, feedback: 'valid' | 'invalid'): void
@@ -333,6 +340,23 @@ const input = ref('')
 const scrollRef = ref<HTMLElement | null>(null)
 const placeholder = props.placeholder || '请输入你的问题，例如：帮我分析当前告警并给出排查步骤'
 const modelOptions = computed(() => props.models ?? [])
+
+// 图片输入：由 ChatImagePicker 负责压缩与预览，submit 时随消息发送（最多 3 张）。
+const images = ref<string[]>([])
+const attaching = ref(false)
+const pickerRef = ref<{ addImageFiles: (files: ArrayLike<File> | null) => Promise<void>; onPickImages: () => void } | null>(null)
+const attachHint = computed(() =>
+  props.visionEnabled
+    ? `添加图片（最多 ${MAX_CHAT_IMAGES} 张，支持直接粘贴截图）`
+    : '当前模型未开启图片输入：请在 AI 配置为该模型开启视觉能力，或切换视觉模型'
+)
+
+function onPaste(event: ClipboardEvent) {
+  const files = event.clipboardData?.files
+  if (!files || files.length === 0) return
+  event.preventDefault()
+  void pickerRef.value?.addImageFiles(files)
+}
 
 // 实时思考过程：思考阶段默认展开，进入回答生成阶段自动折叠；有新增量时自动滚到底部。
 const thinkingOpen = ref(true)
@@ -359,10 +383,6 @@ watch(
 
 function onSelectModel(value: unknown) {
   emit('select-model', String(value ?? ''))
-}
-
-async function copyUserMessage(content: string) {
-  await copyText(content, '已复制消息')
 }
 
 // 首块前等待提示：发送期间每秒累计，收到首个回答增量后切换为“已生成 N 字”。
@@ -483,9 +503,11 @@ watch(
 
 function submit() {
   const content = input.value.trim()
-  if (!content || props.sending) return
+  if ((!content && images.value.length === 0) || props.sending) return
+  const payload = [...images.value]
   input.value = ''
-  emit('send', content)
+  images.value = []
+  emit('send', content, payload)
 }
 
 function onQuickQuestion(question: string) {
@@ -503,13 +525,6 @@ function onPropose(answer: ChatAnswer, messageId?: string) {
 
 function onNavigate(url: string) {
   emit('navigate', url)
-}
-
-function formatTime(value: string) {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 </script>
 
@@ -538,11 +553,6 @@ function formatTime(value: string) {
   max-width: 100%;
 }
 
-.message-row--user {
-  align-items: flex-end;
-  gap: 2px;
-}
-
 .message-row--assistant {
   align-items: stretch;
   gap: 4px;
@@ -558,39 +568,10 @@ function formatTime(value: string) {
   overflow-wrap: anywhere;
 }
 
-.message-bubble--user {
-  color: #ffffff;
-  background: #51663f;
-  border-bottom-right-radius: 4px;
-}
-
-.message-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 2px;
-}
-
-.message-copy {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: none;
-  border-radius: 4px;
-  color: var(--color-text-3);
-  background: transparent;
-  opacity: 0.75;
-  cursor: pointer;
-  transition: opacity 0.15s ease;
-}
-
-.message-copy:hover {
-  color: var(--color-text-1);
-  background: var(--color-fill-2);
-  opacity: 1;
+.attach-button {
+  flex: none;
+  padding: 0 4px;
+  color: var(--color-text-2);
 }
 
 .message-bubble--assistant {
@@ -604,10 +585,6 @@ function formatTime(value: string) {
   margin-top: 2px;
   color: var(--color-text-3);
   font-size: 10px;
-}
-
-.message-meta .message-time {
-  margin-top: 0;
 }
 
 .stage-indicator {

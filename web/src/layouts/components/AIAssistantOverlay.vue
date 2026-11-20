@@ -48,6 +48,7 @@
         :quick-questions="quickQuestions"
         :models="modelOptions"
         :model-value="selectedModel?.provider_id || ''"
+        :vision-enabled="selectedModel?.vision_enabled ?? false"
         placeholder="请输入问题，例如：分析当前页面"
         empty-hint="在任意页面唤起，自动带入当前页面上下文；只分析与建议，不改动生产。"
         @select-model="selectModel"
@@ -117,9 +118,9 @@ watch(visible, async (open) => {
   }
 })
 
-async function onSend(content: string) {
+async function onSend(content: string, images?: string[]) {
   try {
-    await send(content)
+    await send(content, undefined, images ?? [])
   } catch {
     /* 错误已在面板内展示。 */
   }

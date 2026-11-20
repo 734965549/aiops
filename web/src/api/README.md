@@ -160,12 +160,12 @@
 | `deleteProvider` | `DELETE /api/ai/providers/:id` | 删除并同步运行时 |
 | `invokeTool` | `POST /api/ai/tools/invoke` | 工具调用；成功响应内须检查 `allowed` |
 | `analyzeAlert` | `POST /api/ai/analyze-alert` | 告警上下文 AI 分析；返回 summary、risk_level、recommendations、references（证据来源）等 |
-| `listChatModels` | `GET /api/ai/chat/models` | 普通用户可见的启用中类型 b 模型（`provider_id/name/model`，不含敏感字段） |
+| `listChatModels` | `GET /api/ai/chat/models` | 普通用户可见的启用中类型 b 模型（`provider_id/name/model/vision_enabled`，不含敏感字段） |
 | `createChatSession` | `POST /api/ai/chat/sessions` | 创建 AI 助手会话，可带页面上下文与 `provider_id`（会话级模型） |
 | `listChatSessions` | `GET /api/ai/chat/sessions?limit=` | 当前用户最近会话 |
 | `getChatSession` | `GET /api/ai/chat/sessions/:session_id` | 会话详情与历史消息（assistant 消息带 `answer`） |
-| `sendChatMessage` | `POST /api/ai/chat/sessions/:session_id/messages` | 发送消息并同步返回结构化回答；超时按 90s 设置；支持 `client_message_id` 幂等键 |
-| `streamChatMessage` | `POST /api/ai/chat/sessions/:session_id/messages/stream` | 流式发送：fetch 读取 SSE（`stage`/`tool`/`answer`/`error`），返回最终 `SendChatMessageResult`；`signal` 可中断，服务端取消后不落回答 |
+| `sendChatMessage` | `POST /api/ai/chat/sessions/:session_id/messages` | 发送消息并同步返回结构化回答；超时按 90s 设置；支持 `client_message_id` 幂等键与 `images` 附图（视觉模型，契约 §10.20） |
+| `streamChatMessage` | `POST /api/ai/chat/sessions/:session_id/messages/stream` | 流式发送：fetch 读取 SSE（`stage`/`tool`/`answer`/`error`），返回最终 `SendChatMessageResult`；`signal` 可中断，服务端取消后不落回答；同样支持 `images` 附图 |
 | `archiveChatSession` | `POST /api/ai/chat/sessions/:session_id/archive` | 归档会话（只读，可看历史）；幂等 |
 | `unarchiveChatSession` | `POST /api/ai/chat/sessions/:session_id/unarchive` | 恢复归档会话；幂等 |
 | `deleteChatSession` | `DELETE /api/ai/chat/sessions/:session_id` | 删除会话及消息，不可恢复；重复删除返回 404 |
