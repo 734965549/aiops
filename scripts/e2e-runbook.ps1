@@ -1,4 +1,4 @@
-# Runbook E2E: alert -> recommend -> create -> confirm -> execute -> timeline
+﻿# Runbook E2E: alert -> recommend -> create -> confirm -> execute -> timeline
 # Requires PostgreSQL migrations 0011+0012, running API, seed runbook template.
 #
 # Usage (standalone):

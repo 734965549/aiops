@@ -1,4 +1,4 @@
-# Execution Agent E2E verification (requires PostgreSQL + running API + migrations through 0022).
+﻿# Execution Agent E2E verification (requires PostgreSQL + running API + migrations through 0022).
 # Usage:
 #   docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d
 #   go run ./cmd/migrate

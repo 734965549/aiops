@@ -1,4 +1,4 @@
-# Inspection E2E verification (requires PostgreSQL + running API + migrations through 0020).
+﻿# Inspection E2E verification (requires PostgreSQL + running API + migrations through 0020).
 # Usage:
 #   docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d
 #   go run ./cmd/migrate

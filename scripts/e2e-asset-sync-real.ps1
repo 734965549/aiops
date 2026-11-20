@@ -1,4 +1,4 @@
-# Cloud asset sync E2E with REAL huawei_cloud AK/SK account (automated reconciliation).
+﻿# Cloud asset sync E2E with REAL huawei_cloud AK/SK account (automated reconciliation).
 # Not for CI: requires real credentials and CES resource group permissions.
 #
 # Purpose:
