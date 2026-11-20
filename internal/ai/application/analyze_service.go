@@ -38,12 +38,14 @@ type ToolInvoker interface {
 
 // AnalyzeService 告警 AI 分析服务。
 type AnalyzeService struct {
-	alerts     AlertReader
-	tools      ToolInvoker
-	providerID string // 静态兜底 provider；空且无 resolver 时仅返回本地摘要
-	resolver   AnalysisProviderResolver
-	evidence   MetricEvidencePort
-	audit      AuditRecorder
+	alerts                  AlertReader
+	tools                   ToolInvoker
+	providerID              string // 静态兜底 provider；空且无 resolver 时仅返回本地摘要
+	resolver                AnalysisProviderResolver
+	evidence                MetricEvidencePort
+	evidenceSnapshots       EvidenceSnapshotStore
+	evidencePayloadMaxBytes int
+	audit                   AuditRecorder
 	// memory 为可选的相似案例记忆能力；nil 表示关闭。
 	memory MemoryCaseStore
 }
@@ -83,6 +85,14 @@ func (s *AnalyzeService) SetMetricEvidence(port MetricEvidencePort) {
 		return
 	}
 	s.evidence = port
+}
+
+func (s *AnalyzeService) SetEvidenceSnapshots(store EvidenceSnapshotStore, maxBytes int) {
+	if s == nil {
+		return
+	}
+	s.evidenceSnapshots = store
+	s.evidencePayloadMaxBytes = maxBytes
 }
 
 // SetMemory 注入相似案例记忆能力；nil 表示关闭（payload 不含 similar_cases）。
@@ -188,6 +198,7 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 			}
 			mergeToolResponse(result, resp.Data)
 		}
+		result.References = filterAnalyzeEvidenceReferences(result.References, evidence)
 		if len(result.References) == 0 {
 			if refs := evidenceReferences(evidence); len(refs) > 0 {
 				result.References = refs
@@ -223,12 +234,11 @@ func (s *AnalyzeService) collectMetricEvidence(ctx context.Context, userID strin
 	}
 	result, err := s.evidence.Collect(ctx, userID, query)
 	if err != nil {
-		return &MetricEvidenceResult{Status: EvidenceStatusError, Reason: "evidence collector failed"}
+		result = &MetricEvidenceResult{Status: EvidenceStatusError, Reason: "evidence collector failed"}
 	}
-	if result == nil {
-		return &MetricEvidenceResult{Status: EvidenceStatusError, Reason: "empty evidence result"}
-	}
-	return capEvidencePayload(result)
+	return finalizeMetricEvidence(ctx, s.evidenceSnapshots, query, result, evidenceSnapshotOptions{
+		MaxBytes: s.evidencePayloadMaxBytes,
+	})
 }
 
 func (s *AnalyzeService) recordAnalyzeAudit(ctx context.Context, alertID, userID, convID string, toolFailed bool, toolError, riskLevel string, evidence *MetricEvidenceResult, memoryStatus string, memoryUsed int) {

@@ -9,6 +9,8 @@ import (
 type MetricQueryResult struct {
 	Series     []domain.MetricSeries `json:"series"`
 	EvidenceID string                `json:"evidence_id"`
+	Query      domain.MetricQuery    `json:"-"`
+	TraceID    string                `json:"-"`
 }
 
 type LogSearchResult struct {

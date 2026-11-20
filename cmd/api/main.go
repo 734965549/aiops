@@ -393,6 +393,8 @@ func main() {
 		app.Cfg.AI.EvidenceTimeout(),
 	)
 	analyzeSvc.SetMetricEvidence(aiEvidenceCollector)
+	aiEvidenceSnapshots := aiobs.NewSnapshotStore(obsEvidenceRepo)
+	analyzeSvc.SetEvidenceSnapshots(aiEvidenceSnapshots, app.Cfg.AI.EvidencePayloadLimit())
 	// 规则体检 MVP：告警规则只读查询走同一账号数据范围预检。
 	aiRulesCollector := aiobs.NewAlertRulesCollector(
 		obsQuerySvc,
@@ -413,6 +415,7 @@ func main() {
 		aiEvidenceCollector,
 		aiAuditRecorder,
 	)
+	aiChatSvc.SetEvidenceSnapshots(aiEvidenceSnapshots, app.Cfg.AI.EvidencePayloadLimit())
 	aiChatSvc.SetAlertRules(aiRulesCollector)
 	// 上下文不足修复：账号发现 + 资源上下文 + 云资源发现（ops/ai-contract.md §10.12.1）。
 	aiChatSvc.SetAccounts(aiintegration.NewAccountDiscovery(

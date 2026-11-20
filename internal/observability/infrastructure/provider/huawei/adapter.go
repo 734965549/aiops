@@ -114,7 +114,13 @@ func (a *Adapter) queryMetricsCES(ctx context.Context, pctx domain.ProviderConte
 	if err != nil {
 		return nil, err
 	}
-	return MapMetricDataResult(q, result), nil
+	series := MapMetricDataResult(q, result)
+	for i := range series {
+		series[i].QueryProjectID = projectID
+		series[i].QueryPeriod = int(cesQuery.Period)
+		series[i].QueryAggregator = cesQuery.Filter
+	}
+	return series, nil
 }
 
 func (a *Adapter) SearchLogs(ctx context.Context, pctx domain.ProviderContext, q domain.LogQuery) ([]domain.LogEntry, error) {

@@ -10,6 +10,7 @@ import (
 	integdomain "github.com/734965549/aiops/internal/integration/domain"
 	"github.com/734965549/aiops/internal/observability/domain"
 	apperr "github.com/734965549/aiops/pkg/errors"
+	httpx "github.com/734965549/aiops/pkg/transport/http"
 )
 
 type stubAccountPort struct {
@@ -198,6 +199,41 @@ func TestQueryService_NormalizesQueriesAndRedactsLogKeywordEvidence(t *testing.T
 	}
 	if provider.traceLimit != defaultTraceLimit {
 		t.Fatalf("expected normalized trace limit %d, got %d", defaultTraceLimit, provider.traceLimit)
+	}
+}
+
+func TestQueryServiceMarksAIMetricEvidenceCollecting(t *testing.T) {
+	evidence := &memEvidenceRepo{}
+	provider := &captureQueryProvider{}
+	svc := NewQueryService(stubAccountPort{acc: &domain.AccountSnapshot{
+		AccountID: "acc-1", Provider: string(integdomain.ProviderHuaweiCloud),
+		Capabilities: []string{string(integdomain.CapabilityMetrics)},
+	}}, stubRegistry{p: provider}, evidence, nil)
+
+	ctx := httpx.ContextWithTraceID(context.Background(), "trace-evidence-1")
+	out, err := svc.QueryMetrics(ctx, Actor{}, domain.MetricQuery{
+		AccountID: "acc-1", Provider: string(integdomain.ProviderHuaweiCloud),
+		Metric: "cpu_util", From: 1710000000, To: 1710000600,
+		ResourceID: "res-1", CloudResourceID: "ecs-1", SnapshotRequired: true,
+	})
+	if err != nil {
+		t.Fatalf("QueryMetrics: %v", err)
+	}
+	if out.TraceID != "trace-evidence-1" || out.Query.CollectedAt.IsZero() {
+		t.Fatalf("missing result collection metadata: %+v", out)
+	}
+	if len(evidence.refs) != 1 {
+		t.Fatalf("evidence rows = %d", len(evidence.refs))
+	}
+	ref := evidence.refs[0]
+	if ref.Status != "collecting" || ref.Collector != MetricEvidenceSchemaV1 || len(ref.Payload) != 0 {
+		t.Fatalf("AI evidence must start as collecting without payload: %+v", ref)
+	}
+	if ref.TraceID != "trace-evidence-1" || ref.ResourceID != "res-1" || ref.CloudResourceID != "ecs-1" {
+		t.Fatalf("unexpected evidence identity: %+v", ref)
+	}
+	if ref.WindowStart == nil || ref.WindowEnd == nil || ref.CollectedAt == nil || ref.QueryParams["metric"] != "cpu_util" {
+		t.Fatalf("incomplete query snapshot metadata: %+v", ref)
 	}
 }
 

@@ -301,6 +301,7 @@ func newChatTestService(t *testing.T) (*ChatService, *fakeChatSessionRepo, *fake
 		FirstSeenAt: 1700000000, LastSeenAt: 1700000600,
 	}}
 	svc := NewChatService(repo, alerts, tools, chat, evidence, audit)
+	svc.SetEvidenceSnapshots(&fakeEvidenceSnapshotStore{}, 0)
 	svc.now = func() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) }
 	return svc, repo, tools, chat, audit, evidence
 }
@@ -2567,9 +2568,13 @@ func TestExecuteMetricObservationDownsamplesPointsForPrompt(t *testing.T) {
 	if got[0] != points[0] || got[len(got)-1] != points[len(points)-1] {
 		t.Fatalf("downsample must keep first/last: %v .. %v", got[0], got[len(got)-1])
 	}
-	// 返回的 evidence 保留全量点，供引用与动作使用。
-	if len(result.Metrics[0].Points) != 1440 {
-		t.Fatalf("evidence points = %d, want full 1440", len(result.Metrics[0].Points))
+	// 返回并持久化的 evidence 与 Prompt 使用同一份定稿序列。
+	if len(result.Metrics[0].Points) != chatMetricPromptMaxPoints {
+		t.Fatalf("evidence points = %d, want finalized %d", len(result.Metrics[0].Points), chatMetricPromptMaxPoints)
+	}
+	if result.OriginalCount != 1440 || result.RetainedCount != chatMetricPromptMaxPoints ||
+		!result.Truncated || result.Sampling == nil || result.Sampling.Strategy != "stride_first_last" {
+		t.Fatalf("unexpected sampling metadata: %+v", result)
 	}
 }
 

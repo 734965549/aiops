@@ -311,6 +311,9 @@ func TestBuildMetricEvidenceQueryFallsBackToResourceContext(t *testing.T) {
 	if query.Threshold != nil || query.Operator != "" {
 		t.Fatalf("resource fallback must not invent thresholds: %+v", query)
 	}
+	if query.ResourceID != "res-1" || query.CloudResourceID != "cluster-1" {
+		t.Fatalf("resource identity = %+v", query)
+	}
 }
 
 func TestBuildMetricEvidenceQueryPrefersAlertOverResource(t *testing.T) {
@@ -327,6 +330,15 @@ func TestBuildMetricEvidenceQueryPrefersAlertOverResource(t *testing.T) {
 	}
 	if query.Threshold == nil || *query.Threshold != 90 {
 		t.Fatalf("alert threshold fallback missing: %+v", query)
+	}
+	if query.ResourceID != "" || query.CloudResourceID != "i-1" {
+		t.Fatalf("alert identity must replace resource identity as a pair: %+v", query)
+	}
+	alert := evidenceTestAlert()
+	alert.ResourceID = "alert-res"
+	query, status, reason = buildMetricEvidenceQuery(alert, resourceContextForTest(), nil, 1700005000)
+	if status != "" || reason != "" || query.ResourceID != "alert-res" || query.CloudResourceID != "i-1" {
+		t.Fatalf("complete alert identity must be preserved: status=%q reason=%q query=%+v", status, reason, query)
 	}
 }
 

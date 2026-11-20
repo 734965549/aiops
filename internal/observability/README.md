@@ -47,11 +47,13 @@ interfaces/http -> application -> domain <- infrastructure
   -> capability 校验
   -> ProviderRegistry 拎对应 ProviderEntry
   -> MetricQueryPort / LogSearchPort / TraceQueryPort / TopologyQueryPort
-  -> obs_evidence_ref 保存证据引用
+  -> obs_evidence_ref 保存证据引用；AI CES 路径在定稿后补存 payload 快照
   -> audit recorder 写 observability_query
 ```
 
 Observability 只做统一查询同证据引用，唔持有凭据明文，亦唔将华为云、SigNoz、Prometheus 嘅差异带入 domain。真实 provider adapter 可以逐个能力补齐；只要 application Port 唔变，Inspection、AI 工具同前端都唔需要跟住厂商 SDK 改。
+
+migration `0060` 起，`obs_evidence_ref` 同时支持 summary-only 历史证据与 `ai.metric_evidence.v1` 定稿快照。AI CES 查询先写 `collecting`，裁剪/降采样完成后保存 `payload`、`payload_hash`、`query_params`、业务窗口、采集时间、资源标识、状态及截断计数，再把同一份结果交给模型；写快照失败时 AI 侧降级，不将未持久化指标作为事实。普通 Observability / Inspection 查询仍保持 summary-only。证据详情 API、权限校验入口与前端抽屉属于后续 P0-2，本切片不新增对外读取接口。
 
 跨上下文关系：
 
@@ -73,6 +75,7 @@ Observability 只做统一查询同证据引用，唔持有凭据明文，亦唔
 ## 迁移
 
 - `0019_init_observability.up.sql`：`obs_evidence_ref` + `app:observability:read` 种子
+- `0060_obs_evidence_snapshot.up.sql`：CES 定稿快照、hash、查询参数、窗口、采集状态与截断元数据
 
 ## 测试
 

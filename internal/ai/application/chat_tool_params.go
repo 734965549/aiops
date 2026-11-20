@@ -115,6 +115,13 @@ func buildMetricEvidenceQuery(alert *AlertContext, resource *AssetContext, raw m
 	query := MetricEvidenceQuery{}
 	mergeMetricQueryFields(&query, resourceQuery)
 	mergeMetricQueryFields(&query, alertQuery)
+	if len(alertQuery.Dimensions) > 0 {
+		query.ResourceID = alertQuery.ResourceID
+		query.CloudResourceID = alertQuery.CloudResourceID
+	} else {
+		query.ResourceID = resourceQuery.ResourceID
+		query.CloudResourceID = resourceQuery.CloudResourceID
+	}
 	if params.AccountID != "" {
 		query.AccountID = params.AccountID
 	}
@@ -132,6 +139,10 @@ func buildMetricEvidenceQuery(alert *AlertContext, resource *AssetContext, raw m
 	}
 	if len(params.Dimensions) > 0 {
 		query.Dimensions = params.Dimensions
+	}
+	if params.AccountID != "" || params.Region != "" || params.ProjectID != "" || len(params.Dimensions) > 0 {
+		query.ResourceID = ""
+		query.CloudResourceID = ""
 	}
 	if params.Aggregator != "" {
 		query.Aggregator = params.Aggregator
@@ -226,6 +237,12 @@ func mergeMetricQueryFields(dst *MetricEvidenceQuery, src MetricEvidenceQuery) {
 	}
 	if src.Operator != "" {
 		dst.Operator = src.Operator
+	}
+	if src.ResourceID != "" {
+		dst.ResourceID = src.ResourceID
+	}
+	if src.CloudResourceID != "" {
+		dst.CloudResourceID = src.CloudResourceID
 	}
 }
 

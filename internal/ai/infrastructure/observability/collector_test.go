@@ -82,8 +82,11 @@ func TestCollectorMapsMetricEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collect: %v", err)
 	}
-	if result.Status != aiapp.EvidenceStatusOK || len(result.Metrics) != 1 {
+	if result.Status != aiapp.EvidenceStatusOK || len(result.Metrics) != 1 || result.EvidenceID != "ev-1" {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.WindowStart != evidenceQuery().From || result.WindowEnd != evidenceQuery().To || result.Period != 300 {
+		t.Fatalf("unexpected evidence window metadata: %+v", result)
 	}
 	metric := result.Metrics[0]
 	if metric.EvidenceID != "ev-1" || metric.First == nil || *metric.First != 10 ||
@@ -101,6 +104,25 @@ func TestCollectorMapsMetricEvidence(t *testing.T) {
 	}
 	if querier.actor.UserID != "user-1" || querier.query.AccountID != "acc-1" || querier.query.ProjectID != "p-1" {
 		t.Fatalf("unexpected query call: actor=%+v query=%+v", querier.actor, querier.query)
+	}
+	if !querier.query.SnapshotRequired {
+		t.Fatal("AI metric query must require a finalized snapshot")
+	}
+}
+
+func TestCollectorNilQueryResultIsError(t *testing.T) {
+	collector := NewCollectorAdapter(
+		&fakeMetricsQuerier{result: nil},
+		&fakeAccountResolver{snapshot: &obsdomain.AccountSnapshot{AccountID: "acc-1", AuthType: "ak_sk"}},
+		nil,
+		time.Second,
+	)
+	result, err := collector.Collect(context.Background(), "u", evidenceQuery())
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if result.Status != aiapp.EvidenceStatusError || result.Reason != "empty metric query result" {
+		t.Fatalf("nil query result must degrade: %+v", result)
 	}
 }
 

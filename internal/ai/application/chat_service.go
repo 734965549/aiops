@@ -72,10 +72,10 @@ type ChatSessionView struct {
 
 // ChatMessageView 单条消息（assistant 消息带结构化 answer）。
 type ChatMessageView struct {
-	MessageID  string             `json:"message_id"`
-	SessionID  string             `json:"session_id"`
-	Role       string             `json:"role"`
-	Content    string             `json:"content"`
+	MessageID string `json:"message_id"`
+	SessionID string `json:"session_id"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
 	// Images 为用户消息附图的 data URL 数组（migration 0059）；assistant 消息不返回。
 	Images     []string           `json:"images,omitempty"`
 	Answer     *ChatAnswer        `json:"answer,omitempty"`
@@ -123,12 +123,14 @@ type SendChatMessageResult struct {
 // ChatService 编排 AI 运维助手对话（流程图 §16）：上下文组装 -> 工具权限校验与只读取数
 // -> 写工具审计 -> 模型汇总 -> 结构化回答落库。
 type ChatService struct {
-	sessions domain.SessionRepository
-	alerts   AlertReader
-	tools    ChatToolGateway
-	chat     toolgateway.ChatClient
-	evidence MetricEvidencePort
-	audit    AuditRecorder
+	sessions                domain.SessionRepository
+	alerts                  AlertReader
+	tools                   ChatToolGateway
+	chat                    toolgateway.ChatClient
+	evidence                MetricEvidencePort
+	evidenceSnapshots       EvidenceSnapshotStore
+	evidencePayloadMaxBytes int
+	audit                   AuditRecorder
 	// alertRules 为可选的告警规则查询能力；nil 表示规则体检工具不可用。
 	alertRules AlertRuleListPort
 	// accounts 为可选的集成账号发现能力；nil 表示关闭 accounts.list。
@@ -164,6 +166,14 @@ func NewChatService(
 		sessions: sessions, alerts: alerts, tools: tools, chat: chat,
 		evidence: evidence, audit: audit, turnBudget: chatDefaultTurnBudget, now: time.Now,
 	}
+}
+
+func (s *ChatService) SetEvidenceSnapshots(store EvidenceSnapshotStore, maxBytes int) {
+	if s == nil {
+		return
+	}
+	s.evidenceSnapshots = store
+	s.evidencePayloadMaxBytes = maxBytes
 }
 
 // SetTurnBudget 设置单次对话（含 Agent Loop）的总时间预算；<=0 时保持默认值。

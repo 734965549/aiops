@@ -247,20 +247,13 @@ func (s *ChatService) executeMetricObservation(ctx context.Context, userID strin
 	result, err := s.evidence.Collect(ctx, userID, query)
 	if err != nil {
 		logger.From(ctx).Warn("ai chat metric evidence failed", logger.Error(err))
-		return &ChatObservation{
-			ToolCode: chatToolMetricsQuery, Allowed: true,
-			Status: EvidenceStatusError, Reason: "evidence_collect_failed",
-		}, nil
+		result = &MetricEvidenceResult{Status: EvidenceStatusError, Reason: "evidence_collect_failed"}
 	}
-	// point_count 在裁剪前统计：capEvidencePayload 可能丢弃 points 但不应丢失点数事实。
-	pointCount := metricEvidencePointCount(result)
-	result = capEvidencePayload(result)
-	if result == nil {
-		return &ChatObservation{
-			ToolCode: chatToolMetricsQuery, Allowed: true,
-			Status: EvidenceStatusError, Reason: "empty evidence result",
-		}, nil
-	}
+	result = finalizeMetricEvidence(ctx, s.evidenceSnapshots, query, result, evidenceSnapshotOptions{
+		MaxPointsPerSeries: chatMetricPromptMaxPoints,
+		MaxBytes:           s.evidencePayloadMaxBytes,
+	})
+	pointCount := result.OriginalCount
 	status := result.Status
 	if status == "" {
 		status = EvidenceStatusOK
@@ -283,15 +276,20 @@ func (s *ChatService) executeMetricObservation(ctx context.Context, userID strin
 			"status": status, "reason": result.Reason,
 			"metric": query.Metric, "metric_label": chatMetricLabel(query.Metric),
 			"metric_count": len(result.Metrics), "point_count": pointCount,
-			"evidence_ids": ids,
-			"from":         query.From, "to": query.To, "period": query.Period,
-			"dimensions":   query.Dimensions,
+			"retained_point_count": result.RetainedCount, "truncated": result.Truncated,
+			"evidence_ids": ids, "schema_version": result.SchemaVersion,
+			"provider": result.Provider, "trace_id": result.TraceID,
+			"project_id": result.ProjectID, "resource_id": result.ResourceID,
+			"cloud_resource_id": result.CloudResourceID, "collected_at": result.CollectedAt,
+			"window_start": result.WindowStart, "window_end": result.WindowEnd,
+			"aggregator": result.Aggregator, "sampling": result.Sampling,
+			"from": query.From, "to": query.To, "period": result.Period,
+			"dimensions": query.Dimensions,
 		},
 	}
 	if len(result.Metrics) > 0 {
-		// 数值必须随 observations 进 Prompt（data.Evidence 不入模型输入）；
-		// result 已经 capEvidencePayload 裁剪，进 Prompt 前再降采样控制体积。
-		obs.Data["metrics"] = downsampleMetricsForPrompt(result.Metrics)
+		// 持久化快照与 Prompt 共用同一份定稿序列，禁止再次独立降采样。
+		obs.Data["metrics"] = result.Metrics
 	}
 	if len(ids) > 0 {
 		obs.EvidenceID = ids[0]
@@ -303,6 +301,9 @@ func (s *ChatService) executeMetricObservation(ctx context.Context, userID strin
 // appendMetricEvidenceReferences 追加指标证据引用（按 evidence_id 去重）。
 func appendMetricEvidenceReferences(data *chatContextData, evidence *MetricEvidenceResult) {
 	if data == nil {
+		return
+	}
+	if evidence == nil || evidence.Status != EvidenceStatusOK {
 		return
 	}
 	for _, id := range evidenceIDs(evidence) {

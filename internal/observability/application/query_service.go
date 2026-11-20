@@ -4,13 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"strings"
 
 	integdomain "github.com/734965549/aiops/internal/integration/domain"
 	"github.com/734965549/aiops/internal/observability/domain"
 	apperr "github.com/734965549/aiops/pkg/errors"
+	httpx "github.com/734965549/aiops/pkg/transport/http"
 	"github.com/google/uuid"
 )
 
@@ -73,6 +73,7 @@ func (s *QueryService) QueryMetrics(ctx context.Context, actor Actor, q domain.M
 	if err != nil {
 		return nil, wrapProviderError(err, "query metrics failed")
 	}
+	q = effectiveMetricQuery(q, series)
 	evidenceID, err := s.persistEvidence(ctx, q.AccountID, "metrics", q, map[string]any{
 		"metric": q.Metric, "namespace": q.Namespace, "series_count": len(series),
 	})
@@ -89,7 +90,9 @@ func (s *QueryService) QueryMetrics(ctx context.Context, actor Actor, q domain.M
 			"namespace": q.Namespace, "series_count": len(series), "evidence_id": evidenceID,
 		},
 	})
-	return &MetricQueryResult{Series: series, EvidenceID: evidenceID}, nil
+	return &MetricQueryResult{
+		Series: series, EvidenceID: evidenceID, Query: q, TraceID: httpx.TraceIDFromCtx(ctx),
+	}, nil
 }
 
 func (s *QueryService) SearchLogs(ctx context.Context, actor Actor, q domain.LogQuery) (*LogSearchResult, error) {
@@ -435,16 +438,16 @@ func (s *QueryService) persistEvidence(ctx context.Context, accountID, queryType
 	if s.evidence == nil {
 		return evidenceID, nil
 	}
-	hash, err := hashQuery(query)
+	hash, err := HashQuery(query)
 	if err != nil {
 		return "", apperr.Wrap(err, apperr.CodeInternal, "hash query failed")
 	}
 	ref := &domain.EvidenceRef{
-		EvidenceID: evidenceID,
-		AccountID:  accountID,
-		QueryType:  queryType,
-		QueryHash:  hash,
-		Summary:    summary,
+		EvidenceID: evidenceID, AccountID: accountID, EvidenceType: queryType,
+		QueryType: queryType, QueryHash: hash, Summary: summary, Status: "ok",
+	}
+	if metricQuery, ok := query.(domain.MetricQuery); ok {
+		enrichMetricEvidenceRef(ctx, ref, metricQuery)
 	}
 	if err := s.evidence.Create(ctx, ref); err != nil {
 		return "", apperr.Wrap(err, apperr.CodeInternal, "persist evidence failed")
@@ -602,15 +605,6 @@ func hasCapability(caps []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func hashQuery(v any) (string, error) {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:]), nil
 }
 
 func keywordEvidenceSummary(keyword string) map[string]any {

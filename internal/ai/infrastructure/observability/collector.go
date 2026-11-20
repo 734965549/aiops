@@ -112,6 +112,8 @@ func (a *CollectorAdapter) Collect(ctx context.Context, userID string, q aiapp.M
 		To:         q.To,
 		Period:     q.Period,
 		Aggregator: q.Aggregator,
+		ResourceID: q.ResourceID, CloudResourceID: q.CloudResourceID,
+		SnapshotRequired: true,
 		// AI 只读工具允许日聚合 30 天窗口；HTTP 查询不设置该字段，仍为 7 天。
 		AllowLongWindow: true,
 	})
@@ -150,7 +152,30 @@ func evidenceErrorReason(err error, fallback string) string {
 func mapMetricEvidence(q aiapp.MetricEvidenceQuery, result *obsapp.MetricQueryResult) *aiapp.MetricEvidenceResult {
 	out := &aiapp.MetricEvidenceResult{Status: aiapp.EvidenceStatusOK}
 	if result == nil {
-		return out
+		return &aiapp.MetricEvidenceResult{Status: aiapp.EvidenceStatusError, Reason: "empty metric query result"}
+	}
+	effective := q
+	if result.Query.From > 0 {
+		effective.From = result.Query.From
+		effective.To = result.Query.To
+		effective.Period = result.Query.Period
+		effective.Aggregator = result.Query.Aggregator
+		effective.ProjectID = result.Query.ProjectID
+		effective.ResourceID = result.Query.ResourceID
+		effective.CloudResourceID = result.Query.CloudResourceID
+	}
+	out.EvidenceID = result.EvidenceID
+	out.Provider = result.Query.Provider
+	out.TraceID = result.TraceID
+	out.ProjectID = effective.ProjectID
+	out.ResourceID = effective.ResourceID
+	out.CloudResourceID = effective.CloudResourceID
+	out.WindowStart = effective.From
+	out.WindowEnd = effective.To
+	out.Period = effective.Period
+	out.Aggregator = effective.Aggregator
+	if !result.Query.CollectedAt.IsZero() {
+		out.CollectedAt = result.Query.CollectedAt.Unix()
 	}
 	for _, series := range result.Series {
 		metric := strings.TrimSpace(series.Metric)

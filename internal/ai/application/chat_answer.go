@@ -51,6 +51,10 @@ func (s *ChatService) finalizeAnswer(ctx context.Context, userID string, session
 	if len(answer.Evidence) == 0 {
 		answer.Evidence = observationEvidenceLines(*data)
 	}
+	answer.Evidence = filterAnswerEvidence(answer.Evidence, *data)
+	if len(answer.Evidence) == 0 {
+		answer.Evidence = observationEvidenceLines(*data)
+	}
 	if len(answer.Evidence) == 0 {
 		answer.Evidence = []string{}
 	}
@@ -111,6 +115,50 @@ func (s *ChatService) finalizeAnswer(ctx context.Context, userID string, session
 	}
 }
 
+func filterAnswerEvidence(lines []string, data chatContextData) []string {
+	supported := make(map[string]struct{})
+	failed := make(map[string]struct{})
+	for _, obs := range data.Observations {
+		if obs.ToolCode != chatToolMetricsQuery || obs.EvidenceID == "" {
+			continue
+		}
+		if obs.Status == EvidenceStatusOK {
+			supported[obs.EvidenceID] = struct{}{}
+		} else {
+			failed[obs.EvidenceID] = struct{}{}
+		}
+	}
+	if data.Evidence != nil && data.Evidence.Status == EvidenceStatusOK {
+		for _, id := range evidenceIDs(data.Evidence) {
+			supported[id] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		blocked := false
+		for id := range failed {
+			if strings.Contains(line, id) {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			continue
+		}
+		if strings.HasPrefix(line, "observability evidence ") {
+			id := strings.TrimSpace(strings.TrimPrefix(line, "observability evidence "))
+			if _, ok := supported[id]; !ok {
+				continue
+			}
+		}
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 func observationEvidenceLines(data chatContextData) []string {
 	out := make([]string, 0, 4)
 	if data.Alert != nil {
@@ -120,8 +168,10 @@ func observationEvidenceLines(data chatContextData) []string {
 			data.Alert.ApplicationName, data.Alert.ResourceName,
 		))
 	}
-	for _, id := range evidenceIDs(data.Evidence) {
-		out = append(out, "observability evidence "+id)
+	if data.Evidence != nil && data.Evidence.Status == EvidenceStatusOK {
+		for _, id := range evidenceIDs(data.Evidence) {
+			out = append(out, "observability evidence "+id)
+		}
 	}
 	return out
 }

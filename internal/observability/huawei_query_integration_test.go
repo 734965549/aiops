@@ -62,6 +62,12 @@ func TestQueryService_QueryMetricsHuaweiAdapterIntegration(t *testing.T) {
 	if len(out.Series) != 1 || out.Series[0].Metric != "cpu_util" || out.Series[0].Points[0].Value != 33.3 {
 		t.Fatalf("unexpected series: %+v", out.Series)
 	}
+	if out.Series[0].QueryProjectID != "proj-1" || out.Series[0].QueryPeriod != 60 || out.Series[0].QueryAggregator != "average" {
+		t.Fatalf("effective CES query metadata missing: %+v", out.Series[0])
+	}
+	if out.Query.ProjectID != "proj-1" || out.Query.Period != 60 || out.Query.Aggregator != "average" {
+		t.Fatalf("effective query result metadata missing: %+v", out.Query)
+	}
 	if mockCES.last.region != "cn-north-4" {
 		t.Fatalf("adapter did not pass region to mock ces: %+v", mockCES.last)
 	}

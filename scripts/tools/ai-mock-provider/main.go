@@ -19,6 +19,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -102,6 +104,42 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok")
 	})
+	mux.HandleFunc("/__debug/last-request", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		req, ok := state.lastChatRequest()
+		if !ok {
+			http.Error(w, "no request captured", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(req)
+	})
+	mux.HandleFunc("/__debug/json-hash", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+		decoder.UseNumber()
+		var value any
+		if err := decoder.Decode(&value); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		canonical, err := json.Marshal(value)
+		if err != nil {
+			http.Error(w, "invalid JSON value", http.StatusBadRequest)
+			return
+		}
+		sum := sha256.Sum256(canonical)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"canonical": string(canonical), "sha256": hex.EncodeToString(sum[:]),
+		})
+	})
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -112,6 +150,7 @@ func main() {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
+		state.captureChatRequest(req)
 		prompt := joinPrompt(req.Messages)
 		// 限流/断流场景在模型调用前直接处理，便于稳定触发。
 		if strings.Contains(prompt, "MOCK_STREAM_429_ALWAYS") {
@@ -259,6 +298,25 @@ func serveStreamWithDelay(w http.ResponseWriter, r *http.Request, content string
 type scenarioState struct {
 	mu   sync.Mutex
 	seen map[string]int
+	last *chatRequest
+}
+
+func (s *scenarioState) captureChatRequest(req chatRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req.Messages = append([]chatMessage(nil), req.Messages...)
+	s.last = &req
+}
+
+func (s *scenarioState) lastChatRequest() (chatRequest, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil {
+		return chatRequest{}, false
+	}
+	out := *s.last
+	out.Messages = append([]chatMessage(nil), s.last.Messages...)
+	return out, true
 }
 
 // markOnce 返回 key 是否首次命中，用于限流/断流场景只触发一次。

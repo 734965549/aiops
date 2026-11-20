@@ -793,7 +793,7 @@ POST /api/ai/analyze-alert
 }
 ```
 
-AI 模块加载告警后，向 provider 传入的 `payload.alert` 为完整告警快照，包含 `id/name/summary/description/severity/status/source/rule_name/business_line/environment/application_id/application_name/resource_id/resource_name/resource_type/occurrence_count/first_seen_at/last_seen_at/recovered_at/labels/annotations`，时间字段为 Unix 秒。为兼容既有 provider，payload 同时保留 `alert_name`、`alert_summary`、`alert_severity`、`application_name`、`resource_name`、`labels` 平铺字段。`include_metrics=true` 时 payload 还包含只读指标证据 `evidence`（含状态、统计摘要、破限点数与证据 ID），语义与降级枚举见 [AI 契约 §9](ai-contract.md#9-告警分析-evidence-语义)。无可用 provider 时，本地摘要优先使用 `description`，其次 `summary`。
+AI 模块加载告警后，向 provider 传入的 `payload.alert` 为完整告警快照，包含 `id/name/summary/description/severity/status/source/rule_name/business_line/environment/application_id/application_name/resource_id/resource_name/resource_type/occurrence_count/first_seen_at/last_seen_at/recovered_at/labels/annotations`，时间字段为 Unix 秒。为兼容既有 provider，payload 同时保留 `alert_name`、`alert_summary`、`alert_severity`、`application_name`、`resource_name`、`labels` 平铺字段。`include_metrics=true` 时 payload 还包含只读指标证据 `evidence`（含状态、统计摘要、破限点数与证据 ID），语义与降级枚举见 [AI 契约 §9](ai-contract.md#9-告警分析-evidence-语义)。migration `0060` 起，实际送入模型的 CES 数据点先定稿并保存到 `obs_evidence_ref.payload`，同时记录查询参数、窗口、采集时间、SHA-256 与截断元数据；快照写失败时证据降级，不携带未持久化指标。无可用 provider 时，本地摘要优先使用 `description`，其次 `summary`。
 
 **数据范围**：读取告警快照前按当前用户的数据范围校验告警对象（`owner_user_id` / `labels.department` / `labels.team` / `labels.region` / `labels.env|environment|business_line|tags`，完整映射见 [AI 契约 §10.6.4](ai-contract.md#1064-数据范围映射告警对象)）。数据范围不匹配返回 403 `PERMISSION_DENIED`，不返回任何告警字段，并写 `action=analyze_alert`、`result=denied` 审计。告警列表与详情接口的数据范围口径不在本节范围内。
 

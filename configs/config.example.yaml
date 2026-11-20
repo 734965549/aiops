@@ -179,6 +179,8 @@ ai:
   outbound_allow_loopback: false
   # 告警分析注入指标证据的取数预算（毫秒），0 使用默认 5000。
   evidence_timeout_ms: 5000
+  # 单条定稿证据快照上限（字节），0 使用默认 32768；超限先降采样/裁剪并记录 truncated。
+  evidence_payload_max_bytes: 32768
   # 单次对话（含 Agent Loop 多轮）的总时间预算（秒），0 使用默认 600。
   # server.read_timeout_s / write_timeout_s 必须 >= turn_budget_s + 60。
   turn_budget_s: 600

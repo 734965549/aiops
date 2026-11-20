@@ -337,6 +337,20 @@ func (f *fakeEvidenceCollector) Collect(_ context.Context, userID string, q Metr
 	return f.result, f.err
 }
 
+type fakeEvidenceSnapshotStore struct {
+	query MetricEvidenceQuery
+	saved *MetricEvidenceResult
+	err   error
+	calls int
+}
+
+func (f *fakeEvidenceSnapshotStore) Save(_ context.Context, query MetricEvidenceQuery, evidence *MetricEvidenceResult) error {
+	f.query = query
+	f.saved = cloneMetricEvidenceResult(evidence)
+	f.calls++
+	return f.err
+}
+
 func evidenceTestAlert() *AlertContext {
 	return &AlertContext{
 		Name: "HighCPU", Severity: "p1",
@@ -422,6 +436,7 @@ func TestAnalyzeService_InjectsMetricEvidenceAndReferences(t *testing.T) {
 	}}
 	svc := NewAnalyzeService(&fakeAnalyzeAlertReader{alert: evidenceTestAlert()}, invoker, "provider-1", NoopAuditRecorder{})
 	svc.SetMetricEvidence(collector)
+	svc.SetEvidenceSnapshots(&fakeEvidenceSnapshotStore{}, 0)
 
 	out, err := svc.AnalyzeAlert(context.Background(), "u-1", AnalyzeAlertInput{AlertID: "a1", IncludeMetrics: true})
 	if err != nil {
@@ -436,6 +451,26 @@ func TestAnalyzeService_InjectsMetricEvidenceAndReferences(t *testing.T) {
 	}
 	if len(out.References) != 1 || out.References[0] != "observability evidence ev-1" {
 		t.Fatalf("unexpected references: %+v", out.References)
+	}
+}
+
+func TestAnalyzeService_FiltersModelFailureEvidenceReferences(t *testing.T) {
+	invoker := &fakeToolInvoker{resp: &toolgateway.ToolResponse{Allowed: true, Data: map[string]any{
+		"references": []string{"observability evidence ev-denied", "ev-denied", "alert a1"},
+	}}}
+	collector := &fakeEvidenceCollector{result: &MetricEvidenceResult{
+		Status: EvidenceStatusPermissionDenied, EvidenceID: "ev-denied", Reason: "denied",
+	}}
+	svc := NewAnalyzeService(&fakeAnalyzeAlertReader{alert: evidenceTestAlert()}, invoker, "provider-1", NoopAuditRecorder{})
+	svc.SetMetricEvidence(collector)
+	svc.SetEvidenceSnapshots(&fakeEvidenceSnapshotStore{}, 0)
+
+	out, err := svc.AnalyzeAlert(context.Background(), "u-1", AnalyzeAlertInput{AlertID: "a1", IncludeMetrics: true})
+	if err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	if len(out.References) != 1 || out.References[0] != "alert a1" {
+		t.Fatalf("failure evidence references must be filtered: %+v", out.References)
 	}
 }
 
@@ -480,7 +515,10 @@ func TestCapEvidencePayloadTruncatesPoints(t *testing.T) {
 		Status:  EvidenceStatusOK,
 		Metrics: []MetricEvidence{{Metric: "cpu_util", Points: points, EvidenceID: "ev-1"}},
 	}
-	capped := capEvidencePayload(evidence)
+	capped, err := capMetricEvidenceBytes(evidence, maxEvidencePayloadBytes)
+	if err != nil {
+		t.Fatalf("cap evidence: %v", err)
+	}
 	if capped == nil || capped.Reason != "truncated" {
 		t.Fatalf("expected truncation, got %+v", capped)
 	}

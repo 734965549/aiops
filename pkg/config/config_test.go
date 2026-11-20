@@ -199,6 +199,15 @@ func prodConfigFixture() *Config {
 	}
 }
 
+func TestAIEvidencePayloadLimit(t *testing.T) {
+	if got := (AIConfig{}).EvidencePayloadLimit(); got != 32*1024 {
+		t.Fatalf("default evidence payload limit = %d", got)
+	}
+	if got := (AIConfig{EvidencePayloadMaxBytes: 65536}).EvidencePayloadLimit(); got != 65536 {
+		t.Fatalf("explicit evidence payload limit = %d", got)
+	}
+}
+
 func TestAITurnBudgetTimeout(t *testing.T) {
 	if got := (AIConfig{}).TurnBudgetTimeout(); got != 10*time.Minute {
 		t.Fatalf("default turn budget = %v", got)

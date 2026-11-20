@@ -1,19 +1,26 @@
 package domain
 
+import "time"
+
 // MetricQuery 指标查询条件，见 ops/cloud-observability-contract.md §5.1。
 type MetricQuery struct {
 	AccountID string
 	Provider  string
 	Region    string
 	// ProjectID 可选；多项目账号显式指定，缺省时由 provider 按账号/region 配置解析。
-	ProjectID  string
-	Namespace  string
-	Metric     string
-	Dimensions map[string]string
-	From       int64
-	To         int64
-	Period     int
-	Aggregator string
+	ProjectID       string
+	Namespace       string
+	Metric          string
+	Dimensions      map[string]string
+	From            int64
+	To              int64
+	Period          int
+	Aggregator      string
+	ResourceID      string `json:"-"`
+	CloudResourceID string `json:"-"`
+	// SnapshotRequired 标记 AI 路径必须在定稿后补存 payload；初始记录保持 collecting，不能支撑结论。
+	SnapshotRequired bool      `json:"-"`
+	CollectedAt      time.Time `json:"-"`
 	// AllowLongWindow 仅供 AI 只读工具路径使用：period>=86400 的日聚合允许 30 天窗口。
 	// 不参与 HTTP 绑定与 evidence 哈希，普通查询仍保持 7 天上限。
 	AllowLongWindow bool `json:"-"`

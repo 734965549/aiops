@@ -1,5 +1,10 @@
 package domain
 
+import (
+	"encoding/json"
+	"time"
+)
+
 // MetricPoint 指标采样点。
 type MetricPoint struct {
 	TS    int64   `json:"ts"`
@@ -12,6 +17,10 @@ type MetricSeries struct {
 	Unit   string            `json:"unit"`
 	Labels map[string]string `json:"labels"`
 	Points []MetricPoint     `json:"points"`
+	// QueryProjectID / QueryPeriod / QueryAggregator 记录 provider 实际生效的查询口径。
+	QueryProjectID  string `json:"-"`
+	QueryPeriod     int    `json:"-"`
+	QueryAggregator string `json:"-"`
 }
 
 // LogEntry 脱敏日志摘要。
@@ -92,9 +101,26 @@ type AlertRule struct {
 
 // EvidenceRef 查询证据引用，供巡检与 AI 分析复用。
 type EvidenceRef struct {
-	EvidenceID string
-	AccountID  string
-	QueryType  string
-	QueryHash  string
-	Summary    map[string]any
+	EvidenceID      string
+	TraceID         string
+	AccountID       string
+	EvidenceType    string
+	Provider        string
+	Collector       string
+	QueryType       string
+	QueryHash       string
+	QueryParams     map[string]any
+	ResourceID      string
+	CloudResourceID string
+	WindowStart     *time.Time
+	WindowEnd       *time.Time
+	CollectedAt     *time.Time
+	Status          string
+	Reason          string
+	Summary         map[string]any
+	Payload         json.RawMessage
+	PayloadHash     string
+	SchemaVersion   string
+	Truncated       bool
+	OriginalCount   *int
 }

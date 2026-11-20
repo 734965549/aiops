@@ -36,6 +36,7 @@ func TestAnalyzeService_WritesEvidenceAudit(t *testing.T) {
 	}}
 	svc := NewAnalyzeService(&fakeAnalyzeAlertReader{alert: evidenceTestAlert()}, invoker, "provider-1", audit)
 	svc.SetMetricEvidence(collector)
+	svc.SetEvidenceSnapshots(&fakeEvidenceSnapshotStore{}, 0)
 
 	if _, err := svc.AnalyzeAlert(context.Background(), "user-1", AnalyzeAlertInput{AlertID: "a1", IncludeMetrics: true}); err != nil {
 		t.Fatalf("analyze: %v", err)

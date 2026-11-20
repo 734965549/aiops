@@ -252,14 +252,24 @@ AI 运维助手（§10）只使用类型 `b` 做对话补全：没有启用中�
 
 ## 9. 告警分析 evidence 语义
 
-`POST /api/ai/analyze-alert` 在 `include_metrics=true` 时，AI 模块会根据告警快照（账号、区域、命名空间、指标、维度、结构化阈值）调用只读指标查询，并把压缩后的证据注入 provider payload 的 `evidence` 字段。collector 未装配时该能力关闭，不影响既有分析链路。
+`POST /api/ai/analyze-alert` 在 `include_metrics=true` 时，AI 模块会根据告警快照（账号、区域、命名空间、指标、维度、结构化阈值）调用只读指标查询，并把定稿且已持久化的证据注入 provider payload 的 `evidence` 字段。collector 未装配时该能力关闭，不影响既有分析链路。
 
 ### 9.1 payload.evidence
 
 ```json
 {
   "status": "ok",
-  "reason": "",
+  "evidence_id": "ev-...",
+  "schema_version": "ai.metric_evidence.v1",
+  "provider": "huawei_cloud",
+  "trace_id": "trace-...",
+  "window_start": 1762828500,
+  "window_end": 1762830900,
+  "collected_at": 1762831000,
+  "period": 300,
+  "aggregator": "max",
+  "original_count": 2,
+  "retained_count": 2,
   "metrics": [
     {
       "namespace": "SYS.ECS",
@@ -289,11 +299,13 @@ AI 运维助手（§10）只使用类型 `b` 做对话补全：没有启用中�
 | `unsupported` | 账号认证方式（如 agency）暂不支持指标查询 |
 | `error` | 账号解析或指标查询失败，已降级；`reason` 不包含凭据或底层原始错误 |
 
-`points` 为 `[Unix 秒, 值]`；证据总大小超过 32KB 时先丢弃 `points` 仅保留统计摘要并置 `reason=truncated`，仍超限时只保留 `status/reason`。
+`points` 为 `[Unix 秒, 值]`。单条定稿快照上限由 `ai.evidence_payload_max_bytes` 控制（默认 32768 字节）：超限时先丢弃 `points` 仅保留统计摘要，仍超限则丢弃 `metrics` 并保留状态、证据 ID、查询与截断元数据；`truncated=true`、`original_count` 与 `retained_count` 记录裁剪前后点数。对话路径在大小裁剪前还会按 §10.6.6 做每序列最多 96 点的降采样，并携带 `sampling.strategy=stride_first_last`。
+
+持久化顺序固定为“采集 → 定稿/裁剪 → 写 `obs_evidence_ref.payload` 与 `payload_hash` → 交给模型”。AI 查询初始记录为 `collecting`，只有快照写入成功才转为 `ok`；写入失败时返回 `status=error`、`reason=evidence_snapshot_persist_failed`，移除指标和支持性引用，不允许模型把未落库数据当作事实。已进入 collector 的非 OK 终态也会尽力保存失败快照，其 ID 可进入工具观测和审计，但不能作为支持性 `references`。
 
 ### 9.2 边界
 
-- 只读：仅调用指标查询，不触发执行、不写业务数据；证据引用和查询审计由 Observability `QueryService` 落库。
+- 只读：仅调用指标查询，不触发执行、不修改告警或云资源；证据快照、证据引用和查询审计由 Observability 落库。
 - 能力：绑定账号需声明 `metrics` 能力；未声明或 provider 不支持时降级为 `error`，不中断分析。
 - 项目：优先使用告警 `labels.project_id` 指定 project；缺失时回落账号 project_id。多项目账号应确保告警来自 CES 拉取（已写入 `project_id`），避免静默查到空序列。
 - 窗口：按告警首次触发前 30 分钟到最近触发后 10 分钟推导；最长 6.5 天，超长告警优先保留最近数据，避免超过查询接口 7 天上限。
@@ -307,7 +319,7 @@ provider 应同时消费 `payload.alert` 与 `payload.evidence`，在无证据�
 
 ### 9.4 type b 平台直连与 type c 参考协议
 
-类型 `b` 是默认分析路径：平台直接调用模型 API，无需额外编排服务。prompt 由服务端固定构建；`POST /api/ai/analyze-alert` 返回 `summary` / `risk_level` / `recommendations` / `references`，模型异常时降级为保守结果。
+类型 `b` 是默认分析路径：平台直接调用模型 API，无需额外编排服务。prompt 由服务端固定构建；`POST /api/ai/analyze-alert` 返回 `summary` / `risk_level` / `recommendations` / `references`，模型异常时降级为保守结果。类型 b 可验证数据库快照与实际模型消息内容一致；类型 a/c 只能保证发往外部 provider 的请求 payload 与定稿快照一致，不宣称可验证 provider 内部的二次编排。
 
 类型 `c` 的内部 AI 编排服务仅作为兼容参考实现：平台按现有 `POST /api/ai/tools/invoke` 调用，`tool_code=alarm.analyze`，`payload` 包含 `alert` 与 `evidence`。参考实现位于 `cmd/ai-orchestrator`，监听 `POST /api/tool/invoke`（兼容 `/v1/tools/invoke`），使用 `X-API-Key` 鉴权（平台发送 `Bearer <api_key>`，服务同时兼容裸 key）；模型侧通过 `AIOPS_AI_ORCH_MODEL_BASE_URL`、`AIOPS_AI_ORCH_MODEL_API_KEY`、`AIOPS_AI_ORCH_MODEL_NAME` 配置。平台 provider 注册示例：
 
@@ -544,7 +556,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 #### 10.6.6 Prompt 时间基准与可读引用
 
 - user prompt 顶层固定带 `now`（服务端当前 Unix 秒，Agent Loop 每轮重新取值）；system prompt 要求 `metrics.query` 的 `from/to` 必须以 `now` 为基准，禁止从规则 ID、告警 ID 或其他标识符推断时间。
-- 指标观测 `summary` / `data` 带 `metric_label`（常见 CES 指标中文名映射；未映射时为空，模型必须保留原始指标代码并注明“未映射”，禁止臆造含义）与 `point_count`（裁剪前统计的数据点数）。`point_count=0` 时 summary 明确写“无数据点”，模型应先调整时间窗口重查或说明该窗口无数据。`data.metrics` 携带该次查询裁剪后的序列（`first`/`peak`/`last`/`breach_points`/`points`，超 32KB 先丢 `points` 仅保留统计摘要；`points` 进 Prompt 前降采样至每序列 ≤96 点、含首末点，统计量按全量计算），`data.from`/`to`/`period` 标明查询窗口，`data.dimensions` 标明该次查询使用的维度（0 点时模型应先核对维度再换窗口）；模型应基于这些数值收敛作答，不得换参数重查同一窗口。
+- 指标观测 `summary` / `data` 带 `metric_label`（常见 CES 指标中文名映射；未映射时为空，模型必须保留原始指标代码并注明“未映射”，禁止臆造含义）与 `point_count`（定稿前原始数据点数）。`point_count=0` 时 summary 明确写“无数据点”，模型应先调整时间窗口重查或说明该窗口无数据。`data.metrics` 携带该次查询定稿后的序列（`first`/`peak`/`last`/`breach_points`/`points`）：先按每序列 ≤96 点做 `stride_first_last` 降采样并保留首末点，再按快照字节上限裁剪；统计量按全量计算。`retained_point_count` 是最终保留点数，`truncated` / `sampling` 标明裁剪口径。`data.evidence_id` / `schema_version` / `trace_id` / `collected_at` / `window_start` / `window_end` / `period` / `aggregator` 与 `dimensions` 标明证据身份和查询口径。该份序列与 `obs_evidence_ref.payload` 完全相同，禁止落库后再次独立降采样；快照写失败时观测降级为 `error`，不携带指标或支持性引用。模型应基于这些数值收敛作答，不得换参数重查同一窗口。
 - 规则观测每条规则带 `metric_label`；回答引用规则时使用可读形式「规则名（指标中文名 操作符 阈值，采样窗口 Xs，级别）」，`rule_id` / `evidence_id` 只作为括号内的证据引用，不得把机器 ID 当作唯一指代。
 - 推荐操作必须逐条结构化：目标规则（名称+ID）、调整字段、现值→建议值、理由与风险；涉及多条规则逐条列出，禁止只写“部分规则需调整”式笼统结论。
 
@@ -632,6 +644,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 迁移 `0049_ai_session`：`ai_session`（`session_id` 业务唯一列、`user_id`、`title`、`context_json`、`status`）与 `ai_session_message`（`message_id` 业务唯一列、`session_id`、`role`、`content`、`tool_calls_json`、`references_json`、`feedback`）。
 - 迁移 `0050_ai_session_message_idempotency`：`ai_session_message.client_message_id`（+ `(session_id, client_message_id)` 部分唯一索引），支撑 §10.6.5 消息幂等；幂等补齐，不改写已发布的 `0049`。
 - 迁移 `0053_ai_session_share`：`ai_session_share`（`share_id` 业务唯一、`session_id`、`owner_user_id`、`token_hash` 唯一、`status`、`expires_at`），支撑 §10.18 会话只读分享；只存 token 哈希，无外键，时间戳由 Go 维护。
+- 迁移 `0060_obs_evidence_snapshot`：扩展 Observability `obs_evidence_ref`，保存 CES 定稿 payload、SHA-256、查询参数、窗口、采集时间、状态与截断元数据；不在本切片新增证据详情 API 或前端证据抽屉。
 - `assistant` 消息的 `content` 保存结构化回答 JSON；读取时由服务端解析为 `answer` 字段（含 `degraded` / `degraded_reason`，保证重放与非重放一致的 `status`）。
 - 消息落库与会话 `updated_at` / 标题 / 上下文更新在同一事务内完成。
 - 会话归属用户：跨用户访问返回 403；不暴露自增 `id`。
@@ -693,7 +706,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 阈值语义：`threshold` / `operator` 只从告警结构化条件继承；当模型覆盖 `metric` 且与告警 `metric_name` 不同时，证据不再携带告警阈值，避免破限点误判。
 - 指标别名归一化：`namespace=SYS.RDS` 时常见通用名（`cpu_util`/`mem_util`/`disk_util`/`conn_usage`/`connections`/`replication_lag` 等）服务端归一化为 CES 真实代码（`rds001_cpu_util`/`rds002_mem_util`/`rds039_disk_util`/`rds083_conn_usage`/`rds046_replication_lag`），避免错误指标名取回空序列被误判上下文不足；其他命名空间不归一化。
 - 数据范围：取数前按 `account_id` 解析账号并过 `AccountAccessAuthorizer`；拒绝时工具权限本身已通过，观测记为 `allowed=true`、`status=permission_denied`、`reason=no access to integration account for evidence`，审计 `result=partial`。
-- 证据：观测 `summary` 含指标中文名与数据点数（`无数据点` / `N 点`）；`data` 含 `metric`、`metric_label`、`metric_count`、`point_count`、`evidence_ids`、`evidence_id`、`from`/`to`/`period`（查询窗口）、`dimensions`（查询维度）与 `metrics`（裁剪后序列，含 `first`/`peak`/`last`/`breach_points`/`points`，超 32KB 丢 `points` 保留统计摘要；`points` 进 Prompt 降采样 ≤96 点/序列含首末）；最终回答 `references` 含 `observability_evidence`。
+- 证据：观测 `summary` 含指标中文名与原始数据点数（`无数据点` / `N 点`）；`data` 含 `metric`、`metric_label`、`metric_count`、`point_count`、`retained_point_count`、`evidence_ids`、`evidence_id`、`schema_version`、`from`/`to`/`period`、`window_start`/`window_end`、`collected_at`、`aggregator`、`dimensions`、`truncated`/`sampling` 与 `metrics`（定稿序列，≤96 点/序列含首末，统计量按全量计算）。序列先定稿并写入 migration `0060` 的 `obs_evidence_ref.payload`（含 SHA-256 `payload_hash`），再进入 Prompt；写失败返回 `error`，不生成支持性引用。最终回答 `references` 仅对 `status=ok` 的快照包含 `observability_evidence`。
 
 **`alert.rules.list` 参数 schema（`tool_requests[].params`）**
 

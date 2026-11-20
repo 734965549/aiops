@@ -155,7 +155,7 @@ make migrate-up
 go run ./cmd/migrate -config configs/config.yaml
 ```
 
-当前迁移文件（`0001` -> `0059`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
+当前迁移文件（`0001` -> `0060`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -212,6 +212,7 @@ go run ./cmd/migrate -config configs/config.yaml
 | `0057` | `0057_ai_provider_reasoning_effort.up.sql` | AI：provider 增加 `reasoning_effort`（思考型模型推理强度档位） |
 | `0058` | `0058_asset_resource_relation.up.sql` | Asset：CMDB 资源关系表 `asset_resource_relation`（跨应用手工关系；查询期云派生关系见拓扑二期）；复用 `app:assets:read/write`，无新增权限 |
 | `0059` | `0059_ai_chat_image_input.up.sql` | AI：助手图片输入（多模态）：`ai_session_message.images_json`（用户消息附图 data URL 数组，最多 3 张、单张解码后 ≤2MB）+ `ai_provider.vision_enabled`（类型 b 视觉模型开关，默认 false，未开启时带图消息 400 不落库）；契约 `ops/ai-contract.md` §10.20 |
+| `0060` | `0060_obs_evidence_snapshot.up.sql` | Observability：`obs_evidence_ref` 增加 CES 定稿 payload/hash、查询参数、资源与业务窗口、采集时间、状态及截断元数据；历史证据保持 summary-only |
 
 详见 `ops/migration-contract.md`。
 

@@ -11,7 +11,7 @@
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
 | 0.1 | 依赖启动 | `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d` | Postgres 健康 |
-| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0001–0059，无报错；当前仓库未包含 `0021` Notification 迁移 |
+| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0001–0060，无报错；当前仓库未包含 `0021` Notification 迁移 |
 | 0.3 | API 启动 | `go run ./cmd/api` 或 compose 内 api 服务 | 登录接口可用 |
 | 0.4 | 前端（UI 验收） | `cd web && npm run dev` | 可登录并访问各页面 |
 | 0.5 | 自动化冒烟 | 见 [§7 推荐验收顺序](#7-推荐验收顺序自动化) | 全部输出 `PASS` |
@@ -348,6 +348,9 @@ go run ./cmd/migrate
 # 7.5 AI 规则体检（migration 0055；脚本自带本地 mock 模型和 fake huawei 账号）
 .\scripts\e2e-ai-rules.ps1
 
+# 7.6 AI 证据快照（migration 0060；本地 mock + Docker PostgreSQL，比对模型输入与 payload hash）
+.\scripts\e2e-ai-evidence.ps1
+
 # 8. Dashboard API 抽检
 # curl -H "Authorization: Bearer <token>" http://127.0.0.1:8080/api/dashboard/summary
 ```
@@ -364,7 +367,7 @@ go run ./cmd/migrate
 | 执行记录 | ☐ | `e2e-runbook.ps1` ☐ | ☐ | ☐ | ☐ |
 | Dashboard 摘要 | ☐ | 手工/API ☐ | ☐ | ☐ | ☐ |
 | 权限管理 P1 | ☐ | `e2e-identity-access.ps1` ☐ | ☐ | ☐ | ☐ |
-| AI 运维助手 | ☐ | `e2e-ai-assistant.ps1` / `e2e-ai-memory.ps1` / `e2e-ai-knowledge.ps1` / `e2e-ai-stream.ps1` / `e2e-ai-agent-loop.ps1` / `e2e-ai-rules.ps1` ☐ | ☐ | ☐ | ☐ |
+| AI 运维助手 | ☐ | `e2e-ai-assistant.ps1` / `e2e-ai-memory.ps1` / `e2e-ai-knowledge.ps1` / `e2e-ai-stream.ps1` / `e2e-ai-agent-loop.ps1` / `e2e-ai-rules.ps1` / `e2e-ai-evidence.ps1` ☐ | ☐ | ☐ | ☐ |
 | 审计中心 UI | ☐ | 手工/API ☐ | ☐ | ☐ | ☐ |
 | 权限校验 | ☐ | 负向用例 ☐ | ☐ | ☐ | ☐ |
 
@@ -444,8 +447,12 @@ go run ./cmd/migrate
 | 9.6.2 | 无指标自然跳过 | 事件类告警或无维度/指标告警勾选包含指标 | `evidence.status=skipped`，`reason` 为 `no_metric`/`no_dimensions` 等，分析仍返回 |
 | 9.6.3 | 数据权限降级 | 无绑定账号数据范围的用户发起分析 | `evidence.status=permission_denied`，分析不中断，审计记录该状态 |
 | 9.6.4 | 上游/配置降级 | 停用 provider 或使用 agency 账号 | 分析仍返回本地摘要；`evidence.status=error/unsupported`，无凭据或底层原始错误泄露 |
+| 9.6.5 | 快照与模型一致（migration 0060） | 运行 `.\scripts\e2e-ai-evidence.ps1` | 数据库 `payload/query_params` 含实际数据点与查询窗口；模型观测和 payload 的规范化 SHA-256 相同，且等于 `payload_hash` |
+| 9.6.6 | 降采样与截断计数 | 构造单序列 >96 点的对话指标查询；运行 `go test ./internal/ai/application -run TestFinalizeMetricEvidencePersistsExactModelSnapshot` | 模型与数据库共享同一份定稿序列；`original_count=原始点数`、`retained_count<=96`、`truncated=true`、`sampling.strategy=stride_first_last`，首末点保留 |
+| 9.6.7 | 快照写失败 fail-closed | 运行 `go test ./internal/ai/application -run 'TestFinalizeMetricEvidenceFailsClosedWhenPersistFails|TestFinalizeMetricEvidenceRequiresSnapshotStore'` | 返回 `error` 与稳定 reason，指标及支持性引用被移除，不把未持久化数据交给模型作事实 |
+| 9.6.8 | 失败证据不作为支持引用 | 触发账号数据范围拒绝并检查工具观测、审计与最终 references | 失败快照可有 `evidence_id` 供追踪，但最终支持性 `observability_evidence` 引用不包含该 ID，指标为空 |
 
-> 9.6.1 需已配置并启用 AI provider；无 provider 时 `include_metrics` 不会发起取数，仅返回本地摘要。
+> 9.6.1 需已配置并启用 AI provider；无 provider 时 `include_metrics` 不会发起取数，仅返回本地摘要。9.6.5 需要 migration `0060`、本地 mock 模型和 Docker PostgreSQL；证据详情 API / 前端抽屉属于 P0-2，不在本切片验收范围。
 
 ### 9.7 AI Provider 页面配置（migration 0048）
 

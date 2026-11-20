@@ -1,7 +1,6 @@
 package application
 
 import (
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -166,6 +165,8 @@ func deriveResourceMetricQuery(resource *AssetContext) (MetricEvidenceQuery, str
 	if resource == nil {
 		return query, "no_resource"
 	}
+	query.ResourceID = strings.TrimSpace(resource.ResourceID)
+	query.CloudResourceID = strings.TrimSpace(resource.CloudResourceID)
 	query.AccountID = strings.TrimSpace(resource.AccountID)
 	if query.AccountID == "" {
 		return query, "no_account"
@@ -235,6 +236,7 @@ func deriveMetricEvidenceQuery(alert *AlertContext) (MetricEvidenceQuery, string
 		Namespace:  namespace,
 		Metric:     metric,
 		Dimensions: dimensions,
+		ResourceID: strings.TrimSpace(alert.ResourceID), CloudResourceID: strings.TrimSpace(labels["cloud_resource_id"]),
 		From:       from,
 		To:         to,
 		Period:     defaultEvidencePeriod,
@@ -336,36 +338,6 @@ func evidenceAnnotationString(annotations map[string]any, key string) string {
 	}
 }
 
-// capEvidencePayload 保证 evidence 不超过 32KB：先丢弃数据点仅保留统计摘要，
-// 仍然超限时丢弃整个 metrics，只保留状态与截断原因。
-func capEvidencePayload(evidence *MetricEvidenceResult) *MetricEvidenceResult {
-	if evidence == nil {
-		return nil
-	}
-	if evidencePayloadSize(evidence) <= maxEvidencePayloadBytes {
-		return evidence
-	}
-	trimmed := *evidence
-	trimmed.Metrics = make([]MetricEvidence, len(evidence.Metrics))
-	for i, metric := range evidence.Metrics {
-		metric.Points = nil
-		trimmed.Metrics[i] = metric
-	}
-	trimmed.Reason = "truncated"
-	if evidencePayloadSize(&trimmed) <= maxEvidencePayloadBytes {
-		return &trimmed
-	}
-	return &MetricEvidenceResult{Status: evidence.Status, Reason: "truncated"}
-}
-
-func evidencePayloadSize(evidence *MetricEvidenceResult) int {
-	raw, err := json.Marshal(evidence)
-	if err != nil {
-		return 0
-	}
-	return len(raw)
-}
-
 // metricEvidencePointCount 汇总所有指标序列的数据点数（裁剪前统计）。
 func metricEvidencePointCount(evidence *MetricEvidenceResult) int {
 	if evidence == nil {
@@ -409,23 +381,68 @@ func evidenceIDs(evidence *MetricEvidenceResult) []string {
 	if evidence == nil {
 		return nil
 	}
-	seen := make(map[string]struct{}, len(evidence.Metrics))
-	ids := make([]string, 0, len(evidence.Metrics))
-	for _, metric := range evidence.Metrics {
-		id := strings.TrimSpace(metric.EvidenceID)
+	seen := make(map[string]struct{}, len(evidence.Metrics)+1)
+	ids := make([]string, 0, len(evidence.Metrics)+1)
+	appendID := func(id string) {
+		id = strings.TrimSpace(id)
 		if id == "" {
-			continue
+			return
 		}
 		if _, ok := seen[id]; ok {
-			continue
+			return
 		}
 		seen[id] = struct{}{}
 		ids = append(ids, id)
 	}
+	appendID(evidence.EvidenceID)
+	for _, metric := range evidence.Metrics {
+		appendID(metric.EvidenceID)
+	}
 	return ids
 }
 
+func filterAnalyzeEvidenceReferences(references []string, evidence *MetricEvidenceResult) []string {
+	supported := map[string]struct{}{}
+	failed := map[string]struct{}{}
+	if evidence != nil {
+		for _, id := range evidenceIDs(evidence) {
+			if evidence.Status == EvidenceStatusOK {
+				supported[id] = struct{}{}
+			} else {
+				failed[id] = struct{}{}
+			}
+		}
+	}
+	out := make([]string, 0, len(references))
+	for _, reference := range references {
+		reference = strings.TrimSpace(reference)
+		blocked := false
+		for id := range failed {
+			if id != "" && strings.Contains(reference, id) {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			continue
+		}
+		if strings.HasPrefix(reference, "observability evidence ") {
+			id := strings.TrimSpace(strings.TrimPrefix(reference, "observability evidence "))
+			if _, ok := supported[id]; !ok {
+				continue
+			}
+		}
+		if reference != "" {
+			out = append(out, reference)
+		}
+	}
+	return out
+}
+
 func evidenceReferences(evidence *MetricEvidenceResult) []string {
+	if evidence == nil || evidence.Status != EvidenceStatusOK {
+		return nil
+	}
 	ids := evidenceIDs(evidence)
 	if len(ids) == 0 {
 		return nil
