@@ -50,6 +50,29 @@ var chatMetricSuffixLabels = []struct {
 	{"deadlocks", "死锁数"},
 }
 
+// rdsMetricAliases 把模型易臆造的通用名映射到 CES RDS 真实指标代码；
+// 指标名错误时 CES 返回空序列，模型会误判上下文不足。
+var rdsMetricAliases = map[string]string{
+	"cpu_util":         "rds001_cpu_util",
+	"mem_util":         "rds002_mem_util",
+	"disk_util":        "rds039_disk_util",
+	"conn_usage":       "rds083_conn_usage",
+	"connections":      "rds083_conn_usage",
+	"connection_usage": "rds083_conn_usage",
+	"replication_lag":  "rds046_replication_lag",
+}
+
+// normalizeRDSMetricAlias 仅在 SYS.RDS 命名空间下归一化通用指标名。
+func normalizeRDSMetricAlias(namespace, metric string) string {
+	if !strings.EqualFold(strings.TrimSpace(namespace), "SYS.RDS") {
+		return metric
+	}
+	if alias, ok := rdsMetricAliases[strings.ToLower(strings.TrimSpace(metric))]; ok {
+		return alias
+	}
+	return metric
+}
+
 // chatMetricLabel 返回指标代码的中文名；空串表示未映射。
 func chatMetricLabel(metric string) string {
 	metric = strings.TrimSpace(metric)

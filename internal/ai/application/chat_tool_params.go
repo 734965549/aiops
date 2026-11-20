@@ -151,6 +151,7 @@ func buildMetricEvidenceQuery(alert *AlertContext, resource *AssetContext, raw m
 	if query.Period == 0 {
 		query.Period = chatMetricDefaultPeriod
 	}
+	query.Metric = normalizeRDSMetricAlias(query.Namespace, query.Metric)
 
 	query.AccountID = strings.TrimSpace(query.AccountID)
 	query.Region = strings.TrimSpace(query.Region)

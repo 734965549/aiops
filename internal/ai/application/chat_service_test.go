@@ -1511,8 +1511,8 @@ func TestSendMessageAgentLoopUsesFreeMetricParams(t *testing.T) {
 	if result.Status != chatStatusOK {
 		t.Fatalf("status = %q", result.Status)
 	}
-	if evidence.got.Namespace != "SYS.RDS" || evidence.got.Metric != "mem_util" {
-		t.Fatalf("model params not used: %+v", evidence.got)
+	if evidence.got.Namespace != "SYS.RDS" || evidence.got.Metric != "rds002_mem_util" {
+		t.Fatalf("model params not used (mem_util must normalize): %+v", evidence.got)
 	}
 	if evidence.got.AccountID != "acc-1" || evidence.got.Region != "cn-north-4" {
 		t.Fatalf("alert identity fallback missing: %+v", evidence.got)

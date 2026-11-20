@@ -691,6 +691,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 - 窗口：普通查询最大 **7 天**；`period >= 86400` 的日聚合允许最大 **30 天**；任何情况下点数（`window/period + 1`）不得超过 **1440**。服务端在 AI 层先校验，观测 QueryService 再校验一次（纵深防御）。
 - 阈值语义：`threshold` / `operator` 只从告警结构化条件继承；当模型覆盖 `metric` 且与告警 `metric_name` 不同时，证据不再携带告警阈值，避免破限点误判。
+- 指标别名归一化：`namespace=SYS.RDS` 时常见通用名（`cpu_util`/`mem_util`/`disk_util`/`conn_usage`/`connections`/`replication_lag` 等）服务端归一化为 CES 真实代码（`rds001_cpu_util`/`rds002_mem_util`/`rds039_disk_util`/`rds083_conn_usage`/`rds046_replication_lag`），避免错误指标名取回空序列被误判上下文不足；其他命名空间不归一化。
 - 数据范围：取数前按 `account_id` 解析账号并过 `AccountAccessAuthorizer`；拒绝时工具权限本身已通过，观测记为 `allowed=true`、`status=permission_denied`、`reason=no access to integration account for evidence`，审计 `result=partial`。
 - 证据：观测 `summary` 含指标中文名与数据点数（`无数据点` / `N 点`）；`data` 含 `metric`、`metric_label`、`metric_count`、`point_count`、`evidence_ids`、`evidence_id`、`from`/`to`/`period`（查询窗口）与 `metrics`（裁剪后序列，含 `first`/`peak`/`last`/`breach_points`/`points`，超 32KB 丢 `points` 保留统计摘要；`points` 进 Prompt 降采样 ≤96 点/序列含首末）；最终回答 `references` 含 `observability_evidence`。
 

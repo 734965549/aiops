@@ -225,6 +225,24 @@ func TestBuildAlertRuleQueryValidates(t *testing.T) {
 	}
 }
 
+func TestBuildMetricEvidenceQueryNormalizesRDSAliases(t *testing.T) {
+	params := map[string]any{
+		"account_id": "acc-1", "region": "cn-north-4", "namespace": "SYS.RDS",
+		"metric": "mem_util", "dimensions": map[string]any{"rds_instance_id": "i-1"},
+		"from": 1700000000, "to": 1700003600, "period": 300,
+	}
+	query, status, _ := buildMetricEvidenceQuery(nil, nil, params, 1700003600)
+	if status != "" || query.Metric != "rds002_mem_util" {
+		t.Fatalf("alias not normalized: status=%q query=%+v", status, query)
+	}
+	params["namespace"] = "SYS.ECS"
+	params["metric"] = "cpu_util"
+	query, status, _ = buildMetricEvidenceQuery(nil, nil, params, 1700003600)
+	if status != "" || query.Metric != "cpu_util" {
+		t.Fatalf("non-RDS namespace must not normalize: status=%q query=%+v", status, query)
+	}
+}
+
 func TestCapAlertRulesForObservation(t *testing.T) {
 	labels := map[string]string{}
 	for i := 0; i < chatRuleMaxLabels+5; i++ {
