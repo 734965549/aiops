@@ -45,6 +45,8 @@ type chatRequest struct {
 		Type string `json:"type"`
 	} `json:"response_format"`
 	Temperature float64 `json:"temperature"`
+	// ReasoningEffort 思考型模型推理强度（low/high/max）；空串不发送。
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// Stream 为 true 时请求 OpenAI 兼容 SSE 流式响应；同步与分析路径保持 false。
 	Stream bool `json:"stream,omitempty"`
 }
@@ -150,7 +152,8 @@ func (e *ChatCompletionExecutor) Invoke(ctx context.Context, cfg ProviderConfig,
 		ResponseFormat: struct {
 			Type string `json:"type"`
 		}{Type: "json_object"},
-		Temperature: 0.2,
+		Temperature:     0.2,
+		ReasoningEffort: cfg.ReasoningEffort,
 	})
 	if err != nil {
 		return nil, apperr.Wrap(err, apperr.CodeInternal, "build model request failed")

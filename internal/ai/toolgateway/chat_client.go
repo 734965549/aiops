@@ -73,7 +73,8 @@ func (e *ChatCompletionExecutor) Complete(ctx context.Context, cfg ProviderConfi
 		ResponseFormat: struct {
 			Type string `json:"type"`
 		}{Type: "json_object"},
-		Temperature: 0.2,
+		Temperature:     0.2,
+		ReasoningEffort: cfg.ReasoningEffort,
 	})
 	if err != nil {
 		return nil, apperr.Wrap(err, apperr.CodeInternal, "build model request failed")
@@ -137,8 +138,9 @@ func (e *ChatCompletionExecutor) CompleteStream(ctx context.Context, cfg Provide
 		ResponseFormat: struct {
 			Type string `json:"type"`
 		}{Type: "json_object"},
-		Temperature: 0.2,
-		Stream:      true,
+		Temperature:     0.2,
+		ReasoningEffort: cfg.ReasoningEffort,
+		Stream:          true,
 	})
 	if err != nil {
 		return nil, apperr.Wrap(err, apperr.CodeInternal, "build model request failed")

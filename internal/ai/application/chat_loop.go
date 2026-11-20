@@ -19,7 +19,8 @@ const (
 	// chatMaxLoopRounds 模型可追加取数的最大轮数（不含首轮）。
 	chatMaxLoopRounds = 3
 	// chatLoopTokenBudget 单次对话累计 token 上限，超限即终止循环。
-	chatLoopTokenBudget = 20000
+	// 思考型模型即使 low 强度单轮也数千 token，20000 会在取数中途截断。
+	chatLoopTokenBudget = 60000
 	// chatLoopMaxRequestsPerRound 单轮最多受理的工具申请数。
 	chatLoopMaxRequestsPerRound = 3
 	// chatDegradedLoopExhausted 轮数/预算耗尽仍未产出 answer 时的降级原因。

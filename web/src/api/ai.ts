@@ -11,6 +11,7 @@ export interface AIProvider {
   api_key?: string
   has_api_key?: boolean
   timeout_ms?: number
+  reasoning_effort?: string
   headers?: Record<string, string>
   enabled: boolean
   description?: string
@@ -24,6 +25,7 @@ export interface UpsertProviderInput {
   model?: string
   api_key?: string
   timeout_ms?: number
+  reasoning_effort?: string
   headers?: Record<string, string>
   enabled?: boolean
   description?: string

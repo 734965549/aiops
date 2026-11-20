@@ -56,6 +56,7 @@ type providerRequest struct {
 	Headers     map[string]string `json:"headers"`
 	Enabled     bool              `json:"enabled"`
 	Description string            `json:"description"`
+	ReasoningEffort string        `json:"reasoning_effort"`
 }
 
 type providerListItem struct {
@@ -69,6 +70,7 @@ type providerListItem struct {
 	Headers     map[string]string `json:"headers"`
 	Enabled     bool              `json:"enabled"`
 	Description string            `json:"description"`
+	ReasoningEffort string        `json:"reasoning_effort"`
 }
 
 func maskProviderForList(p toolgateway.ProviderPublic) providerListItem {
@@ -83,6 +85,7 @@ func maskProviderForList(p toolgateway.ProviderPublic) providerListItem {
 		Headers:     p.Headers,
 		Enabled:     p.Enabled,
 		Description: p.Description,
+		ReasoningEffort: p.ReasoningEffort,
 	}
 }
 
@@ -116,7 +119,7 @@ func (h *Handler) UpsertProvider(c *gin.Context) {
 	err := h.providers.UpsertProvider(c.Request.Context(), aiapp.UpsertProviderInput{
 		ID: req.ID, Name: req.Name, Type: req.Type, BaseURL: req.BaseURL, Model: req.Model,
 		APIKey: req.APIKey, TimeoutMS: req.TimeoutMS, Headers: req.Headers,
-		Enabled: req.Enabled, Description: req.Description,
+		Enabled: req.Enabled, Description: req.Description, ReasoningEffort: req.ReasoningEffort,
 	})
 	if err != nil {
 		httpx.Fail(c, err)

@@ -94,6 +94,7 @@ AI 助手只做分析、解释、建议与执行计划，不直接执行任何�
 | `model` | string | 类型 `b` 必填 | 模型名或推理接入点 ID（如 `ep-20241128xxxxx`） |
 | `api_key` | string | 新增必填；更新可省略 | 调用凭据；更新时省略则保留原密钥 |
 | `timeout_ms` | number | 否 | 非流式请求总时长上限，默认 `300000`；流式对话使用首块 60s + 空闲 180s，总时长受 `ai.turn_budget_s` 约束 |
+| `reasoning_effort` | string | 否 | 思考型模型推理强度 `low` / `high` / `max`，随 chat/completions 发送 `reasoning_effort`；空串不发送。不支持该参数的模型可能 400，按 provider 配置 |
 | `headers` | object | 否 | 额外请求头 |
 | `enabled` | boolean | 否 | 是否启用 |
 | `description` | string | 否 | 备注说明 |
@@ -745,7 +746,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 上下文缺失：`allowed=true`、`status=skipped`；常见 reason：`no_alert` / `no_account` / `no_region` / `no_namespace` / `no_metric` / `no_dimensions`。
 - 资源上下文缺失/不可用：`resource_not_found` / `resource_not_cloud_linked` / `resource_load_failed` / `data_scope_denied`。
 - 审计：每次执行写 `tool_invoke`，payload 含 `tool_code/allowed/mode/status/reason/evidence_id/result`；`evidence_id` 仅在成功取数时出现。`chat_message` 仍含 `tool_codes` / `tool_denied` / `loop_rounds`。
-- Agent Loop 白名单扩展为 `alarm.analyze` / `metrics.query` / `alert.rules.list` / `accounts.list` / `resource.analyze` / `resources.list`；其余约束（≤3 轮、20000 token、单轮≤3 个申请、轮内/跨轮按 tool_code+params 去重、每轮 RBAC、执行类拒绝）不变（§10.16）。
+- Agent Loop 白名单扩展为 `alarm.analyze` / `metrics.query` / `alert.rules.list` / `accounts.list` / `resource.analyze` / `resources.list`；其余约束（≤3 轮、60000 token、单轮≤3 个申请、轮内/跨轮按 tool_code+params 去重、每轮 RBAC、执行类拒绝）不变（§10.16）。
 
 #### 10.12.2 云厂商只读观测工具（cloud.* 系列）— 推迟
 
@@ -932,7 +933,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | 工具白名单 | 仅 `alarm.analyze`、`metrics.query`、`alert.rules.list`、`accounts.list`、`resource.analyze`、`resources.list` 可被申请；其它工具（含 `execution.tasks.propose` / `dispatch` / `command.run`）一律拒绝并记 `allowed=false`、`reason=tool is not allowed in agent loop` |
 | 参数透传 | `tool_requests[].params` 按 §10.12.1 校验；非法参数记 `status=invalid_argument` 并反馈给模型，不执行取数 |
 | 权限 | 每轮每个工具独立过 RBAC + 工具权限（与首轮同一套校验），`allowed=false` 时把原因反馈给模型而不中断 |
-| 预算 | 追加轮数 ≤ **3**；累计 token ≥ **20000** 即终止；单轮最多受理 **3** 个申请（轮内相同 `tool_code+params` 去重，同工具不同参数各自执行）；单次对话总时间预算 `ai.turn_budget_s`（默认 600s），超时立即终止并返回 `turn_budget_exceeded` |
+| 预算 | 追加轮数 ≤ **3**；累计 token ≥ **60000** 即终止（思考型模型 low 强度单轮亦数千 token）；单轮最多受理 **3** 个申请（轮内相同 `tool_code+params` 去重，同工具不同参数各自执行）；单次对话总时间预算 `ai.turn_budget_s`（默认 600s），超时立即终止并返回 `turn_budget_exceeded` |
 | 去重 | 轮内相同 `tool_code + params` 只执行一次，不同参数各自执行；跨轮按 `tool_code + params` 去重：已成功执行过的组合重复申请时返回 `status=denied`、`reason=duplicate tool request: identical parameters already executed in this turn`，不再取数且不占用有效轮数；连续两轮无实际取数仍按收敛规则终止 |
 | 收敛 | 连续两轮「申请了但一个工具都没真正执行」才终止，给模型一次看到拒绝原因后自我纠正的机会 |
 | 审计 | 每轮工具调用写 `tool_invoke`（与现状同结构）；`chat_message` 新增 `loop_rounds`（实际追加轮数） |

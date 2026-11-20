@@ -44,6 +44,29 @@ func TestProviderRegistryChatCompletion(t *testing.T) {
 	}
 }
 
+func TestProviderRegistryChatCompletionSendsReasoningEffort(t *testing.T) {
+	var captured chatRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &captured)
+		_ = json.NewEncoder(w).Encode(chatCompletionResponse(`{"summary":"ok"}`))
+	}))
+	defer srv.Close()
+
+	registry := chatTestRegistry(t, srv.URL+"/api/v3")
+	cfg, _ := registry.GetProvider("ark")
+	cfg.ReasoningEffort = "low"
+	if err := registry.UpsertProvider(cfg); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+	if _, err := registry.Complete(context.Background(), "ark", "sys", "user"); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if captured.ReasoningEffort != "low" {
+		t.Fatalf("reasoning_effort = %q, want low", captured.ReasoningEffort)
+	}
+}
+
 func TestProviderRegistryChatCompletionRequiresTypeB(t *testing.T) {
 	registry := NewProviderRegistryWithPolicy(OutboundPolicy{AllowLoopback: true})
 	registry.RegisterExecutor(NewHTTPToolExecutor(ProviderTypeA, "/v1/tools/invoke"))

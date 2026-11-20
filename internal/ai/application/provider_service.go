@@ -55,6 +55,8 @@ type UpsertProviderInput struct {
 	Headers     map[string]string
 	Enabled     bool
 	Description string
+	// ReasoningEffort 思考型模型推理强度（low/high/max）；空串不发送。
+	ReasoningEffort string
 }
 
 // ProviderService 编排 provider 的持久化、启动加载与运行时注册。
@@ -140,7 +142,7 @@ func (s *ProviderService) ListProviders(ctx context.Context) ([]toolgateway.Prov
 			ID: record.ProviderID, Name: record.Name, Type: toolgateway.ProviderType(record.Type),
 			BaseURL: record.BaseURL, Model: record.Model, HasAPIKey: record.HasAPIKey,
 			TimeoutMS: record.TimeoutMS, Headers: record.Headers, Enabled: record.Enabled,
-			Description: record.Description,
+			Description: record.Description, ReasoningEffort: record.ReasoningEffort,
 		})
 	}
 	return out, nil
@@ -155,6 +157,10 @@ func (s *ProviderService) UpsertProvider(ctx context.Context, in UpsertProviderI
 	providerID := strings.TrimSpace(in.ID)
 	if providerID == "" || strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.Type) == "" || strings.TrimSpace(in.BaseURL) == "" {
 		return apperr.New(apperr.CodeInvalidArgument, "id, name, type and base_url are required")
+	}
+	reasoningEffort, err := normalizeReasoningEffort(in.ReasoningEffort)
+	if err != nil {
+		return err
 	}
 	existing, err := s.store.Get(ctx, providerID)
 	if err != nil && !errors.Is(err, domain.ErrProviderNotFound) {
@@ -180,7 +186,8 @@ func (s *ProviderService) UpsertProvider(ctx context.Context, in UpsertProviderI
 		ProviderID: providerID, Name: strings.TrimSpace(in.Name), Type: strings.TrimSpace(in.Type),
 		BaseURL: strings.TrimSpace(in.BaseURL), Model: strings.TrimSpace(in.Model),
 		Headers: in.Headers, TimeoutMS: normalizeProviderTimeout(in.TimeoutMS), Enabled: in.Enabled,
-		Description: strings.TrimSpace(in.Description), APIKeyCiphertext: ciphertext, HasAPIKey: true,
+		Description: strings.TrimSpace(in.Description), ReasoningEffort: reasoningEffort,
+		APIKeyCiphertext: ciphertext, HasAPIKey: true,
 	}
 	cfg := runtimeConfig(record, apiKey)
 	if err := s.runtime.ValidateProvider(cfg); err != nil {
@@ -218,6 +225,19 @@ func normalizeProviderTimeout(ms int64) int64 {
 	return ms
 }
 
+// normalizeReasoningEffort 仅允许空（不发送）或 low/high/max；
+// 思考型模型可能不支持关闭思考，只支持强度档位。
+func normalizeReasoningEffort(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return "", nil
+	case "low", "high", "max":
+		return strings.ToLower(strings.TrimSpace(raw)), nil
+	default:
+		return "", apperr.New(apperr.CodeInvalidArgument, "reasoning_effort must be low, high or max")
+	}
+}
+
 func (s *ProviderService) encrypt(plaintext string) ([]byte, error) {
 	if s.cipher == nil {
 		return nil, errors.New("ai provider secret cipher is not configured")
@@ -240,6 +260,6 @@ func runtimeConfig(record domain.Provider, apiKey string) toolgateway.ProviderCo
 		ID: record.ProviderID, Name: record.Name, Type: toolgateway.ProviderType(record.Type),
 		BaseURL: record.BaseURL, Model: record.Model, APIKey: apiKey,
 		TimeoutMS: record.TimeoutMS, Headers: record.Headers, Enabled: record.Enabled,
-		Description: record.Description,
+		Description: record.Description, ReasoningEffort: record.ReasoningEffort,
 	}
 }

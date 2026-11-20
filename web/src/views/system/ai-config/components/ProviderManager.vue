@@ -137,6 +137,20 @@
               style="width: 100%"
             />
           </a-form-item>
+          <a-form-item label="思考强度">
+            <a-select
+              v-model="form.reasoning_effort"
+              allow-clear
+              placeholder="默认（不发送）"
+            >
+              <a-option value="low">low</a-option>
+              <a-option value="high">high</a-option>
+              <a-option value="max">max</a-option>
+            </a-select>
+            <div class="field-hint">
+              思考型模型降低强度可大幅缩短时延；不支持的模型留空
+            </div>
+          </a-form-item>
           <a-form-item label="启用">
             <a-switch v-model="form.enabled" />
           </a-form-item>
@@ -204,6 +218,7 @@ const emptyForm = () => ({
   model: '',
   api_key: '',
   timeout_ms: 300000,
+  reasoning_effort: '',
   enabled: true,
   description: ''
 })
@@ -232,6 +247,7 @@ function onSelect(record: Record<string, unknown>) {
   form.model = provider.model ?? ''
   form.api_key = ''
   form.timeout_ms = provider.timeout_ms ?? 300000
+  form.reasoning_effort = provider.reasoning_effort ?? ''
   form.enabled = provider.enabled
   form.description = provider.description ?? ''
 }
@@ -261,6 +277,7 @@ async function onSave() {
       model: form.model.trim() || undefined,
       api_key: form.api_key.trim() || undefined,
       timeout_ms: form.timeout_ms,
+      reasoning_effort: form.reasoning_effort || undefined,
       enabled: form.enabled,
       description: form.description.trim() || undefined
     })

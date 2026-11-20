@@ -22,6 +22,8 @@ type Provider struct {
 	TimeoutMS        int64
 	Enabled          bool
 	Description      string
+	// ReasoningEffort 思考型模型的推理强度（low/high/max）；空串表示不发送该参数。
+	ReasoningEffort  string
 	APIKeyCiphertext []byte
 	HasAPIKey        bool
 	CreatedAt        time.Time

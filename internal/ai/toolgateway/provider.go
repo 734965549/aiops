@@ -32,6 +32,8 @@ type ProviderConfig struct {
 	Headers     map[string]string
 	Enabled     bool
 	Description string
+	// ReasoningEffort 随 chat/completions 发送 reasoning_effort；空串不发送。
+	ReasoningEffort string
 }
 
 // ProviderPublic 是对外暴露的 provider 摘要，不含明文 api_key。
@@ -46,6 +48,7 @@ type ProviderPublic struct {
 	Headers     map[string]string
 	Enabled     bool
 	Description string
+	ReasoningEffort string
 }
 
 // Public 将内部配置转换为对外安全摘要。
@@ -61,6 +64,7 @@ func (c ProviderConfig) Public() ProviderPublic {
 		Headers:     c.Headers,
 		Enabled:     c.Enabled,
 		Description: c.Description,
+		ReasoningEffort: c.ReasoningEffort,
 	}
 }
 

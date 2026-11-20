@@ -186,6 +186,17 @@ func TestProviderServiceUpsertRequiresKeyForNewProvider(t *testing.T) {
 	}
 }
 
+func TestNormalizeReasoningEffort(t *testing.T) {
+	for _, raw := range []string{"", "low", "high", "max", " LOW "} {
+		if _, err := normalizeReasoningEffort(raw); err != nil {
+			t.Fatalf("normalize(%q) = %v", raw, err)
+		}
+	}
+	if _, err := normalizeReasoningEffort("off"); err == nil {
+		t.Fatal("expected invalid reasoning_effort error")
+	}
+}
+
 func TestProviderServiceListMasksAPIKey(t *testing.T) {
 	store := newFakeProviderStore()
 	store.records["ark"] = domain.Provider{
