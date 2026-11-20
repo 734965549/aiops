@@ -217,7 +217,8 @@ AI 运维平台的信息架构应满足以下目标：
 - 资源与应用
   - 应用列表
   - 应用详情
-  - 服务拓扑
+  - CMDB 资源拓扑（应用归属 + 同应用手工关系）
+  - 运行时调用拓扑（观测查询）
   - 资源目录
   - 服务器
   - Kubernetes
@@ -772,6 +773,7 @@ AI 不应只存在于独立助手页面中，而应嵌入多个业务页面。
 | --- | --- | --- |
 | `/integrations/accounts` | 云账号接入 | 系统管理 |
 | `/observability/sources` | 观测数据源 | 资源与应用 |
+| `/assets/topology` | CMDB 资源拓扑 | 资源与观测 / CMDB 拓扑 |
 | `/inspections/policies` | 巡检策略 | AI 运维助手 |
 | `/inspections/runs` | 巡检结果 | AI 运维助手 / Dashboard |
 | `/inspections/recommendations` | 建议中心 | AI 运维助手 |

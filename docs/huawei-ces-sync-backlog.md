@@ -46,10 +46,11 @@
 - 后端 `SyncModeConfig`/adapter/契约已落地；前端接入表单已暴露 `region_projects`/`sync_mode`/`resource_group_name`/`resource_group_id`/`enterprise_project_id`/`max_resources` 等配置项。
 - 每个 region 使用对应 project_id 创建 CES client 已落地。
 - batch summary 按 region/project 聚合已落地：`SyncBatchSummaryDTO` 新增 `scopes[]`，每个 scope 保留单 `region/project/resource_group` 组合的明细。旧顶层聚合字段保留作兼容；多区域排查必须读取 `scopes[]`。审计 payload 同步增加 `scopes` 明细。
+- CMDB 拓扑一期已落地：应用资源归属实时派生，`asset_resource_relation` 支持同应用手工关系、权限审计和删除保护，前端 `/assets/topology` 提供 G6 与列表视图；不使用 fake 观测拓扑冒充 CMDB。
 
 后续待办：
 
-1. 建立资源关系模型，例如 ECS -> EVS、ECS -> VPC、ELB -> ECS/RDS。
+1. 建立云资源自动关系发现，例如 ECS -> EVS、ECS -> VPC、ELB -> ECS/RDS；必须使用已验证的原生字段，不按名称、IP 或同 VPC 猜边。
 2. 将拓扑和资源详情接入 Inspection evidence。
 3. 支持按资源类型、region、应用、告警状态触发巡检策略。
 
