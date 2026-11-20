@@ -285,6 +285,7 @@ func (s *ChatService) executeMetricObservation(ctx context.Context, userID strin
 			"metric_count": len(result.Metrics), "point_count": pointCount,
 			"evidence_ids": ids,
 			"from":         query.From, "to": query.To, "period": query.Period,
+			"dimensions":   query.Dimensions,
 		},
 	}
 	if len(result.Metrics) > 0 {
@@ -404,5 +405,18 @@ func (s *ChatService) appendToolResult(ctx context.Context, userID, sessionID, m
 		"reason":      obs.Reason,
 		"evidence_id": obs.EvidenceID,
 		"result":      toolAuditResult(obs),
+		"query":       metricAuditQuery(obs),
 	})
+}
+
+// metricAuditQuery 提取指标查询参数供审计排查（不含凭据）；非指标工具返回 nil。
+func metricAuditQuery(obs ChatObservation) map[string]any {
+	if obs.ToolCode != chatToolMetricsQuery || obs.Data == nil {
+		return nil
+	}
+	return map[string]any{
+		"metric": obs.Data["metric"], "dimensions": obs.Data["dimensions"],
+		"from": obs.Data["from"], "to": obs.Data["to"], "period": obs.Data["period"],
+		"point_count": obs.Data["point_count"],
+	}
 }

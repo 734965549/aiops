@@ -544,7 +544,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 #### 10.6.6 Prompt 时间基准与可读引用
 
 - user prompt 顶层固定带 `now`（服务端当前 Unix 秒，Agent Loop 每轮重新取值）；system prompt 要求 `metrics.query` 的 `from/to` 必须以 `now` 为基准，禁止从规则 ID、告警 ID 或其他标识符推断时间。
-- 指标观测 `summary` / `data` 带 `metric_label`（常见 CES 指标中文名映射；未映射时为空，模型必须保留原始指标代码并注明“未映射”，禁止臆造含义）与 `point_count`（裁剪前统计的数据点数）。`point_count=0` 时 summary 明确写“无数据点”，模型应先调整时间窗口重查或说明该窗口无数据。`data.metrics` 携带该次查询裁剪后的序列（`first`/`peak`/`last`/`breach_points`/`points`，超 32KB 先丢 `points` 仅保留统计摘要；`points` 进 Prompt 前降采样至每序列 ≤96 点、含首末点，统计量按全量计算），`data.from`/`to`/`period` 标明查询窗口；模型应基于这些数值收敛作答，不得换参数重查同一窗口。
+- 指标观测 `summary` / `data` 带 `metric_label`（常见 CES 指标中文名映射；未映射时为空，模型必须保留原始指标代码并注明“未映射”，禁止臆造含义）与 `point_count`（裁剪前统计的数据点数）。`point_count=0` 时 summary 明确写“无数据点”，模型应先调整时间窗口重查或说明该窗口无数据。`data.metrics` 携带该次查询裁剪后的序列（`first`/`peak`/`last`/`breach_points`/`points`，超 32KB 先丢 `points` 仅保留统计摘要；`points` 进 Prompt 前降采样至每序列 ≤96 点、含首末点，统计量按全量计算），`data.from`/`to`/`period` 标明查询窗口，`data.dimensions` 标明该次查询使用的维度（0 点时模型应先核对维度再换窗口）；模型应基于这些数值收敛作答，不得换参数重查同一窗口。
 - 规则观测每条规则带 `metric_label`；回答引用规则时使用可读形式「规则名（指标中文名 操作符 阈值，采样窗口 Xs，级别）」，`rule_id` / `evidence_id` 只作为括号内的证据引用，不得把机器 ID 当作唯一指代。
 - 推荐操作必须逐条结构化：目标规则（名称+ID）、调整字段、现值→建议值、理由与风险；涉及多条规则逐条列出，禁止只写“部分规则需调整”式笼统结论。
 
@@ -693,7 +693,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 阈值语义：`threshold` / `operator` 只从告警结构化条件继承；当模型覆盖 `metric` 且与告警 `metric_name` 不同时，证据不再携带告警阈值，避免破限点误判。
 - 指标别名归一化：`namespace=SYS.RDS` 时常见通用名（`cpu_util`/`mem_util`/`disk_util`/`conn_usage`/`connections`/`replication_lag` 等）服务端归一化为 CES 真实代码（`rds001_cpu_util`/`rds002_mem_util`/`rds039_disk_util`/`rds083_conn_usage`/`rds046_replication_lag`），避免错误指标名取回空序列被误判上下文不足；其他命名空间不归一化。
 - 数据范围：取数前按 `account_id` 解析账号并过 `AccountAccessAuthorizer`；拒绝时工具权限本身已通过，观测记为 `allowed=true`、`status=permission_denied`、`reason=no access to integration account for evidence`，审计 `result=partial`。
-- 证据：观测 `summary` 含指标中文名与数据点数（`无数据点` / `N 点`）；`data` 含 `metric`、`metric_label`、`metric_count`、`point_count`、`evidence_ids`、`evidence_id`、`from`/`to`/`period`（查询窗口）与 `metrics`（裁剪后序列，含 `first`/`peak`/`last`/`breach_points`/`points`，超 32KB 丢 `points` 保留统计摘要；`points` 进 Prompt 降采样 ≤96 点/序列含首末）；最终回答 `references` 含 `observability_evidence`。
+- 证据：观测 `summary` 含指标中文名与数据点数（`无数据点` / `N 点`）；`data` 含 `metric`、`metric_label`、`metric_count`、`point_count`、`evidence_ids`、`evidence_id`、`from`/`to`/`period`（查询窗口）、`dimensions`（查询维度）与 `metrics`（裁剪后序列，含 `first`/`peak`/`last`/`breach_points`/`points`，超 32KB 丢 `points` 保留统计摘要；`points` 进 Prompt 降采样 ≤96 点/序列含首末）；最终回答 `references` 含 `observability_evidence`。
 
 **`alert.rules.list` 参数 schema（`tool_requests[].params`）**
 
@@ -746,7 +746,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 参数非法：`allowed=true`、`status=invalid_argument`、`reason` 说明字段约束，不执行取数；模型可在后续轮次修正。
 - 上下文缺失：`allowed=true`、`status=skipped`；常见 reason：`no_alert` / `no_account` / `no_region` / `no_namespace` / `no_metric` / `no_dimensions`。
 - 资源上下文缺失/不可用：`resource_not_found` / `resource_not_cloud_linked` / `resource_load_failed` / `data_scope_denied`。
-- 审计：每次执行写 `tool_invoke`，payload 含 `tool_code/allowed/mode/status/reason/evidence_id/result`；`evidence_id` 仅在成功取数时出现。`chat_message` 仍含 `tool_codes` / `tool_denied` / `loop_rounds`。
+- 审计：每次执行写 `tool_invoke`，payload 含 `tool_code/allowed/mode/status/reason/evidence_id/result`；`evidence_id` 仅在成功取数时出现；`metrics.query` 另含 `query`（`metric/dimensions/from/to/period/point_count`，不含凭据）供排查空调数。`chat_message` 仍含 `tool_codes` / `tool_denied` / `loop_rounds`。
 - Agent Loop 白名单扩展为 `alarm.analyze` / `metrics.query` / `alert.rules.list` / `accounts.list` / `resource.analyze` / `resources.list`；其余约束（≤3 轮、60000 token、单轮≤3 个申请、轮内/跨轮按 tool_code+params 去重、每轮 RBAC、执行类拒绝）不变（§10.16）。
 
 #### 10.12.2 云厂商只读观测工具（cloud.* 系列）— 推迟
