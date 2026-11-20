@@ -149,6 +149,9 @@ type Message struct {
 	SessionID  string
 	Role       MessageRole
 	Content    string
+	// Images 是用户消息附图的 data URL 数组（migration 0059），仅 user 消息写入；
+	// 元素为 data:image/(png|jpeg|webp);base64,... 形式，校验规则见 application 层。
+	Images     []string
 	ToolCalls  []ToolCall
 	References []Reference
 	Feedback   Feedback

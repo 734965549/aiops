@@ -11,7 +11,7 @@
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
 | 0.1 | 依赖启动 | `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d` | Postgres 健康 |
-| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0001–0058，无报错；当前仓库未包含 `0021` Notification 迁移 |
+| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0001–0059，无报错；当前仓库未包含 `0021` Notification 迁移 |
 | 0.3 | API 启动 | `go run ./cmd/api` 或 compose 内 api 服务 | 登录接口可用 |
 | 0.4 | 前端（UI 验收） | `cd web && npm run dev` | 可登录并访问各页面 |
 | 0.5 | 自动化冒烟 | 见 [§7 推荐验收顺序](#7-推荐验收顺序自动化) | 全部输出 `PASS` |
@@ -607,6 +607,19 @@ go run ./cmd/migrate
 | 9.15.8 | 资源维度推导 | 对 `SYS.RDS` 资源提问 CPU 指标 | 缺省 `dimensions` 为 `rds_cluster_id` 且值为资源主维度；阈值不因资源推导而臆造 |
 
 > 前置：已执行迁移 `0056`；契约见 `ops/ai-contract.md` §10.12.1。E2E 脚本：`scripts/e2e-ai-agent-loop.ps1` 的 `MOCK_TOOL_DISCOVERY` 分支自动覆盖 9.15.2 / 9.15.5 的链路；9.15.3 / 9.15.4 / 9.15.6 / 9.15.8 由单测与手工验收覆盖（需要真实云同步资源）。
+### 9.16 图片输入（migration 0059，契约 §10.20）
+
+| # | 检查项 | 操作 | 预期 |
+| --- | --- | --- | --- |
+| 9.16.1 | 视觉开关与目录 | 在「AI 配置 → Provider 管理」为类型 b provider 开启「视觉能力」，调用 `GET /api/ai/chat/models` | 列表与 models 返回 `vision_enabled=true`；聊天页图片按钮变为可用 |
+| 9.16.2 | 上传与粘贴发送 | 选择视觉模型，粘贴截图或上传图片（可附加文字）发送 | 图片随消息发送，用户气泡显示缩略图；回答包含图片理解内容；provider payload 为多模态 content（text + image_url） |
+| 9.16.3 | 非视觉模型拦截 | 切换到未开启视觉的模型后带图发送 | 400 `INVALID_ARGUMENT`；用户消息未落库、未调用模型；前端提示开启视觉或更换模型 |
+| 9.16.4 | 纯图片消息 | 不填文字只发图片 | 服务端补默认提问「请分析这张图片。」；回答正常返回 |
+| 9.16.5 | 参数边界 | 分别构造 4 张图片、GIF、远程 URL、非法 base64、单张 >2MB 的请求 | 均 400 `INVALID_ARGUMENT`；空文本且无图仍在 SSE 之前返回 400 |
+| 9.16.6 | 历史与分享回显 | 刷新会话详情；创建只读分享并打开链接 | 用户消息 `images` 正常回显缩略图；分享页只读展示图片，无输入入口 |
+| 9.16.7 | 审计与脱敏 | 查 `GET /api/audits?resource_type=ai&resource_id={session_id}` 与后端日志 | `chat_message` 含 `image_count`；审计 payload、日志与 Prompt 文本字段不含图片 base64 |
+
+> 前置：已执行迁移 `0059`；图片理解效果需真实视觉模型验证，报文与拒绝语义由 `internal/ai/application/chat_images_test.go`、`internal/ai/toolgateway/chat_vision_test.go` 自动覆盖；前端工具函数由 `web/src/views/ai-assistant/composables/imageInput.spec.ts` 覆盖。
 
 
 ## 附录 A：仅 UI 手工步骤（精简表）

@@ -659,7 +659,7 @@ MetricQueryRequest
 
 ### 4.7 AI 编排服务
 
-> **落地状态**：已落地（`internal/ai`）：provider 持久化与 AES-GCM 密钥加密（migration 0048）、多轮会话与消息幂等（0049/0050）、SSE 流式与取消、相似案例记忆（0051）、知识沉淀与审核（0052/0054）、会话只读分享（0053）、受限 Agent Loop（≤3 轮只读工具 + 预算控制）、规则体检与上下文发现工具（0055/0056）、provider 级 reasoning_effort（0057）。契约 `ops/ai-contract.md`，演进状态见本文 §16.2 与 `docs/ai-assistant-memory-roadmap.md`。
+> **落地状态**：已落地（`internal/ai`）：provider 持久化与 AES-GCM 密钥加密（migration 0048）、多轮会话与消息幂等（0049/0050）、SSE 流式与取消、相似案例记忆（0051）、知识沉淀与审核（0052/0054）、会话只读分享（0053）、受限 Agent Loop（≤3 轮只读工具 + 预算控制）、规则体检与上下文发现工具（0055/0056）、provider 级 reasoning_effort（0057）、多模态图片输入（0059，provider 级 `vision_enabled`，契约 §10.20）。契约 `ops/ai-contract.md`，演进状态见本文 §16.2 与 `docs/ai-assistant-memory-roadmap.md`。
 
 #### 4.7.1 职责
 

@@ -35,6 +35,8 @@ type sessionMessageModel struct {
 	Feedback       string `gorm:"column:feedback;type:varchar(16);not null;default:''"`
 	// ClientMessageID 由 migration 0050 引入，仅 user 消息写入；空串不参与部分唯一索引。
 	ClientMessageID string `gorm:"column:client_message_id;type:varchar(64);not null;default:''"`
+	// ImagesJSON 由 migration 0059 引入，保存用户消息附图 data URL 数组；NULL 表示无图。
+	ImagesJSON []byte `gorm:"column:images_json;type:jsonb"`
 }
 
 func (sessionMessageModel) TableName() string { return "ai_session_message" }
@@ -137,6 +139,10 @@ func (r *SessionRepository) AppendMessage(ctx context.Context, message domain.Me
 	if err != nil {
 		return err
 	}
+	imagesJSON, err := marshalMessageImages(message.Images)
+	if err != nil {
+		return err
+	}
 	row := sessionMessageModel{
 		BaseModel:       database.BaseModel{CreatedAt: message.CreatedAt, UpdatedAt: message.UpdatedAt},
 		MessageID:       messageID,
@@ -147,6 +153,7 @@ func (r *SessionRepository) AppendMessage(ctx context.Context, message domain.Me
 		ReferencesJSON:  referencesJSON,
 		Feedback:        string(message.Feedback),
 		ClientMessageID: strings.TrimSpace(message.ClientMessageID),
+		ImagesJSON:      imagesJSON,
 	}
 	updatedAt := touch.UpdatedAt
 	if updatedAt.IsZero() {
@@ -427,11 +434,16 @@ func toMessageDomain(row *sessionMessageModel) (domain.Message, error) {
 	if err != nil {
 		return domain.Message{}, err
 	}
+	images, err := unmarshalMessageImages(row.ImagesJSON)
+	if err != nil {
+		return domain.Message{}, err
+	}
 	return domain.Message{
 		MessageID:       row.MessageID,
 		SessionID:       row.SessionID,
 		Role:            domain.MessageRole(row.Role),
 		Content:         row.Content,
+		Images:          images,
 		ToolCalls:       toolCalls,
 		References:      references,
 		Feedback:        domain.Feedback(row.Feedback),
@@ -494,6 +506,25 @@ func unmarshalReferences(raw []byte) ([]domain.Reference, error) {
 	}
 	if out == nil {
 		out = []domain.Reference{}
+	}
+	return out, nil
+}
+
+// marshalMessageImages 仅在有附图时写入 JSONB，空切片落 NULL 保持与历史行一致。
+func marshalMessageImages(images []string) ([]byte, error) {
+	if len(images) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(images)
+}
+
+func unmarshalMessageImages(raw []byte) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var out []string
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

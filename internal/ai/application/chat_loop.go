@@ -72,7 +72,7 @@ func parseChatToolRequests(content string) []chatToolRequest {
 //	轮数/token 预算耗尽且仍无 answer -> 强制收敛一轮（禁止再申请工具）；仍失败才 degraded(agent_loop_exhausted)
 //
 // 任何执行类工具都不会被执行；模型申请它们只会得到一条 denied 观测。
-func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, question string, session *domain.Session, history []ChatHistoryMessage, data *chatContextData) chatGeneration {
+func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, question string, session *domain.Session, history []ChatHistoryMessage, data *chatContextData, images []string) chatGeneration {
 	if data == nil {
 		return chatGeneration{}
 	}
@@ -124,7 +124,7 @@ func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, 
 		}
 		callCtx, cancel := context.WithTimeout(ctx, remaining)
 		started := time.Now()
-		result, err := s.completeModel(callCtx, providerID, systemPrompt, prompt)
+		result, err := s.completeModel(callCtx, providerID, systemPrompt, prompt, images)
 		cancel()
 		logger.From(ctx).Info("ai chat model call",
 			logger.String("session_id", session.SessionID),
@@ -191,7 +191,7 @@ func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, 
 			logger.From(ctx).Warn("ai chat agent loop exhausted",
 				logger.String("session_id", session.SessionID),
 				logger.Int("rounds", rounds), logger.Int("tokens", tokens))
-			return s.forceFinalAnswer(ctx, providerID, question, session, history, data, systemPrompt, tokens, deadline)
+			return s.forceFinalAnswer(ctx, providerID, question, session, history, data, systemPrompt, tokens, deadline, images)
 		}
 		if time.Until(deadline) <= 0 {
 			return budgetExceeded()
@@ -216,14 +216,14 @@ func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, 
 			logger.From(ctx).Warn("ai chat agent loop made no progress",
 				logger.String("session_id", session.SessionID),
 				logger.Int("rounds", rounds), logger.Int("denied_rounds", deniedRounds))
-			return s.forceFinalAnswer(ctx, providerID, question, session, history, data, systemPrompt, tokens, deadline)
+			return s.forceFinalAnswer(ctx, providerID, question, session, history, data, systemPrompt, tokens, deadline, images)
 		}
 	}
 }
 
 // forceFinalAnswer 预算耗尽时强制模型基于已有观测收敛作答，避免丢弃已取证据直接降级；
 // 仅当强制轮也失败/输出非法时才回退 degraded(agent_loop_exhausted)。
-func (s *ChatService) forceFinalAnswer(ctx context.Context, providerID, question string, session *domain.Session, history []ChatHistoryMessage, data *chatContextData, systemPrompt string, tokens int, deadline time.Time) chatGeneration {
+func (s *ChatService) forceFinalAnswer(ctx context.Context, providerID, question string, session *domain.Session, history []ChatHistoryMessage, data *chatContextData, systemPrompt string, tokens int, deadline time.Time, images []string) chatGeneration {
 	evidence := observationEvidenceLines(*data)
 	degraded := chatGeneration{
 		Answer: degradedChatAnswer(chatDegradedLoopExhausted, evidence),
@@ -241,7 +241,7 @@ func (s *ChatService) forceFinalAnswer(ctx context.Context, providerID, question
 	})
 	callCtx, cancel := context.WithTimeout(ctx, remaining)
 	started := time.Now()
-	result, err := s.completeModel(callCtx, providerID, systemPrompt, prompt)
+	result, err := s.completeModel(callCtx, providerID, systemPrompt, prompt, images)
 	cancel()
 	if err != nil {
 		logger.From(ctx).Warn("ai chat forced convergence failed",
@@ -337,8 +337,22 @@ func partialChatGeneration(result *toolgateway.ChatCompletionResult, evidence []
 }
 
 // completeModel 在流式请求（存在 SSE sink）时走模型增量；同步路径保持原 Complete。
-func (s *ChatService) completeModel(ctx context.Context, providerID, systemPrompt, prompt string) (*toolgateway.ChatCompletionResult, error) {
-	if _, ok := ctx.Value(ChatEventSinkKey{}).(ChatEventSink); !ok {
+// images 非空时走多模态通道：registry 未实现视觉能力时明确报错（正常流程已被 sendMessage 预检拦截）。
+func (s *ChatService) completeModel(ctx context.Context, providerID, systemPrompt, prompt string, images []string) (*toolgateway.ChatCompletionResult, error) {
+	_, streaming := ctx.Value(ChatEventSinkKey{}).(ChatEventSink)
+	if len(images) > 0 {
+		vision, ok := s.chat.(toolgateway.ChatVisionClient)
+		if !ok {
+			return nil, apperr.New(apperr.CodeFailedPrecondition, "chat provider does not support image input")
+		}
+		if !streaming {
+			return vision.CompleteVision(ctx, providerID, systemPrompt, prompt, images)
+		}
+		return vision.CompleteStreamVision(ctx, providerID, systemPrompt, prompt, images, func(phase, text string) error {
+			return emitChatModelDelta(ctx, phase, text)
+		})
+	}
+	if !streaming {
 		return s.chat.Complete(ctx, providerID, systemPrompt, prompt)
 	}
 	return s.chat.CompleteStream(ctx, providerID, systemPrompt, prompt, func(phase, text string) error {

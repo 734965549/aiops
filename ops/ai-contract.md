@@ -1144,3 +1144,44 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 - `scripts/e2e-ai-memory.ps1`：自动覆盖「有效反馈沉淀 → 检索引用 → invalid 淘汰」。
 - `scripts/e2e-ai-knowledge.ps1`：额外覆盖记忆列表检索与手动 retire 清理。
+
+### 10.20 图片输入（多模态，migration 0059）
+
+AI 助手支持用户随消息携带图片（截图提问）。仅类型 b 且开启 `vision_enabled` 的模型接受图片；其余链路（文本对话、Agent Loop、降级、幂等、分享）语义不变。
+
+#### 10.20.1 Provider 视觉开关与模型目录
+
+- `ai_provider.vision_enabled`（BOOLEAN，默认 `false`）：provider 管理接口 `POST /api/ai/providers` 与列表 `GET /api/ai/providers` 增加 `vision_enabled` 字段；前端「系统设置 → AI 配置 → Provider 管理」以「视觉能力」开关维护，保存即生效。
+- `GET /api/ai/chat/models` 返回项新增 `vision_enabled`；前端据此开放/禁用图片按钮与粘贴入口。
+- YAML `ai.providers` 种子不含该字段，默认 false；需要图片输入时在页面开启。
+
+#### 10.20.2 发送带图消息
+
+- Method: `POST`
+- Path: `/api/ai/chat/sessions/:session_id/messages` 与 `/messages/stream`
+- Body 在 §10.6 基础上新增：
+  - `images`: string[]，可选；元素为 `data:image/(png|jpeg|webp);base64,...` 形式的 data URL。
+  - 规则：最多 3 张；单张 base64 解码后 ≤ 2MB（2 * 1024 * 1024 字节）；空 payload、非法 base64、非白名单 MIME、远程 URL 均返回 400 `INVALID_ARGUMENT`。
+- `content` 允许为空字符串（仅当 `images` 非空）；纯图片消息由服务端补默认提问 `请分析这张图片。`。文本与图片均为空仍在写 SSE/业务编排之前返回 400。
+- 视觉校验：本轮实际模型（请求 `provider_id` > 会话 `provider_id` > 默认模型，回退语义同 §10.6.7）未开启 `vision_enabled` 时返回 400 `INVALID_ARGUMENT`，**不落用户消息、不调用模型**；前端按提示更换模型或开启开关。
+- 幂等：`client_message_id` 语义不变；重放返回首次结果，不重复把图片发给模型。
+
+#### 10.20.3 模型调用与持久化
+
+- 类型 b 执行器把 user 消息构造为 OpenAI 兼容多模态 content：`[{"type":"text","text":...},{"type":"image_url","image_url":{"url":"data:..."}}]`；无图消息仍为纯字符串 content，既有文本报文不变。
+- 图片只在当前回合的模型调用（含 Agent Loop 各轮与强制收敛轮）中携带；送入模型的会话历史（`chatHistoryLimit`）只保留文本，不回放历史图片。
+- `ai_session_message.images_json`（JSONB，可空）保存用户消息附图 data URL 数组；assistant 消息不写该列。
+- 会话详情（§10.5）与只读分享（§10.18.5）的消息视图新增 `images`（omitempty，仅 user 消息非空时返回）。
+- 审计 `chat_message` payload 新增 `image_count`；图片 base64 不进入日志、审计 payload 或 Prompt 文本字段。
+- 记忆/知识沉淀不读取图片内容（仍只使用文本摘要）。
+
+#### 10.20.4 前端接入
+
+- 输入区支持点击上传与直接粘贴截图；前端压缩（>300KB 缩放至最长边 1280、JPEG 0.85）并预览/删除，最多 3 张。
+- 用户消息气泡展示附图缩略图（可点击预览）；独立工作台与全局浮层共用同一图片通道。
+- 重试复用同一幂等键与附图；停止生成、归档、数据范围等语义不变。
+
+#### 10.20.5 验证
+
+- 单测：`internal/ai/application/chat_images_test.go`（校验规则、视觉通道、非视觉 400 不落库、纯图片默认提问）；`internal/ai/toolgateway/chat_vision_test.go`（多模态 payload 同步/流式、无图报文不变、models 视觉标志）。
+- 前端：`web/src/views/ai-assistant/composables/imageInput.spec.ts`。

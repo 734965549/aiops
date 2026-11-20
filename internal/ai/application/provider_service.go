@@ -57,6 +57,8 @@ type UpsertProviderInput struct {
 	Description string
 	// ReasoningEffort 思考型模型推理强度（low/high/max）；空串不发送。
 	ReasoningEffort string
+	// VisionEnabled 表示类型 b 模型接受图片输入（多模态）。
+	VisionEnabled bool
 }
 
 // ProviderService 编排 provider 的持久化、启动加载与运行时注册。
@@ -142,7 +144,7 @@ func (s *ProviderService) ListProviders(ctx context.Context) ([]toolgateway.Prov
 			ID: record.ProviderID, Name: record.Name, Type: toolgateway.ProviderType(record.Type),
 			BaseURL: record.BaseURL, Model: record.Model, HasAPIKey: record.HasAPIKey,
 			TimeoutMS: record.TimeoutMS, Headers: record.Headers, Enabled: record.Enabled,
-			Description: record.Description, ReasoningEffort: record.ReasoningEffort,
+			Description: record.Description, ReasoningEffort: record.ReasoningEffort, VisionEnabled: record.VisionEnabled,
 		})
 	}
 	return out, nil
@@ -186,7 +188,7 @@ func (s *ProviderService) UpsertProvider(ctx context.Context, in UpsertProviderI
 		ProviderID: providerID, Name: strings.TrimSpace(in.Name), Type: strings.TrimSpace(in.Type),
 		BaseURL: strings.TrimSpace(in.BaseURL), Model: strings.TrimSpace(in.Model),
 		Headers: in.Headers, TimeoutMS: normalizeProviderTimeout(in.TimeoutMS), Enabled: in.Enabled,
-		Description: strings.TrimSpace(in.Description), ReasoningEffort: reasoningEffort,
+		Description: strings.TrimSpace(in.Description), ReasoningEffort: reasoningEffort, VisionEnabled: in.VisionEnabled,
 		APIKeyCiphertext: ciphertext, HasAPIKey: true,
 	}
 	cfg := runtimeConfig(record, apiKey)
@@ -260,6 +262,6 @@ func runtimeConfig(record domain.Provider, apiKey string) toolgateway.ProviderCo
 		ID: record.ProviderID, Name: record.Name, Type: toolgateway.ProviderType(record.Type),
 		BaseURL: record.BaseURL, Model: record.Model, APIKey: apiKey,
 		TimeoutMS: record.TimeoutMS, Headers: record.Headers, Enabled: record.Enabled,
-		Description: record.Description, ReasoningEffort: record.ReasoningEffort,
+		Description: record.Description, ReasoningEffort: record.ReasoningEffort, VisionEnabled: record.VisionEnabled,
 	}
 }

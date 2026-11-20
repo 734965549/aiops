@@ -24,6 +24,8 @@ type Provider struct {
 	Description      string
 	// ReasoningEffort 思考型模型的推理强度（low/high/max）；空串表示不发送该参数。
 	ReasoningEffort  string
+	// VisionEnabled 表示类型 b 模型接受图片输入（多模态）；false 时带图消息被拒绝。
+	VisionEnabled    bool
 	APIKeyCiphertext []byte
 	HasAPIKey        bool
 	CreatedAt        time.Time

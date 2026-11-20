@@ -38,9 +38,45 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
+// chatRequestMessage 是请求侧消息：Content 纯文本时为字符串，
+// 带图片时为 OpenAI 兼容多模态 content 数组（migration 0059）。
+type chatRequestMessage struct {
+	Role    string `json:"role"`
+	Content any    `json:"content"`
+}
+
+type chatContentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *chatImageURL `json:"image_url,omitempty"`
+}
+
+type chatImageURL struct {
+	URL string `json:"url"`
+}
+
+// buildChatRequestMessages 构造 system+user 两条请求消息；images 非空时 user 消息
+// 使用多模态 content 数组（text + image_url），否则保持纯文本字符串。
+func buildChatRequestMessages(systemPrompt, userPrompt string, images []string) []chatRequestMessage {
+	messages := []chatRequestMessage{{Role: "system", Content: systemPrompt}}
+	if len(images) == 0 {
+		return append(messages, chatRequestMessage{Role: "user", Content: userPrompt})
+	}
+	parts := make([]chatContentPart, 0, len(images)+1)
+	parts = append(parts, chatContentPart{Type: "text", Text: userPrompt})
+	for _, image := range images {
+		image = strings.TrimSpace(image)
+		if image == "" {
+			continue
+		}
+		parts = append(parts, chatContentPart{Type: "image_url", ImageURL: &chatImageURL{URL: image}})
+	}
+	return append(messages, chatRequestMessage{Role: "user", Content: parts})
+}
+
 type chatRequest struct {
-	Model          string        `json:"model"`
-	Messages       []chatMessage `json:"messages"`
+	Model          string               `json:"model"`
+	Messages       []chatRequestMessage `json:"messages"`
 	ResponseFormat struct {
 		Type string `json:"type"`
 	} `json:"response_format"`
@@ -148,7 +184,7 @@ func (e *ChatCompletionExecutor) Invoke(ctx context.Context, cfg ProviderConfig,
 	systemPrompt, userPrompt := buildChatPrompts(req)
 	body, err := json.Marshal(chatRequest{
 		Model:    cfg.Model,
-		Messages: []chatMessage{{Role: "system", Content: systemPrompt}, {Role: "user", Content: userPrompt}},
+		Messages: buildChatRequestMessages(systemPrompt, userPrompt, nil),
 		ResponseFormat: struct {
 			Type string `json:"type"`
 		}{Type: "json_object"},

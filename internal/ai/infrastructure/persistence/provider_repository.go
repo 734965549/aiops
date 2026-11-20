@@ -26,6 +26,7 @@ type providerModel struct {
 	Enabled         bool   `gorm:"column:enabled;not null;default:true"`
 	Description     string `gorm:"column:description;type:varchar(512);not null;default:''"`
 	ReasoningEffort string `gorm:"column:reasoning_effort;type:varchar(16);not null;default:''"`
+	VisionEnabled   bool   `gorm:"column:vision_enabled;not null;default:false"`
 }
 
 func (providerModel) TableName() string { return "ai_provider" }
@@ -104,6 +105,7 @@ func (r *ProviderRepository) Upsert(ctx context.Context, provider domain.Provide
 		"enabled":           provider.Enabled,
 		"description":       provider.Description,
 		"reasoning_effort":  provider.ReasoningEffort,
+		"vision_enabled":    provider.VisionEnabled,
 		"updated_at":        now,
 	})
 	if res.Error != nil {
@@ -116,7 +118,7 @@ func (r *ProviderRepository) Upsert(ctx context.Context, provider domain.Provide
 		ProviderID: providerID, Name: provider.Name, Type: provider.Type,
 		BaseURL: provider.BaseURL, Model: provider.Model, APIKeyEncrypted: provider.APIKeyCiphertext,
 		Headers: headers, TimeoutMS: provider.TimeoutMS, Enabled: provider.Enabled,
-		Description: provider.Description, ReasoningEffort: provider.ReasoningEffort,
+		Description: provider.Description, ReasoningEffort: provider.ReasoningEffort, VisionEnabled: provider.VisionEnabled,
 	}
 	if err := r.db.WithContext(ctx).Create(&row).Error; err != nil {
 		if database.IsUniqueViolation(err) {
@@ -124,7 +126,7 @@ func (r *ProviderRepository) Upsert(ctx context.Context, provider domain.Provide
 				"name": provider.Name, "type": provider.Type, "base_url": provider.BaseURL,
 				"model": provider.Model, "api_key_encrypted": provider.APIKeyCiphertext,
 				"headers": headers, "timeout_ms": provider.TimeoutMS, "enabled": provider.Enabled,
-				"description": provider.Description, "reasoning_effort": provider.ReasoningEffort, "updated_at": time.Now(),
+				"description": provider.Description, "reasoning_effort": provider.ReasoningEffort, "vision_enabled": provider.VisionEnabled, "updated_at": time.Now(),
 			}).Error
 		}
 		return err
@@ -159,6 +161,7 @@ func toProviderDomain(row *providerModel) (domain.Provider, error) {
 		Enabled:          row.Enabled,
 		Description:      row.Description,
 		ReasoningEffort:  row.ReasoningEffort,
+		VisionEnabled:    row.VisionEnabled,
 		APIKeyCiphertext: row.APIKeyEncrypted,
 		HasAPIKey:        len(row.APIKeyEncrypted) > 0,
 		CreatedAt:        row.CreatedAt,

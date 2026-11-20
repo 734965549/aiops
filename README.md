@@ -14,7 +14,7 @@
 | Execution 自动化执行 | ✅ | `/executions` | `e2e-execution.ps1` | 人工确认、执行代理、时间线回写 |
 | Dashboard 首页驾驶舱 | ✅ | `/dashboard` | API 抽检 | 告警/执行/资产/Runbook 聚合摘要 |
 | Audit 审计中心 | ✅ | `/audits` | UI 查询/聚合/导出 | 关键操作审计写入、Trace/资源/用户多维聚合、详情查看与 CSV 导出 |
-| AI 运维助手 | ✅ API | `/ai-assistant`、`/system/ai-config` | `e2e-ai-*.ps1` | 多轮会话、记忆/知识管理、流式输出、受限 Agent Loop、生成待确认执行计划 |
+| AI 运维助手 | ✅ API | `/ai-assistant`、`/system/ai-config` | `e2e-ai-*.ps1` | 多轮会话、记忆/知识管理、流式输出、受限 Agent Loop、多模态图片输入、生成待确认执行计划 |
 | Integration 接入账号 | ✅ | `/integrations` | `e2e-integration.ps1` | 云账号/观测平台账号注册、凭据引用、连通性测试 |
 | Observability 统一观测 | ✅ | `/observability` | `e2e-observability.ps1` | 指标、日志、链路、拓扑统一查询，fake provider 与 Huawei CES 指标路径 |
 | Inspection 巡检中心 | ✅ | `/inspections` | `e2e-inspection.ps1` | 巡检策略、运行、Finding、Recommendation 与证据链 |
@@ -155,7 +155,7 @@ make migrate-up
 go run ./cmd/migrate -config configs/config.yaml
 ```
 
-当前迁移文件（`0001` -> `0058`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
+当前迁移文件（`0001` -> `0059`，按实际文件名顺序执行；当前仓库未包含 `0021` 文件，不要手工补空版本）：
 
 | 版本 | 文件 | 说明 |
 | --- | --- | --- |
@@ -211,6 +211,7 @@ go run ./cmd/migrate -config configs/config.yaml
 | `0056` | `0056_ai_discovery_tools_permission.up.sql` | AI：上下文发现只读工具 `accounts.list` / `resource.analyze` / `resources.list` 权限种子并绑定 admin；无表结构变更 |
 | `0057` | `0057_ai_provider_reasoning_effort.up.sql` | AI：provider 增加 `reasoning_effort`（思考型模型推理强度档位） |
 | `0058` | `0058_asset_resource_relation.up.sql` | Asset：CMDB 资源关系表 `asset_resource_relation`（跨应用手工关系；查询期云派生关系见拓扑二期）；复用 `app:assets:read/write`，无新增权限 |
+| `0059` | `0059_ai_chat_image_input.up.sql` | AI：助手图片输入（多模态）：`ai_session_message.images_json`（用户消息附图 data URL 数组，最多 3 张、单张解码后 ≤2MB）+ `ai_provider.vision_enabled`（类型 b 视觉模型开关，默认 false，未开启时带图消息 400 不落库）；契约 `ops/ai-contract.md` §10.20 |
 
 详见 `ops/migration-contract.md`。
 

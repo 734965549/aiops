@@ -11,6 +11,8 @@ type ChatModelOption struct {
 	ProviderID string `json:"provider_id"`
 	Name       string `json:"name"`
 	Model      string `json:"model"`
+	// VisionEnabled 表示该模型接受图片输入；前端据此开放/禁用图片入口。
+	VisionEnabled bool `json:"vision_enabled"`
 }
 
 // ListChatModels 返回启用中的类型 b 模型；实现未提供模型目录时返回空列表。
@@ -29,6 +31,7 @@ func (s *ChatService) ListChatModels() []ChatModelOption {
 			ProviderID: model.ProviderID,
 			Name:       model.Name,
 			Model:      model.Model,
+			VisionEnabled: model.VisionEnabled,
 		})
 	}
 	return out

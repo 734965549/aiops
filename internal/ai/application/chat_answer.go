@@ -25,7 +25,7 @@ type chatGeneration struct {
 
 // generateAnswer 解析本次使用的模型并调用受限 Agent Loop。
 // 所选模型不可用/禁用时回退默认模型，并在回答不确定性中说明，不直接让请求失败。
-func (s *ChatService) generateAnswer(ctx context.Context, userID, question string, session *domain.Session, history []ChatHistoryMessage, data *chatContextData, requestedProviderID string) chatGeneration {
+func (s *ChatService) generateAnswer(ctx context.Context, userID, question string, session *domain.Session, history []ChatHistoryMessage, data *chatContextData, requestedProviderID string, images []string) chatGeneration {
 	providerID, fallbackNote, ok := s.resolveChatProvider(requestedProviderID)
 	if !ok {
 		var evidence []string
@@ -37,7 +37,7 @@ func (s *ChatService) generateAnswer(ctx context.Context, userID, question strin
 			Status: chatStatusDegraded, FallbackNote: fallbackNote,
 		}
 	}
-	generation := s.generateWithLoop(ctx, providerID, userID, question, session, history, data)
+	generation := s.generateWithLoop(ctx, providerID, userID, question, session, history, data, images)
 	generation.FallbackNote = fallbackNote
 	return generation
 }

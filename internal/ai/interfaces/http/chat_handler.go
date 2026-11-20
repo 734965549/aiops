@@ -77,7 +77,10 @@ type createChatSessionRequest struct {
 }
 
 type sendChatMessageRequest struct {
-	Content string              `json:"content" binding:"required"`
+	// Content 纯文本提问；允许为空字符串但此时必须携带 images（application 层校验）。
+	Content string              `json:"content"`
+	// Images 为可选用户附图（data URL 数组，最多 3 张、单张解码后 <=2MB）；需模型开启 vision_enabled。
+	Images  []string            `json:"images"`
 	Context *chatContextRequest `json:"context"`
 	// ProviderID 为可选对话模型；空时回退会话上下文与默认模型（ops/ai-contract.md §10.6.7）。
 	ProviderID string `json:"provider_id"`
@@ -182,12 +185,17 @@ func (h *ChatHandler) SendMessage(c *gin.Context) {
 	}
 	var req sendChatMessageRequest
 	if err := httpx.BindJSON(c, &req); err != nil {
+		httpx.FailWith(c, apperr.CodeInvalidArgument, "invalid chat message request")
+		return
+	}
+	// 空文本且未带图仍在写 SSE/业务编排之前返回 400；纯图片消息由 application 补默认提问。
+	if strings.TrimSpace(req.Content) == "" && len(req.Images) == 0 {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "content is required")
 		return
 	}
 	in := aiapp.SendChatMessageInput{
 		UserID: c.GetString(middleware.CtxKeyUserID), SessionID: c.Param("session_id"), Content: req.Content,
-		ProviderID: req.ProviderID, ClientMessageID: req.ClientMessageID,
+		Images: req.Images, ProviderID: req.ProviderID, ClientMessageID: req.ClientMessageID,
 	}
 	if req.Context != nil {
 		context := req.Context.toDomain()
@@ -214,12 +222,16 @@ func (h *ChatHandler) SendMessageStream(c *gin.Context) {
 	}
 	var req sendChatMessageRequest
 	if err := httpx.BindJSON(c, &req); err != nil {
+		httpx.FailWith(c, apperr.CodeInvalidArgument, "invalid chat message request")
+		return
+	}
+	if strings.TrimSpace(req.Content) == "" && len(req.Images) == 0 {
 		httpx.FailWith(c, apperr.CodeInvalidArgument, "content is required")
 		return
 	}
 	in := aiapp.SendChatMessageInput{
 		UserID: c.GetString(middleware.CtxKeyUserID), SessionID: c.Param("session_id"), Content: req.Content,
-		ProviderID: req.ProviderID, ClientMessageID: req.ClientMessageID,
+		Images: req.Images, ProviderID: req.ProviderID, ClientMessageID: req.ClientMessageID,
 	}
 	if req.Context != nil {
 		context := req.Context.toDomain()

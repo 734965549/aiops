@@ -34,6 +34,8 @@ type ProviderConfig struct {
 	Description string
 	// ReasoningEffort 随 chat/completions 发送 reasoning_effort；空串不发送。
 	ReasoningEffort string
+	// VisionEnabled 表示该类型 b 模型接受图片输入（多模态 content）。
+	VisionEnabled bool
 }
 
 // ProviderPublic 是对外暴露的 provider 摘要，不含明文 api_key。
@@ -49,6 +51,7 @@ type ProviderPublic struct {
 	Enabled     bool
 	Description string
 	ReasoningEffort string
+	VisionEnabled bool
 }
 
 // Public 将内部配置转换为对外安全摘要。
@@ -65,6 +68,7 @@ func (c ProviderConfig) Public() ProviderPublic {
 		Enabled:     c.Enabled,
 		Description: c.Description,
 		ReasoningEffort: c.ReasoningEffort,
+		VisionEnabled: c.VisionEnabled,
 	}
 }
 

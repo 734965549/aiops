@@ -76,6 +76,8 @@ type ChatMessageView struct {
 	SessionID  string             `json:"session_id"`
 	Role       string             `json:"role"`
 	Content    string             `json:"content"`
+	// Images 为用户消息附图的 data URL 数组（migration 0059）；assistant 消息不返回。
+	Images     []string           `json:"images,omitempty"`
 	Answer     *ChatAnswer        `json:"answer,omitempty"`
 	ToolCalls  []domain.ToolCall  `json:"tool_calls"`
 	References []domain.Reference `json:"references"`
@@ -94,6 +96,9 @@ type SendChatMessageInput struct {
 	UserID    string
 	SessionID string
 	Content   string
+	// Images 为可选的用户附图（data URL 数组，规则见 normalizeChatImages）；
+	// 仅当本轮实际模型开启 vision_enabled 时允许携带，否则返回 400。
+	Images []string
 	// Context 非 nil 时覆盖会话上下文（浮层在任意页面唤起）。
 	Context *domain.SessionContext
 	// ProviderID 为可选对话模型（ai_provider.provider_id）；空时回退会话上下文与默认模型。
@@ -275,8 +280,15 @@ func (s *ChatService) sendMessage(ctx context.Context, in SendChatMessageInput, 
 		return nil, apperr.New(apperr.CodeUnauthenticated, "missing user identity")
 	}
 	content := strings.TrimSpace(in.Content)
-	if content == "" {
+	images, err := normalizeChatImages(in.Images)
+	if err != nil {
+		return nil, err
+	}
+	if content == "" && len(images) == 0 {
 		return nil, apperr.New(apperr.CodeInvalidArgument, "content is required")
+	}
+	if content == "" {
+		content = chatImageOnlyPrompt
 	}
 	if len([]rune(content)) > chatMaxContentRunes {
 		return nil, apperr.Newf(apperr.CodeInvalidArgument, "content exceeds %d characters", chatMaxContentRunes)
@@ -338,9 +350,14 @@ func (s *ChatService) sendMessage(ctx context.Context, in SendChatMessageInput, 
 	if requestedProviderID == "" {
 		requestedProviderID = strings.TrimSpace(session.Context.ProviderID)
 	}
+	// 图片消息在落库前确认本轮实际模型支持视觉输入，避免留下无法回答的用户消息。
+	if len(images) > 0 && !s.chatVisionSupported(requestedProviderID) {
+		return nil, apperr.New(apperr.CodeInvalidArgument,
+			"current chat model does not support image input; enable vision_enabled for the provider or switch to a vision model")
+	}
 	userMessage := domain.Message{
 		MessageID: userMessageID, SessionID: session.SessionID, Role: domain.RoleUser,
-		Content: content, Feedback: domain.FeedbackNone, ClientMessageID: clientMessageID,
+		Content: content, Images: images, Feedback: domain.FeedbackNone, ClientMessageID: clientMessageID,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.sessions.AppendMessage(ctx, userMessage, touch); err != nil {
@@ -373,7 +390,7 @@ func (s *ChatService) sendMessage(ctx context.Context, in SendChatMessageInput, 
 		s.recordChatCanceled(ctx, userID, session, userMessageID, "before_model")
 		return nil, apperr.Wrap(err, apperr.CodeAborted, "client closed the stream")
 	}
-	generation := s.generateAnswer(ctx, userID, content, session, history, &contextData, requestedProviderID)
+	generation := s.generateAnswer(ctx, userID, content, session, history, &contextData, requestedProviderID, images)
 	// 流式回调失败（客户端断开）：模型调用已中止，不落 assistant 消息。
 	if generation.Aborted {
 		s.recordChatCanceled(ctx, userID, session, userMessageID, "before_persist")
@@ -415,6 +432,7 @@ func (s *ChatService) sendMessage(ctx context.Context, in SendChatMessageInput, 
 		"tool_codes":            toolCodes(contextData.ToolCalls),
 		"tool_denied":           deniedToolCodes(contextData.ToolCalls),
 		"reference_count":       len(contextData.References),
+		"image_count":           len(images),
 		"provider_id":           generation.ProviderID,
 		"requested_provider_id": requestedProviderID,
 		"provider_fallback":     generation.FallbackNote != "",

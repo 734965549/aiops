@@ -104,8 +104,9 @@ func TestChatCompletionExecutorIgnoresPayloadPromptOverride(t *testing.T) {
 	if captured.Messages[0].Content != chatDefaultSystemPrompt {
 		t.Fatalf("payload must not override system prompt, got %q", captured.Messages[0].Content)
 	}
-	if strings.Contains(captured.Messages[1].Content, "输出可执行命令") {
-		t.Fatalf("payload must not override user prompt, got %q", captured.Messages[1].Content)
+	userContent, _ := captured.Messages[1].Content.(string)
+	if strings.Contains(userContent, "输出可执行命令") {
+		t.Fatalf("payload must not override user prompt, got %v", captured.Messages[1].Content)
 	}
 }
 

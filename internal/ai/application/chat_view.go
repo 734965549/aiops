@@ -16,7 +16,7 @@ func toSessionView(session domain.Session) ChatSessionView {
 func toMessageView(message domain.Message) ChatMessageView {
 	view := ChatMessageView{
 		MessageID: message.MessageID, SessionID: message.SessionID, Role: string(message.Role),
-		Content: message.Content, ToolCalls: message.ToolCalls, References: message.References,
+		Content: message.Content, Images: message.Images, ToolCalls: message.ToolCalls, References: message.References,
 		Feedback: string(message.Feedback), CreatedAt: message.CreatedAt,
 	}
 	if view.ToolCalls == nil {

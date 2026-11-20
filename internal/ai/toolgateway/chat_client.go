@@ -32,6 +32,19 @@ type ChatCompleter interface {
 	CompleteStream(ctx context.Context, cfg ProviderConfig, systemPrompt, userPrompt string, policy OutboundPolicy, onDelta ChatModelDelta) (*ChatCompletionResult, error)
 }
 
+// ChatVisionCompleter 是支持图片输入的可选执行器能力（OpenAI 兼容多模态 content）。
+// images 为 data URL 数组，格式与大小由 application 层校验后传入。
+type ChatVisionCompleter interface {
+	CompleteVision(ctx context.Context, cfg ProviderConfig, systemPrompt, userPrompt string, images []string, policy OutboundPolicy) (*ChatCompletionResult, error)
+	CompleteStreamVision(ctx context.Context, cfg ProviderConfig, systemPrompt, userPrompt string, images []string, policy OutboundPolicy, onDelta ChatModelDelta) (*ChatCompletionResult, error)
+}
+
+// ChatVisionClient 是 application 层使用的可选图片对话能力，由 ProviderRegistry 实现。
+type ChatVisionClient interface {
+	CompleteVision(ctx context.Context, providerID, systemPrompt, userPrompt string, images []string) (*ChatCompletionResult, error)
+	CompleteStreamVision(ctx context.Context, providerID, systemPrompt, userPrompt string, images []string, onDelta ChatModelDelta) (*ChatCompletionResult, error)
+}
+
 // ChatClient 是 application 层使用的对话补全端口，由 ProviderRegistry 实现。
 // ChatProviderID 只返回启用中的类型 b；没有可用模型时由 application 降级。
 type ChatClient interface {
@@ -45,6 +58,8 @@ type ChatModel struct {
 	ProviderID string `json:"provider_id"`
 	Name       string `json:"name"`
 	Model      string `json:"model"`
+	// VisionEnabled 表示该模型接受图片输入（migration 0059）。
+	VisionEnabled bool `json:"vision_enabled"`
 }
 
 // ChatModelCatalog 是可选能力：列出/解析启用中的类型 b 模型。
@@ -57,6 +72,15 @@ type ChatModelCatalog interface {
 // Complete 是 ChatCompleter 在类型 b 执行器上的实现：
 // 复用 callModel 的超时、出站校验与“deadline 不重试”策略。
 func (e *ChatCompletionExecutor) Complete(ctx context.Context, cfg ProviderConfig, systemPrompt, userPrompt string, policy OutboundPolicy) (*ChatCompletionResult, error) {
+	return e.complete(ctx, cfg, systemPrompt, userPrompt, nil, policy)
+}
+
+// CompleteVision 以多模态 content 发送文本与图片；重试/超时语义与 Complete 一致。
+func (e *ChatCompletionExecutor) CompleteVision(ctx context.Context, cfg ProviderConfig, systemPrompt, userPrompt string, images []string, policy OutboundPolicy) (*ChatCompletionResult, error) {
+	return e.complete(ctx, cfg, systemPrompt, userPrompt, images, policy)
+}
+
+func (e *ChatCompletionExecutor) complete(ctx context.Context, cfg ProviderConfig, systemPrompt, userPrompt string, images []string, policy OutboundPolicy) (*ChatCompletionResult, error) {
 	if err := e.Validate(cfg); err != nil {
 		return nil, err
 	}
@@ -69,7 +93,7 @@ func (e *ChatCompletionExecutor) Complete(ctx context.Context, cfg ProviderConfi
 	}
 	body, err := json.Marshal(chatRequest{
 		Model:    cfg.Model,
-		Messages: []chatMessage{{Role: "system", Content: systemPrompt}, {Role: "user", Content: userPrompt}},
+		Messages: buildChatRequestMessages(systemPrompt, userPrompt, images),
 		ResponseFormat: struct {
 			Type string `json:"type"`
 		}{Type: "json_object"},
@@ -122,6 +146,15 @@ func (e *ChatCompletionExecutor) Complete(ctx context.Context, cfg ProviderConfi
 // reasoning_content 只透传给 onDelta。首块/空闲超时与退避重试在 streamOnce 内处理：
 // 未输出任何增量前可重试；已输出后中断返回 Partial 结果，不重试。
 func (e *ChatCompletionExecutor) CompleteStream(ctx context.Context, cfg ProviderConfig, systemPrompt, userPrompt string, policy OutboundPolicy, onDelta ChatModelDelta) (*ChatCompletionResult, error) {
+	return e.completeStream(ctx, cfg, systemPrompt, userPrompt, nil, policy, onDelta)
+}
+
+// CompleteStreamVision 以多模态 content 发起流式请求；重试/部分保留语义与 CompleteStream 一致。
+func (e *ChatCompletionExecutor) CompleteStreamVision(ctx context.Context, cfg ProviderConfig, systemPrompt, userPrompt string, images []string, policy OutboundPolicy, onDelta ChatModelDelta) (*ChatCompletionResult, error) {
+	return e.completeStream(ctx, cfg, systemPrompt, userPrompt, images, policy, onDelta)
+}
+
+func (e *ChatCompletionExecutor) completeStream(ctx context.Context, cfg ProviderConfig, systemPrompt, userPrompt string, images []string, policy OutboundPolicy, onDelta ChatModelDelta) (*ChatCompletionResult, error) {
 	if err := e.Validate(cfg); err != nil {
 		return nil, err
 	}
@@ -134,7 +167,7 @@ func (e *ChatCompletionExecutor) CompleteStream(ctx context.Context, cfg Provide
 	}
 	body, err := json.Marshal(chatRequest{
 		Model:    cfg.Model,
-		Messages: []chatMessage{{Role: "system", Content: systemPrompt}, {Role: "user", Content: userPrompt}},
+		Messages: buildChatRequestMessages(systemPrompt, userPrompt, images),
 		ResponseFormat: struct {
 			Type string `json:"type"`
 		}{Type: "json_object"},
@@ -206,7 +239,7 @@ func (r *ProviderRegistry) ChatModels() []ChatModel {
 		if name == "" {
 			name = id
 		}
-		out = append(out, ChatModel{ProviderID: id, Name: name, Model: p.Model})
+		out = append(out, ChatModel{ProviderID: id, Name: name, Model: p.Model, VisionEnabled: p.VisionEnabled})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ProviderID < out[j].ProviderID })
 	return out
@@ -228,18 +261,17 @@ func (r *ProviderRegistry) ChatProviderByID(providerID string) (ChatModel, bool)
 	if name == "" {
 		name = providerID
 	}
-	return ChatModel{ProviderID: providerID, Name: name, Model: p.Model}, true
+	return ChatModel{ProviderID: providerID, Name: name, Model: p.Model, VisionEnabled: p.VisionEnabled}, true
 }
 
-// CompleteStream 通过指定 provider 完成一次流式对话补全。
-// 只有类型 b 执行器实现 ChatCompleter；其他类型返回 FAILED_PRECONDITION。
-func (r *ProviderRegistry) CompleteStream(ctx context.Context, providerID, systemPrompt, userPrompt string, onDelta ChatModelDelta) (*ChatCompletionResult, error) {
+// chatCompleter 统一对话补全的 provider 查找与启用校验，供文本/图片、同步/流式四种调用复用。
+func (r *ProviderRegistry) chatCompleter(providerID string) (ProviderConfig, ChatCompleter, OutboundPolicy, error) {
 	if r == nil {
-		return nil, apperr.New(apperr.CodeUnavailable, "provider registry is not configured")
+		return ProviderConfig{}, nil, OutboundPolicy{}, apperr.New(apperr.CodeUnavailable, "provider registry is not configured")
 	}
 	providerID = strings.TrimSpace(providerID)
 	if providerID == "" {
-		return nil, apperr.New(apperr.CodeInvalidArgument, "provider id is required")
+		return ProviderConfig{}, nil, OutboundPolicy{}, apperr.New(apperr.CodeInvalidArgument, "provider id is required")
 	}
 	r.mu.RLock()
 	cfg, ok := r.providers[providerID]
@@ -247,14 +279,24 @@ func (r *ProviderRegistry) CompleteStream(ctx context.Context, providerID, syste
 	policy := r.policy
 	r.mu.RUnlock()
 	if !ok {
-		return nil, apperr.New(apperr.CodeNotFound, "provider not found")
+		return ProviderConfig{}, nil, OutboundPolicy{}, apperr.New(apperr.CodeNotFound, "provider not found")
 	}
 	if !cfg.Enabled {
-		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider is disabled")
+		return ProviderConfig{}, nil, OutboundPolicy{}, apperr.New(apperr.CodeFailedPrecondition, "provider is disabled")
 	}
 	completer, isCompleter := exec.(ChatCompleter)
 	if !hasExec || !isCompleter {
-		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider does not support chat completion")
+		return ProviderConfig{}, nil, OutboundPolicy{}, apperr.New(apperr.CodeFailedPrecondition, "provider does not support chat completion")
+	}
+	return cfg, completer, policy, nil
+}
+
+// CompleteStream 通过指定 provider 完成一次流式对话补全。
+// 只有类型 b 执行器实现 ChatCompleter；其他类型返回 FAILED_PRECONDITION。
+func (r *ProviderRegistry) CompleteStream(ctx context.Context, providerID, systemPrompt, userPrompt string, onDelta ChatModelDelta) (*ChatCompletionResult, error) {
+	cfg, completer, policy, err := r.chatCompleter(providerID)
+	if err != nil {
+		return nil, err
 	}
 	if err := ValidateOutboundURL(ctx, cfg.BaseURL, policy); err != nil {
 		return nil, apperr.Wrap(err, apperr.CodeFailedPrecondition, "provider base_url is invalid")
@@ -265,30 +307,45 @@ func (r *ProviderRegistry) CompleteStream(ctx context.Context, providerID, syste
 // Complete 通过指定 provider 完成一次对话补全。
 // 只有类型 b 执行器实现 ChatCompleter；其他类型返回 FAILED_PRECONDITION。
 func (r *ProviderRegistry) Complete(ctx context.Context, providerID, systemPrompt, userPrompt string) (*ChatCompletionResult, error) {
-	if r == nil {
-		return nil, apperr.New(apperr.CodeUnavailable, "provider registry is not configured")
-	}
-	providerID = strings.TrimSpace(providerID)
-	if providerID == "" {
-		return nil, apperr.New(apperr.CodeInvalidArgument, "provider id is required")
-	}
-	r.mu.RLock()
-	cfg, ok := r.providers[providerID]
-	exec, hasExec := r.executors[cfg.Type]
-	policy := r.policy
-	r.mu.RUnlock()
-	if !ok {
-		return nil, apperr.New(apperr.CodeNotFound, "provider not found")
-	}
-	if !cfg.Enabled {
-		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider is disabled")
-	}
-	completer, isCompleter := exec.(ChatCompleter)
-	if !hasExec || !isCompleter {
-		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider does not support chat completion")
+	cfg, completer, policy, err := r.chatCompleter(providerID)
+	if err != nil {
+		return nil, err
 	}
 	if err := ValidateOutboundURL(ctx, cfg.BaseURL, policy); err != nil {
 		return nil, apperr.Wrap(err, apperr.CodeFailedPrecondition, "provider base_url is invalid")
 	}
 	return completer.Complete(ctx, cfg, systemPrompt, userPrompt, policy)
+}
+
+// CompleteVision 通过指定 provider 发送带图片的对话补全（多模态 content）。
+// 执行器未实现 ChatVisionCompleter 时返回 FAILED_PRECONDITION。
+func (r *ProviderRegistry) CompleteVision(ctx context.Context, providerID, systemPrompt, userPrompt string, images []string) (*ChatCompletionResult, error) {
+	cfg, completer, policy, err := r.chatCompleter(providerID)
+	if err != nil {
+		return nil, err
+	}
+	vision, ok := completer.(ChatVisionCompleter)
+	if !ok {
+		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider does not support image input")
+	}
+	if err := ValidateOutboundURL(ctx, cfg.BaseURL, policy); err != nil {
+		return nil, apperr.Wrap(err, apperr.CodeFailedPrecondition, "provider base_url is invalid")
+	}
+	return vision.CompleteVision(ctx, cfg, systemPrompt, userPrompt, images, policy)
+}
+
+// CompleteStreamVision 通过指定 provider 发送带图片的流式对话补全。
+func (r *ProviderRegistry) CompleteStreamVision(ctx context.Context, providerID, systemPrompt, userPrompt string, images []string, onDelta ChatModelDelta) (*ChatCompletionResult, error) {
+	cfg, completer, policy, err := r.chatCompleter(providerID)
+	if err != nil {
+		return nil, err
+	}
+	vision, ok := completer.(ChatVisionCompleter)
+	if !ok {
+		return nil, apperr.New(apperr.CodeFailedPrecondition, "provider does not support image input")
+	}
+	if err := ValidateOutboundURL(ctx, cfg.BaseURL, policy); err != nil {
+		return nil, apperr.Wrap(err, apperr.CodeFailedPrecondition, "provider base_url is invalid")
+	}
+	return vision.CompleteStreamVision(ctx, cfg, systemPrompt, userPrompt, images, policy, onDelta)
 }
