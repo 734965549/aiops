@@ -34,7 +34,7 @@ func TestBuildMetricEvidenceQueryUsesModelParams(t *testing.T) {
 	if query.AccountID != "acc-1" || query.Region != "cn-north-4" {
 		t.Fatalf("alert identity fallback missing: %+v", query)
 	}
-	if query.Namespace != "SYS.RDS" || query.Metric != "mem_util" {
+	if query.Namespace != "SYS.RDS" || query.Metric != "rds002_mem_util" {
 		t.Fatalf("model params not applied: %+v", query)
 	}
 	if len(query.Dimensions) != 1 || query.Dimensions["instance_id"] != "i-9" {
@@ -302,7 +302,7 @@ func TestBuildMetricEvidenceQueryFallsBackToResourceContext(t *testing.T) {
 	if query.Dimensions["rds_cluster_id"] != "cluster-1" {
 		t.Fatalf("dimensions = %+v", query.Dimensions)
 	}
-	if query.Metric != "cpu_util" || query.Period != defaultEvidencePeriod {
+	if query.Metric != "rds001_cpu_util" || query.Period != defaultEvidencePeriod {
 		t.Fatalf("query = %+v", query)
 	}
 	if query.To-query.From != evidenceMinWindow {

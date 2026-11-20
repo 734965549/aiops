@@ -2410,8 +2410,8 @@ func TestSendMessageAgentLoopUsesResourceMetricFallback(t *testing.T) {
 		t.Fatalf("status = %q", result.Status)
 	}
 	if evidence.got.AccountID != "acc-1" || evidence.got.Region != "cn-north-4" ||
-		evidence.got.Namespace != "SYS.RDS" || evidence.got.Metric != "cpu_util" {
-		t.Fatalf("resource fallback not used: %+v", evidence.got)
+		evidence.got.Namespace != "SYS.RDS" || evidence.got.Metric != "rds001_cpu_util" {
+		t.Fatalf("resource fallback not used (cpu_util must normalize): %+v", evidence.got)
 	}
 	if evidence.got.Dimensions["rds_cluster_id"] != "cluster-1" {
 		t.Fatalf("dimensions = %+v", evidence.got.Dimensions)
@@ -2607,7 +2607,7 @@ func TestSendMessageAgentLoopSameRoundDistinctMetricsBothExecute(t *testing.T) {
 		t.Fatalf("metrics ok calls = %d, want 2: %+v", metricOK, result.ToolCalls)
 	}
 	// 同轮不同参数的两个 metrics 都必须执行，且下一轮 prompt 带两组序列。
-	if !strings.Contains(chat.user, `"metric":"cpu_util"`) || !strings.Contains(chat.user, `"metric":"mem_util"`) {
+	if !strings.Contains(chat.user, `"metric":"rds001_cpu_util"`) || !strings.Contains(chat.user, `"metric":"rds002_mem_util"`) {
 		t.Fatalf("round-1 prompt missing one of the metric series: %s", chat.user)
 	}
 }
