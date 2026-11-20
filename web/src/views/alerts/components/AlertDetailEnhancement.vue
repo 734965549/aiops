@@ -36,7 +36,11 @@
           <span
             v-if="condition.showMetric && condition.metricName"
             class="alert-condition-metric-value"
-          >{{ condition.metricName }}</span>
+          >{{ semantic.metricTitle }}</span>
+          <code
+            v-if="fieldView === 'raw' && condition.metricName"
+            class="condition-metric-raw"
+          >{{ condition.metricName }}</code>
         </div>
 
         <!-- 结论行整体读作一句自然语言，拆分的视觉片段对读屏隐藏 -->
@@ -44,7 +48,7 @@
           v-if="condition.showConclusion"
           class="alert-condition-body"
           role="img"
-          :aria-label="condition.ariaLabel"
+          :aria-label="conditionAriaLabel"
         >
           <span
             class="cond-op"
@@ -53,12 +57,12 @@
           <span
             class="cond-threshold"
             aria-hidden="true"
-          >{{ condition.parsed.threshold }}{{ condition.parsed.unit }}</span>
+          >{{ fieldView === 'raw' ? `${condition.parsed.threshold}${condition.parsed.unit}` : semantic.thresholdText }}</span>
           <span
             v-if="condition.parsed.windowText"
             class="cond-window"
             aria-hidden="true"
-          >{{ condition.parsed.windowText }}</span>
+          >{{ semantic.evaluationText }}</span>
         </div>
         <!-- 态 A'：条件原文整体降级，文本与云端返回值一字不差 -->
         <div
@@ -251,6 +255,7 @@ import {
   type EnhancementAlert
 } from '../composables/alertPresentation'
 import AlertCopyButton from './AlertCopyButton.vue'
+import { buildAlertSemantics } from '../composables/alertSemantics'
 
 const props = defineProps<{ alert: EnhancementAlert }>()
 
@@ -264,6 +269,13 @@ const vNoLiveRole = {
 
 const vm = computed(() => buildAlertPresentation(props.alert))
 const condition = computed(() => vm.value.condition)
+const semantic = computed(() => buildAlertSemantics(props.alert))
+const conditionAriaLabel = computed(() => {
+  if (semantic.value.conditionText && condition.value.parsed.ok) {
+    return `触发条件：${semantic.value.metricTitle}${condition.value.parsed.opText}${semantic.value.thresholdText} ${semantic.value.evaluationText}`
+  }
+  return condition.value.ariaLabel
+})
 const fieldView = ref<'friendly' | 'raw'>('friendly')
 
 const gridId = `alert-labels-grid-${useId()}`
@@ -312,6 +324,7 @@ $label-col: 96px;
 .cond-op { margin-right:4px; font-size:13px; font-weight:600; color:var(--color-text-2); }
 .cond-threshold { margin-right:8px; font-size:20px; font-weight:600; letter-spacing:-0.2px; color:rgb(var(--primary-6)); }
 .cond-window { font-size:12px; color:var(--color-text-2); }
+.condition-metric-raw { margin-left:6px; color:var(--color-text-2); font-family:$mono; font-size:11px; }
 .cond-raw { display:inline-block; max-width:100%; padding:4px 10px; font-family:$mono; font-size:13px; line-height:20px; color:var(--color-text-2); background:var(--color-fill-2); border:1px solid var(--color-border-2); border-radius:var(--radius-sm); overflow-wrap:anywhere; word-break:break-word; }
 .alert-condition-foot { margin-top:6px; padding:8px 12px; font-size:12px; line-height:20px; color:var(--color-text-2); background:var(--color-fill-1); border:1px solid var(--color-border-2); border-radius:var(--radius-sm);
   :deep(.arco-alert-content) { display:flex; align-items:baseline; flex-wrap:wrap; gap:4px 8px; line-height:20px; color:var(--color-text-2); }

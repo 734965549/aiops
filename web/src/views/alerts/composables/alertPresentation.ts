@@ -109,6 +109,8 @@ const LABEL_CN: Record<string, string> = {
   lbaas_instance_id: 'LB 实例 ID',
   disk_name: '磁盘名',
   rds_instance_id: 'RDS 实例 ID',
+  rds_cluster_id: 'RDS 集群 ID',
+  postgresql_cluster_id: 'PostgreSQL 集群 ID',
   dcs_instance_id: 'DCS 实例 ID',
   dms_instance_id: 'DMS 实例 ID',
   pod: 'Pod 名称',

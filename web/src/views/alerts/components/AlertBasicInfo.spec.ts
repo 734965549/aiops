@@ -4,6 +4,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AlertBasicInfo from './AlertBasicInfo.vue'
 import type { Alert } from '@/api/alert'
 
+const resolveResourceMock = vi.hoisted(() => vi.fn())
+vi.mock('@/api/asset-topology', () => ({
+  getAssetResourceResolution: resolveResourceMock
+}))
+
 function makeAlert(overrides: Partial<Alert> = {}): Alert {
   return {
     id: 'alert-1', source: 'prometheus_alertmanager', fingerprint: 'fp-1', dedup_key: 'dk-1',
@@ -31,6 +36,8 @@ function render(alert: Alert) {
 }
 
 beforeEach(() => {
+  resolveResourceMock.mockReset()
+  resolveResourceMock.mockResolvedValue({ status: 'unregistered', candidates: [], total: 0 })
   vi.stubGlobal('matchMedia', vi.fn(() => ({
     matches: false,
     media: '',
@@ -53,6 +60,31 @@ describe('AlertBasicInfo', () => {
     expect(matchLink).toBeDefined()
     await matchLink!.trigger('click')
     expect(wrapper.emitted('check-match-rules')).toHaveLength(1)
+  })
+
+  it('resolves cloud IDs to real CMDB resource and application names', async () => {
+    resolveResourceMock.mockResolvedValue({
+      status: 'matched',
+      total: 1,
+      candidates: [{
+        resource_id: 'res-1', application_id: 'app-1', application_name: '支付服务',
+        name: '生产支付数据库', cloud_resource_type: 'rds', cloud_resource_id: 'rds-cloud-1', sync_status: 'active'
+      }]
+    })
+    const wrapper = render(makeAlert({
+      labels: {
+        account_id: 'acc-1', cloud_resource_id: 'rds-cloud-1', resource_type: 'rds', region: 'cn-south-1'
+      }
+    }))
+    await Promise.resolve()
+    await wrapper.vm.$nextTick()
+
+    expect(resolveResourceMock).toHaveBeenCalledWith({
+      cloud_resource_id: 'rds-cloud-1', account_id: 'acc-1', region: 'cn-south-1', cloud_resource_type: 'rds'
+    })
+    expect(wrapper.text()).toContain('支付服务')
+    expect(wrapper.text()).toContain('生产支付数据库')
+    expect(wrapper.text()).not.toContain('未匹配应用')
   })
 
   it('keeps matched asset names and raw business IDs visible', () => {

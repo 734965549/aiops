@@ -99,14 +99,19 @@ describe('success state (A)', () => {
     body.findAll('span').forEach((span) => expect(span.attributes('aria-hidden')).toBe('true'))
   })
 
-  it('shows the metric name and ces_namespace exactly once in the whole region', () => {
-    const text = render(successAlert()).text()
-    expect(text.split('cpu_util').length - 1).toBe(1)
-    expect(text.split('SYS.ECS').length - 1).toBe(1)
-    expect(text).toContain('云端原始级别')
-    expect(text).toContain('（云端：重要）')
-    expect(text).toContain('平台定级以基础信息「级别」为准')
-    expect(wrapperHasTag(render(successAlert()), 'a-tag')).toBe(false)
+  it('shows friendly metric names and keeps the raw metric in the raw view', async () => {
+    const wrapper = render(successAlert())
+    expect(wrapper.text()).toContain('CPU 使用率')
+    expect(wrapper.text()).not.toContain('cpu_util')
+    expect(wrapper.text().split('SYS.ECS').length - 1).toBe(1)
+    expect(wrapper.text()).toContain('云端原始级别')
+    expect(wrapper.text()).toContain('（云端：重要）')
+    expect(wrapper.text()).toContain('平台定级以基础信息「级别」为准')
+    expect(wrapperHasTag(wrapper, 'a-tag')).toBe(false)
+
+    ;(wrapper.vm as unknown as { fieldView: string }).fieldView = 'raw'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text().split('cpu_util').length - 1).toBe(1)
   })
 
   it('orders the three sections and keeps their distinct shapes', () => {

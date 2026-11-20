@@ -103,3 +103,34 @@ export function deleteAssetResourceRelation(relationId: string) {
     method: 'delete'
   })
 }
+
+export interface ResolvedAssetResource {
+  resource_id: string
+  application_id: string
+  application_name?: string
+  name: string
+  resource_type?: string
+  cloud_resource_type?: string
+  cloud_resource_id: string
+  region?: string
+  sync_status?: string
+}
+
+export interface AssetResourceResolution {
+  status: 'matched' | 'unregistered' | 'ambiguous'
+  candidates: ResolvedAssetResource[]
+  total: number
+}
+
+export function getAssetResourceResolution(params: {
+  cloud_resource_id: string
+  account_id: string
+  region?: string
+  cloud_resource_type?: string
+}) {
+  return http<AssetResourceResolution>({
+    url: '/api/assets/resources/resolve',
+    method: 'get',
+    params
+  })
+}

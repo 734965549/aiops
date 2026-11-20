@@ -100,7 +100,7 @@
     <a-drawer
       v-model:visible="detailVisible"
       :width="isNarrow ? '100%' : 720"
-      :title="detail?.alert.name || '告警详情'"
+      :title="detail?.alert ? alertHeadline(detail.alert) : '告警详情'"
       unmount-on-close
       :footer="false"
       @cancel="closeDetail"
@@ -476,6 +476,7 @@ import * as runbookApi from '@/api/runbook'
 import type { RunbookRecommendation } from '@/api/runbook'
 import PageHeader from '@/components/PageHeader.vue'
 import { severityColor, severityLabel, statusColor, statusLabel, sourceLabel, formatTime } from './composables/alertDisplay'
+import { alertHeadline } from './composables/alertSemantics'
 import AlertBasicInfo from './components/AlertBasicInfo.vue'
 import AlertFilterForm from './components/AlertFilterForm.vue'
 import AlertSourceManager from './components/AlertSourceManager.vue'
@@ -494,7 +495,6 @@ const alerts = ref<Alert[]>([])
 const sources = ref<AlertSource[]>([])
 const detail = ref<AlertDetail | null>(null)
 const selectedAlertId = ref('')
-
 const loadingList = ref(false)
 const listLoadError = ref('')
 const loadingDetail = ref(false)
