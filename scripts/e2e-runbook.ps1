@@ -58,7 +58,7 @@ function Ensure-ProcessingRunbookAlert {
     try {
         Invoke-Api -Method POST -Path "/api/alerts/sources" -Headers $Auth -Body @{
             id = $SourceId
-            name = "E2E Runbook Alertmanager"
+            name = "Runbook 验收 Alertmanager（E2E）"
             type = "prometheus_alertmanager"
             enabled = $true
             secret = $WebhookSecret
@@ -82,8 +82,8 @@ function Ensure-ProcessingRunbookAlert {
                     namespace = "prod"
                 }
                 annotations = @{
-                    summary = "Pod CPU > 90%"
-                    description = "E2E runbook test alert"
+                    summary = "支付 Pod CPU 使用率超过 90%"
+                    description = "Runbook 验收：支付 Pod CPU 使用率过高"
                 }
                 startsAt = "2026-06-13T00:00:00Z"
             }
