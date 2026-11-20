@@ -543,7 +543,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 #### 10.6.6 Prompt 时间基准与可读引用
 
 - user prompt 顶层固定带 `now`（服务端当前 Unix 秒，Agent Loop 每轮重新取值）；system prompt 要求 `metrics.query` 的 `from/to` 必须以 `now` 为基准，禁止从规则 ID、告警 ID 或其他标识符推断时间。
-- 指标观测 `summary` / `data` 带 `metric_label`（常见 CES 指标中文名映射；未映射时为空，模型必须保留原始指标代码并注明“未映射”，禁止臆造含义）与 `point_count`（裁剪前统计的数据点数）。`point_count=0` 时 summary 明确写“无数据点”，模型应先调整时间窗口重查或说明该窗口无数据。`data.metrics` 携带该次查询裁剪后的序列（`first`/`peak`/`last`/`breach_points`/`points`，超 32KB 先丢 `points` 仅保留统计摘要），`data.from`/`to`/`period` 标明查询窗口；模型应基于这些数值收敛作答，不得换参数重查同一窗口。
+- 指标观测 `summary` / `data` 带 `metric_label`（常见 CES 指标中文名映射；未映射时为空，模型必须保留原始指标代码并注明“未映射”，禁止臆造含义）与 `point_count`（裁剪前统计的数据点数）。`point_count=0` 时 summary 明确写“无数据点”，模型应先调整时间窗口重查或说明该窗口无数据。`data.metrics` 携带该次查询裁剪后的序列（`first`/`peak`/`last`/`breach_points`/`points`，超 32KB 先丢 `points` 仅保留统计摘要；`points` 进 Prompt 前降采样至每序列 ≤96 点、含首末点，统计量按全量计算），`data.from`/`to`/`period` 标明查询窗口；模型应基于这些数值收敛作答，不得换参数重查同一窗口。
 - 规则观测每条规则带 `metric_label`；回答引用规则时使用可读形式「规则名（指标中文名 操作符 阈值，采样窗口 Xs，级别）」，`rule_id` / `evidence_id` 只作为括号内的证据引用，不得把机器 ID 当作唯一指代。
 - 推荐操作必须逐条结构化：目标规则（名称+ID）、调整字段、现值→建议值、理由与风险；涉及多条规则逐条列出，禁止只写“部分规则需调整”式笼统结论。
 
@@ -691,7 +691,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 窗口：普通查询最大 **7 天**；`period >= 86400` 的日聚合允许最大 **30 天**；任何情况下点数（`window/period + 1`）不得超过 **1440**。服务端在 AI 层先校验，观测 QueryService 再校验一次（纵深防御）。
 - 阈值语义：`threshold` / `operator` 只从告警结构化条件继承；当模型覆盖 `metric` 且与告警 `metric_name` 不同时，证据不再携带告警阈值，避免破限点误判。
 - 数据范围：取数前按 `account_id` 解析账号并过 `AccountAccessAuthorizer`；拒绝时工具权限本身已通过，观测记为 `allowed=true`、`status=permission_denied`、`reason=no access to integration account for evidence`，审计 `result=partial`。
-- 证据：观测 `summary` 含指标中文名与数据点数（`无数据点` / `N 点`）；`data` 含 `metric`、`metric_label`、`metric_count`、`point_count`、`evidence_ids`、`evidence_id`、`from`/`to`/`period`（查询窗口）与 `metrics`（裁剪后序列，含 `first`/`peak`/`last`/`breach_points`/`points`，超 32KB 丢 `points` 保留统计摘要）；最终回答 `references` 含 `observability_evidence`。
+- 证据：观测 `summary` 含指标中文名与数据点数（`无数据点` / `N 点`）；`data` 含 `metric`、`metric_label`、`metric_count`、`point_count`、`evidence_ids`、`evidence_id`、`from`/`to`/`period`（查询窗口）与 `metrics`（裁剪后序列，含 `first`/`peak`/`last`/`breach_points`/`points`，超 32KB 丢 `points` 保留统计摘要；`points` 进 Prompt 降采样 ≤96 点/序列含首末）；最终回答 `references` 含 `observability_evidence`。
 
 **`alert.rules.list` 参数 schema（`tool_requests[].params`）**
 

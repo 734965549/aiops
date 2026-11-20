@@ -289,8 +289,8 @@ func (s *ChatService) executeMetricObservation(ctx context.Context, userID strin
 	}
 	if len(result.Metrics) > 0 {
 		// 数值必须随 observations 进 Prompt（data.Evidence 不入模型输入）；
-		// result 已经 capEvidencePayload 裁剪，超 32KB 丢 points 保留统计摘要。
-		obs.Data["metrics"] = result.Metrics
+		// result 已经 capEvidencePayload 裁剪，进 Prompt 前再降采样控制体积。
+		obs.Data["metrics"] = downsampleMetricsForPrompt(result.Metrics)
 	}
 	if len(ids) > 0 {
 		obs.EvidenceID = ids[0]

@@ -378,6 +378,33 @@ func metricEvidencePointCount(evidence *MetricEvidenceResult) int {
 	return total
 }
 
+// chatMetricPromptMaxPoints 限制进 Prompt 的每序列数据点数：全量点会使 Prompt
+// 随轮次膨胀、模型调用耗时线性上涨；降采样保留趋势形状，统计量按全量计算。
+const chatMetricPromptMaxPoints = 96
+
+// downsampleMetricsForPrompt 返回 points 降采样后的序列副本，供观测携带进 Prompt。
+func downsampleMetricsForPrompt(metrics []MetricEvidence) []MetricEvidence {
+	out := make([]MetricEvidence, len(metrics))
+	for i, m := range metrics {
+		m.Points = strideSamplePoints(m.Points, chatMetricPromptMaxPoints)
+		out[i] = m
+	}
+	return out
+}
+
+// strideSamplePoints 等步长采样（含首末点），len<=max 时原样返回。
+func strideSamplePoints(points [][2]float64, max int) [][2]float64 {
+	if max <= 1 || len(points) <= max {
+		return points
+	}
+	out := make([][2]float64, 0, max)
+	step := float64(len(points)-1) / float64(max-1)
+	for i := 0; i < max; i++ {
+		out = append(out, points[int(float64(i)*step+0.5)])
+	}
+	return out
+}
+
 func evidenceIDs(evidence *MetricEvidenceResult) []string {
 	if evidence == nil {
 		return nil

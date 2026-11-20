@@ -2539,6 +2539,40 @@ func TestSendMessageAgentLoopPromptCarriesMetricValues(t *testing.T) {
 	}
 }
 
+func TestExecuteMetricObservationDownsamplesPointsForPrompt(t *testing.T) {
+	svc, _, _, _, _, evidence := newChatTestService(t)
+	points := make([][2]float64, 1440)
+	for i := range points {
+		points[i] = [2]float64{float64(1700000000 + i*300), float64(i % 100)}
+	}
+	evidence.result = &MetricEvidenceResult{Status: EvidenceStatusOK, Metrics: []MetricEvidence{{
+		Metric: "cpu_util", Points: points, EvidenceID: "ev-1",
+	}}}
+
+	obs, result := svc.executeMetricObservation(context.Background(), "u-1", MetricEvidenceQuery{Metric: "cpu_util"})
+	if obs == nil || result == nil {
+		t.Fatal("expected observation and evidence")
+	}
+	if obs.Data["point_count"] != 1440 {
+		t.Fatalf("point_count must report pre-cap fact, got %v", obs.Data["point_count"])
+	}
+	metrics, ok := obs.Data["metrics"].([]MetricEvidence)
+	if !ok || len(metrics) != 1 {
+		t.Fatalf("observation metrics = %+v", obs.Data["metrics"])
+	}
+	got := metrics[0].Points
+	if len(got) != chatMetricPromptMaxPoints {
+		t.Fatalf("prompt points = %d, want %d", len(got), chatMetricPromptMaxPoints)
+	}
+	if got[0] != points[0] || got[len(got)-1] != points[len(points)-1] {
+		t.Fatalf("downsample must keep first/last: %v .. %v", got[0], got[len(got)-1])
+	}
+	// 返回的 evidence 保留全量点，供引用与动作使用。
+	if len(result.Metrics[0].Points) != 1440 {
+		t.Fatalf("evidence points = %d, want full 1440", len(result.Metrics[0].Points))
+	}
+}
+
 func TestSendMessageAgentLoopSameRoundDistinctMetricsBothExecute(t *testing.T) {
 	svc, repo, _, chat, _, evidence := newChatTestService(t)
 	evidence.result = &MetricEvidenceResult{Status: EvidenceStatusOK, Metrics: []MetricEvidence{{

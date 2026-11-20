@@ -122,8 +122,15 @@ func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, 
 			return budgetExceeded()
 		}
 		callCtx, cancel := context.WithTimeout(ctx, remaining)
+		started := time.Now()
 		result, err := s.completeModel(callCtx, providerID, systemPrompt, prompt)
 		cancel()
+		logger.From(ctx).Info("ai chat model call",
+			logger.String("session_id", session.SessionID),
+			logger.Int("round", rounds),
+			logger.Int("prompt_bytes", len(prompt)),
+			logger.Int64("duration_ms", time.Since(started).Milliseconds()),
+			logger.Bool("ok", err == nil))
 		if err != nil {
 			logger.From(ctx).Warn("ai chat completion failed",
 				logger.String("provider_id", providerID),
@@ -221,11 +228,15 @@ func (s *ChatService) forceFinalAnswer(ctx context.Context, providerID, question
 		Memory: memoryPromptCases(data.Memories), ForceAnswer: true,
 	})
 	callCtx, cancel := context.WithTimeout(ctx, remaining)
+	started := time.Now()
 	result, err := s.completeModel(callCtx, providerID, systemPrompt, prompt)
 	cancel()
 	if err != nil {
 		logger.From(ctx).Warn("ai chat forced convergence failed",
-			logger.String("session_id", session.SessionID), logger.Error(err))
+			logger.String("session_id", session.SessionID),
+			logger.Int("prompt_bytes", len(prompt)),
+			logger.Int64("duration_ms", time.Since(started).Milliseconds()),
+			logger.Error(err))
 		return degraded
 	}
 	if result.Partial {
@@ -234,7 +245,9 @@ func (s *ChatService) forceFinalAnswer(ctx context.Context, providerID, question
 	answer, parseErr := parseChatAnswer(result.Content)
 	if parseErr != nil {
 		logger.From(ctx).Warn("ai chat forced convergence output invalid",
-			logger.String("session_id", session.SessionID))
+			logger.String("session_id", session.SessionID),
+			logger.Int("prompt_bytes", len(prompt)),
+			logger.Int64("duration_ms", time.Since(started).Milliseconds()))
 		return degraded
 	}
 	status := chatStatusOK
@@ -242,7 +255,10 @@ func (s *ChatService) forceFinalAnswer(ctx context.Context, providerID, question
 		status = chatStatusInsufficientContext
 	}
 	logger.From(ctx).Info("ai chat forced convergence answer",
-		logger.String("session_id", session.SessionID), logger.Int("tokens", tokens+result.Tokens))
+		logger.String("session_id", session.SessionID),
+		logger.Int("prompt_bytes", len(prompt)),
+		logger.Int64("duration_ms", time.Since(started).Milliseconds()),
+		logger.Int("tokens", tokens+result.Tokens))
 	return chatGeneration{
 		Answer: answer, Status: status, ProviderID: providerID,
 		Tokens: tokens + result.Tokens, ForcedConvergence: true,
