@@ -401,7 +401,7 @@ import { RESOURCE_FILTER_QUERY_KEYS } from './composables/assetUtils'
 const route = useRoute()
 const router = useRouter()
 
-const activeTab = ref('registry')
+const activeTab = ref(route.query.tab === 'match-rules' ? 'match-rules' : 'registry')
 
 const selectedAppId = ref('')
 const ruleApplicationOptions = ref<Application[]>([])

@@ -122,68 +122,10 @@
         </a-alert>
       </template>
       <template v-else-if="detail">
-        <a-descriptions
-          :column="2"
-          bordered
-          size="small"
-          class="detail-desc"
-        >
-          <a-descriptions-item label="状态">
-            <a-tag :color="statusColor(detail.alert.status)">
-              {{ statusLabel(detail.alert.status) }}
-            </a-tag>
-          </a-descriptions-item>
-          <a-descriptions-item label="级别">
-            <a-tag :color="severityColor(detail.alert.severity)">
-              {{ severityLabel(detail.alert.severity) }}
-            </a-tag>
-          </a-descriptions-item>
-          <a-descriptions-item label="来源">
-            {{ sourceLabel(detail.alert) }}
-          </a-descriptions-item>
-          <a-descriptions-item label="触发次数">
-            {{ detail.alert.occurrence_count }}
-          </a-descriptions-item>
-          <a-descriptions-item
-            label="摘要"
-            :span="2"
-          >
-            {{ detail.alert.summary || '—' }}
-          </a-descriptions-item>
-          <a-descriptions-item
-            label="描述"
-            :span="2"
-          >
-            {{ detail.alert.description || '—' }}
-          </a-descriptions-item>
-          <a-descriptions-item label="环境">
-            {{ detail.alert.environment || '—' }}
-          </a-descriptions-item>
-          <a-descriptions-item label="应用">
-            <RouterLink
-              v-if="detail.alert.application_id"
-              :to="assetLink(detail.alert.application_id)"
-            >
-              {{ detail.alert.application_name || detail.alert.application_id }}
-            </RouterLink>
-            <span v-else>{{ detail.alert.application_name || '—' }}</span>
-          </a-descriptions-item>
-          <a-descriptions-item label="资源">
-            <RouterLink
-              v-if="detail.alert.resource_id"
-              :to="assetLink(detail.alert.application_id, detail.alert.resource_id)"
-            >
-              {{ detail.alert.resource_name || detail.alert.resource_id }}
-            </RouterLink>
-            <span v-else>{{ detail.alert.resource_name || '—' }}</span>
-          </a-descriptions-item>
-          <a-descriptions-item label="首次触发">
-            {{ formatTime(detail.alert.first_seen_at) }}
-          </a-descriptions-item>
-          <a-descriptions-item label="最近更新">
-            {{ formatTime(detail.alert.last_seen_at) }}
-          </a-descriptions-item>
-        </a-descriptions>
+        <AlertBasicInfo
+          :alert="detail.alert"
+          @check-match-rules="goMatchRules"
+        />
 
         <AlertDetailEnhancement :alert="detail.alert" />
 
@@ -533,6 +475,8 @@ import * as executionApi from '@/api/execution'
 import * as runbookApi from '@/api/runbook'
 import type { RunbookRecommendation } from '@/api/runbook'
 import PageHeader from '@/components/PageHeader.vue'
+import { severityColor, severityLabel, statusColor, statusLabel, sourceLabel, formatTime } from './composables/alertDisplay'
+import AlertBasicInfo from './components/AlertBasicInfo.vue'
 import AlertFilterForm from './components/AlertFilterForm.vue'
 import AlertSourceManager from './components/AlertSourceManager.vue'
 import AlertDetailEnhancement from './components/AlertDetailEnhancement.vue'
@@ -640,52 +584,6 @@ const runbookCreateHint = computed(() => {
   return '创建后将跳转到任务详情。中高风险任务需输入 CONFIRM 确认后再执行；结果会回写告警时间线。'
 })
 
-function severityLabel(s: string) {
-  const map: Record<string, string> = {
-    p0: 'P0',
-    p1: 'P1',
-    p2: 'P2',
-    p3: 'P3',
-    info: 'Info'
-  }
-  return map[s] || s
-}
-
-function severityColor(s: string) {
-  const map: Record<string, string> = {
-    p0: 'red',
-    p1: 'orangered',
-    p2: 'orange',
-    p3: 'gold',
-    info: 'arcoblue'
-  }
-  return map[s] || 'gray'
-}
-
-function statusLabel(s: string) {
-  const map: Record<string, string> = {
-    new: '新建',
-    acknowledged: '已认领',
-    processing: '处理中',
-    recovered: '已恢复',
-    closed: '已关闭',
-    silenced: '已静默'
-  }
-  return map[s] || s
-}
-
-function statusColor(s: string) {
-  const map: Record<string, string> = {
-    new: 'red',
-    acknowledged: 'orangered',
-    processing: 'orange',
-    recovered: 'green',
-    closed: 'gray',
-    silenced: 'purple'
-  }
-  return map[s] || 'gray'
-}
-
 function executionIdFromEvent(ev: AlertEvent): string | null {
   const id = ev.payload?.execution_id
   return typeof id === 'string' && id ? id : null
@@ -693,22 +591,6 @@ function executionIdFromEvent(ev: AlertEvent): string | null {
 
 function goToExecution(taskId: string) {
   router.push({ path: '/executions', query: { task_id: taskId } })
-}
-
-function assetLink(applicationId?: string, resourceId?: string) {
-  const query: Record<string, string> = {}
-  if (applicationId) query.application_id = applicationId
-  if (resourceId) query.resource_id = resourceId
-  return { path: '/assets', query }
-}
-
-function formatTime(ts?: number) {
-  if (!ts) return '—'
-  return new Date(ts * 1000).toLocaleString()
-}
-
-function sourceLabel(alert: Alert) {
-  return alert.source_name || alert.source_id || alert.source || '—'
 }
 
 async function loadAlerts() {
@@ -783,6 +665,11 @@ function closeDetail() {
   selectedAlertId.value = ''
   clearAlertAIContext()
   deepLink.resetDeepLink()
+}
+
+function goMatchRules() {
+  closeDetail()
+  router.push({ path: '/assets', query: { tab: 'match-rules' } })
 }
 
 /** 打开全局 AI 浮层，并把当前告警作为页面上下文带入。 */

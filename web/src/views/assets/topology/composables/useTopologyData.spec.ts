@@ -55,6 +55,10 @@ describe('useTopologyData', () => {
       application_id: 'app-1', keyword: undefined, region: undefined,
       cloud_resource_type: undefined, relation_type: undefined, include_stale: false
     })
+    expect(mocks.getAssetTopology).toHaveBeenLastCalledWith({
+      root_resource_id: 'res-1', depth: 2, direction: 'both', keyword: undefined,
+      region: undefined, cloud_resource_type: undefined, relation_type: undefined, include_stale: false
+    })
   })
 
   it('contains application list failures without an unhandled mounted error', async () => {

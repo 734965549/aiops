@@ -23,7 +23,7 @@ export interface AssetTopologyEdge {
   source_node_id: string
   target_node_id: string
   relation_type: 'contains' | ResourceRelationType
-  origin: 'registry' | 'manual'
+  origin: 'registry' | 'manual' | 'cloud_sync'
 }
 
 export interface AssetTopologySnapshot {
@@ -34,11 +34,18 @@ export interface AssetTopologySnapshot {
     truncated: boolean
     node_count: number
     edge_count: number
+    unresolved_relation_count: number
+    root_resource_id?: string
+    depth?: number
+    direction?: 'both' | 'upstream' | 'downstream'
   }
 }
 
 export interface AssetTopologyQuery {
-  application_id: string
+  application_id?: string
+  root_resource_id?: string
+  depth?: number
+  direction?: 'both' | 'upstream' | 'downstream'
   region?: string
   cloud_resource_type?: string
   relation_type?: ResourceRelationType
@@ -50,8 +57,10 @@ export interface AssetResourceRelation {
   relation_id: string
   source_resource_id: string
   source_name: string
+  source_application_id?: string
   target_resource_id: string
   target_name: string
+  target_application_id?: string
   relation_type: ResourceRelationType
   origin: 'manual'
   created_at: number

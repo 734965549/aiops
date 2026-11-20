@@ -65,7 +65,13 @@
           >暂无手工下游关系</span>
         </div>
       </section>
-      <a-link @click="emit('open-registry')">前往资产注册表</a-link>
+      <div class="drawer-actions">
+        <a-button
+          type="outline"
+          @click="emit('focus-node', node.entity_id)"
+        >以此节点查看链路</a-button>
+        <a-link @click="emit('open-registry')">前往资产注册表</a-link>
+      </div>
     </template>
   </a-drawer>
 </template>
@@ -84,6 +90,7 @@ const props = defineProps<{
 const visible = defineModel<boolean>('visible', { default: false })
 const emit = defineEmits<{
   'open-registry': []
+  'focus-node': [resourceId: string]
 }>()
 
 const upstreamNames = computed(() => relatedNames('upstream'))
@@ -117,6 +124,12 @@ function relatedNames(direction: 'upstream' | 'downstream') {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .mono {

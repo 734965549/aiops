@@ -18,6 +18,9 @@ export function useTopologyData() {
   const applications = ref<Application[]>([])
   const applicationsLoading = ref(false)
   const selectedApplicationId = ref('')
+  const rootResourceId = ref('')
+  const depth = ref(2)
+  const relationDirection = ref<'both' | 'upstream' | 'downstream'>('both')
   const topology = ref<AssetTopologySnapshot | null>(null)
   const relations = ref<AssetResourceRelation[]>([])
   const loading = ref(false)
@@ -50,7 +53,7 @@ export function useTopologyData() {
       selectedApplicationId.value = applications.value.some((app) => app.id === preferred)
         ? preferred
         : applications.value[0]?.id || ''
-      if (selectedApplicationId.value) await refreshAll()
+      if (selectedApplicationId.value) await selectApplication(selectedApplicationId.value)
     } catch {
       applications.value = []
       selectedApplicationId.value = ''
@@ -62,6 +65,18 @@ export function useTopologyData() {
   }
 
   function topologyQuery(): AssetTopologyQuery {
+    if (rootResourceId.value) {
+      return {
+        root_resource_id: rootResourceId.value,
+        depth: depth.value,
+        direction: relationDirection.value,
+        keyword: filters.keyword || undefined,
+        region: filters.region || undefined,
+        cloud_resource_type: filters.cloudResourceType || undefined,
+        relation_type: filters.relationType || undefined,
+        include_stale: filters.includeStale
+      }
+    }
     return {
       application_id: selectedApplicationId.value,
       keyword: filters.keyword || undefined,
@@ -123,9 +138,24 @@ export function useTopologyData() {
 
   async function selectApplication(applicationId: string) {
     selectedApplicationId.value = applicationId
+    rootResourceId.value = ''
     topology.value = null
     relations.value = []
     await refreshAll()
+    if (resourceNodes.value.length) {
+      rootResourceId.value = resourceNodes.value[0].entity_id
+      await loadTopology()
+    }
+  }
+
+  async function focusResource(resourceId: string) {
+    rootResourceId.value = resourceId
+    await loadTopology()
+  }
+
+  async function clearRoot() {
+    rootResourceId.value = ''
+    await loadTopology()
   }
 
   function resetFilters() {
@@ -165,6 +195,9 @@ export function useTopologyData() {
     applications,
     applicationsLoading,
     selectedApplicationId,
+    rootResourceId,
+    depth,
+    relationDirection,
     topology,
     relations,
     resourceNodes,
@@ -178,6 +211,8 @@ export function useTopologyData() {
     loadTopology,
     refreshAll,
     selectApplication,
+    focusResource,
+    clearRoot,
     resetFilters,
     createRelation,
     removeRelation

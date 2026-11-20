@@ -13,6 +13,7 @@
  * - 富化失败（ces_rule_lookup）只影响规则详情展示，不改变告警数据 Complete 语义。
  */
 import type { Alert } from '@/api/alert'
+import { annotationLabel, labelValueText } from './alertDisplay'
 
 // ---------------------------------------------------------------------------
 // 从 index.vue 迁出的静态映射（变量名保持不变，模板无需改动）
@@ -110,8 +111,15 @@ const LABEL_CN: Record<string, string> = {
   rds_instance_id: 'RDS 实例 ID',
   dcs_instance_id: 'DCS 实例 ID',
   dms_instance_id: 'DMS 实例 ID',
-  pod: 'Pod',
-  container: '容器'
+  pod: 'Pod 名称',
+  container: '容器名称',
+  alertname: '告警名称',
+  severity: '严重程度',
+  service: '服务名称',
+  instance: '实例标识',
+  job: '任务名称',
+  node: '节点名称',
+  environment: '环境'
 }
 
 /** 前 5 项位置恒定，便于跨告警比对。 */
@@ -235,6 +243,7 @@ export interface LabelItem {
   key: string
   label: string
   value: string
+  rawValue: string
   mono: boolean
   copyable: boolean
   hint: string
@@ -245,6 +254,7 @@ export interface AnnotationKV {
   key: string
   label: string
   value: string
+  rawValue: string
   hint: string
 }
 
@@ -318,9 +328,9 @@ function buildLabelItem(key: string, value: string): LabelItem {
   return {
     key,
     label: dynamic ? dimensionLabel(key) : knownLabel || key,
-    value: sensitive ? '****' : value,
-    // 未命中完整中文映射（含复合键）时给出「· 维度」提示并等宽完整换行
-    hint: dynamic && !knownLabel ? '· 维度' : '',
+    value: sensitive ? '****' : labelValueText(key, value),
+    rawValue: sensitive ? '****' : value,
+    hint: dynamic && !knownLabel ? '原始维度' : '',
     mono: dynamic || MONO_KEYS.has(key),
     copyable: !sensitive && (dynamic || COPY_KEYS.has(key)),
     sensitive
@@ -469,9 +479,10 @@ export function buildAlertPresentation(alert: EnhancementAlert): AlertPresentati
     .sort()
     .map((key) => ({
       key,
-      label: key,
-      value: SENSITIVE_KEY_RE.test(key) ? '****' : annotations[key],
-      hint: '· 注解'
+      label: annotationLabel(key),
+      value: SENSITIVE_KEY_RE.test(key) ? '****' : labelValueText(key, annotations[key]),
+      rawValue: SENSITIVE_KEY_RE.test(key) ? '****' : annotations[key],
+      hint: key
     }))
 
   const ruleTypeMapped = /^MULTI_INSTANCE$/i.test(ruleType)

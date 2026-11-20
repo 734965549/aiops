@@ -202,14 +202,14 @@ describe('buildAlertPresentation: dedup and label ordering', () => {
     expect(vm.labels[0].key).toBe('future_dim')
     expect(vm.labels[0].label).toBe('future_dim')
     expect(vm.labels[0].value).toBe('a,b,c')
-    expect(vm.labels[0].hint).toBe('· 维度')
+    expect(vm.labels[0].hint).toBe('原始维度')
     expect(vm.labels[0].copyable).toBe(true)
   })
 
   it('maps composite dimension keys segment by segment and preserves the raw value', () => {
     const vm = buildAlertPresentation(makeAlert({ 'lbaas_instance_id,loadbalancer_id': 'id-a,id-b' }))
     expect(vm.labels[0].label).toBe('LB 实例 ID / 负载均衡器 ID')
-    expect(vm.labels[0].hint).toBe('· 维度')
+    expect(vm.labels[0].hint).toBe('原始维度')
     expect(vm.labels[0].value).toBe('id-a,id-b')
   })
 
@@ -223,7 +223,7 @@ describe('buildAlertPresentation: dedup and label ordering', () => {
   it('masks sensitive annotation keys too', () => {
     const vm = buildAlertPresentation(makeAlert({}, { access_token: 'plain' }))
     expect(vm.annotationKVs[0].value).toBe('****')
-    expect(vm.annotationKVs[0].hint).toBe('· 注解')
+    expect(vm.annotationKVs[0].hint).toBe('access_token')
   })
 
   it('masks only by key name: business IDs stay plaintext and values are never scanned', () => {

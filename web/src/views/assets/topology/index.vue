@@ -107,12 +107,37 @@
           <span v-if="topology?.meta.generated_at">更新于 {{ formatTopologyTime(topology.meta.generated_at) }}</span>
         </div>
         <div class="topology-actions">
+          <template v-if="viewMode === 'chain'">
+            <a-select
+              v-model="rootResourceId"
+              allow-search
+              size="small"
+              style="width: 190px"
+              :options="rootOptions"
+              placeholder="选择根资源"
+              @change="focusTopology"
+            />
+            <a-select
+              v-model="depth"
+              size="small"
+              style="width: 88px"
+              :options="[1, 2, 3].map((value) => ({ label: `${value} 层`, value }))"
+              @change="loadTopology"
+            />
+            <a-select
+              v-model="relationDirection"
+              size="small"
+              style="width: 110px"
+              :options="directionOptions"
+              @change="loadTopology"
+            />
+          </template>
           <a-button
             size="small"
             :loading="loading || relationsLoading"
             @click="refreshAll"
           >刷新</a-button>
-          <template v-if="viewMode === 'graph'">
+          <template v-if="viewMode !== 'list'">
             <a-button
               size="small"
               @click="canvasRef?.zoomOut()"
@@ -126,6 +151,7 @@
               @click="canvasRef?.fitView()"
             >适配</a-button>
             <a-button
+              v-if="viewMode === 'chain'"
               size="small"
               @click="toggleDirection"
             >{{ direction === 'LR' ? '纵向布局' : '横向布局' }}</a-button>
@@ -134,8 +160,10 @@
             v-model="viewMode"
             type="button"
             size="small"
+            @change="onViewModeChange"
           >
-            <a-radio value="graph">图形</a-radio>
+            <a-radio value="chain">链路</a-radio>
+            <a-radio value="network">全景</a-radio>
             <a-radio value="list">列表</a-radio>
           </a-radio-group>
         </div>
@@ -147,6 +175,14 @@
         class="topology-alert"
       >
         当前应用资源过多，仅展示前 299 个资源；请使用筛选缩小范围。
+      </a-alert>
+
+      <a-alert
+        v-if="topology?.meta.unresolved_relation_count"
+        type="warning"
+        class="topology-alert"
+      >
+        {{ topology.meta.unresolved_relation_count }} 个资源的关系端点未能唯一解析，未生成猜测关系。
       </a-alert>
 
       <a-spin
@@ -164,10 +200,12 @@
           description="当前应用没有匹配的资源，请调整筛选或先注册资源"
         />
         <TopologyCanvas
-          v-else-if="viewMode === 'graph'"
+          v-else-if="viewMode !== 'list'"
           ref="canvasRef"
           :nodes="topology?.nodes || []"
           :edges="topology?.edges || []"
+          :mode="viewMode === 'network' ? 'network' : 'chain'"
+          :root-resource-id="rootResourceId"
           :direction="direction"
           @select="selectNode"
         />
@@ -188,10 +226,12 @@
       :nodes="topology?.nodes || []"
       :edges="topology?.edges || []"
       @open-registry="router.push('/assets')"
+      @focus-node="focusTopology"
     />
     <RelationFormModal
       v-model:visible="relationModalVisible"
-      :resources="resourceNodes"
+      :applications="applications"
+      :current-application-id="selectedApplicationId"
       :loading="saving"
       :submit="submitRelation"
     />
@@ -216,6 +256,9 @@ const {
   applications,
   applicationsLoading,
   selectedApplicationId,
+  rootResourceId,
+  depth,
+  relationDirection,
   topology,
   relations,
   resourceNodes,
@@ -229,12 +272,14 @@ const {
   loadTopology,
   refreshAll,
   selectApplication,
+  focusResource,
+  clearRoot,
   resetFilters,
   createRelation,
   removeRelation
 } = useTopologyData()
 
-const viewMode = ref<'graph' | 'list'>('graph')
+const viewMode = ref<'chain' | 'network' | 'list'>('chain')
 const direction = ref<'LR' | 'TB'>('LR')
 const canvasRef = ref<InstanceType<typeof TopologyCanvas> | null>(null)
 const selectedNode = ref<AssetTopologyNode | null>(null)
@@ -247,6 +292,12 @@ const applicationOptions = computed(() => applications.value.map((app) => ({
 })))
 const regionOptions = computed(() => filterOptions.value.regions.map((value) => ({ label: value, value })))
 const cloudTypeOptions = computed(() => filterOptions.value.cloud_resource_types.map((value) => ({ label: value, value })))
+const rootOptions = computed(() => resourceNodes.value.map((node) => ({ label: node.name, value: node.entity_id })))
+const directionOptions = [
+  { label: '双向', value: 'both' },
+  { label: '上游', value: 'upstream' },
+  { label: '下游', value: 'downstream' }
+]
 
 async function onApplicationChange(value: unknown) {
   const applicationId = String(value)
@@ -263,6 +314,23 @@ function selectNode(nodeId: string) {
 function openNode(node: AssetTopologyNode) {
   selectedNode.value = node
   nodeDrawerVisible.value = true
+}
+
+async function onViewModeChange(value: unknown) {
+  const mode = String(value)
+  if (mode === 'network') {
+    await clearRoot()
+  } else if (mode === 'chain' && !rootResourceId.value && resourceNodes.value.length) {
+    await focusResource(resourceNodes.value[0].entity_id)
+  }
+}
+
+async function focusTopology(value: unknown) {
+  const resourceId = String(value)
+  if (!resourceId) return
+  viewMode.value = 'chain'
+  nodeDrawerVisible.value = false
+  await focusResource(resourceId)
 }
 
 function toggleDirection() {

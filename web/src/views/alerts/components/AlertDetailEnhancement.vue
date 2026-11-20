@@ -3,6 +3,18 @@
     v-if="vm.showRegion"
     class="alert-enhancement"
   >
+    <div class="alert-view-switch">
+      <span>字段展示</span>
+      <a-radio-group
+        v-model="fieldView"
+        type="button"
+        size="mini"
+      >
+        <a-radio value="friendly">友好字段</a-radio>
+        <a-radio value="raw">原始字段</a-radio>
+      </a-radio-group>
+    </div>
+
     <!-- ① 触发条件卡：浅底全框卡片 + 横向结论行；所有降级态都保留外壳 -->
     <section
       v-if="vm.showConditionCard"
@@ -111,24 +123,27 @@
             :class="{ 'is-dim-key': !!item.hint }"
           >
             <dt class="alert-kv-label">
-              {{ item.label }}
-              <code
-                v-if="item.label !== item.key"
-                class="alert-kv-hint is-mono"
-              >{{ item.key }}</code>
-              <span
-                v-if="item.hint"
-                class="alert-kv-hint"
-              >{{ item.hint }}</span>
+              <template v-if="fieldView === 'raw'">{{ item.key }}</template>
+              <template v-else>
+                {{ item.label }}
+                <code
+                  v-if="item.label !== item.key"
+                  class="alert-kv-hint is-mono"
+                >{{ item.key }}</code>
+                <span
+                  v-if="item.hint"
+                  class="alert-kv-hint"
+                >{{ item.hint }}</span>
+              </template>
             </dt>
             <dd
               class="alert-kv-value"
               :class="{ 'is-mono': item.mono, 'is-dim': item.sensitive }"
             >
-              <span class="alert-kv-text">{{ item.value }}</span>
+              <span class="alert-kv-text">{{ fieldView === 'raw' ? item.rawValue : item.value }}</span>
               <AlertCopyButton
                 v-if="item.copyable"
-                :value="item.value"
+                :value="item.rawValue"
                 :label="item.label"
               />
             </dd>
@@ -215,10 +230,13 @@
           class="alert-anno-kv"
         >
           <span class="alert-kv-label">
-            {{ kv.label }}
-            <span class="alert-kv-hint">{{ kv.hint }}</span>
+            <template v-if="fieldView === 'raw'">{{ kv.key }}</template>
+            <template v-else>
+              {{ kv.label }}
+              <span class="alert-kv-hint">{{ kv.hint }}</span>
+            </template>
           </span>
-          <span class="alert-kv-value is-mono">{{ kv.value }}</span>
+          <span class="alert-kv-value is-mono">{{ fieldView === 'raw' ? kv.rawValue : kv.value }}</span>
         </div>
       </div>
     </section>
@@ -246,6 +264,7 @@ const vNoLiveRole = {
 
 const vm = computed(() => buildAlertPresentation(props.alert))
 const condition = computed(() => vm.value.condition)
+const fieldView = ref<'friendly' | 'raw'>('friendly')
 
 const gridId = `alert-labels-grid-${useId()}`
 const expanded = ref(false)
@@ -272,6 +291,7 @@ $mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 $label-col: 96px;
 
 .alert-enhancement { --alert-row-h: 28px; }
+.alert-view-switch { display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-bottom:8px; color:var(--color-text-2); font-size:12px; }
 
 /* 区块节奏：相邻区块用中性细线分隔 */
 .alert-section { margin-top: 12px; }

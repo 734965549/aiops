@@ -97,7 +97,7 @@
 | `listApplications` / `createApplication` / `updateApplication` / `deleteApplication` | `/api/assets/applications` | 应用注册表 CRUD；`listApplications` 返回 `PageResult<Application>`，支持 `page` / `page_size` |
 | `listResources` / `createResource` / `updateResource` / `deleteResource` | `/api/assets/applications/:application_id/resources`、`/api/assets/resources` | 资源注册表 CRUD，云同步字段只由后端同步链路写入；`listResources` 按 `application_id` 返回 `PageResult<Resource>`，支持 `page` / `page_size`、`cloud_resource_type` / `region` / `sync_status` / `source` 精确筛选、`keyword` 跨字段模糊筛选，以及 `sort_by` / `sort_order` 服务端排序（排序字段白名单见 `ops/cloud-observability-contract.md` §5.5.4）；筛选与排序均为服务端行为，前端不做跨页本地假筛选/假排序 |
 | `getResourceFilterOptions` | `GET /api/assets/applications/:application_id/resource-facets` | 资源页云类型/Region 下拉字典；仅返回当前应用下非空去重值，按字典序升序；只作候选值，实际过滤仍走 `listResources` 的精确参数（契约 §5.5.5） |
-| `getAssetTopology` | `GET /api/assets/topology` | CMDB 真实应用归属与手工关系图；`application_id` 必填，支持区域、云类型、关键字、关系类型及 stale 过滤；超限时必须展示 `meta.truncated` |
+| `getAssetTopology` | `GET /api/assets/topology` | CMDB 应用归属、手工与云派生关系图；按 `application_id` 或 `root_resource_id + depth + direction` 查询，支持跨应用链路和已验证 labels 派生边；必须展示 `meta.truncated` 与 `unresolved_relation_count` |
 | `listAssetResourceRelations` | `GET /api/assets/resource-relations` | 查询同一应用内的手工资源关系 |
 | `createAssetResourceRelation` / `deleteAssetResourceRelation` | `POST/DELETE /api/assets/resource-relations` | 创建/删除手工关系；写权限和服务端校验优先，前端不伪造 `origin` 或云端关系 |
 | `listMatchRules` / `createMatchRule` / `updateMatchRule` / `deleteMatchRule` | `/api/assets/match-rules` | 匹配规则 CRUD；`listMatchRules` 返回 `PageResult<MatchRule>` |

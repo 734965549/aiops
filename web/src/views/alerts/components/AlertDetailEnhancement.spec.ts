@@ -16,7 +16,9 @@ vi.mock('@arco-design/web-vue/es/message', () => ({
 }))
 // unplugin-vue-components 把 <a-alert> 编译成 @arco-design/web-vue 的直接 import。
 vi.mock('@arco-design/web-vue', () => ({
-  Alert: { template: '<div><slot /></div>' }
+  Alert: { template: '<div><slot /></div>' },
+  Radio: { template: '<label><slot /></label>' },
+  RadioGroup: { template: '<div><slot /></div>' }
 }))
 
 function makeAlert(
@@ -235,7 +237,7 @@ describe('long IDs, unknown keys and masking', () => {
   it('maps composite keys, keeps raw values and never drops unknown keys', () => {
     const wrapper = render(makeAlert({ 'lbaas_instance_id,loadbalancer_id': 'id-a,id-b', future_dim: 'v' }))
     expect(wrapper.text()).toContain('LB 实例 ID / 负载均衡器 ID')
-    expect(wrapper.text()).toContain('· 维度')
+    expect(wrapper.text()).toContain('原始维度')
     expect(wrapper.text()).toContain('id-a,id-b')
     expect(wrapper.find('[data-key="future_dim"]').exists()).toBe(true)
     expect(wrapper.find('[data-key="future_dim"]').text()).toContain('future_dim')
@@ -574,7 +576,7 @@ describe('Phase 3 typography DOM contract', () => {
     const dt = composite.find('dt')
     expect(dt.text()).toContain('LB 实例 ID / 负载均衡器 ID')
     expect(dt.text()).toContain('lbaas_instance_id,loadbalancer_id')
-    expect(dt.text()).toContain('· 维度')
+    expect(dt.text()).toContain('原始维度')
     expect(dt.find('code.alert-kv-hint.is-mono').exists()).toBe(true)
     expect(composite.find('dd').text()).toContain('id-a,id-b')
 
@@ -591,6 +593,18 @@ describe('Phase 3 typography DOM contract', () => {
     expect(row.find('dt').text()).toContain('实例 ID')
     expect(row.find('dt code.alert-kv-hint.is-mono').text()).toBe('instance_id')
     expect(row.find('dt .alert-kv-hint:not(.is-mono)').exists()).toBe(false)
+  })
+
+  it('switches between friendly labels and raw fields without losing raw values', async () => {
+    const wrapper = render(makeAlert({ severity: 'critical' }, { summary: 'CPU 使用率过高' }))
+    expect(wrapper.text()).toContain('严重（critical）')
+    expect(wrapper.text()).toContain('规则摘要')
+
+    ;(wrapper.vm as unknown as { fieldView: string }).fieldView = 'raw'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).not.toContain('严重（critical）')
+    expect(wrapper.find('[data-key="severity"]').text()).toContain('critical')
+    expect(wrapper.text()).toContain('summary')
   })
 
   it('fallback keeps the complete value inside a static (non-absolute) wrapper', async () => {
