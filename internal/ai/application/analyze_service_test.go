@@ -112,15 +112,26 @@ func TestAnalyzeService_InvalidArgument(t *testing.T) {
 }
 
 type fakeToolInvoker struct {
-	providerID string
-	captured   toolgateway.ToolRequest
-	resp       *toolgateway.ToolResponse
-	err        error
+	providerID   string
+	captured     toolgateway.ToolRequest
+	resp         *toolgateway.ToolResponse
+	err          error
+	validateResp *toolgateway.ToolResponse
+	validateErr  error
+	validateReq  toolgateway.ToolRequest
 }
 
 func (f *fakeToolInvoker) Invoke(_ context.Context, providerID string, req toolgateway.ToolRequest) (*toolgateway.ToolResponse, error) {
 	f.providerID = providerID
 	f.captured = req
+	return f.resp, f.err
+}
+
+func (f *fakeToolInvoker) Validate(_ context.Context, req toolgateway.ToolRequest) (*toolgateway.ToolResponse, error) {
+	f.validateReq = req
+	if f.validateResp != nil || f.validateErr != nil {
+		return f.validateResp, f.validateErr
+	}
 	return f.resp, f.err
 }
 

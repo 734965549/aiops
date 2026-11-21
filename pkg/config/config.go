@@ -281,6 +281,8 @@ type AIConfig struct {
 	EvidenceTimeoutMS int64 `mapstructure:"evidence_timeout_ms"`
 	// EvidencePayloadMaxBytes 是单条定稿证据快照的字节上限，0 使用默认 32768。
 	EvidencePayloadMaxBytes int `mapstructure:"evidence_payload_max_bytes"`
+	// PostgresEvidenceTimeoutMS 控制 RDS 历史会话三组只读接口的总预算，0 使用默认 15000ms。
+	PostgresEvidenceTimeoutMS int64 `mapstructure:"postgres_evidence_timeout_ms"`
 	// TurnBudgetS 是单次对话（含 Agent Loop 多轮）的总时间预算，0 使用默认 600s。
 	TurnBudgetS int `mapstructure:"turn_budget_s"`
 }
@@ -298,6 +300,13 @@ func (c AIConfig) EvidencePayloadLimit() int {
 		return 32 * 1024
 	}
 	return c.EvidencePayloadMaxBytes
+}
+
+func (c AIConfig) PostgresEvidenceTimeout() time.Duration {
+	if c.PostgresEvidenceTimeoutMS <= 0 {
+		return 15 * time.Second
+	}
+	return time.Duration(c.PostgresEvidenceTimeoutMS) * time.Millisecond
 }
 
 // TurnBudgetTimeout 返回单次对话总时间预算。
@@ -595,6 +604,7 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("ai.evidence_timeout_ms", 5000)
 	v.SetDefault("ai.evidence_payload_max_bytes", 32768)
+	v.SetDefault("ai.postgres_evidence_timeout_ms", 15000)
 	v.SetDefault("ai.turn_budget_s", 600)
 
 	v.SetDefault("cors.allow_credentials", true)

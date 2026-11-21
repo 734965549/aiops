@@ -46,6 +46,7 @@ const chatSystemPrompt = `你是企业运维平台的 AI 运维助手。你只�
 - resource.analyze：无参数，读取当前页面选中的资源上下文；账号、区域、命名空间与主维度由服务端从资产推导。
 - resources.list：params 支持 account_id（必填，可回退资源上下文）/ resource_type（如 rds、ecs）/ region / keyword / limit（默认 20，最大 50）；返回云同步资源及 cloud_resource_id 等实例标识。metrics.query 的 dimensions 键名与值必须取该观测的 dimension_name / dimension_value（或告警标签），不得用 instance_id 等 ECS 键名、也不得用实例名称代替云资源 ID；查询 0 点时先核对 dimensions 再考虑换窗口。
 - metrics.query：params 支持 account_id / region / project_id / namespace / metric / dimensions / from / to / period / aggregator；缺省字段依次回退告警推导与资源上下文推导；时间窗口最多 7 天，period=86400 的日聚合最多 30 天，最多 1440 点。指标代码优先取 alert.rules.list 观测中规则的 metric 字段；SYS.RDS 真实代码形如 rds001_cpu_util / rds002_mem_util / rds039_disk_util / rds083_conn_usage / rds046_replication_lag，cpu_util / mem_util 等通用名在 CES RDS 不存在（服务端会归一化常见别名）。观测 data.metrics 携带该次查询的序列（first/peak/last/breach_points/points，超限时 points 被丢弃仅保留统计），data.from/to/period 标明窗口；数值足以支撑结论时直接作答，不得换参数重查同一窗口。
+- postgres.activity.query：params 支持 from / to / limit，缺省取告警证据窗口，最长 7 天；读取 RDS for PostgreSQL 历史会话、等待事件和 Top SQL。会话状态、事务时长、等待事件、阻塞进程和 Query ID 只能以 observations 中的脱敏快照为依据；缺少现场时必须输出原因未定和缺失证据，禁止把未提交、慢 SQL 或锁等待写成已确认根因。
 - alert.rules.list：params 支持 account_id / region / namespace（必填，可回退告警标签或资源上下文）/ keyword / limit（最多 50）。
 - alarm.analyze：无参数，重新读取当前告警快照。
 若用户要求体检告警规则（例如判断阈值是否合理），优先申请 alert.rules.list 获取规则阈值，再按需要申请 metrics.query 获取趋势与破限点进行对照。
@@ -112,8 +113,9 @@ type ChatAnswer struct {
 	Degraded            bool         `json:"degraded,omitempty"`
 	DegradedReason      string       `json:"degraded_reason,omitempty"`
 	// Incomplete 表示流式生成中断但保留了已获取上下文；IncompleteReason 为中断原因。
-	Incomplete       bool   `json:"incomplete,omitempty"`
-	IncompleteReason string `json:"incomplete_reason,omitempty"`
+	Incomplete       bool           `json:"incomplete,omitempty"`
+	IncompleteReason string         `json:"incomplete_reason,omitempty"`
+	Diagnosis        *ChatDiagnosis `json:"diagnosis,omitempty"`
 }
 
 // buildChatUserPrompt 组装模型 user 消息：问题 + 上下文 + 只读观测 + 历史。
@@ -163,19 +165,20 @@ func chatPromptTask(forceAnswer bool) string {
 // chatAnswerPayload 是模型输出的 JSON 结构；actions 由服务端生成，不接受模型覆盖。
 // degraded / degraded_reason 仅在平台降级落库时写入，重放历史回答时按原值还原。
 type chatAnswerPayload struct {
-	Summary             string   `json:"summary"`
-	Evidence            flexList `json:"evidence"`
-	Impact              flexList `json:"impact"`
-	Recommendations     flexList `json:"recommendations"`
-	RiskLevel           string   `json:"risk_level"`
-	RequireConfirm      bool     `json:"require_confirm"`
-	Rollback            flexText `json:"rollback"`
-	Uncertainties       flexList `json:"uncertainties"`
-	InsufficientContext bool     `json:"insufficient_context"`
-	Degraded            bool     `json:"degraded"`
-	DegradedReason      string   `json:"degraded_reason"`
-	Incomplete          bool     `json:"incomplete"`
-	IncompleteReason    string   `json:"incomplete_reason"`
+	Summary             string         `json:"summary"`
+	Evidence            flexList       `json:"evidence"`
+	Impact              flexList       `json:"impact"`
+	Recommendations     flexList       `json:"recommendations"`
+	RiskLevel           string         `json:"risk_level"`
+	RequireConfirm      bool           `json:"require_confirm"`
+	Rollback            flexText       `json:"rollback"`
+	Uncertainties       flexList       `json:"uncertainties"`
+	InsufficientContext bool           `json:"insufficient_context"`
+	Degraded            bool           `json:"degraded"`
+	DegradedReason      string         `json:"degraded_reason"`
+	Incomplete          bool           `json:"incomplete"`
+	IncompleteReason    string         `json:"incomplete_reason"`
+	Diagnosis           *ChatDiagnosis `json:"diagnosis"`
 }
 
 // flexList 兼容模型把字符串数组漂移输出为对象数组等形态，逐元素转成可读字符串。
@@ -229,6 +232,14 @@ func (t *flexText) UnmarshalJSON(raw []byte) error {
 
 // parseChatAnswer 解析并校验模型输出，失败表示需要降级。
 func parseChatAnswer(content string) (ChatAnswer, error) {
+	return parseChatAnswerWithDiagnosis(content, false)
+}
+
+func parseChatAnswerForReplay(content string) (ChatAnswer, error) {
+	return parseChatAnswerWithDiagnosis(content, true)
+}
+
+func parseChatAnswerWithDiagnosis(content string, preserveDiagnosis bool) (ChatAnswer, error) {
 	var payload chatAnswerPayload
 	if err := json.Unmarshal([]byte(extractJSONObject(content)), &payload); err != nil {
 		return ChatAnswer{}, fmt.Errorf("decode chat answer json: %w", err)
@@ -237,7 +248,7 @@ func parseChatAnswer(content string) (ChatAnswer, error) {
 	if summary == "" {
 		return ChatAnswer{}, errors.New("chat answer summary is required")
 	}
-	return ChatAnswer{
+	answer := ChatAnswer{
 		Summary:             truncateRunes(summary, 2000),
 		Evidence:            sanitizeList(payload.Evidence),
 		Impact:              sanitizeList(payload.Impact),
@@ -252,7 +263,12 @@ func parseChatAnswer(content string) (ChatAnswer, error) {
 		DegradedReason:      strings.TrimSpace(payload.DegradedReason),
 		Incomplete:          payload.Incomplete,
 		IncompleteReason:    strings.TrimSpace(payload.IncompleteReason),
-	}, nil
+		Diagnosis:           nil,
+	}
+	if preserveDiagnosis {
+		answer.Diagnosis = payload.Diagnosis
+	}
+	return answer, nil
 }
 
 // chatResultStatus 由结构化回答还原对外 status（重放历史回答时使用）。

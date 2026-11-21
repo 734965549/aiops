@@ -269,6 +269,7 @@ func (f *fakeChatToolGateway) Validate(_ context.Context, req toolgateway.ToolRe
 func allowAllChatTools() *fakeChatToolGateway {
 	return &fakeChatToolGateway{allowed: map[string]bool{
 		chatToolAlarmAnalyze: true, chatToolMetricsQuery: true, chatToolAlertRulesList: true,
+		chatToolPostgresActivity: true,
 		chatToolAccountsList: true, chatToolResourceAnalyze: true, chatToolResourcesList: true,
 		chatToolExecutionPropose: true,
 	}}

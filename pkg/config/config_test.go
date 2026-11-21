@@ -208,6 +208,15 @@ func TestAIEvidencePayloadLimit(t *testing.T) {
 	}
 }
 
+func TestAIPostgresEvidenceTimeout(t *testing.T) {
+	if got := (AIConfig{}).PostgresEvidenceTimeout(); got != 15*time.Second {
+		t.Fatalf("default postgres evidence timeout = %v", got)
+	}
+	if got := (AIConfig{PostgresEvidenceTimeoutMS: 20000}).PostgresEvidenceTimeout(); got != 20*time.Second {
+		t.Fatalf("explicit postgres evidence timeout = %v", got)
+	}
+}
+
 func TestAITurnBudgetTimeout(t *testing.T) {
 	if got := (AIConfig{}).TurnBudgetTimeout(); got != 10*time.Minute {
 		t.Fatalf("default turn budget = %v", got)

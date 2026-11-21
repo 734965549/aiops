@@ -151,6 +151,32 @@ export interface ChatAction {
   target?: string
 }
 
+export interface ChatDiagnosisFact {
+  statement: string
+  evidence_id?: string
+  pointer?: string
+}
+
+export interface ChatRootCause {
+  status: 'undetermined' | 'suspected' | 'confirmed' | string
+  code: string
+  statement: string
+  evidence_ids: string[]
+}
+
+export interface ChatHypothesis {
+  code: string
+  statement: string
+  missing_evidence: string[]
+}
+
+export interface ChatDiagnosis {
+  facts: ChatDiagnosisFact[]
+  root_cause: ChatRootCause
+  hypotheses: ChatHypothesis[]
+  missing_evidence: string[]
+}
+
 export interface ChatAnswer {
   summary: string
   evidence: string[]
@@ -167,6 +193,7 @@ export interface ChatAnswer {
   /** 流式生成中断但保留了已获取上下文；前端按“不完整回答”提示，不按失败处理。 */
   incomplete?: boolean
   incomplete_reason?: string
+  diagnosis?: ChatDiagnosis
 }
 
 export interface ChatToolCall {

@@ -1,6 +1,6 @@
 # AI 证据驱动诊断设计
 
-> 状态：P0-1 已实施（migration 0060）；P0-2 及后续切片待评审  
+> 状态：P0-1（0060）与 P1-1（0061）已实施；P0-2/P0-3 通用能力和 P1-2 告警触发采集待实施
 > 日期：2026-11-20  
 > P0-1 实施日期：2026-11-20  
 > 首个验证场景：华为云 CES `SYS.RDS / oldest_transaction_duration` 长事务告警  
@@ -299,7 +299,11 @@ AI 回答页固定分区：
 
 ### 6.1 接入前置条件
 
-华为云 AK/SK 只能访问 CES 等云 API，不能代替数据库登录。需要额外准备：
+**P1-1 已优先采用华为云现成历史会话 API，而非数据库直连**：`ListHistorySessions`、`ListHistoryWaitEvents`、`ListHistoryTopSqls` 已能提供历史会话状态、事务时间、等待事件、阻塞进程和 Query ID，所需 IAM 动作分别为 `rds:instance:getHistorySession/getWaitEvent/getTopSql`。该路径复用现有 Integration AK/SK，窗口最长 7 天，避免额外数据库账号和网络依赖。官方契约：[历史会话](https://support.huaweicloud.com/api-rds/rds_12_0014.html)、[等待事件](https://support.huaweicloud.com/api-rds/rds_12_0015.html)、[Top SQL](https://support.huaweicloud.com/api-rds/rds_12_0016.html)。
+
+如果现场已消失、实例不支持历史会话或需要更完整的锁对象，才回退到数据库直连。直连需要额外准备：
+
+华为云 AK/SK 只能访问云 API，不能代替数据库登录。需要额外准备：
 
 - 平台或专用只读采集器到 RDS 私网地址和端口的网络连通。
 - 目标实例、数据库名、SSL 要求和资源绑定的凭据引用。
@@ -396,9 +400,9 @@ SQL 文本可能包含业务参数。优先使用 `pg_stat_statements.queryid` �
 
 1. **P0-1：证据快照模型与持久化（已完成，migration 0060）**：覆盖现有 CES 指标证据；模型输入前统一降采样/裁剪并保存 payload/hash，写失败 fail-closed；E2E 为 `scripts/e2e-ai-evidence.ps1`。本切片不包含关系表、证据查询 API、前端抽屉或保留期清理。
 2. **P0-2：证据查询接口与证据抽屉（待实施）**，打通权限和原始数据复查。
-3. **P0-3：Fact Builder、回答结构、引用校验和回放元数据**。
-4. **P1-1：PostgreSQL 只读适配器与手动补采**，先验证固定模板和脱敏。
-5. **P1-2：告警触发快照、覆盖度 profile 和长事务诊断输出**。
+3. **P0-3：Fact Builder、回答结构、引用校验和回放元数据（长事务专用子集已落地）**：已实现平台确定性事实、`undetermined/suspected` 根因、假设和缺失项；通用 Fact Builder、证据详情、完整回放和人工 confirmed 仍待实施。
+4. **P1-1：PostgreSQL 只读适配器与手动补采（已完成，migration 0061）**：复用 RDS 历史会话三接口，支持分页、超时、部分失败、用户/客户端/SQL 脱敏和证据落库；真实账号验收脚本为 `scripts/e2e-postgres-history.ps1`。
+5. **P1-2：告警触发快照、覆盖度 profile（部分完成）**：长事务诊断输出已完成；告警触发后的平台主动采集和完整覆盖度 profile 待实施。
 6. **P2+：按诊断价值逐项增加变更、日志、链路和性能基线。**
 
 涉及接口、权限码、迁移、工具清单、状态或健康检查时，必须同步：
@@ -418,8 +422,8 @@ SQL 文本可能包含业务参数。优先使用 `pg_stat_statements.queryid` �
 
 - 证据保留期和存储预算（待确认）；单条 payload 上限已由 P0-1 确定为可配置 `ai.evidence_payload_max_bytes`，默认 32768 字节。
 - 证据详情接口与前端展示所需的权限码。
-- SQL 文本脱敏策略及无法可靠脱敏时的降级方式。
-- PostgreSQL 采集网络位置、允许采集的实例清单和只读账号权限。
+- SQL 文本脱敏策略已确定为默认不保存原文，只保留 Query ID 或规范化空白后的 SQL hash；用户只保留 hash，客户端只保留网段或地址摘要。
+- PostgreSQL 采集已优先复用 RDS 历史会话 API，需要 `rds:instance:getHistorySession/getWaitEvent/getTopSql`；数据库直连的网络位置和只读账号仅作为后续补充方案。
 - 告警自动采集的频率、并发、超时和重试上限。
 - 哪些诊断规则允许平台标记 `confirmed`，哪些必须人工确认。
 

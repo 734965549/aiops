@@ -416,6 +416,15 @@ func main() {
 		aiAuditRecorder,
 	)
 	aiChatSvc.SetEvidenceSnapshots(aiEvidenceSnapshots, app.Cfg.AI.EvidencePayloadLimit())
+	aiPostgresCollector := aiobs.NewPostgresCollector(
+		obsAccountAdapter,
+		huaweiObsCreds,
+		huaweiobs.NewRDSHistoryClient(),
+		aiAccountAccess,
+		app.Cfg.AI.PostgresEvidenceTimeout(),
+	)
+	aiChatSvc.SetPostgresEvidence(aiPostgresCollector, aiEvidenceSnapshots, app.Cfg.AI.EvidencePayloadLimit())
+	analyzeSvc.SetPostgresEvidence(aiPostgresCollector, aiEvidenceSnapshots, app.Cfg.AI.EvidencePayloadLimit())
 	aiChatSvc.SetAlertRules(aiRulesCollector)
 	// 上下文不足修复：账号发现 + 资源上下文 + 云资源发现（ops/ai-contract.md §10.12.1）。
 	aiChatSvc.SetAccounts(aiintegration.NewAccountDiscovery(

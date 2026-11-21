@@ -26,7 +26,7 @@ func toMessageView(message domain.Message) ChatMessageView {
 		view.References = []domain.Reference{}
 	}
 	if message.Role == domain.RoleAssistant {
-		if answer, err := parseChatAnswer(message.Content); err == nil {
+		if answer, err := parseChatAnswerForReplay(message.Content); err == nil {
 			view.Answer = &answer
 		}
 	}

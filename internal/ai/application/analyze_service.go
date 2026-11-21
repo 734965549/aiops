@@ -24,11 +24,12 @@ type AnalyzeAlertInput struct {
 
 // AnalyzeAlertResult 分析响应（技术架构设计 §6.3.1）。
 type AnalyzeAlertResult struct {
-	ConversationID  string   `json:"conversation_id"`
-	Summary         string   `json:"summary"`
-	RiskLevel       string   `json:"risk_level"`
-	Recommendations []string `json:"recommendations"`
-	References      []string `json:"references"`
+	ConversationID  string         `json:"conversation_id"`
+	Summary         string         `json:"summary"`
+	RiskLevel       string         `json:"risk_level"`
+	Recommendations []string       `json:"recommendations"`
+	References      []string       `json:"references"`
+	Diagnosis       *ChatDiagnosis `json:"diagnosis,omitempty"`
 }
 
 // ToolInvoker AI 工具网关调用 port。
@@ -45,6 +46,9 @@ type AnalyzeService struct {
 	evidence                MetricEvidencePort
 	evidenceSnapshots       EvidenceSnapshotStore
 	evidencePayloadMaxBytes int
+	postgres                PostgresEvidencePort
+	postgresStore           PostgresEvidenceStore
+	postgresPayloadMaxBytes int
 	audit                   AuditRecorder
 	// memory 为可选的相似案例记忆能力；nil 表示关闭。
 	memory MemoryCaseStore
@@ -85,6 +89,15 @@ func (s *AnalyzeService) SetMetricEvidence(port MetricEvidencePort) {
 		return
 	}
 	s.evidence = port
+}
+
+func (s *AnalyzeService) SetPostgresEvidence(port PostgresEvidencePort, store PostgresEvidenceStore, maxBytes int) {
+	if s == nil {
+		return
+	}
+	s.postgres = port
+	s.postgresStore = store
+	s.postgresPayloadMaxBytes = maxBytes
 }
 
 func (s *AnalyzeService) SetEvidenceSnapshots(store EvidenceSnapshotStore, maxBytes int) {
@@ -133,6 +146,7 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 	toolFailed := false
 	var toolError string
 	var evidence *MetricEvidenceResult
+	var postgresEvidence *PostgresEvidenceResult
 	memoryStatus := MemoryStatusSkipped
 	var similarCases []chatMemoryCase
 	providerID := s.analysisProviderID()
@@ -141,6 +155,7 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 		obj := AlertObjectContextOf(alert)
 		if in.IncludeMetrics {
 			evidence = s.collectMetricEvidence(ctx, userID, alert)
+			postgresEvidence = s.collectPostgresEvidence(ctx, userID, alert)
 		}
 		// 相似案例记忆（阶段 1）：命中则与 evidence 平级注入，失败降级不中断分析。
 		similarCases, memoryStatus = s.searchSimilarCases(ctx, userID, alert, evidence)
@@ -162,6 +177,9 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 		}
 		if evidence != nil {
 			payload["evidence"] = evidence
+		}
+		if postgresEvidence != nil {
+			payload["postgres_activity"] = postgresEvidence
 		}
 		if len(similarCases) > 0 {
 			payload["similar_cases"] = similarCases
@@ -205,7 +223,16 @@ func (s *AnalyzeService) AnalyzeAlert(ctx context.Context, userID string, in Ana
 			}
 		}
 	}
-	s.recordAnalyzeAudit(ctx, alertID, userID, convID, toolFailed, toolError, result.RiskLevel, evidence, memoryStatus, len(similarCases))
+	if diagnosis := buildPostgresDiagnosis(&chatContextData{Alert: alert, Evidence: evidence, Postgres: postgresEvidence}); diagnosis != nil {
+		result.Diagnosis = diagnosis
+		result.Summary = postgresDiagnosisSummary(diagnosis)
+		result.Recommendations = postgresDiagnosisRecommendations(diagnosis)
+		result.References = evidenceReferences(evidence)
+		if postgresObservationEvidenceID(postgresEvidence) != "" {
+			result.References = append(result.References, "observability evidence "+postgresEvidence.EvidenceID)
+		}
+	}
+	s.recordAnalyzeAudit(ctx, alertID, userID, convID, toolFailed, toolError, result.RiskLevel, evidence, postgresEvidence, memoryStatus, len(similarCases))
 	return result, nil
 }
 
@@ -241,7 +268,46 @@ func (s *AnalyzeService) collectMetricEvidence(ctx context.Context, userID strin
 	})
 }
 
-func (s *AnalyzeService) recordAnalyzeAudit(ctx context.Context, alertID, userID, convID string, toolFailed bool, toolError, riskLevel string, evidence *MetricEvidenceResult, memoryStatus string, memoryUsed int) {
+func (s *AnalyzeService) authorizePostgresActivity(ctx context.Context, userID string) (bool, string) {
+	validator, ok := s.tools.(ChatToolGateway)
+	if !ok {
+		return false, "postgres tool authorization unavailable"
+	}
+	resp, err := validator.Validate(ctx, toolgateway.ToolRequest{
+		UserID: userID, ToolCode: chatToolPostgresActivity,
+		RequiredPermission: "app:ai.analysis:analyze", SkipDataScope: true,
+	})
+	if err != nil {
+		return false, "postgres tool authorization failed"
+	}
+	if resp == nil || !resp.Allowed {
+		return false, "postgres tool permission denied"
+	}
+	return true, ""
+}
+
+func (s *AnalyzeService) collectPostgresEvidence(ctx context.Context, userID string, alert *AlertContext) *PostgresEvidenceResult {
+	if !isPostgresLongTransactionAlert(alert) {
+		return nil
+	}
+	if allowed, reason := s.authorizePostgresActivity(ctx, userID); !allowed {
+		return &PostgresEvidenceResult{Status: EvidenceStatusPermissionDenied, Reason: reason}
+	}
+	query, skip := derivePostgresEvidenceQuery(alert, nil)
+	if s.postgres == nil {
+		return &PostgresEvidenceResult{Status: EvidenceStatusSkipped, Reason: "collector_disabled"}
+	}
+	if skip != "" {
+		return finalizePostgresEvidence(ctx, s.postgresStore, query, &PostgresEvidenceResult{Status: EvidenceStatusSkipped, Reason: skip}, s.postgresPayloadMaxBytes)
+	}
+	result, err := s.postgres.Collect(ctx, userID, query)
+	if err != nil {
+		result = &PostgresEvidenceResult{Status: EvidenceStatusError, Reason: "postgres evidence collector failed"}
+	}
+	return finalizePostgresEvidence(ctx, s.postgresStore, query, result, s.postgresPayloadMaxBytes)
+}
+
+func (s *AnalyzeService) recordAnalyzeAudit(ctx context.Context, alertID, userID, convID string, toolFailed bool, toolError, riskLevel string, evidence *MetricEvidenceResult, postgresEvidence *PostgresEvidenceResult, memoryStatus string, memoryUsed int) {
 	if s == nil || s.audit == nil {
 		return
 	}
@@ -259,6 +325,12 @@ func (s *AnalyzeService) recordAnalyzeAudit(ctx context.Context, alertID, userID
 		payload["evidence_status"] = evidence.Status
 		if ids := evidenceIDs(evidence); len(ids) > 0 {
 			payload["evidence_ids"] = ids
+		}
+	}
+	if postgresEvidence != nil {
+		payload["postgres_status"] = postgresEvidence.Status
+		if postgresEvidence.EvidenceID != "" {
+			payload["postgres_evidence_id"] = postgresEvidence.EvidenceID
 		}
 	}
 	_ = s.audit.Record(ctx, AuditRecord{

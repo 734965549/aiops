@@ -1198,3 +1198,46 @@ AI 助手支持用户随消息携带图片（截图提问）。仅类型 b 且�
 
 - 单测：`internal/ai/application/chat_images_test.go`（校验规则、视觉通道、非视觉 400 不落库、纯图片默认提问）；`internal/ai/toolgateway/chat_vision_test.go`（多模态 payload 同步/流式、无图报文不变、models 视觉标志）。
 - 前端：`web/src/views/ai-assistant/composables/imageInput.spec.ts`。
+
+### 10.21 RDS for PostgreSQL 历史会话证据（migration 0061）
+
+`postgres.activity.query` 复用现有 Integration 华为 AK/SK 账号，调用 RDS for PostgreSQL 历史会话分析接口，不要求数据库直连账号，也不执行自由 SQL：
+
+| 能力 | RDS API / IAM 授权项 | 用途 |
+| --- | --- | --- |
+| 历史会话 | `ListHistorySessions` / `rds:instance:getHistorySession` | 会话状态、事务时间、等待事件、阻塞进程、Query ID |
+| 历史等待事件 | `ListHistoryWaitEvents` / `rds:instance:getWaitEvent` | 按采样时间聚合的等待事件 |
+| 历史 Top SQL | `ListHistoryTopSqls` / `rds:instance:getTopSql` | SQL 并发记录及 Query ID |
+
+仅支持 `SYS.RDS + oldest_transaction_duration` 的自动诊断和显式补采；DAS MySQL 会话接口、kill 会话、SQL 限流等变更能力一律不开放。查询使用告警/资源解析出的 `account_id`、`region`、`project_id`、RDS `instance_id` 和时间窗口，窗口最长 7 天，模型不能指定连接地址或任意实例。`limit` 默认/最大 300 条每类记录，分页总数和截断状态保留；上游省略 `total_count` 时以 `-1` 表示 unknown，达到该预算仍按 `truncated=true` 处理。总预算由 `ai.postgres_evidence_timeout_ms` 控制（默认 15000ms），超时和 SDK 空响应按采集异常处理，不能解释成正常空窗口。
+
+- 工具权限：`postgres.activity.query`（read_only，migration `0061` 绑定 admin）；调用前继续校验当前用户的 Integration 账号数据范围。
+- 凭据：沿用 Integration 凭据引用和 Vault；AK/SK 不进入 Prompt、证据、日志或审计。
+- 脱敏：用户名只保留 `user_hash`；客户端地址保留 IPv4 `/24` 或 IPv6 `/64` 网段，非 IP 客户端标识哈希化；`sql_statement` 原文不保存、不进入 Prompt，只保留 `query_id` 和/或规范化空白后的 `sql_hash`。
+- 快照：`obs_evidence_ref.evidence_type=postgres_activity`、`schema_version=ai.postgres_activity.v1`，包含 `sessions/wait_events/top_sql`、上游 `total_count`、`original_count/retained_count`、`missing_evidence` 和 `collection_errors`。先落库再进入模型；写库失败时诊断降级，不把未持久化现场当事实。
+- 部分失败：历史会话是主证据；等待事件或 Top SQL 失败时保留已有会话事实，并在 `missing_evidence/collection_errors` 标明，不能改写成“没有等待/没有 SQL”。
+- 时间语义：查询的是华为已采样的历史窗口，不等同于平台在告警时主动抓取的快照。当前版本尚未实现告警触发后的平台主动采集。
+
+`POST /api/ai/analyze-alert` 的 provider payload 新增 `postgres_activity`；Chat observations 使用 `tool_code=postgres.activity.query`。两条路径都在 `data.diagnosis` 返回平台确定性生成的结构：
+
+```json
+{
+  "facts": [{"statement":"会话 42 状态 idle in transaction；事务持续 900 秒；Query ID query-42","evidence_id":"ev-...","pointer":"/sessions/0"}],
+  "root_cause": {"status":"suspected","code":"idle_in_transaction","statement":"历史会话存在空闲长事务；是否由应用未提交导致需结合应用证据确认","evidence_ids":["ev-..."]},
+  "hypotheses": [],
+  "missing_evidence": []
+}
+```
+
+根因边界：
+
+| code | 判定 | 输出约束 |
+| --- | --- | --- |
+| `undetermined` | 无现场、采集失败或无法分类 | 必须显示缺失证据与待验证假设，不能输出确定根因 |
+| `idle_in_transaction` | 有 `idle in transaction` 且事务时长 >0 | 只能说存在空闲长事务，不能直接断言应用未提交原因 |
+| `active_long_query` | 有 `active` 且事务时长 >0 | 只能说存在活跃长 SQL，不能臆造慢因 |
+| `lock_wait` | `wait_event_type=Lock` 或有阻塞进程 | 只能说存在锁等待/直接阻塞者，不能直接给出完整根因链 |
+
+自动诊断只产生 `undetermined` 或 `suspected`，不会自动标记 `confirmed`。`suspected` 仍有证据 ID，但不等于人工确认的最终根因。摘要、建议、事实、假设和缺失项由服务端生成，模型不能把这些字段改写为无依据结论。
+
+真实账号验收：`scripts/e2e-postgres-history.ps1 -AlertId <long-transaction-alert-id>`，使用告警现有云账号和 mock 模型，验证 `postgres.activity.query` 返回状态、证据 ID、根因状态和事实；权限不足必须显式失败，不伪造成功。

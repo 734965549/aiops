@@ -22,6 +22,35 @@ func (c *captureSnapshotRepository) SaveSnapshot(_ context.Context, ref *obsdoma
 	return nil
 }
 
+func TestSnapshotStorePersistsPostgresPayload(t *testing.T) {
+	repo := &captureSnapshotRepository{}
+	store := NewSnapshotStore(repo)
+	evidence := &aiapp.PostgresEvidenceResult{
+		Status: aiapp.EvidenceStatusOK, EvidenceID: "ev-pg-1", SchemaVersion: aiapp.PostgresEvidenceSchemaV1,
+		Provider: "huawei_cloud", InstanceID: "instance-1", CollectedAt: 1700003700,
+		OriginalCount: 1, RetainedCount: 1,
+		Sessions: []aiapp.PostgresSession{{SessionID: 42, SessionStatus: "idle in transaction", QueryID: "query-42", SQLHash: "sql:abc"}},
+	}
+	query := aiapp.PostgresEvidenceQuery{AccountID: "acc-1", Region: "cn-north-4", ProjectID: "p-1", InstanceID: "instance-1", From: 1700000000, To: 1700003600, Limit: 300}
+	if err := store.SavePostgres(context.Background(), query, evidence); err != nil {
+		t.Fatalf("save postgres snapshot: %v", err)
+	}
+	ref := repo.ref
+	if ref == nil || ref.EvidenceType != "postgres_activity" || ref.CloudResourceID != "instance-1" {
+		t.Fatalf("unexpected postgres evidence ref: %+v", ref)
+	}
+	if ref.PayloadHash != obsapp.HashPayload(ref.Payload) {
+		t.Fatal("postgres payload hash mismatch")
+	}
+	var decoded aiapp.PostgresEvidenceResult
+	if err := json.Unmarshal(ref.Payload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Sessions) != 1 || decoded.Sessions[0].QueryID != "query-42" || decoded.Sessions[0].SQLHash != "sql:abc" {
+		t.Fatalf("unexpected postgres payload: %+v", decoded)
+	}
+}
+
 func TestSnapshotStorePersistsExactPayloadAndHash(t *testing.T) {
 	repo := &captureSnapshotRepository{}
 	store := NewSnapshotStore(repo)

@@ -76,6 +76,7 @@ migration `0060` 起，`obs_evidence_ref` 同时支持 summary-only 历史证据
 
 - `0019_init_observability.up.sql`：`obs_evidence_ref` + `app:observability:read` 种子
 - `0060_obs_evidence_snapshot.up.sql`：CES 定稿快照、hash、查询参数、窗口、采集状态与截断元数据
+- `0061_postgres_history_tool.up.sql`：RDS for PostgreSQL 历史会话只读工具权限；`rds_history_client.go` 封装历史会话、等待事件和 Top SQL 三接口，AI 侧复用 Integration AK/SK 与账号数据范围，快照 `evidence_type=postgres_activity`。
 
 ## 测试
 

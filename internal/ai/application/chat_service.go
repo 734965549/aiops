@@ -130,6 +130,9 @@ type ChatService struct {
 	evidence                MetricEvidencePort
 	evidenceSnapshots       EvidenceSnapshotStore
 	evidencePayloadMaxBytes int
+	postgres                PostgresEvidencePort
+	postgresStore           PostgresEvidenceStore
+	postgresPayloadMaxBytes int
 	audit                   AuditRecorder
 	// alertRules 为可选的告警规则查询能力；nil 表示规则体检工具不可用。
 	alertRules AlertRuleListPort
@@ -166,6 +169,15 @@ func NewChatService(
 		sessions: sessions, alerts: alerts, tools: tools, chat: chat,
 		evidence: evidence, audit: audit, turnBudget: chatDefaultTurnBudget, now: time.Now,
 	}
+}
+
+func (s *ChatService) SetPostgresEvidence(port PostgresEvidencePort, store PostgresEvidenceStore, maxBytes int) {
+	if s == nil {
+		return
+	}
+	s.postgres = port
+	s.postgresStore = store
+	s.postgresPayloadMaxBytes = maxBytes
 }
 
 func (s *ChatService) SetEvidenceSnapshots(store EvidenceSnapshotStore, maxBytes int) {
@@ -521,7 +533,7 @@ func (s *ChatService) replayOrConflict(ctx context.Context, session *domain.Sess
 		return nil, apperr.New(apperr.CodeFailedPrecondition,
 			"the same client_message_id is still being processed; refresh the session before retrying")
 	}
-	answer, parseErr := parseChatAnswer(assistant.Content)
+	answer, parseErr := parseChatAnswerForReplay(assistant.Content)
 	if parseErr != nil {
 		return nil, apperr.New(apperr.CodeInternal, "stored ai chat answer is invalid")
 	}

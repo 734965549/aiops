@@ -159,7 +159,7 @@
 | `upsertProvider` | `POST /api/ai/providers` | 新增或更新；落库并立即生效，类型 `b` 必须填 `model`，省略 `api_key` 保留原密钥 |
 | `deleteProvider` | `DELETE /api/ai/providers/:id` | 删除并同步运行时 |
 | `invokeTool` | `POST /api/ai/tools/invoke` | 工具调用；成功响应内须检查 `allowed` |
-| `analyzeAlert` | `POST /api/ai/analyze-alert` | 告警上下文 AI 分析；返回 summary、risk_level、recommendations、references（证据来源）等 |
+| `analyzeAlert` | `POST /api/ai/analyze-alert` | 告警上下文 AI 分析；返回 summary、risk_level、recommendations、references，以及长事务场景 `diagnosis`（事实、根因状态、假设、缺失证据） |
 | `listChatModels` | `GET /api/ai/chat/models` | 普通用户可见的启用中类型 b 模型（`provider_id/name/model/vision_enabled`，不含敏感字段） |
 | `createChatSession` | `POST /api/ai/chat/sessions` | 创建 AI 助手会话，可带页面上下文与 `provider_id`（会话级模型） |
 | `listChatSessions` | `GET /api/ai/chat/sessions?limit=` | 当前用户最近会话 |
@@ -193,10 +193,11 @@
 契约：`ops/ai-contract.md`（§10 为 AI 助手会话与对话）。要点：
 
 - 成功判断使用 `code === "OK"`；`sendChatMessage` 的 `data.status` 为 `ok` / `degraded` / `insufficient_context`，前端必须分别展示失败、无足够上下文状态。
+- `data.answer.diagnosis` 为可选长事务诊断结构：`facts`（平台事实及 evidence_id/pointer）、`root_cause`（undetermined/suspected/confirmed、code、说明、证据 ID）、`hypotheses` 和 `missing_evidence`；前端不得把 suspected 渲染成人工已确认根因。
 - `data.answer.actions` 由服务端按权限生成；`execution.propose.allowed=false` 时必须禁用按钮并展示 `reason`。
 - 「生成执行计划」调用既有 `createExecutionTask`（`source_type=ai_conversation`，`source_id=session_id`），任务进入 Execution `pending_confirm`；前端不得提供任何直接执行入口。
 - 工具调用结果必须检查 `allowed`；被拒绝是业务结果，需展示 `reason`（`toolReason.ts` 负责原因码的中文映射）。
-- 对话只读工具（§10.12.1）：`alarm.analyze`、自由参数 `metrics.query`、`alert.rules.list`（规则体检）；`status=invalid_argument / skipped / unsupported / permission_denied` 都需展示原因，不能当作网络错误。
+- 对话只读工具：`alarm.analyze`、自由参数 `metrics.query`、`alert.rules.list`、`postgres.activity.query`（RDS for PostgreSQL 历史会话，§10.21）；`status=invalid_argument / skipped / unsupported / permission_denied` 都需展示原因，不能当作网络错误。
 - 引用类型：`alert`、`observability_evidence` 带 `url` 可跳转；`memory_case`（相似案例记忆，`ops/ai-contract.md` §10.14）与 `knowledge_item`（知识沉淀，§10.15）无 `url`，只展示标签与条数提示。
 - 知识沉淀管理接口（§10.15）要求 `app:ai:knowledge:manage`（当前仅 admin），入口在「系统设置 → AI 配置 → 知识沉淀」（`KnowledgeManager.vue`）；未授权时返回 403。
 - 记忆管理接口（§10.19）要求 `app:ai:memory:manage`（当前仅 admin），入口在「系统设置 → AI 配置 → 记忆管理」（`MemoryManager.vue`）；停用/启用只影响后续检索并写 `memory_review` 审计，回答注入仍按归属用户隔离。

@@ -67,6 +67,29 @@ func (s *ChatService) finalizeAnswer(ctx context.Context, userID string, session
 	if answer.Uncertainties == nil {
 		answer.Uncertainties = []string{}
 	}
+	answer.Diagnosis = nil
+	if diagnosis := buildPostgresDiagnosis(data); diagnosis != nil {
+		answer.Diagnosis = diagnosis
+		answer.Summary = postgresDiagnosisSummary(diagnosis)
+		answer.Evidence = postgresDiagnosisEvidenceLines(diagnosis)
+		answer.Recommendations = postgresDiagnosisRecommendations(diagnosis)
+		answer.Uncertainties = []string{diagnosis.RootCause.Statement}
+		if len(diagnosis.MissingEvidence) > 0 {
+			answer.Uncertainties = append(answer.Uncertainties, "缺失证据："+strings.Join(diagnosis.MissingEvidence, "、"))
+		}
+		if diagnosis.RootCause.Code == "lock_wait" {
+			answer.Impact = []string{"锁等待可能阻塞相关事务；实际业务影响需结合阻塞链和应用日志确认。"}
+		} else {
+			answer.Impact = []string{"长事务可能影响 WAL 清理、vacuum 和锁获取；实际业务影响需结合会话与应用日志确认。"}
+		}
+		answer.Rollback = "无变更动作"
+		if diagnosis.RootCause.Status == "undetermined" {
+			answer.InsufficientContext = true
+			if gen.Status == chatStatusOK {
+				gen.Status = chatStatusInsufficientContext
+			}
+		}
+	}
 	// 模型回退说明放在最前，确保用户/审计能看到“所选模型不可用”的事实。
 	if note := strings.TrimSpace(gen.FallbackNote); note != "" {
 		answer.Uncertainties = append([]string{note}, answer.Uncertainties...)
@@ -119,7 +142,7 @@ func filterAnswerEvidence(lines []string, data chatContextData) []string {
 	supported := make(map[string]struct{})
 	failed := make(map[string]struct{})
 	for _, obs := range data.Observations {
-		if obs.ToolCode != chatToolMetricsQuery || obs.EvidenceID == "" {
+		if obs.EvidenceID == "" {
 			continue
 		}
 		if obs.Status == EvidenceStatusOK {
@@ -131,6 +154,18 @@ func filterAnswerEvidence(lines []string, data chatContextData) []string {
 	if data.Evidence != nil && data.Evidence.Status == EvidenceStatusOK {
 		for _, id := range evidenceIDs(data.Evidence) {
 			supported[id] = struct{}{}
+		}
+	}
+	if data.Postgres != nil {
+		for _, id := range []string{data.Postgres.EvidenceID} {
+			if id == "" {
+				continue
+			}
+			if data.Postgres.Status == EvidenceStatusOK {
+				supported[id] = struct{}{}
+			} else {
+				failed[id] = struct{}{}
+			}
 		}
 	}
 	out := make([]string, 0, len(lines))
@@ -172,6 +207,9 @@ func observationEvidenceLines(data chatContextData) []string {
 		for _, id := range evidenceIDs(data.Evidence) {
 			out = append(out, "observability evidence "+id)
 		}
+	}
+	if id := postgresObservationEvidenceID(data.Postgres); id != "" {
+		out = append(out, "observability evidence "+id)
 	}
 	return out
 }

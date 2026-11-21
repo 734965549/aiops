@@ -75,6 +75,63 @@
     </section>
 
     <section
+      v-if="answer.diagnosis"
+      class="answer-section diagnosis-root"
+    >
+      <h4>根因判断</h4>
+      <p>
+        <a-tag :color="answer.diagnosis.root_cause.status === 'suspected' ? 'orange' : 'gray'">
+          {{ rootCauseStatusLabel(answer.diagnosis.root_cause.status) }}
+        </a-tag>
+        {{ answer.diagnosis.root_cause.statement }}
+      </p>
+      <small v-if="answer.diagnosis.root_cause.evidence_ids.length">
+        证据：{{ answer.diagnosis.root_cause.evidence_ids.join('、') }}
+      </small>
+    </section>
+
+    <section
+      v-if="answer.diagnosis?.facts.length"
+      class="answer-section"
+    >
+      <h4>已确认事实</h4>
+      <ul>
+        <li
+          v-for="(fact, index) in answer.diagnosis.facts"
+          :key="`diagnosis-fact-${index}`"
+        >
+          {{ fact.statement }}
+          <small v-if="fact.evidence_id" class="diagnosis-ref">
+            {{ fact.evidence_id }}{{ fact.pointer || '' }}
+          </small>
+        </li>
+      </ul>
+    </section>
+
+    <section
+      v-if="answer.diagnosis?.hypotheses.length"
+      class="answer-section answer-uncertainty"
+    >
+      <h4>待验证假设</h4>
+      <ul>
+        <li
+          v-for="hypothesis in answer.diagnosis.hypotheses"
+          :key="hypothesis.code"
+        >
+          {{ hypothesis.statement }}（缺少：{{ hypothesis.missing_evidence.join('、') || '待补证据' }}）
+        </li>
+      </ul>
+    </section>
+
+    <section
+      v-if="answer.diagnosis?.missing_evidence.length"
+      class="answer-section answer-uncertainty"
+    >
+      <h4>缺失 / 失败证据</h4>
+      <p>{{ answer.diagnosis.missing_evidence.join('、') }}</p>
+    </section>
+
+    <section
       v-if="answer.evidence.length"
       class="answer-section"
     >
@@ -264,6 +321,15 @@ const deniedReason = computed(
   () => props.answer.actions?.find((action) => !action.allowed && action.reason)?.reason ?? ''
 )
 
+function rootCauseStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    undetermined: '原因未定',
+    suspected: '疑似根因（未人工确认）',
+    confirmed: '已确认根因',
+  }
+  return labels[status] || status
+}
+
 const RISK_COLORS: Record<string, string> = {
   low: 'green',
   medium: 'orange',
@@ -315,6 +381,18 @@ function answerMarkdown(answer: ChatAnswer): string {
     `# AI 运维分析\n\n风险等级：${riskLabel(answer.risk_level)}；${answer.require_confirm ? '需要人工确认' : '无需人工确认'}`
   )
   sections.push(`## 结论摘要\n${answer.summary || '（无）'}`)
+  if (answer.diagnosis) {
+    const diagnosis = answer.diagnosis
+    sections.push(`## 根因判断\n${rootCauseStatusLabel(diagnosis.root_cause.status)}：${diagnosis.root_cause.statement}`)
+    const facts = diagnosis.facts.map((fact) => `${fact.statement}${fact.evidence_id ? `（${fact.evidence_id}${fact.pointer || ''}）` : ''}`)
+    if (facts.length) sections.push(`## 已确认事实\n${facts.map((item) => `- ${item}`).join('\n')}`)
+    if (diagnosis.hypotheses.length) {
+      sections.push(`## 待验证假设\n${diagnosis.hypotheses.map((item) => `- ${item.statement}`).join('\n')}`)
+    }
+    if (diagnosis.missing_evidence.length) {
+      sections.push(`## 缺失 / 失败证据\n${diagnosis.missing_evidence.join('、')}`)
+    }
+  }
   const evidence = formatMarkdownList(answer.evidence)
   if (evidence) sections.push(`## 分析依据\n${evidence}`)
   const impact = formatMarkdownList(answer.impact)
@@ -438,6 +516,12 @@ function onNavigate(url?: string) {
 
 .answer-uncertainty h4 {
   color: #97661b;
+}
+
+.diagnosis-ref {
+  display: block;
+  color: var(--color-text-3);
+  font-size: 11px;
 }
 
 .answer-uncertainty ul {

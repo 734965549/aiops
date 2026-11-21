@@ -421,6 +421,8 @@ func (s *ChatService) runLoopToolRequests(ctx context.Context, userID string, se
 			ok = s.refreshAlertObservation(ctx, userID, session, data)
 		case chatToolMetricsQuery:
 			ok = s.refreshMetricObservation(ctx, userID, session, data, req.Params)
+		case chatToolPostgresActivity:
+			ok = s.refreshPostgresObservation(ctx, userID, session, data, req.Params)
 		case chatToolAlertRulesList:
 			ok = s.refreshAlertRulesObservation(ctx, userID, session, data, req.Params)
 		case chatToolAccountsList:

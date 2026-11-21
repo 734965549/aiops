@@ -17,6 +17,7 @@ type chatContextData struct {
 	Alert        *AlertContext
 	Resource     *AssetContext
 	Evidence     *MetricEvidenceResult
+	Postgres     *PostgresEvidenceResult
 	Observations []ChatObservation
 	ToolCalls    []domain.ToolCall
 	References   []domain.Reference
@@ -81,6 +82,12 @@ func (s *ChatService) gatherContext(ctx context.Context, userID string, session 
 	if data.Evidence != nil {
 		appendMetricEvidenceReferences(&data, data.Evidence)
 	}
+	postgresObs, activity := s.collectPostgresObservation(ctx, userID, alert)
+	if postgresObs != nil {
+		s.appendToolResult(ctx, userID, session.SessionID, userMessageID, &data, *postgresObs)
+	}
+	data.Postgres = activity
+	appendPostgresEvidenceReference(&data, activity)
 	return data
 }
 

@@ -21,6 +21,7 @@ func NewSnapshotStore(repo obsdomain.EvidenceSnapshotRepository) *SnapshotStore 
 }
 
 var _ aiapp.EvidenceSnapshotStore = (*SnapshotStore)(nil)
+var _ aiapp.PostgresEvidenceStore = (*SnapshotStore)(nil)
 
 func (s *SnapshotStore) Save(ctx context.Context, query aiapp.MetricEvidenceQuery, evidence *aiapp.MetricEvidenceResult) error {
 	if s == nil || s.repo == nil {
@@ -59,6 +60,50 @@ func (s *SnapshotStore) Save(ctx context.Context, query aiapp.MetricEvidenceQuer
 		},
 		Payload: payload, PayloadHash: obsapp.HashPayload(payload),
 		SchemaVersion: evidence.SchemaVersion, Truncated: evidence.Truncated, OriginalCount: &originalCount,
+	}
+	return s.repo.SaveSnapshot(ctx, ref)
+}
+
+func (s *SnapshotStore) SavePostgres(ctx context.Context, query aiapp.PostgresEvidenceQuery, evidence *aiapp.PostgresEvidenceResult) error {
+	if s == nil || s.repo == nil {
+		return errors.New("evidence snapshot repository is not configured")
+	}
+	if evidence == nil {
+		return errors.New("postgres evidence snapshot is nil")
+	}
+	payloadEvidence := *evidence
+	if payloadEvidence.TraceID == "" {
+		payloadEvidence.TraceID = httpx.TraceIDFromCtx(ctx)
+	}
+	payload, err := obsapp.CanonicalJSON(&payloadEvidence)
+	if err != nil {
+		return err
+	}
+	params := map[string]any{
+		"account_id": query.AccountID, "region": query.Region, "project_id": query.ProjectID,
+		"instance_id": query.InstanceID, "from": query.From, "to": query.To, "limit": query.Limit,
+	}
+	queryHash, err := obsapp.HashQuery(params)
+	if err != nil {
+		return err
+	}
+	collectedAt := time.Unix(evidence.CollectedAt, 0).UTC()
+	originalCount := evidence.OriginalCount
+	ref := &obsdomain.EvidenceRef{
+		EvidenceID: evidence.EvidenceID, TraceID: payloadEvidence.TraceID, AccountID: query.AccountID,
+		EvidenceType: "postgres_activity", Provider: evidence.Provider, Collector: aiapp.PostgresEvidenceSchemaV1,
+		QueryType: "postgres_activity", QueryHash: queryHash, QueryParams: params,
+		ResourceID: evidence.ResourceID, CloudResourceID: evidence.InstanceID,
+		WindowStart: evidenceTime(evidence.WindowStart), WindowEnd: evidenceTime(evidence.WindowEnd),
+		CollectedAt: &collectedAt, Status: evidence.Status, Reason: truncateEvidenceReason(evidence.Reason),
+		Summary: map[string]any{
+			"session_count": len(evidence.Sessions), "wait_event_count": len(evidence.WaitEvents),
+			"top_sql_count": len(evidence.TopSQL), "original_count": evidence.OriginalCount,
+			"retained_count": evidence.RetainedCount, "truncated": evidence.Truncated,
+			"missing_evidence": evidence.MissingEvidence, "collection_errors": evidence.CollectionErrors,
+		},
+		Payload: payload, PayloadHash: obsapp.HashPayload(payload), SchemaVersion: evidence.SchemaVersion,
+		Truncated: evidence.Truncated, OriginalCount: &originalCount,
 	}
 	return s.repo.SaveSnapshot(ctx, ref)
 }
