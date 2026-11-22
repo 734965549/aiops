@@ -107,11 +107,15 @@ func TestPostgresCollectorPaginatesAndRedactsHistory(t *testing.T) {
 		t.Fatalf("unexpected pagination: %+v", history.sessionOffsets)
 	}
 	blob := fmt.Sprintf("%+v", out)
-	if strings.Contains(blob, "app-user") || strings.Contains(blob, "customer") || strings.Contains(blob, "13800000000") || strings.Contains(blob, "10.1.2.3") {
+	if strings.Contains(blob, "app-user") || strings.Contains(blob, "13800000000") || strings.Contains(blob, "10.1.2.3") || strings.Contains(blob, rawSQL) {
 		t.Fatalf("sensitive history fields leaked: %s", blob)
 	}
 	if out.Sessions[0].ClientAddress != "10.1.2.0/24" || out.Sessions[0].SQLHash == "" || out.Sessions[0].UserHash == "" {
 		t.Fatalf("unexpected redaction: %+v", out.Sessions[0])
+	}
+	if out.Sessions[0].SQLOperation != "SELECT" || out.Sessions[0].SQLSummary != "select * from customer where phone=?" ||
+		out.TopSQL[0].SQLOperation != "SELECT" || out.TopSQL[0].SQLSummary != "select * from customer where phone=?" {
+		t.Fatalf("unexpected SQL summary: session=%+v top=%+v", out.Sessions[0], out.TopSQL[0])
 	}
 }
 
@@ -177,6 +181,52 @@ func TestFetchHistoryPagesStopsOnContextCancel(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled, got %v", err)
+	}
+}
+
+func TestSummarizePostgresSQLMasksSensitiveContent(t *testing.T) {
+	cases := []struct {
+		name      string
+		raw       string
+		operation string
+		summary   string
+	}{
+		{
+			name:      "cte strings dollar quotes and numbers",
+			raw:       `/* leading */ WITH x AS (SELECT 'hidden' AS v) UPDATE public.orders SET note = E'alice\'secret', payload = $$private$$, amount = 1.2e3 WHERE id = 7`,
+			operation: "UPDATE",
+			summary:   "WITH x AS (SELECT ? AS v) UPDATE public.orders SET note = ?, payload = ?, amount = ? WHERE id = ?",
+		},
+		{
+			name:      "nested comments",
+			raw:       `DELETE FROM sessions WHERE token = 'secret' /* outer /* nested */ still comment */ AND id IN (1, 2)`,
+			operation: "DELETE",
+			summary:   "DELETE FROM sessions WHERE token = ? AND id IN (?, ?)",
+		},
+		{
+			name:      "line comment and identifier digits",
+			raw:       "-- private\nSELECT col1 FROM table2 WHERE id=42 AND note=$tag$hidden$tag$",
+			operation: "SELECT",
+			summary:   "SELECT col1 FROM table2 WHERE id=? AND note=?",
+		},
+		{name: "unterminated string", raw: `SELECT 'do-not-leak`, operation: "SELECT", summary: "SELECT ?"},
+		{name: "unterminated quoted identifier", raw: `SELECT "do-not-leak`, operation: "SELECT", summary: `SELECT "?"`},
+		{name: "empty", raw: " /* only a comment */ ", operation: "", summary: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			operation, summary := summarizePostgresSQL(tc.raw)
+			if operation != tc.operation || summary != tc.summary {
+				t.Fatalf("summarizePostgresSQL() = (%q, %q), want (%q, %q)", operation, summary, tc.operation, tc.summary)
+			}
+		})
+	}
+}
+
+func TestSummarizePostgresSQLTruncatesToThreeHundredRunes(t *testing.T) {
+	operation, summary := summarizePostgresSQL("SELECT " + strings.Repeat("表", 400))
+	if operation != "SELECT" || len([]rune(summary)) != 300 {
+		t.Fatalf("unexpected bounded summary: operation=%q runes=%d", operation, len([]rune(summary)))
 	}
 }
 

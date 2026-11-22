@@ -40,8 +40,10 @@ func TestSendMessageBuildsEvidenceBackedPostgresDiagnosis(t *testing.T) {
 		Status: EvidenceStatusOK,
 		Sessions: []PostgresSession{{
 			SessionID: 42, SessionStatus: "idle in transaction", TransactionExecutionTime: 900,
-			QueryID: "query-42", AppName: "payment-worker",
+			QueryID: "query-42", AppName: "payment-worker", WaitEventType: "Client", WaitEventName: "ClientRead",
+			SQLOperation: "UPDATE", SQLSummary: "UPDATE orders SET status = ? WHERE id = ?",
 		}},
+		TopSQL: []PostgresTopSQL{{QueryID: "query-42", SQLOperation: "UPDATE", SQLSummary: "UPDATE orders SET status = ? WHERE id = ?"}},
 	}}
 	store := &fakePostgresEvidenceStore{}
 	svc.SetPostgresEvidence(port, store, 0)
@@ -59,23 +61,27 @@ func TestSendMessageBuildsEvidenceBackedPostgresDiagnosis(t *testing.T) {
 	if store.saved == nil || result.Answer.Diagnosis == nil {
 		t.Fatalf("missing persisted evidence or diagnosis: %+v", result.Answer)
 	}
-	if result.Answer.Diagnosis.RootCause.Code != "idle_in_transaction" || result.Answer.Diagnosis.RootCause.Status != "suspected" {
+	if result.Answer.Diagnosis.RootCause.Code != "idle_in_transaction" || result.Answer.Diagnosis.RootCause.Status != "confirmed" {
 		t.Fatalf("unexpected root cause: %+v", result.Answer.Diagnosis.RootCause)
 	}
 	if result.Answer.InsufficientContext {
-		t.Fatal("evidence-backed suspected diagnosis must not be marked insufficient")
+		t.Fatal("evidence-backed confirmed category must not be marked insufficient")
 	}
 	if !strings.Contains(result.Answer.Summary, "空闲长事务") || strings.Contains(result.Answer.Summary, "备份") {
 		t.Fatalf("summary is not evidence bounded: %q", result.Answer.Summary)
 	}
 	foundFact := false
+	foundTopSQL := false
 	for _, fact := range result.Answer.Diagnosis.Facts {
 		if strings.Contains(fact.Statement, "query-42") && fact.EvidenceID != "" {
 			foundFact = true
 		}
+		if strings.Contains(fact.Statement, "关联 Top SQL") && strings.Contains(fact.Statement, "UPDATE orders") {
+			foundTopSQL = true
+		}
 	}
-	if !foundFact {
-		t.Fatalf("session fact with evidence id missing: %+v", result.Answer.Diagnosis.Facts)
+	if !foundFact || !foundTopSQL {
+		t.Fatalf("session or Top SQL fact with evidence id missing: %+v", result.Answer.Diagnosis.Facts)
 	}
 	if !hasToolCall(result.ToolCalls, chatToolPostgresActivity, EvidenceStatusOK) {
 		t.Fatalf("postgres tool observation missing: %+v", result.ToolCalls)

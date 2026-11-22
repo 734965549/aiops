@@ -40,7 +40,7 @@
 1. Observability 第一阶段只保存证据摘要，不保存原始查询结果，见 [repository.go](../internal/observability/domain/repository.go)。仅凭证据 ID 不一定能复查模型当时看到的数据点和记录。
 2. 当前回答以 `evidence[]` 和整篇 `references[]` 为主，尚未把每个事实、推断与具体证据逐项绑定。
 3. 当前解析主要校验回答结构，不能阻止模型引用不存在的证据，也不能把无证据内容自动降级为假设。
-4. 当前对话工具没有 PostgreSQL 会话、事务和锁现场采集能力，见 [builtin.go](../internal/ai/toolgateway/builtin.go)。
+4. PostgreSQL 现场已支持 RDS 历史会话采样，但尚不包含应用日志中的提交/回滚路径，不能仅凭会话确认应用代码级最终原因。
 5. 真实日志、链路和变更工具仍未形成统一证据链；现有 fake Provider 不能作为生产诊断事实来源。
 6. 现有 Prompt 已要求“不臆造”，但 Prompt 只是软约束，不能替代确定性的数据和服务端校验，见 [analysis_prompt.go](../internal/ai/application/analysis_prompt.go)。
 
@@ -230,7 +230,7 @@ payload 必须限额。超限时先按固定规则裁剪并记录 `truncated=tru
 }
 ```
 
-`root_cause.status` 至少区分 `undetermined / suspected / confirmed`。AI 不能自行把原因置为 `confirmed`；只有满足平台明确诊断规则或经人工确认后才能确认，且仍需保留证据和确认人。
+`root_cause.status` 至少区分 `undetermined / suspected / confirmed`。AI 不能自行把原因置为 `confirmed`；只有满足平台明确诊断规则或经人工确认后才能确认。平台规则确认必须保留直接证据，人工确认还必须保留确认人；空闲长事务规则的 confirmed 只确认分类，不代表应用代码级最终根因。
 
 ### 5.4 服务端回答校验
 
@@ -400,8 +400,8 @@ SQL 文本可能包含业务参数。优先使用 `pg_stat_statements.queryid` �
 
 1. **P0-1：证据快照模型与持久化（已完成，migration 0060）**：覆盖现有 CES 指标证据；模型输入前统一降采样/裁剪并保存 payload/hash，写失败 fail-closed；E2E 为 `scripts/e2e-ai-evidence.ps1`。本切片不包含关系表、证据查询 API、前端抽屉或保留期清理。
 2. **P0-2：证据查询接口与证据抽屉（待实施）**，打通权限和原始数据复查。
-3. **P0-3：Fact Builder、回答结构、引用校验和回放元数据（长事务专用子集已落地）**：已实现平台确定性事实、`undetermined/suspected` 根因、假设和缺失项；通用 Fact Builder、证据详情、完整回放和人工 confirmed 仍待实施。
-4. **P1-1：PostgreSQL 只读适配器与手动补采（已完成，migration 0061）**：复用 RDS 历史会话三接口，支持分页、超时、部分失败、用户/客户端/SQL 脱敏和证据落库；真实账号验收脚本为 `scripts/e2e-postgres-history.ps1`。
+3. **P0-3：Fact Builder、回答结构、引用校验和回放元数据（长事务专用子集已落地）**：已实现平台确定性事实、`undetermined/suspected/confirmed` 分类、假设和缺失项；空闲长事务 confirmed 仅确认分类，应用原因仍未定；通用 Fact Builder、证据详情、完整回放和人工 confirmed 仍待实施。
+4. **P1-1：PostgreSQL 只读适配器与手动补采（已完成，migration 0061）**：复用 RDS 历史会话三接口，支持分页、超时、部分失败、用户/客户端/SQL 脱敏和证据落库；会话及匹配 Top SQL 可输出操作类型和最长 300 字的脱敏摘要，原始 SQL 仍不落库；真实账号验收脚本为 `scripts/e2e-postgres-history.ps1`。
 5. **P1-2：告警触发快照、覆盖度 profile（部分完成）**：长事务诊断输出已完成；告警触发后的平台主动采集和完整覆盖度 profile 待实施。
 6. **P2+：按诊断价值逐项增加变更、日志、链路和性能基线。**
 
@@ -422,9 +422,9 @@ SQL 文本可能包含业务参数。优先使用 `pg_stat_statements.queryid` �
 
 - 证据保留期和存储预算（待确认）；单条 payload 上限已由 P0-1 确定为可配置 `ai.evidence_payload_max_bytes`，默认 32768 字节。
 - 证据详情接口与前端展示所需的权限码。
-- SQL 文本脱敏策略已确定为默认不保存原文，只保留 Query ID 或规范化空白后的 SQL hash；用户只保留 hash，客户端只保留网段或地址摘要。
+- SQL 文本脱敏策略已确定为默认不保存原文，只保留 Query ID、规范化空白后的 SQL hash、操作类型及最长 300 字的脱敏摘要；摘要中的字符串/数字字面量、注释和 dollar-quoted 内容必须移除；用户只保留 hash，客户端只保留网段或地址摘要。
 - PostgreSQL 采集已优先复用 RDS 历史会话 API，需要 `rds:instance:getHistorySession/getWaitEvent/getTopSql`；数据库直连的网络位置和只读账号仅作为后续补充方案。
 - 告警自动采集的频率、并发、超时和重试上限。
-- 哪些诊断规则允许平台标记 `confirmed`，哪些必须人工确认。
+- 除空闲长事务分类外，哪些诊断规则允许平台标记 `confirmed`，哪些必须人工确认。
 
 这些配置用于收紧安全与容量边界，不允许通过配置重新打开自由 SQL、绕过数据权限或 AI 直接执行能力。

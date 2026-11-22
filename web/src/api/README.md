@@ -193,7 +193,7 @@
 契约：`ops/ai-contract.md`（§10 为 AI 助手会话与对话）。要点：
 
 - 成功判断使用 `code === "OK"`；`sendChatMessage` 的 `data.status` 为 `ok` / `degraded` / `insufficient_context`，前端必须分别展示失败、无足够上下文状态。
-- `data.answer.diagnosis` 为可选长事务诊断结构：`facts`（平台事实及 evidence_id/pointer）、`root_cause`（undetermined/suspected/confirmed、code、说明、证据 ID）、`hypotheses` 和 `missing_evidence`；前端不得把 suspected 渲染成人工已确认根因。
+- `data.answer.diagnosis` 为可选长事务诊断结构：`facts`（平台事实及 evidence_id/pointer，可含匹配 Query ID 的 Top SQL 脱敏摘要）、`root_cause`（undetermined/suspected/confirmed、code、说明、证据 ID）、`hypotheses` 和 `missing_evidence`；前端不得把 suspected 渲染成人工已确认根因。空闲长事务的 confirmed 只表示分类有直接会话证据，页面显示“分类已确认”，应用代码级原因仍为未定。
 - `data.answer.actions` 由服务端按权限生成；`execution.propose.allowed=false` 时必须禁用按钮并展示 `reason`。
 - 「生成执行计划」调用既有 `createExecutionTask`（`source_type=ai_conversation`，`source_id=session_id`），任务进入 Execution `pending_confirm`；前端不得提供任何直接执行入口。
 - 工具调用结果必须检查 `allowed`；被拒绝是业务结果，需展示 `reason`（`toolReason.ts` 负责原因码的中文映射）。

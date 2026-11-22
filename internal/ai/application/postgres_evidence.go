@@ -34,6 +34,8 @@ type PostgresSession struct {
 	SessionStatus            string `json:"session_status,omitempty"`
 	QueryID                  string `json:"query_id,omitempty"`
 	SQLHash                  string `json:"sql_hash,omitempty"`
+	SQLOperation             string `json:"sql_operation,omitempty"`
+	SQLSummary               string `json:"sql_summary,omitempty"`
 	ProcessType              string `json:"process_type,omitempty"`
 }
 
@@ -52,6 +54,8 @@ type PostgresTopSQL struct {
 	UserHash     string `json:"user_hash,omitempty"`
 	QueryID      string `json:"query_id,omitempty"`
 	SQLHash      string `json:"sql_hash,omitempty"`
+	SQLOperation string `json:"sql_operation,omitempty"`
+	SQLSummary   string `json:"sql_summary,omitempty"`
 }
 
 type PostgresEvidenceResult struct {

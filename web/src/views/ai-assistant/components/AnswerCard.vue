@@ -78,9 +78,9 @@
       v-if="answer.diagnosis"
       class="answer-section diagnosis-root"
     >
-      <h4>根因判断</h4>
+      <h4>诊断结论</h4>
       <p>
-        <a-tag :color="answer.diagnosis.root_cause.status === 'suspected' ? 'orange' : 'gray'">
+        <a-tag :color="rootCauseStatusColor(answer.diagnosis.root_cause.status)">
           {{ rootCauseStatusLabel(answer.diagnosis.root_cause.status) }}
         </a-tag>
         {{ answer.diagnosis.root_cause.statement }}
@@ -325,9 +325,15 @@ function rootCauseStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     undetermined: '原因未定',
     suspected: '疑似根因（未人工确认）',
-    confirmed: '已确认根因',
+    confirmed: '分类已确认',
   }
   return labels[status] || status
+}
+
+function rootCauseStatusColor(status: string): string {
+  if (status === 'confirmed') return 'green'
+  if (status === 'suspected') return 'orange'
+  return 'gray'
 }
 
 const RISK_COLORS: Record<string, string> = {
@@ -383,7 +389,7 @@ function answerMarkdown(answer: ChatAnswer): string {
   sections.push(`## 结论摘要\n${answer.summary || '（无）'}`)
   if (answer.diagnosis) {
     const diagnosis = answer.diagnosis
-    sections.push(`## 根因判断\n${rootCauseStatusLabel(diagnosis.root_cause.status)}：${diagnosis.root_cause.statement}`)
+    sections.push(`## 诊断结论\n${rootCauseStatusLabel(diagnosis.root_cause.status)}：${diagnosis.root_cause.statement}`)
     const facts = diagnosis.facts.map((fact) => `${fact.statement}${fact.evidence_id ? `（${fact.evidence_id}${fact.pointer || ''}）` : ''}`)
     if (facts.length) sections.push(`## 已确认事实\n${facts.map((item) => `- ${item}`).join('\n')}`)
     if (diagnosis.hypotheses.length) {

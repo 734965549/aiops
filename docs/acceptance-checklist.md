@@ -637,11 +637,11 @@ go run ./cmd/migrate
 | --- | --- | --- | --- |
 | 9.17.1 | 工具权限与真实只读采集 | 执行 `.\scripts\e2e-postgres-history.ps1 -AlertId <长事务告警ID>` | `postgres.activity.query.status=ok`；现有云账号返回历史会话；输出证据 ID 和 `diagnosis`，无 kill/自由 SQL/数据库直连 |
 | 9.17.2 | IAM 与功能缺口 | 分别缺少 `rds:instance:getHistorySession/getWaitEvent/getTopSql` 或实例不支持历史会话时运行 | 主接口失败明确为 error/permission_denied；辅助接口失败进入 `missing_evidence/collection_errors`，不得伪装成无等待或无 SQL |
-| 9.17.3 | 空闲事务分类 | 历史会话含 `idle in transaction` 且事务时长 >0 | `root_cause.code=idle_in_transaction`、`status=suspected`，事实含会话和 Query ID；不得直接断言应用未提交原因 |
+| 9.17.3 | 空闲事务分类 | 历史会话含 `idle in transaction` 且事务时长 >0 | `root_cause.code=idle_in_transaction`、`status=confirmed`，页面显示“分类已确认”而非“已确认根因”；应用原因仍未定并缺少 `application_logs`；事实含会话、Query ID 和匹配 Top SQL 的脱敏摘要；`Client/ClientRead` 不得解释为锁等待 |
 | 9.17.4 | 活跃长 SQL 分类 | 历史会话含 `active` 且事务时长 >0 | `root_cause.code=active_long_query`、`status=suspected`；说明仍需执行计划和等待事件，不臆造慢因 |
 | 9.17.5 | 锁等待分类 | 会话含 `wait_event_type=Lock` 或有效阻塞进程 | `root_cause.code=lock_wait`、`status=suspected`；只陈述锁等待和直接阻塞者，不自动 confirmed |
 | 9.17.6 | 无现场/失败降级 | 采集失败或窗口内无可分类会话 | `root_cause.status=undetermined`，页面显示缺失证据和三类待验证假设；不得输出“未提交/持续阻塞”等确定根因 |
-| 9.17.7 | 脱敏与截断 | 检查真实或 mock 会话、Top SQL、证据 payload 和 Prompt | 无原始 SQL、用户名或完整客户端标识；只含 user_hash、客户端网段/摘要、query_id/sql_hash；上游 total_count、original/retained 和 truncated 可见 |
+| 9.17.7 | 脱敏与截断 | 检查真实或 mock 会话、Top SQL、证据 payload 和 Prompt | 无原始 SQL、字符串/数字字面量、注释、用户名或完整客户端标识；只含 user_hash、客户端网段/摘要、query_id/sql_hash、sql_operation 和最长 300 字的脱敏 sql_summary；上游 total_count、original/retained 和 truncated 可见 |
 | 9.17.8 | 双入口一致性 | 分别调用 Chat 与 `POST /api/ai/analyze-alert` | Chat observations 含 `postgres.activity.query`，分析 payload 含 `postgres_activity`；两端 `diagnosis` 语义一致 |
 
 > 前置：已执行迁移 `0061`，账号具有 `rds:instance:getHistorySession/getWaitEvent/getTopSql`；历史窗口最长 7 天。当前仅支持查询时读取华为历史采样，尚未实现平台在告警触发后的主动快照。单测覆盖分页、脱敏、部分失败、四类判定和 fail-closed；真实账号权限与实例功能由 9.17.1 验证。

@@ -46,7 +46,7 @@ const chatSystemPrompt = `你是企业运维平台的 AI 运维助手。你只�
 - resource.analyze：无参数，读取当前页面选中的资源上下文；账号、区域、命名空间与主维度由服务端从资产推导。
 - resources.list：params 支持 account_id（必填，可回退资源上下文）/ resource_type（如 rds、ecs）/ region / keyword / limit（默认 20，最大 50）；返回云同步资源及 cloud_resource_id 等实例标识。metrics.query 的 dimensions 键名与值必须取该观测的 dimension_name / dimension_value（或告警标签），不得用 instance_id 等 ECS 键名、也不得用实例名称代替云资源 ID；查询 0 点时先核对 dimensions 再考虑换窗口。
 - metrics.query：params 支持 account_id / region / project_id / namespace / metric / dimensions / from / to / period / aggregator；缺省字段依次回退告警推导与资源上下文推导；时间窗口最多 7 天，period=86400 的日聚合最多 30 天，最多 1440 点。指标代码优先取 alert.rules.list 观测中规则的 metric 字段；SYS.RDS 真实代码形如 rds001_cpu_util / rds002_mem_util / rds039_disk_util / rds083_conn_usage / rds046_replication_lag，cpu_util / mem_util 等通用名在 CES RDS 不存在（服务端会归一化常见别名）。观测 data.metrics 携带该次查询的序列（first/peak/last/breach_points/points，超限时 points 被丢弃仅保留统计），data.from/to/period 标明窗口；数值足以支撑结论时直接作答，不得换参数重查同一窗口。
-- postgres.activity.query：params 支持 from / to / limit，缺省取告警证据窗口，最长 7 天；读取 RDS for PostgreSQL 历史会话、等待事件和 Top SQL。会话状态、事务时长、等待事件、阻塞进程和 Query ID 只能以 observations 中的脱敏快照为依据；缺少现场时必须输出原因未定和缺失证据，禁止把未提交、慢 SQL 或锁等待写成已确认根因。
+- postgres.activity.query：params 支持 from / to / limit，缺省取告警证据窗口，最长 7 天；读取 RDS for PostgreSQL 历史会话、等待事件和 Top SQL。会话状态、事务时长、等待事件、阻塞进程、Query ID、SQL 操作类型和脱敏摘要只能以 observations 中的快照为依据；Client/ClientRead 不是锁等待；缺少现场时必须输出原因未定和缺失证据，禁止把未提交、慢 SQL 或锁等待写成已确认根因。
 - alert.rules.list：params 支持 account_id / region / namespace（必填，可回退告警标签或资源上下文）/ keyword / limit（最多 50）。
 - alarm.analyze：无参数，重新读取当前告警快照。
 若用户要求体检告警规则（例如判断阈值是否合理），优先申请 alert.rules.list 获取规则阈值，再按需要申请 metrics.query 获取趋势与破限点进行对照。

@@ -69,14 +69,15 @@ func TestFinalizePostgresEvidenceTruncatesWithoutLosingCounts(t *testing.T) {
 
 func TestBuildPostgresDiagnosisClassifiesEvidence(t *testing.T) {
 	cases := []struct {
-		name     string
-		sessions []PostgresSession
-		wantCode string
+		name       string
+		sessions   []PostgresSession
+		wantCode   string
+		wantStatus string
 	}{
-		{name: "lock", sessions: []PostgresSession{{SessionID: 1, WaitEventType: "Lock"}}, wantCode: "lock_wait"},
-		{name: "idle", sessions: []PostgresSession{{SessionID: 1, SessionStatus: "idle in transaction", TransactionExecutionTime: 60}}, wantCode: "idle_in_transaction"},
-		{name: "active", sessions: []PostgresSession{{SessionID: 1, SessionStatus: "active", TransactionExecutionTime: 60}}, wantCode: "active_long_query"},
-		{name: "empty", sessions: nil, wantCode: "undetermined"},
+		{name: "lock", sessions: []PostgresSession{{SessionID: 1, WaitEventType: "Lock"}}, wantCode: "lock_wait", wantStatus: "suspected"},
+		{name: "idle", sessions: []PostgresSession{{SessionID: 1, SessionStatus: "idle in transaction", TransactionExecutionTime: 60}}, wantCode: "idle_in_transaction", wantStatus: "confirmed"},
+		{name: "active", sessions: []PostgresSession{{SessionID: 1, SessionStatus: "active", TransactionExecutionTime: 60}}, wantCode: "active_long_query", wantStatus: "suspected"},
+		{name: "empty", sessions: nil, wantCode: "undetermined", wantStatus: "undetermined"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,10 +88,41 @@ func TestBuildPostgresDiagnosisClassifiesEvidence(t *testing.T) {
 			if diagnosis.RootCause.Code != tc.wantCode {
 				t.Fatalf("root cause = %q, want %q", diagnosis.RootCause.Code, tc.wantCode)
 			}
-			if tc.wantCode != "undetermined" && diagnosis.RootCause.Status != "suspected" {
-				t.Fatalf("automatic diagnosis must not be confirmed: %+v", diagnosis.RootCause)
+			if diagnosis.RootCause.Status != tc.wantStatus {
+				t.Fatalf("root status = %q, want %q", diagnosis.RootCause.Status, tc.wantStatus)
 			}
 		})
+	}
+}
+
+func TestPostgresIdleDiagnosisConfirmsCategoryNotApplicationReason(t *testing.T) {
+	diagnosis := buildPostgresDiagnosis(&chatContextData{Alert: longTransactionTestAlert(), Postgres: &PostgresEvidenceResult{
+		Status: EvidenceStatusOK, EvidenceID: "ev-pg-idle",
+		Sessions: []PostgresSession{{
+			SessionID: 42, SessionStatus: "idle in transaction", TransactionExecutionTime: 900,
+			QueryID: "query-42", AppName: "payment-worker", WaitEventType: "Client", WaitEventName: "ClientRead",
+			SQLOperation: "UPDATE", SQLSummary: "UPDATE orders SET status = ? WHERE id = ?",
+		}},
+		TopSQL: []PostgresTopSQL{
+			{QueryID: "query-42", SQLOperation: "UPDATE", SQLSummary: "UPDATE orders SET status = ? WHERE id = ?"},
+			{QueryID: "unrelated-query", SQLOperation: "SELECT", SQLSummary: "SELECT private_value"},
+		},
+	}})
+	if diagnosis.RootCause.Status != "confirmed" || !strings.Contains(diagnosis.RootCause.Statement, "仍未定") {
+		t.Fatalf("confirmed category must retain an undetermined application reason: %+v", diagnosis.RootCause)
+	}
+	if len(diagnosis.MissingEvidence) != 1 || diagnosis.MissingEvidence[0] != "application_logs" {
+		t.Fatalf("application log requirement missing: %+v", diagnosis.MissingEvidence)
+	}
+	facts := postgresDiagnosisEvidenceLines(diagnosis)
+	joined := strings.Join(facts, "\n")
+	for _, expected := range []string{"不是锁等待", "UPDATE orders", "关联 Top SQL", "query-42"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("diagnosis facts missing %q: %s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "private_value") || strings.Contains(joined, "unrelated-query") {
+		t.Fatalf("unrelated Top SQL entered diagnosis: %s", joined)
 	}
 }
 
@@ -165,7 +197,7 @@ func TestBuildPostgresDiagnosisRequiresLongTransactionContext(t *testing.T) {
 func TestPostgresDiagnosisJSONUsesEmptyArrays(t *testing.T) {
 	diagnosis := buildPostgresDiagnosis(&chatContextData{Alert: longTransactionTestAlert(), Postgres: &PostgresEvidenceResult{
 		Status: EvidenceStatusOK, EvidenceID: "ev-pg-1",
-		Sessions: []PostgresSession{{SessionID: 1, SessionStatus: "idle in transaction", TransactionExecutionTime: 60}},
+		Sessions: []PostgresSession{{SessionID: 1, SessionStatus: "active", TransactionExecutionTime: 60}},
 	}})
 	raw, err := json.Marshal(diagnosis)
 	if err != nil {

@@ -59,6 +59,7 @@ func buildPostgresDiagnosis(data *chatContextData) *ChatDiagnosis {
 				Statement: postgresSessionFact(session), EvidenceID: activity.EvidenceID, Pointer: fmt.Sprintf("/sessions/%d", i),
 			})
 		}
+		diagnosis.Facts = append(diagnosis.Facts, postgresTopSQLFacts(activity)...)
 	}
 	classifyPostgresRootCause(diagnosis, activity)
 	if diagnosis.RootCause.Status == "undetermined" {
@@ -123,12 +124,54 @@ func postgresSessionFact(session PostgresSession) string {
 		parts = append(parts, "Query ID "+session.QueryID)
 	}
 	if session.WaitEventType != "" || session.WaitEventName != "" {
-		parts = append(parts, "等待 "+fallbackDiagnosisText(session.WaitEventType, "未知")+"/"+fallbackDiagnosisText(session.WaitEventName, "未知"))
+		wait := "等待 " + fallbackDiagnosisText(session.WaitEventType, "未知") + "/" + fallbackDiagnosisText(session.WaitEventName, "未知")
+		if strings.EqualFold(session.WaitEventType, "Client") && strings.EqualFold(session.WaitEventName, "ClientRead") {
+			wait += "（数据库等待客户端下一命令，不是锁等待）"
+		}
+		parts = append(parts, wait)
+	}
+	if session.SQLOperation != "" {
+		parts = append(parts, "SQL 操作 "+session.SQLOperation)
+	}
+	if session.SQLSummary != "" {
+		parts = append(parts, "脱敏 SQL 摘要 "+session.SQLSummary)
 	}
 	if blocked := strings.TrimSpace(session.BlockedProcessID); postgresHasBlockedProcess(blocked) {
 		parts = append(parts, "阻塞进程 "+blocked)
 	}
 	return strings.Join(parts, "；")
+}
+
+func postgresTopSQLFacts(evidence *PostgresEvidenceResult) []ChatDiagnosisFact {
+	queryIDs := map[string]struct{}{}
+	for _, session := range evidence.Sessions {
+		if queryID := strings.TrimSpace(session.QueryID); queryID != "" {
+			queryIDs[queryID] = struct{}{}
+		}
+	}
+	facts := []ChatDiagnosisFact{}
+	for i, item := range evidence.TopSQL {
+		if _, ok := queryIDs[strings.TrimSpace(item.QueryID)]; !ok || item.SQLSummary == "" && item.SQLOperation == "" {
+			continue
+		}
+		parts := []string{"关联 Top SQL", "Query ID " + item.QueryID}
+		if item.SQLOperation != "" {
+			parts = append(parts, "SQL 操作 "+item.SQLOperation)
+		}
+		if item.SQLSummary != "" {
+			parts = append(parts, "脱敏 SQL 摘要 "+item.SQLSummary)
+		}
+		if item.SampleTime != "" {
+			parts = append(parts, "采样时间 "+item.SampleTime)
+		}
+		facts = append(facts, ChatDiagnosisFact{
+			Statement: strings.Join(parts, "；"), EvidenceID: evidence.EvidenceID, Pointer: fmt.Sprintf("/top_sql/%d", i),
+		})
+		if len(facts) == 3 {
+			break
+		}
+	}
+	return facts
 }
 
 func fallbackDiagnosisText(value, fallback string) string {
@@ -158,9 +201,10 @@ func classifyPostgresRootCause(diagnosis *ChatDiagnosis, evidence *PostgresEvide
 	}
 	for _, session := range evidence.Sessions {
 		if strings.EqualFold(session.SessionStatus, "idle in transaction") && session.TransactionExecutionTime > 0 {
-			diagnosis.RootCause.Status = "suspected"
+			diagnosis.RootCause.Status = "confirmed"
 			diagnosis.RootCause.Code = "idle_in_transaction"
-			diagnosis.RootCause.Statement = "历史会话存在空闲长事务；是否由应用未提交导致需结合应用证据确认"
+			diagnosis.RootCause.Statement = "已确认历史会话存在空闲长事务；应用为何未结束事务仍未定，需结合脱敏 SQL 摘要与应用日志确认"
+			diagnosis.MissingEvidence = appendMissingEvidence(diagnosis.MissingEvidence, "application_logs")
 			return
 		}
 	}
@@ -217,7 +261,7 @@ func postgresDiagnosisSummary(diagnosis *ChatDiagnosis) string {
 	}
 	switch diagnosis.RootCause.Code {
 	case "idle_in_transaction":
-		return "历史会话显示存在空闲长事务；应用未提交只是待验证方向，不能直接认定为最终根因。"
+		return "已确认存在空闲长事务；应用为何未及时提交或回滚仍未定，需结合 Query ID、脱敏 SQL 摘要和应用日志核对。"
 	case "active_long_query":
 		return "历史会话显示存在活跃长 SQL；SQL 为什么慢仍需结合 Query ID 和执行计划确认。"
 	case "lock_wait":
@@ -236,7 +280,7 @@ func postgresDiagnosisRecommendations(diagnosis *ChatDiagnosis) []string {
 	}
 	switch diagnosis.RootCause.Code {
 	case "idle_in_transaction":
-		return []string{"按会话 Query ID 和应用名核对提交/回滚路径；需要终止事务时，只生成待人工确认的处置计划。"}
+		return []string{"按会话 Query ID、脱敏 SQL 摘要和应用名核对提交/回滚及连接池归还路径，并补充同事务窗口的应用日志；需要终止事务时，只生成待人工确认的处置计划。"}
 	case "active_long_query":
 		return []string{"按 Query ID 核对执行计划、等待事件和资源瓶颈，不直接认定慢 SQL 的具体原因。"}
 	case "lock_wait":

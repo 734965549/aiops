@@ -57,6 +57,17 @@ try {
     if (-not $diagnosis -or -not $diagnosis.root_cause) {
         throw "structured diagnosis is missing"
     }
+    if ([string]$diagnosis.root_cause.code -eq "idle_in_transaction") {
+        if ([string]$diagnosis.root_cause.status -ne "confirmed") {
+            throw ("idle transaction category must be confirmed by direct session evidence, got " + $diagnosis.root_cause.status)
+        }
+        if (-not ([string]$diagnosis.root_cause.statement).Contains("仍未定")) {
+            throw "confirmed category must not claim the application-level reason"
+        }
+        if (@($diagnosis.missing_evidence) -notcontains "application_logs") {
+            throw "idle transaction diagnosis must request application logs for the unfinished transaction reason"
+        }
+    }
 
     Write-Host ""
     Write-Host "PASS: RDS PostgreSQL history evidence E2E"
@@ -64,7 +75,7 @@ try {
     Write-Host ("  root_status=" + $diagnosis.root_cause.status + " root_code=" + $diagnosis.root_cause.code)
     Write-Host ("  evidence_ids=" + ($diagnosis.root_cause.evidence_ids -join ","))
     Write-Host ("  missing_evidence=" + ($diagnosis.missing_evidence -join ","))
-    foreach ($fact in @($diagnosis.facts | Select-Object -First 3)) {
+    foreach ($fact in @($diagnosis.facts | Select-Object -First 6)) {
         Write-Host ("  fact=" + $fact.statement + " [" + $fact.evidence_id + $fact.pointer + "]")
     }
 }

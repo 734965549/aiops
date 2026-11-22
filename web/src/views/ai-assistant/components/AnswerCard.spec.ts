@@ -44,6 +44,25 @@ describe('AnswerCard diagnosis', () => {
     expect(wrapper.text()).toContain('ev-1')
   })
 
+  it('renders confirmed category without claiming the application reason', () => {
+    const wrapper = mount(AnswerCard, {
+      props: {
+        answer: answerWithDiagnosis({
+          facts: [{ statement: '会话 42；脱敏 SQL 摘要 UPDATE orders SET status = ?', evidence_id: 'ev-1', pointer: '/sessions/0' }],
+          root_cause: { status: 'confirmed', code: 'idle_in_transaction', statement: '已确认存在空闲长事务；应用为何未结束事务仍未定', evidence_ids: ['ev-1'] },
+          hypotheses: [],
+          missing_evidence: ['application_logs'],
+        }),
+      },
+      global: { stubs },
+    })
+    expect(wrapper.text()).toContain('分类已确认')
+    expect(wrapper.text()).toContain('应用为何未结束事务仍未定')
+    expect(wrapper.text()).toContain('UPDATE orders SET status = ?')
+    expect(wrapper.text()).toContain('application_logs')
+    expect(wrapper.text()).not.toContain('已确认根因')
+  })
+
   it('renders undetermined root cause and missing evidence', () => {
     const wrapper = mount(AnswerCard, {
       props: {
