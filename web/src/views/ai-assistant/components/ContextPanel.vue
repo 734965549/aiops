@@ -115,6 +115,7 @@ const TOOL_CATALOG = [
   { code: 'alarm.analyze', name: '读取告警快照', mode: 'read_only' },
   { code: 'metrics.query', name: '查询指标证据', mode: 'read_only' },
   { code: 'alert.rules.list', name: '查询告警规则', mode: 'read_only' },
+  { code: 'alert.rules.health', name: '批量规则体检', mode: 'read_only' },
   { code: 'accounts.list', name: '列出集成账号', mode: 'read_only' },
   { code: 'resource.analyze', name: '读取资源上下文', mode: 'read_only' },
   { code: 'resources.list', name: '发现云同步资源', mode: 'read_only' },

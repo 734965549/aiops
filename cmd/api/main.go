@@ -426,6 +426,15 @@ func main() {
 	aiChatSvc.SetPostgresEvidence(aiPostgresCollector, aiEvidenceSnapshots, app.Cfg.AI.EvidencePayloadLimit())
 	analyzeSvc.SetPostgresEvidence(aiPostgresCollector, aiEvidenceSnapshots, app.Cfg.AI.EvidencePayloadLimit())
 	aiChatSvc.SetAlertRules(aiRulesCollector)
+	// 批量规则体检：按规则关联资源批量取历史曲线，减少逐条 metrics.query 抽样。
+	aiRuleHealthCollector := aiobs.NewRuleHealthCollector(
+		obsQuerySvc,
+		obsQuerySvc,
+		obsAccountAdapter,
+		aiAccountAccess,
+		app.Cfg.AI.EvidenceTimeout(),
+	)
+	aiChatSvc.SetRuleHealth(aiRuleHealthCollector)
 	// 上下文不足修复：账号发现 + 资源上下文 + 云资源发现（ops/ai-contract.md §10.12.1）。
 	aiChatSvc.SetAccounts(aiintegration.NewAccountDiscovery(
 		integAccountSvc, aiAccountAccess, app.Cfg.AI.EvidenceTimeout(),

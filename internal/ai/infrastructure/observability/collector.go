@@ -114,7 +114,7 @@ func (a *CollectorAdapter) Collect(ctx context.Context, userID string, q aiapp.M
 		Aggregator: q.Aggregator,
 		ResourceID: q.ResourceID, CloudResourceID: q.CloudResourceID,
 		SnapshotRequired: true,
-		// AI 只读工具允许日聚合 30 天窗口；HTTP 查询不设置该字段，仍为 7 天。
+		// AI 只读工具允许最长 30 天窗口（period≥3600）；HTTP 查询不设置该字段，仍为 7 天。
 		AllowLongWindow: true,
 	})
 	if err != nil {

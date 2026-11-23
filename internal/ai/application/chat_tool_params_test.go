@@ -88,6 +88,20 @@ func TestBuildMetricEvidenceQueryWindowLimits(t *testing.T) {
 			status: "",
 		},
 		{
+			name: "8 days with half-hour period is rejected",
+			params: map[string]any{
+				"from": from, "to": from + 8*24*3600, "period": 1800,
+			},
+			status: chatObservationStatusInvalidArgument,
+		},
+		{
+			name: "30 days with hourly period is allowed",
+			params: map[string]any{
+				"from": from, "to": from + 30*24*3600, "period": 3600,
+			},
+			status: "",
+		},
+		{
 			name: "30 days with daily period is allowed",
 			params: map[string]any{
 				"from": from, "to": from + 30*24*3600, "period": 86400,
@@ -251,6 +265,10 @@ func TestCapAlertRulesForObservation(t *testing.T) {
 	rules := capAlertRulesForObservation([]AlertRuleSummary{{
 		RuleID: "rule-1", Metric: "rds002_mem_util",
 		Description: strings.Repeat("描", chatRuleDescriptionRune+10), Labels: labels,
+		Unit: "  %  ",
+		Resources: []map[string]string{
+			{"instance_id": "i-1"}, {"instance_id": "i-2"}, {"instance_id": "i-3"}, {"instance_id": "i-4"},
+		},
 	}})
 	if len(rules) != 1 {
 		t.Fatalf("rules = %+v", rules)
@@ -264,11 +282,61 @@ func TestCapAlertRulesForObservation(t *testing.T) {
 	if rules[0].MetricLabel != "内存使用率" {
 		t.Fatalf("metric_label = %q", rules[0].MetricLabel)
 	}
+	if rules[0].Unit != "%" {
+		t.Fatalf("unit = %q", rules[0].Unit)
+	}
+	if len(rules[0].Resources) != chatRuleMaxResourceSamples {
+		t.Fatalf("resource samples = %d", len(rules[0].Resources))
+	}
+}
+
+func TestBuildRuleHealthQueryDefaults(t *testing.T) {
+	now := int64(1700000000)
+	query, status, reason := buildRuleHealthQuery(evidenceTestAlert(), nil, nil, now)
+	if status != "" || reason != "" {
+		t.Fatalf("unexpected status=%q reason=%q", status, reason)
+	}
+	if query.AccountID != "acc-1" || query.Region != "cn-north-4" || query.Namespace != "SYS.ECS" {
+		t.Fatalf("identity fallback = %+v", query)
+	}
+	if query.Limit != ruleHealthDefaultLimit || query.Period != ruleHealthDefaultPeriod || query.Aggregator != "max" {
+		t.Fatalf("defaults = %+v", query)
+	}
+	if query.From != now-ruleHealthDefaultWindowSeconds || query.To != now {
+		t.Fatalf("window = %d..%d", query.From, query.To)
+	}
+}
+
+func TestBuildRuleHealthQueryValidation(t *testing.T) {
+	alert := evidenceTestAlert()
+	now := int64(1700000000)
+	cases := []struct {
+		name   string
+		params map[string]any
+		status string
+	}{
+		{name: "from only", params: map[string]any{"from": now - 3600}, status: chatObservationStatusInvalidArgument},
+		{name: "8 days hourly allowed", params: map[string]any{"from": now - 8*24*3600, "to": now, "period": 3600}, status: ""},
+		{name: "8 days minute rejected", params: map[string]any{"from": now - 8*24*3600, "to": now, "period": 300}, status: chatObservationStatusInvalidArgument},
+		{name: "31 days rejected", params: map[string]any{"from": now - 31*24*3600, "to": now, "period": 3600}, status: chatObservationStatusInvalidArgument},
+		{name: "limit too large", params: map[string]any{"limit": ruleHealthMaxLimit + 1}, status: chatObservationStatusInvalidArgument},
+		{name: "invalid aggregator", params: map[string]any{"aggregator": "median"}, status: chatObservationStatusInvalidArgument},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, status, _ := buildRuleHealthQuery(alert, nil, tc.params, now)
+			if status != tc.status {
+				t.Fatalf("status = %q, want %q", status, tc.status)
+			}
+		})
+	}
 }
 
 func TestCanonicalAlertRulesToolCodeRegistered(t *testing.T) {
-	if _, ok := toolgateway.LookupBuiltinChatTool(chatToolAlertRulesList); !ok {
-		t.Fatalf("%s must be registered as a builtin chat tool", chatToolAlertRulesList)
+	for _, code := range []string{chatToolAlertRulesList, chatToolAlertRulesHealth} {
+		if _, ok := toolgateway.LookupBuiltinChatTool(code); !ok {
+			t.Fatalf("%s must be registered as a builtin chat tool", code)
+		}
 	}
 	for _, code := range []string{chatToolAccountsList, chatToolResourceAnalyze, chatToolResourcesList} {
 		if _, ok := toolgateway.LookupBuiltinChatTool(code); !ok {

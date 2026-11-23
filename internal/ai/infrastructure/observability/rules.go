@@ -118,8 +118,11 @@ func (a *AlertRulesCollector) List(ctx context.Context, userID string, q aiapp.A
 			Metric:        rule.Metric,
 			Operator:      rule.Operator,
 			Threshold:     rule.Threshold,
+			Unit:          rule.Unit,
 			WindowSeconds: rule.WindowSeconds,
 			Labels:        rule.Labels,
+			ResourceCount: rule.ResourceCount,
+			Resources:     rule.Resources,
 		})
 	}
 	return out, nil

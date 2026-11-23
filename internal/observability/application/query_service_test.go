@@ -561,8 +561,12 @@ func TestNormalizeMetricQueryLongWindow(t *testing.T) {
 		{name: "8d default rejected", window: 8 * 24 * 3600, period: 86400, allowLong: false, wantErr: true},
 		{name: "8d daily allowed", window: 8 * 24 * 3600, period: 86400, allowLong: true, wantErr: false},
 		{name: "8d minute rejected", window: 8 * 24 * 3600, period: 300, allowLong: true, wantErr: true},
+		{name: "8d half-hour rejected", window: 8 * 24 * 3600, period: 1800, allowLong: true, wantErr: true},
+		{name: "8d hourly allowed", window: 8 * 24 * 3600, period: 3600, allowLong: true, wantErr: false},
+		{name: "30d hourly allowed", window: 30 * 24 * 3600, period: 3600, allowLong: true, wantErr: false},
 		{name: "30d daily allowed", window: 30 * 24 * 3600, period: 86400, allowLong: true, wantErr: false},
 		{name: "31d daily rejected", window: 31 * 24 * 3600, period: 86400, allowLong: true, wantErr: true},
+		{name: "31d hourly rejected", window: 31 * 24 * 3600, period: 3600, allowLong: true, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

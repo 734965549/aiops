@@ -15,6 +15,7 @@ var builtinChatToolSpecs = []BuiltinToolSpec{
 	{Code: "metrics.query", Name: "查询指标证据", Mode: "read_only"},
 	{Code: "postgres.activity.query", Name: "查询 PostgreSQL 历史会话", Mode: "read_only"},
 	{Code: "alert.rules.list", Name: "查询告警规则", Mode: "read_only"},
+	{Code: "alert.rules.health", Name: "批量规则体检", Mode: "read_only"},
 	{Code: "accounts.list", Name: "列出可用集成账号", Mode: "read_only"},
 	{Code: "resource.analyze", Name: "读取资源上下文", Mode: "read_only"},
 	{Code: "resources.list", Name: "列出云同步资源", Mode: "read_only"},

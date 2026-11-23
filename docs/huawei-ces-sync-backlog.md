@@ -45,7 +45,7 @@
 - `region_projects` 已落地：放入 `extra_config` JSON，无需新增 DB 列。
 - 后端 `SyncModeConfig`/adapter/契约已落地；前端接入表单已暴露 `region_projects`/`sync_mode`/`resource_group_name`/`resource_group_id`/`enterprise_project_id`/`max_resources` 等配置项。
 - 每个 region 使用对应 project_id 创建 CES client 已落地。
-- batch summary 按 region/project 聚合已落地：`SyncBatchSummaryDTO` 新增 `scopes[]`，每个 scope 保留单 `region/project/resource_group` 组合的明细。旧顶层聚合字段保留作兼容；多区域排查必须读取 `scopes[]`。审计 payload 同步增加 `scopes` 明细。
+- batch summary 按 region/project 聚合已落地：`SyncBatchSummaryDTO` 新增 `scopes[]`，每个 scope 保留单 `region/project/resource_group` 组合的明细。旧顶层聚合字段保留作兼容；多区域排查必须读取 `scopes[]`。审计 payload 并未同步包含完整 `scopes`，该差距见第 5 节。
 - CMDB 拓扑已落地：应用资源归属实时派生，`asset_resource_relation` 支持跨应用手工关系、权限审计和删除保护；根资源 1–3 层链路、完整路径高亮与全景力导向可用。查询时按已验证 `vpc_id` / `subnet_id` / `attached_to` / `bandwidth_id` / Peering 字段派生 `cloud_sync` 边，端点无法唯一解析时显式计数，不使用 fake 观测拓扑或猜测关系冒充 CMDB。
 
 后续待办：
@@ -146,3 +146,15 @@
 - **组级覆盖对账**：逐组比对声明 `resource_statistics.total` 与实际拉取数，provider 层输出逐组 Warn 日志；dimension 组声明 total 大于实际拉取且差值不可解释（组内未知 namespace 服务未被枚举）时置 `scope_incomplete=true` 并给出 `group_coverage_mismatch=<组名>`，该 region 禁止任何 stale。
 - **摘要新字段**：`dimension_group_count`（各 scope 求和）、`group_coverage_mismatches`；批次 message 追加 `dimension_groups=<N>` 与 `group_coverage_mismatch=<组名,...>`；前端新增 `Dimension groups` / `Coverage mismatch` 信号标签。零数据库迁移。
 - **真实现状（实现后）**：真实账号 `acc-50843711-...`（cn-south-1）10 组（6 product + 4 dimension）全部覆盖，dimension 组约 1205 资源正常入库；全组成功时批次由 `partial` 变为 `success` 属预期改善。
+
+## 5. 当前代码与历史契约差距（2026-11-23 复核）
+
+以下项目与第 1–4 节所述主路径并不矛盾，但尚未达到早期契约的完整目标，需要独立排期和验收：
+
+1. **Sync 数据范围未完整接入**：TriggerSync 只经过 `app:assets:write`、账号 enabled/assets capability 校验；批次列表没有 owner_team 过滤，详情没有完整对象级校验。AI 资源读取的数据范围已落地，但不能替代 Sync 证明。
+2. **审计生命周期未完整落地**：当前终态与内联 reap 统一 `action=sync`，没有独立 `sync_started/sync_finished/sync_reaped`；终态 payload 不含完整嵌套 summary/scopes。
+3. **触发人归因和周期 reaper 未落地**：`triggered_by` 列存在但 TriggerSync 未写入；reap actor 为当次请求用户；过期 running 只在下一次同账号 TriggerSync 清理，未装配周期后台 reaper。
+4. **云应用命名仍有运行时差距**：0036/0038 迁移已归一化历史名称，但当前 `ensureCloudApplication` 新建应用仍为 `<provider>-cloud`，未附带 account_id。
+5. **前后端排序能力不同步**：后端资源排序白名单已包含 updated_at，前端当前只开放 created_at 排序；updated_at 可展示和导出，是否开放排序需在目标部署版本核对后决定。
+
+上述项目不能只通过修改契约关闭；补实现时应同时更新单元测试、E2E/专项验收、`ops/cloud-observability-contract.md`、`ops/huawei-ces-sync-contract.md` 和本清单。

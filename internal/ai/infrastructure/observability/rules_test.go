@@ -40,8 +40,10 @@ func TestAlertRulesCollectorMapsRules(t *testing.T) {
 		EvidenceID: "rules-ev-1",
 		Rules: []obsdomain.AlertRule{{
 			RuleID: "rule-1", Name: "High CPU", Namespace: "SYS.RDS", Severity: "major",
-			Enabled: true, Metric: "cpu_util", Operator: ">", Threshold: &threshold, WindowSeconds: 300,
-			Labels: map[string]string{"provider": "huawei_cloud"},
+			Enabled: true, Metric: "cpu_util", Operator: ">", Threshold: &threshold, Unit: "%",
+			WindowSeconds: 300, Labels: map[string]string{"provider": "huawei_cloud"},
+			ResourceCount: 2,
+			Resources:     []map[string]string{{"instance_id": "i-1"}},
 		}},
 	}}
 	access := &fakeAccountAccess{}
@@ -59,6 +61,10 @@ func TestAlertRulesCollectorMapsRules(t *testing.T) {
 	rule := result.Rules[0]
 	if rule.Metric != "cpu_util" || rule.Operator != ">" || rule.Threshold == nil || *rule.Threshold != 80 || rule.WindowSeconds != 300 {
 		t.Fatalf("rule fields = %+v", rule)
+	}
+	if rule.Unit != "%" || rule.ResourceCount != 2 || len(rule.Resources) != 1 ||
+		rule.Resources[0]["instance_id"] != "i-1" {
+		t.Fatalf("rule unit/resources not mapped: %+v", rule)
 	}
 	if !access.called || access.ref.AccountID != "acc-1" || access.ref.OwnerTeam != "sre" {
 		t.Fatalf("account access not checked: %+v", access)

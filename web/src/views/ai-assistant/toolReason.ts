@@ -46,9 +46,11 @@ const TOOL_REASON_LABELS: Record<string, string> = {
   no_dimensions: '缺少指标维度',
   'invalid metrics.query params': 'metrics.query 参数格式不合法',
   'invalid alert.rules.list params': 'alert.rules.list 参数格式不合法',
+  'invalid alert.rules.health params': 'alert.rules.health 参数格式不合法',
+  'invalid aggregator': '聚合方式不支持，可选 avg/max/min/sum/variance',
   'from and to must be provided together': 'from 与 to 必须同时提供',
   'invalid time range': '指标时间范围不合法',
-  'time range exceeds 7 days; period must be at least 86400': '时间窗口超过 7 天，日聚合 period 需至少 86400',
+  'time range exceeds 7 days; period must be at least 3600': '时间窗口超过 7 天，period 需至少 3600（小时级）',
   'time range exceeds maximum 30 days': '时间窗口超过 30 天上限',
   'too many data points': '数据点超过 1440 上限，请缩小窗口或增大 period',
   'period below minimum 10 seconds': 'period 不能小于 10 秒',
@@ -59,10 +61,18 @@ const TOOL_REASON_LABELS: Record<string, string> = {
   'dimension key or value is too long': '维度 key/value 过长',
   'keyword exceeds 100 characters': '关键词超过 100 字符',
   'limit must be at most 50': '单次规则查询最多 50 条',
+  'limit must be at most 20': '单次规则体检最多 20 条',
   'alert rule query is not configured': '告警规则查询能力未配置',
   'empty alert rule result': '告警规则查询结果为空',
   'alert rules query failed': '告警规则查询失败，已降级',
-  'alert rules are not supported by the provider': '当前观测 provider 不支持告警规则查询'
+  'alert rules are not supported by the provider': '当前观测 provider 不支持告警规则查询',
+  'rule health collector is not configured': '规则体检能力未配置',
+  'rule health check failed': '规则体检失败，已降级',
+  'empty rule health result': '规则体检结果为空',
+  'empty metric query result': '该规则指标查询结果为空',
+  no_resource_scope: '规则未返回关联资源，无法确定取数维度',
+  'rule health query timeout': '规则体检总预算耗尽，剩余规则未取数',
+  'agency auth does not support metrics query': '委托账号鉴权暂不支持指标取数'
 }
 
 export function toolReasonLabel(reason?: string): string {
@@ -75,6 +85,7 @@ const TOOL_LABELS: Record<string, string> = {
   'alarm.analyze': '读取告警快照',
   'metrics.query': '查询指标证据',
   'alert.rules.list': '查询告警规则',
+  'alert.rules.health': '批量规则体检',
   'accounts.list': '列出集成账号',
   'resource.analyze': '读取资源上下文',
   'resources.list': '发现云同步资源',

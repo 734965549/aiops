@@ -55,6 +55,11 @@ func TestCESAlarmRuleListClientMapsPolicies(t *testing.T) {
 	threshold := 80.0
 	period := int32(300)
 	level := int32(2)
+	unit := "ms"
+	resourceDims := []cesv2model.MetricDimensionResp{{
+		Name: strPtr("rds_instance_id"), Value: strPtr("inst-1"),
+	}}
+	resources := []cesv2model.ResourcesInListResp{{Dimensions: &resourceDims}}
 	api := &fakeRuleListAPI{ruleFn: func(req *cesv2model.ListAlarmRulesRequest) (*cesv2model.ListAlarmRulesResponse, error) {
 		if valueOf(req.Namespace) != "SYS.RDS" {
 			t.Fatalf("namespace = %q", valueOf(req.Namespace))
@@ -65,8 +70,9 @@ func TestCESAlarmRuleListClientMapsPolicies(t *testing.T) {
 				Description: strPtr("cpu utilization"), Enabled: &enabled,
 				Policies: &[]cesv2model.PolicyResp{{
 					MetricName: &metricName, ComparisonOperator: &operator,
-					Value: &threshold, Period: &period, Level: &level,
+					Value: &threshold, Period: &period, Level: &level, Unit: &unit,
 				}},
+				Resources: &resources,
 			},
 			{
 				AlarmId: strPtr("al-2"), Name: strPtr("Event rule"), Namespace: strPtr("SYS.RDS"),
@@ -93,6 +99,10 @@ func TestCESAlarmRuleListClientMapsPolicies(t *testing.T) {
 	if rule.RuleID != "al-1" || rule.Enabled || rule.Metric != "cpu_util" || rule.Operator != ">" ||
 		rule.Threshold == nil || *rule.Threshold != 80 || rule.WindowSeconds != 300 || rule.Severity != "2" {
 		t.Fatalf("unexpected mapped rule: %+v", rule)
+	}
+	if rule.Unit != "ms" || rule.ResourceCount != 1 || len(rule.Resources) != 1 ||
+		rule.Resources[0]["rds_instance_id"] != "inst-1" {
+		t.Fatalf("resource/unit not mapped: %+v", rule)
 	}
 	event := rules[1]
 	if !event.Enabled || event.Metric != "" || event.Threshold != nil || event.WindowSeconds != 0 {

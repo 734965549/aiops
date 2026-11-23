@@ -705,22 +705,22 @@ stale 标记按类型逐项判断，只有同时满足以下三项的类型才�
 
 ## §14 审计与日志
 
-审计覆盖批次全生命周期，`resource_type = asset_sync_batch`，按阶段写入三个 action（不再使用单一 `action=sync`）：
+### 当前代码实现（2026-11-23 复核）
 
-| action | 写入时机 | actor | 说明 |
-| --- | --- | --- | --- |
-| `sync_started` | `TriggerSync` 创建 running 批次成功后立即写入 | 触发请求用户 | 记录触发人、`account_id`、`sync_mode`、`regions`、`fencing_token`；进程崩溃时仍可据此还原原批次操作者 |
-| `sync_finished` | 终态 finalize（`success`/`partial`/`failed`） | 触发请求用户（detached finalize context） | payload 含完整 summary 与计数；前置失败已建 running 批次的场景也走终态 finalize + 此审计 |
-| `sync_reaped` | `ReapExpiredRunning`/`ReapAllExpiredRunning` 把租约过期的崩溃批次落 `failed` 时 | 批次 `triggered_by`（原操作者） | payload 含 `reap_reason=lease_expired`、`reaped_by`（触发 reap 的来源：`TriggerSync` 路径为当次请求用户，后台 reaper 为 `system`）；actor 固定为原操作者 |
+当前审计统一使用 `resource_type=asset_sync_batch`、`action=sync`：
 
-批次表通过 `triggered_by` 持久化触发人，`sync_reaped` 审计的 actor 取自该字段而非当次请求 context。
+| 场景 | 写入时机与 payload | 当前边界 |
+| --- | --- | --- |
+| 批次终态 | success/partial/failed finalize 后写入，payload 含 account/provider/status/regions、基础计数和部分同步摘要 | 没有独立 `sync_started`/`sync_finished` action，也不包含完整嵌套 summary/scopes |
+| 内联 reap | 下一次同账号 TriggerSync 先清理过期 running，payload 增加 `event=reap_expired_running` 与 reaped_count | actor 为当次请求用户；没有独立 `sync_reaped` action |
 
-过期 running 批次有两条 reap 路径：
+migration 0033 增加了 `triggered_by` 列，但当前 TriggerSync 没有给该字段赋值，因此不能据此还原原操作者。当前也没有装配 `SyncService.StartReaper()` 周期后台 reaper；过期 running 批次只通过下一次同账号 TriggerSync 内联清理，无人再次触发时不保证自动自愈。
 
-1. **TriggerSync 内联 reap**：触发同账号同步时先 `ReapExpiredRunning(accountID, now)` 清理本账号过期批次，`reaped_by` 为当次请求用户。
-2. **后台定时 reaper**：`SyncService.StartReaper()` 在进程启动时由 `main.go` 拉起，受 `rootCtx` 管理，每 60 秒调用 `ReapAllExpiredRunning(now)` 扫描**所有账号**的过期 running 批次。这保证无人再触发同步的账号也能自愈，崩溃批次不会永久卡 `running`。后台 reaper 的 `reaped_by` 固定为 `system`，actor 仍取批次 `triggered_by`。`rootCtx` 取消时 reaper 退出。
+早期文档中的“三个独立 action、完整 summary/scopes 审计载荷、actor 固定取 triggered_by、60 秒全账号后台 reaper”均为**尚未完整落地的目标**，不能作为当前验收通过结论。
 
-`sync_finished` Payload 建议字段（`sync_started` 为其子集，仅含 `account_id`/`provider`/`sync_mode`/`regions`/`resource_group`/`fencing_token`/`triggered_by`，不含计数）：
+### 早期目标载荷（未完整落地）
+
+以下 JSON 与字段说明仅是早期目标示例，**不是当前实际审计输出**。当前终态 payload 只含 account/provider/status/regions、created/updated/stale/failed 计数，以及有摘要时的 sync_mode、resource_group、projects、ces_total、discovered_count、unknown_namespace_count、invalid_resource_count、max_resources_reached；不包含 triggered_by、fencing_token、完整嵌套 summary 或 scopes。
 
 ```json
 {
@@ -764,7 +764,7 @@ stale 标记按类型逐项判断，只有同时满足以下三项的类型才�
 }
 ```
 
-顶层保留 `account_id`/`provider`/`status`/`regions`/`fencing_token`/`triggered_by` 及常用计数标量（`ces_total`/`discovered_count`/`created_count`/`updated_count`/`stale_count`/`failed_count`/`unknown_namespace_count`/`invalid_resource_count`/`max_resources_reached`）用于审计检索；完整 summary 与计数以嵌套 `summary` 对象写入，结构与 `SyncBatchSummaryDTO` / 批次 `summary` 列一致（同源于 `buildSyncBatchSummaryDTO`），含 §9.5 全部对账字段（`raw_fetched_count`/`mapped_count`/`unique_discovered_count`/`persisted_count`/`duplicate_count`/`persist_failed_count`/`failed_scopes`/`product_names_empty` 等）。`scopes[]` 仅出现在 `summary.scopes`，不在顶层重复；多区域同步时每个 scope 保留单 `region/project/resource_group` 组合的计数摘要，支持按 region/project 聚合排查（与 §15.3 前端 `summary.scopes[]` 对齐）。无 summary（前置失败且无 scope 数据）时不写 `summary`/`scopes` 键。
+早期目标曾要求顶层保留 triggered_by/fencing_token 和常用计数，并以嵌套 summary/scopes 写入全部对账字段。当前代码尚未达到该目标；需要完整对账时应读取批次详情 `summary`，不能把审计 payload 当作等价的完整副本。
 
 `partial_reason` / `partial_reasons` 的语义必须明确：`partial_reason` 是首要可读原因，`partial_reasons` 是全部可读原因；两者都只保证去重与稳定输出，不保证严重性排序。机器判断应优先使用结构化门控字段，而不是解析 `message` 文本。
 
@@ -784,9 +784,9 @@ stale 标记按类型逐项判断，只有同时满足以下三项的类型才�
 - 短超时 finalize context 只能在 detached context 上派生，禁止从 `context.Background()` 直接派生。
 - `hybrid` 模式必须先持久化 CES 基础资产，再执行原生增强；增强失败仅影响 `summary.enrichment_failed_types` 和批次 `partial` 状态，不得影响基础资产落库结果。
 - `hybrid` 的权威性只来自 CES 基础发现层，原生增强层只补充 labels/详情，不能改变基础发现的资源集合与 stale 结论。
-- `sync_started` 审计必须在创建 running 批次成功后立即写入，使用触发请求 context（非 detached）；审计失败只记 warn，不回滚批次创建。
-- `sync_reaped` 审计的 actor 必须取自批次 `triggered_by`，不得使用当次触发 reap 的请求用户作为 actor；当次请求用户记入 payload `reaped_by`。
-- 前置校验失败如果已经创建 running batch，必须同时完成批次终态写入（`action=sync_finished`）和审计记录；审计失败只能记录 warn/error，不能导致批次继续卡在 running。
+- 当前终态审计在 finalize 后写入并统一使用 `action=sync`；审计失败记 Warn，不回滚批次终态。
+- 前置校验失败且已创建 running batch 时，当前会完成 failed 终态和 `action=sync` 审计，避免批次继续卡 running。
+- 早期目标中的 `sync_started` 即时审计、按 `triggered_by` 归因和后台 reaper 仍需补实现及对应测试。
 
 ## §15 前端对接契约
 
@@ -818,7 +818,7 @@ stale 标记按类型逐项判断，只有同时满足以下三项的类型才�
 
 | sync_mode | 推荐文案 | 风险提示 |
 | --- | --- | --- |
-| `ces` | CES 资源同步（推荐）：按指定 CES 资源分组同步，适合仅授予 CES 只读权限 | 资源详情较少，数量口径为指定资源分组；默认候选名需预先创建 |
+| `ces` | CES 资源同步（推荐）：按指定 CES 资源分组同步，适合仅授予 CES 只读权限 | 资源详情较少；显式组未命中失败，默认候选名未命中时可进入全部资源组并集，聚合口径不等于未分组资源全量 |
 | `hybrid` | 混合同步：先按指定资源分组发现，再按资源类型补充原生云服务详情 | 需要更多云服务只读权限；增强失败不影响基础资源入库 |
 | `native` | 原生云资产同步：兼容旧 ECS/CCE/RDS/ELB 路径 | 不保证与 CES 总览数量一致，仅用于兼容或回退 |
 
@@ -895,7 +895,7 @@ trigger / input
 - CES 资源维度可能不是稳定的云资源 ID，映射时必须保留 namespace 和 dim_name，避免跨类型冲突。
 - `asset_resource` 唯一约束已由迁移 `0026` 补齐为含 `region` 的部分唯一索引（见 §9.4），可区分多区域同类型同云 ID 资源。
 - `asset_sync_batch` 已由迁移 `0030` 增加 `fencing_token`；续租必须按 `batch_id + fencing_token` 校验所有权，upsert/stale 写入前也必须确认仍持有 running 且未过期租约。
-- `asset_sync_batch` 由迁移 `0033` 增加 `triggered_by`（触发用户 user_id）；崩溃批次被 reap 时 `sync_reaped` 审计 actor 取该字段（见 §14）。
+- `asset_sync_batch` 由迁移 `0033` 增加 `triggered_by` 列，但当前 TriggerSync 未写入；内联 reap 使用 `action=sync` 且 actor 为当次请求用户（见 §14）。
 - `/api/assets/sync` 已改为异步任务：立即返回 running batch，后台 goroutine 执行同步并续租。
 - CES API rate limit 需要退避重试；重试仍失败时标记 partial，不要阻塞其他 namespace。
 - 涉及数据库迁移时，执行方式以 `migration-contract.md` 为准：生产 / 预发必须通过自研 runner（`cmd/migrate`）显式执行，禁止手工 `psql` 或手工写入 `schema_migrations`。
@@ -907,12 +907,12 @@ trigger / input
 - `asset_sync_batch` 新增 `lease_expires_at` 列；建部分唯一索引 `(integration_account_id) WHERE status='running'`，确保每个账号同一时刻只有一个 running 批次。
 - `asset_sync_batch` 新增 `fencing_token` 列；后台任务持有 token，`RenewLease` 必须按 `batch_id + fencing_token + status=running + lease_expires_at 未过期` 续租（过期不可复活，只能由 `ReapExpiredRunning` 回收），upsert/stale 前必须校验 `batch_id + fencing_token + status=running + lease_expires_at 未过期`。确认租约丢失时立即取消旧任务，禁止继续写入。
 - `asset_sync_batch` 新增 `triggered_by` 列（迁移 `0033`）；`TriggerSync` 创建 running 批次时写入。
-- `TriggerSync` 在 `Create` 前先 `ReapExpiredRunning(accountID, now)` 清理本账号租约过期的 running 批次：把崩溃批次落 `failed` 并写 `sync_reaped` 审计，actor 取该批次 `triggered_by`、payload 含 `reap_reason=lease_expired` 与当次 `reaped_by`；再插入带 `lease_expires_at = now + 5min`、`triggered_by = 当次请求用户` 的 running 批次。
-- `TriggerSync` 创建 running 批次成功后立即写 `sync_started` 审计（使用触发请求 context）。
+- `TriggerSync` 在 `Create` 前先 `ReapExpiredRunning(accountID, now)` 清理本账号过期 running 批次，并写入 `action=sync`、`event=reap_expired_running` 的审计；actor 当前为当次请求用户。随后插入带 5 分钟租约的 running 批次，但当前未写入 `triggered_by`。
+- 当前没有创建 running 批次后的独立 `sync_started` 即时审计；终态和前置失败统一写 `action=sync`。
 - 已有 running 批次时 `Create` 触发唯一冲突 → 映射为 `ALREADY_EXISTS`（HTTP 409，`message=sync already in progress for this account`）。
 - **异步生命周期**：`runCtx` 先从请求 context 派生 detached context（保留 values、移除请求取消），再受进程级 `shutdownCtx` 与 30 分钟硬超时控制。后台 goroutine 每 60 秒通过 `RenewLease` 续租，把 `lease_expires_at` 推进到 `now+5min`。续租、前置失败处理、终态写入与审计都必须使用该链路 context 派生的短超时 context。即便 `runCtx` 取消，也要用保留 trace/user/logger 的 detached finalize context 尝试落终态。
 - 终态 `Update` / `finishBatchFailedDetached` 把 `lease_expires_at` 清空，释放槽位。
-- **后台定时 reaper**：`SyncService.StartReaper()` 由 `main.go` 在进程启动时拉起，受 `rootCtx` 管理。每 60 秒调用 `ReapAllExpiredRunning(now)` 扫描全账号过期 running 批次并落 `failed`，写 `sync_reaped` 审计（actor=`triggered_by`，`reaped_by=system`）。这弥补了"仅 TriggerSync 内联 reap"的缺口：无人再触发的账号也能自愈，崩溃批次不会永久卡 `running`。`rootCtx` 取消时 reaper 退出，不纳入 `Wait`/`WaitContext`（无 finalization 工作）。
+- **当前仅有内联 reap**：过期 running 批次在下一次同账号 TriggerSync 时清理。早期所述 `StartReaper()` 每 60 秒全账号后台清理当前未装配，`triggered_by` 也未在 TriggerSync 写入；发布验收不得把“无人再次触发也能自动自愈”或“reap actor 为原操作者”列为已落地。
 - 契约：见 `cloud-observability-contract.md` §5.5.1 与 §8 审计动作、`migration-contract.md` `0028`/`0030`/`0033`。
 
 ### §18.2 验收检查清单

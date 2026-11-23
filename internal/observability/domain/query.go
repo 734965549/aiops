@@ -21,7 +21,8 @@ type MetricQuery struct {
 	// SnapshotRequired 标记 AI 路径必须在定稿后补存 payload；初始记录保持 collecting，不能支撑结论。
 	SnapshotRequired bool      `json:"-"`
 	CollectedAt      time.Time `json:"-"`
-	// AllowLongWindow 仅供 AI 只读工具路径使用：period>=86400 的日聚合允许 30 天窗口。
+	// AllowLongWindow 仅供 AI 只读工具路径使用：允许 >7 天最长 30 天窗口，
+	// 但 period 不得小于 3600（小时级），避免超过 1440 点上限。
 	// 不参与 HTTP 绑定与 evidence 哈希，普通查询仍保持 7 天上限。
 	AllowLongWindow bool `json:"-"`
 }

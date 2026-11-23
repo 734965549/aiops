@@ -245,13 +245,31 @@ func normalizeUnit(unit string) string {
 	}
 }
 
+// metricUnitInferences 仅登记华为云官方文档给出明确量纲的指标；未命中的保持空，
+// 由 CES 返回的 unit 或规则摘要中的 unit 兜底，禁止按名称后缀臆造单位。
+var metricUnitInferences = map[string]string{
+	"cpu_util":                            "Percent",
+	"cpu_usage":                           "Percent",
+	"mem_util":                            "Percent",
+	"memory_util":                         "Percent",
+	"disk_util":                           "Percent",
+	"rds001_cpu_util":                     "Percent",
+	"rds002_mem_util":                     "Percent",
+	"rds039_disk_util":                    "Percent",
+	"rds072_conn_usage":                   "Percent",
+	"rds083_conn_usage":                   "Percent",
+	"rds042_database_connections":         "Count",
+	"active_connections":                  "Count",
+	"rds043_maximum_used_transaction_ids": "Count",
+	// rds045 是指 WAL 滞留量（MiB），不是时间；阈值 20480 对应 20 GiB。
+	"rds045_oldest_replication_slot_lag": "MiB",
+	"rds073_replication_delay":           "s",
+	"rds173_replication_delay_avg":       "s",
+	"oldest_transaction_duration":        "ms",
+}
+
 func inferUnitFromMetric(metric string) string {
-	switch strings.ToLower(strings.TrimSpace(metric)) {
-	case "cpu_util", "cpu_usage", "mem_util", "memory_util", "disk_util":
-		return "Percent"
-	default:
-		return ""
-	}
+	return metricUnitInferences[strings.ToLower(strings.TrimSpace(metric))]
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

@@ -28,7 +28,7 @@ go test ./internal/observability/infrastructure/provider/huawei/... ./internal/a
 准备一个华为云账号：
 
 - 授权 `CES ReadOnlyAccess`。
-- 能在 CES 控制台看到目标 CES 资源分组（默认候选名“全部资源”，需预先创建）的资源总数。
+- 能在 CES 控制台看到目标资源分组或全部资源组并集的资源总数。默认候选名未命中时当前实现可进入 `all_groups`，不要求必须预先创建“全部资源”分组；生产对账仍推荐显式指定资源组 ID。
 - 平台账号配置对应 region/project_id。
 
 验收步骤：
@@ -212,10 +212,10 @@ cd web && npm run build
 - dimension 组的服务枚举会增加 API 调用量（16 服务 × dimension 组数，含分页）；共享 `max_resources` 预算不放大，同步耗时增加属预期，验收时记录耗时基线。
 - `asset_resource` 唯一约束已由迁移 `0026` 补齐为含 `region` 的部分唯一索引，可区分多区域同类型同云 ID 资源。
 - `asset_sync_batch` 已由迁移 `0030` 增加 `fencing_token`；续租必须按 `batch_id + fencing_token` 校验所有权，upsert/stale 写入前也必须确认仍持有 running 且未过期租约，避免旧任务在被 reap 后继续写入。
-- `asset_sync_batch` 由迁移 `0033` 增加 `triggered_by`（触发用户 user_id）；崩溃批次被 reap 时 `sync_reaped` 审计 actor 取该字段，避免归因到当次请求用户。
+- `asset_sync_batch` 由迁移 `0033` 增加 `triggered_by` 列，但当前 TriggerSync 未写入该字段，reap 审计 actor 仍取当次请求用户；原操作者归因需单独补实现。
 - `/api/assets/sync` 已改为异步任务：立即返回 running batch，后台 goroutine 执行同步并续租；后续如需支撑更大账号，可评估 worker/队列化。
 - CES API rate limit 需要退避重试；重试仍失败时标记 partial，不要阻塞其他 namespace。
-- 审计必须始终是业务旁路：`sync_started` / `sync_finished` / `sync_reaped` 写失败只能 `warn`，不得回滚或反向影响 batch 终态；batch 状态更新失败才按 `error` 处理并作为业务失败收口。
+- 审计必须始终是业务旁路：当前终态和内联 reap 统一写 `action=sync`，失败只记 Warn，不得回滚或反向影响 batch 终态；batch 状态更新失败才按 Error 处理并作为业务失败收口。早期三个独立 action 尚未落地。
 - 涉及 `0026`、`0028`、`0030` 等数据库迁移时，执行方式以 `ops/migration-contract.md` 为准：生产 / 预发必须通过自研 runner（`cmd/migrate` 或 `go run ./cmd/migrate -config <path>`）显式执行，禁止手工 `psql`、手工执行 `manual_schema_migrations.sql` 或手工写入 `schema_migrations`。
 
 ### 4.1 同账号并发同步互斥
@@ -231,7 +231,7 @@ cd web && npm run build
 满足以下条件才算实现完成：
 
 - `sync_mode=ces` 是默认推荐模式。
-- 使用仅 CES 只读权限的账号，可以同步指定 CES 资源分组（默认候选名“全部资源”，需预先创建）下可见的资源。
+- 使用仅 CES 只读权限的账号，可以同步指定 CES 资源分组；默认候选名未命中时可走全部资源组并集，显式指定组未命中仍应失败。
 - 平台 active 资产数与指定资源分组总数一致，或 batch message 能解释所有差异。
 - EVS/VPC/OBS/DCS/DMS/RDS/ELB/ECS 等截图中出现的类型能进入 `asset_resource`。
 - `sync_mode=hybrid` 可以在指定资源分组发现基础上按权限补充已支持类型详情；EVS 因 CES 维度与原生资源匹配键不成立，详情增强尚未支持；增强失败不影响基础资源入库。
@@ -242,6 +242,8 @@ cd web && npm run build
 - P0 告警接入、资产匹配、Runbook 推荐、Execution 闭环不受影响。
 
 ## 6. 云同步应用 ID 与名称变更升级说明（迁移 0032 -> 0035 -> 0036 -> 0037 -> 0038 -> 0039 -> 0040 -> 0041 -> 0042）
+
+> **当前运行时差距**：本节迁移只归一化历史数据。2026-11-23 复核时，`ensureCloudApplication` 新建应用仍使用 `<provider>-cloud`，未附带 account_id；因此迁移后再次同步新建的应用仍可能不符合名称目标，需单独修复运行时代码并补充回归测试。
 
 > 适用场景：2026-06 之后使用新 `cloudApplicationID` 算法的版本。九条迁移共同收敛云同步应用 ID/名称，**必须按版本号顺序执行**：`0032` 破坏性删除旧格式 -> `0035` 修复字节/rune 截断 -> `0036` 修复应用名歧义 -> `0037` 修复合并安全性 -> `0038` 归一化反向格式应用名 -> `0039` 补全 0032 遗留的孤儿引用 -> `0040` 创建引用完整性诊断视图 -> `0041` legacy 应用收敛硬阻断守卫 -> `0042` 补建孤儿引用并将视图作为硬验收。其中 `0032` 为破坏性 DELETE（开发/未上线阶段"清空重来"策略），其余八条为无损改写/幂等更新/纯校验。生产/预发/开发统一适用。已跑过初版（启发式删除版）`0032` 的 dev/CI 库必须重建。
 

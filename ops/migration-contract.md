@@ -76,6 +76,7 @@
 0059_ai_chat_image_input.up.sql                      -> AI：ai_session_message.images_json（用户消息附图 data URL 数组，JSONB 可空）；ai_provider.vision_enabled（类型 b 视觉开关，默认 false）；仅新增列，幂等
 0060_obs_evidence_snapshot.up.sql                   -> Observability：obs_evidence_ref 增加 CES 定稿 payload/hash、查询参数、资源/窗口/采集时间、状态与截断元数据；历史行保持 summary-only；仅新增列与索引，幂等
 0061_postgres_history_tool.up.sql                   -> AI：种子 postgres.activity.query（read_only）并绑定 admin，用于 RDS for PostgreSQL 历史会话只读诊断；无表结构变更
+0062_ai_rule_health_tool_permission.up.sql          -> AI：种子 alert.rules.health（read_only）并绑定 admin，用于按规则批量取历史曲线做阈值体检（契约 §10.12.1）；无表结构变更
 ```
 
 | 职责 | 0001 / 0002 / 0016 迁移 | 启动期 bootstrap（`cmd/api`） |
@@ -328,6 +329,7 @@ Integration 上下文第一阶段迁移，建表：
 | `0059` | `0059_ai_chat_image_input.up.sql` | AI | `ai_session_message.images_json`（JSONB 可空，用户消息附图 data URL 数组，最多 3 张、单张解码后 ≤2MB）；`ai_provider.vision_enabled`（BOOLEAN NOT NULL DEFAULT FALSE，类型 b 视觉模型开关，未开启时带图消息 400 不落库）；仅新增列、幂等；契约 `ops/ai-contract.md` §10.20；`down.sql` 删除两列（人工回滚参考，删除前需备份附图） | 已落地 |
 | `0060` | `0060_obs_evidence_snapshot.up.sql` | Observability | `obs_evidence_ref` 新增 `trace_id/evidence_type/provider/collector/query_params/resource_id/cloud_resource_id/window_start/window_end/collected_at/status/reason/payload/payload_hash/schema_version/truncated/original_count`；历史行仅回填 `evidence_type=query_type`，不伪造 payload；AI 初始状态 `collecting`，定稿后 upsert 快照；`down.sql` 删除新增索引与列（会永久丢失快照，执行前须备份） | 已落地 |
 | `0061` | `0061_postgres_history_tool.up.sql` | AI | 种子 `postgres.activity.query`（read_only）并绑定 admin；用于 RDS for PostgreSQL `ListHistorySessions/ListHistoryWaitEvents/ListHistoryTopSqls` 只读诊断；无表结构变更；`down.sql` 删除角色绑定和工具权限 | 已落地 |
+| `0062` | `0062_ai_rule_health_tool_permission.up.sql` | AI | 种子 `alert.rules.health`（read_only）并绑定 admin；用于批量规则体检（按规则关联资源取历史曲线并计算峰值/P95/破限比例，契约 §10.12.1）；无表结构变更；`down.sql` 删除角色绑定和工具权限 | 已落地 |
 
 这些迁移必须同步种子化权限和 AI 工具权限，并把 admin 角色绑定到新增权限：
 

@@ -73,9 +73,11 @@ Authorization: Bearer <access_token>
 
 授权失败返回 `PERMISSION_DENIED`（HTTP 403）。未登录或 token 无效返回 `UNAUTHENTICATED`（HTTP 401）。
 
+**当前路由补充**：创建和更新接入源时，代码对所有来源类型都同时挂载 `app:integrations:read`，包括纯 Webhook 源；手动同步也要求该权限。拉取源除此之外还会在 application 层校验绑定账号及其数据范围。列表、详情和删除接入源只要求 `app:alerts:ingest`。
+
 ### 3.2 Webhook 接入接口
 
-Webhook 接入接口不使用 Bearer token，避免外部监控系统和用户登录体系耦合。第一阶段建议使用共享密钥：
+Webhook 接入接口不使用 Bearer token，避免外部监控系统和用户登录体系耦合。当前使用共享密钥：
 
 ```http
 X-AIOPS-Webhook-Token: <source secret>
@@ -85,7 +87,7 @@ X-AIOPS-Webhook-Token: <source secret>
 
 - 按 `source_id` 找到启用中的接入源。
 - 校验 token，失败返回 `UNAUTHENTICATED`。
-- 限制请求体大小，建议默认 `1MB`。
+- 限制请求体大小，当前上限为 `1MB`，超出返回 `PAYLOAD_TOO_LARGE`（413）。
 - 记录来源 IP、User-Agent、trace_id。
 - 对重复请求做幂等处理：`X-Request-ID` 短期幂等键（`source_id + request_id`）。生产多实例须 Redis 共享；`redis.required=false` 单实例开发可降级进程内 MemoryStore（与平台 health 契约一致，不阻塞启动）。
 
@@ -252,7 +254,7 @@ stateDiagram-v2
 
 ### 5.3 `AlertSource`
 
-`AlertSource` 是外部接入源配置；第一阶段可以先只落 Alertmanager。
+`AlertSource` 是外部接入源配置。当前已落地 Alertmanager/通用 Webhook 与华为云 CES Pull；`signoz`、`zabbix` 等类型可作为 Webhook 来源标识保存，但不代表已有对应专用拉取 Adapter。
 
 | 字段 | 类型 | 必有 | 说明 |
 | --- | --- | --- | --- |
@@ -288,6 +290,8 @@ stateDiagram-v2
 | `ends_at` | number | 是 | 结束时间，Unix 秒 |
 | `created_by` | string | 是 | 创建人用户 ID |
 | `created_at` | number | 是 | 创建时间，Unix 秒 |
+
+当前只实现单告警静默记录。`ends_at` 是截止时间的持久化与展示字段，代码没有到期自动流转 worker；到期后仍需手动取消静默，或由外部 resolved 进入 recovered，不能把到期时间理解为自动恢复状态。
 
 ## 6. 接入契约
 
@@ -403,10 +407,8 @@ stateDiagram-v2
 
 优先级：
 
-1. 如果外部提供稳定 `external_id` 或 `fingerprint`：  
-   `dedup_key = sha256(source_id + "\x00" + external_id_or_fingerprint)`
-2. 如果无稳定外部 ID：  
-   `dedup_key = sha256(source_id + "\x00" + rule_name + "\x00" + resource_name + "\x00" + selected_labels)`
+1. 如果外部提供稳定 `external_id` 或 `fingerprint`：`dedup_key = sha256(source_id + "\x00" + external_id_or_fingerprint)`
+2. 如果无稳定外部 ID：`dedup_key = sha256(source_id + "\x00" + rule_name + "\x00" + resource_name + "\x00" + selected_labels)`
 
 `selected_labels` 建议只纳入稳定标签：
 
@@ -475,7 +477,9 @@ stateDiagram-v2
 
 #### 响应
 
-返回 `PageData<Alert>`。
+返回 `PageData<Alert>`。`active_only=true` 当前只排除 closed，recovered 和 silenced 仍可属于 active 查询结果。
+
+列表与详情路由使用静态 RBAC，当前没有自动应用 Identity 数据范围过滤；AI 分析读取告警对象时的数据范围校验是独立调用链，不能反推列表/详情已具备相同隔离。
 
 ### 8.2 告警详情
 
@@ -608,7 +612,7 @@ stateDiagram-v2
 约束：
 
 - 允许状态：`new` / `acknowledged` / `processing`（§4.2 人工状态图；`recovered` / `closed` / `silenced` 不可静默，`silenced` 须先 `unsilence` 或走其它流转）。
-- `duration_s` 必须大于 `0`，建议最大不超过 `30d`。
+- `duration_s` 必须大于 `0`，当前最大为 `30d`。
 - 成功后状态：`silenced`。
 - 写入 `silenced` 事件。
 - 非法状态返回 `INVALID_ARGUMENT`。
@@ -669,7 +673,8 @@ stateDiagram-v2
 
 管理外部告警接入源（§5.3 `AlertSource`）；Webhook 路径参数 `:source_id` 即此处配置的 ID。接口返回 `secret_masked`，**永不**返回明文 `secret`。
 
-- 鉴权: 是（Bearer + `app:alerts:ingest`）
+- 列表、详情、删除：Bearer + `app:alerts:ingest`。
+- 创建、更新：当前路由对全部来源类型同时要求 `app:alerts:ingest` + `app:integrations:read`；拉取源另行校验绑定账号授权。
 
 #### 8.12.1 列表接入源
 
@@ -717,7 +722,7 @@ stateDiagram-v2
 - Method: `PUT`
 - Path: `/api/alerts/sources/:source_id`
 
-请求体字段同创建，省略时保留原值。禁止更改 `id`、`delivery_mode` 及拉取源的 `type/account_id`。Webhook 源可轮换 `secret`。拉取源更新 `pull_config` 时以传入对象替换配置并应用默认值。创建或更新拉取源额外要求 `app:integrations:read` 及绑定账号的读取授权。
+请求体字段同创建，省略时保留原值。禁止更改 `id`、`delivery_mode` 及拉取源的 `type/account_id`。Webhook 源可轮换 `secret`。拉取源更新 `pull_config` 时以传入对象替换配置并应用默认值；application 层会重新校验绑定账号及其数据范围。
 
 响应 `data`：更新后的 `AlertSource`。
 
@@ -728,7 +733,7 @@ stateDiagram-v2
 
 响应 `data`：`{ "deleted": true }`。
 
-### 8.13 手动同步拉取源（待实现）
+### 8.13 手动同步拉取源（已实现）
 
 - Method: `POST`
 - Path: `/api/alerts/sources/:source_id/sync`
@@ -795,6 +800,8 @@ POST /api/ai/analyze-alert
 
 AI 模块加载告警后，向 provider 传入的 `payload.alert` 为完整告警快照，包含 `id/name/summary/description/severity/status/source/rule_name/business_line/environment/application_id/application_name/resource_id/resource_name/resource_type/occurrence_count/first_seen_at/last_seen_at/recovered_at/labels/annotations`，时间字段为 Unix 秒。为兼容既有 provider，payload 同时保留 `alert_name`、`alert_summary`、`alert_severity`、`application_name`、`resource_name`、`labels` 平铺字段。`include_metrics=true` 时 payload 还包含只读指标证据 `evidence`（含状态、统计摘要、破限点数与证据 ID），语义与降级枚举见 [AI 契约 §9](ai-contract.md#9-告警分析-evidence-语义)。migration `0060` 起，实际送入模型的 CES 数据点先定稿并保存到 `obs_evidence_ref.payload`，同时记录查询参数、窗口、采集时间、SHA-256 与截断元数据；快照写失败时证据降级，不携带未持久化指标。migration `0061` 起，RDS for PostgreSQL 长事务告警还注入 `postgres_activity`（历史会话、等待事件、Top SQL 的脱敏快照），响应 `data.diagnosis` 明确事实、根因状态、假设与缺失证据，语义见 [AI 契约 §10.21](ai-contract.md#1021-rds-for-postgresql-历史会话证据migration-0061)。无可用 provider 时，本地摘要优先使用 `description`，其次 `summary`。
 
+当前告警 AI 弹窗展示风险、摘要、建议和引用，尚未完整渲染可选 `diagnosis`；AI 助手回答卡片已有结构化诊断展示。验收告警页时不能用后者替代前者。
+
 **数据范围**：读取告警快照前按当前用户的数据范围校验告警对象（`owner_user_id` / `labels.department` / `labels.team` / `labels.region` / `labels.env|environment|business_line|tags`，完整映射见 [AI 契约 §10.6.4](ai-contract.md#1064-数据范围映射告警对象)）。数据范围不匹配返回 403 `PERMISSION_DENIED`，不返回任何告警字段，并写 `action=analyze_alert`、`result=denied` 审计。告警列表与详情接口的数据范围口径不在本节范围内。
 
 ### 9.3 Execution
@@ -811,24 +818,20 @@ Alert 时间线写 `execution_created` / `execution_started` / `execution_finish
 
 ### 9.4 Audit
 
-用户对告警的关键操作应写审计（落库 `audit_operation`，查询 `GET /api/audits`）：
+用户对告警的关键操作会尝试写 Operation Audit（落库 `audit_operation`，查询 `GET /api/audits`）：
 
-- 认领
-- 转派
-- 开始处理
-- 静默 / 取消静默
-- 手动恢复
-- 关闭
-- 发起 AI 分析入口
-- 从告警创建执行任务（预留）
-
-审计资源建议：
+- 告警处理：`acknowledge`、`assign`、`start_processing`、`recover`、`close`、`silence`、`unsilence`、`comment`、`ai_analysis_requested`。
+- Webhook/CES 单条实际变更：`ingest`，payload 区分 created/updated/recovered；重复观测不追加逐条审计。
+- 接入源：`source_create`、`source_update`、`source_delete`。
+- CES 轮次：`alert_source_sync`，语义见拉取契约 §11。
 
 | 字段 | 值 |
 | --- | --- |
-| `resource_type` | `alert` |
-| `resource_id` | `alert_id` |
-| `action` | 对应操作，如 `close` / `silence` |
+| `resource_type` | 告警为 `alert`，接入源为 `alert_source` |
+| `resource_id` | `alert_id` 或 `source_id` |
+| `action` | 上述动作编码 |
+
+Alert 人工操作、Webhook 和 Source CRUD 的审计写入为 best-effort，失败不回滚主业务。CES 轮次最终状态与 `alert_source_sync` 审计按拉取契约在同一事务提交。Execution 创建/开始/结束通过 Alert 时间线关联，具体审计归 Execution 模块。
 
 ## 10. 错误语义
 
@@ -853,57 +856,44 @@ Alert 时间线写 `execution_created` / `execution_started` / `execution_finish
 }
 ```
 
-## 11. 数据表建议
+## 11. 数据表与迁移
 
-第一阶段建议最少落以下表：
+当前核心表：
 
 | 表名 | 说明 |
 | --- | --- |
-| `alert_alert` | 告警主表 |
+| `alert_alert` | 告警主表，包含 dedup_key 与 lifecycle_seq |
 | `alert_event` | 告警时间线事件 |
-| `alert_source` | 外部接入源配置 |
-| `alert_silence` | 静默记录 |
+| `alert_source` | 外部接入源配置及同步状态 |
+| `alert_silence` | 单告警静默记录 |
+| `alert_source_sync_lease` | CES 拉取源级租约，migration 0046 |
 
-字段落库建议：
+主要迁移：
 
-- `labels`、`annotations`、`payload` 使用 `JSONB`。
-- 业务 ID 使用 `VARCHAR(36)` 并建唯一索引。
-- `dedup_key` 使用 `VARCHAR(128)` 或定长 hash。
-- 时间字段统一使用 `TIMESTAMPTZ`，API 输出 Unix 秒。
-- `alert_source` 的接入方式、配置、同步状态与游标见 [CES 告警拉取契约](huawei-ces-alert-sync-contract.md) §4.1。
+- `0007_init_alert`：核心表、唯一约束与 Alert 权限种子。
+- `0046_alert_source_pull`：Pull 账号、配置、最近同步状态与源级租约。
+- `0047_alert_source_pull_state`：`delivery_mode` 和按 scope 保存的 `sync_state`。
 
-## 12. 第一阶段验收标准
+`labels`、`annotations`、`payload` 使用 JSONB；对外使用业务 ID；数据库时间使用 TIMESTAMPTZ，API 输出 Unix 秒。`alert_source` 的接入方式、配置、同步状态与游标语义见 [CES 告警拉取契约](huawei-ces-alert-sync-contract.md) §4.1。
 
-完成第一阶段时，至少满足：
+## 12. 验收标准与证据边界
 
-- 能创建一个 Alertmanager 接入源，并配置共享 token。
-- Alertmanager firing payload 能生成平台告警。
-- 同一告警重复 firing 会更新原记录，而不是无限新增。
-- resolved payload 能将告警转为 `recovered`。
-- 用户可查看列表、详情与时间线。
-- 用户可认领、开始处理、关闭、静默、取消静默。
-- 每个状态动作都写 `AlertEvent`。
-- 关键用户动作预留审计写入点。
-- 告警详情可以跳转/调用 AI 分析入口。
+核心验收至少覆盖：接入源与共享 token、firing/resolved、重复去重、关闭后新 lifecycle、列表/详情/时间线、全部人工状态动作、审计，以及 AI 分析入口。CES Pull 另按拉取契约 §13 验收。
 
-### 12.1 联调验收记录（2026-06-13）
+### 12.1 单元、集成与前端测试
 
-在远程 PostgreSQL + 本地 API/前端环境完成第一阶段 E2E（脚本 `scripts/e2e-alert.ps1`，默认 `admin/admin123` → `http://127.0.0.1:8080`）：
+现有测试覆盖状态机、dedup、secret、Webhook 鉴权与请求级幂等、Source 创建/更新与创建审计、Pull 准入、CES 游标/恢复/租约/规则富化、Handler 权限和分页，以及前端详情语义、复制、掩码、资源解析和 AI 助手入口。测试文件存在不代表本轮已执行通过，运行结论应单独记录。
 
-| 覆盖项 | 结果 |
+### 12.2 E2E 的实际覆盖
+
+| 脚本 | 当前覆盖 |
 | --- | --- |
-| Alertmanager 接入源创建（`POST /api/alerts/sources`） | 通过 |
-| Webhook firing 入库（`POST /api/alerts/ingest/alertmanager/:source_id`） | `created=1` |
-| 重复 firing 去重更新 | `updated=1`，`occurrence_count` 递增 |
-| resolved 自动恢复 | `status=recovered` |
-| 列表 / 详情 / 时间线 | 通过 |
-| 认领 → 开始处理 → 手动恢复 | 通过 |
-| 关闭后新 firing 重新开单 | `created=1`，`status=new` |
-| 转派（`POST /assign`） | 时间线含 `assigned` |
-| 静默 / 取消静默（`POST /silence`、`/unsilence`） | `silenced` → `new` |
-| AI 分析入口（`POST /ai-analysis` + `POST /api/ai/analyze-alert`） | 时间线含 `ai_analysis_requested`，返回 summary |
+| `scripts/e2e-alert.ps1` | Alertmanager 源创建、firing、重复 firing、resolved、关闭后新 lifecycle、认领、开始处理、手动恢复、AI 分析入口与时间线 |
+| `scripts/e2e-alert-sync.ps1` | 非生产 fake 华为账号、Pull 源创建、Webhook 源 sync 返回 400、三轮拉取、独立恢复、重复观测、最近同步状态和 `alert_source_sync` 审计 |
 
-前端页面：`web/src/views/alerts/index.vue`（路由 `/alerts`），dev 代理至本地 API。
+`e2e-alert.ps1` 不包含转派、静默/取消静默、备注、无效 token、通用 Webhook 或完整 UI 验收。`e2e-alert-sync.ps1` 不包含真实 CES、多实例租约争抢、worker 定时调度、账号权限负向和全部规则富化分支。这些项目必须结合单元测试、专项接口或 UI/真实账号验收，不能从脚本名称推断通过。
+
+2026-06-13 的历史联调记录只代表当时环境，不作为当前版本的执行证据；当前验收应重新记录日期、环境、脚本版本和结果。
 
 ## 13. 后续扩展
 

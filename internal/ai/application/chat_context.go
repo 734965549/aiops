@@ -345,6 +345,7 @@ func appendObservabilityEvidenceReference(data *chatContextData, evidenceID, lab
 //
 // 语义：
 //   - 指标取数：数据范围由 MetricEvidencePort 按账号二次校验；
+//   - 规则体检：数据范围由 RuleHealthPort 在账号解析后二次校验；
 //   - 告警快照：RBAC/工具权限在此校验，对象级数据范围由 AlertReader 读取端口统一收口
 //     （读取发生在权限校验之后，避免无权用户探测告警是否存在）；
 //   - 无对象上下文的调用（如 execution.tasks.propose）跳过数据范围，避免被误判为缺少对象上下文。

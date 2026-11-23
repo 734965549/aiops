@@ -30,7 +30,7 @@
 
 - 华为云 CES 告警拉取、标准化、资源匹配和原始字段追溯已落地。
 - 告警详情可将 `alert_id`、应用、资源和时间窗口带入 AI 助手，见 [alertAIContext.ts](../web/src/views/alerts/composables/alertAIContext.ts)。
-- AI 助手已有告警读取、CES 指标证据、规则查询、账号/资源发现、受限 Agent Loop、权限校验和审计，见 [AI 契约](../ops/ai-contract.md)。
+- AI 助手已有告警读取、CES 指标证据、规则查询、批量规则体检（`alert.rules.health`）、账号/资源发现、受限 Agent Loop、权限校验和审计，见 [AI 契约](../ops/ai-contract.md)。
 - Observability 已生成 `evidence_id`，并持久化证据引用，见 [evidence_repository.go](../internal/observability/infrastructure/persistence/evidence_repository.go)。
 - Asset 已有云资源同步、应用归属和部分 CMDB 拓扑。
 - Execution 已具备人工确认边界，AI 不需要也不应获得直接执行能力。

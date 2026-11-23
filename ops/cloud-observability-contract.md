@@ -267,7 +267,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 | `TopologyQueryPort` | `QueryTopology` | 服务拓扑（需账号声明 `topology` 能力） |
 | `AssetDiscoveryPort` | `ListResources` | 云资源发现（阶段 2 HTTP / Asset Sync 复用） |
 | `CloudFullSyncPort` | `ListAllResources` | 云资源全量同步发现（Asset Sync 专用，不受交互查询 `limit <= 500` 限制） |
-| `AlertRuleQueryPort` | `ListAlertRules` | 告警规则（AI 规则体检复用）；返回含 `metric/operator/threshold/window_seconds` 可选字段。huawei `auth_type=none` 走 fake，`ak_sk` 走真实 CES V2 `ListAlarmRules`，`agency` 返回 unsupported |
+| `AlertRuleQueryPort` | `ListAlertRules` | 告警规则（AI 规则体检复用）；返回含 `metric/operator/threshold/unit/window_seconds` 可选字段以及 `resource_count/resources`（关联资源总数与前 3 个维度样本）。huawei `auth_type=none` 走 fake，`ak_sk` 走真实 CES V2 `ListAlarmRules`，`agency` 返回 unsupported |
 
 账号解析依赖 `IntegrationAccountPort`（adapter 包装 Integration 仓储），QueryService 编排：能力校验 → Provider Port → `obs_evidence_ref` → 审计。
 
@@ -301,7 +301,9 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 }
 ```
 
-`period` 默认 60 秒，最小 10 秒；HTTP 查询单次时间窗口最大 7 天，最多返回 1440 个点，超过限制返回 `INVALID_ARGUMENT`。AI 只读工具路径（`ops/ai-contract.md` §10.12.1）在 `period >= 86400` 的日聚合下允许最大 30 天窗口，仍受 1440 点上限约束。`project_id` 可选；缺省时按账号或 `extra_config.region_projects` 的 region 映射解析。多项目账号建议显式传入，避免查询到错误项目导致空序列。
+`period` 默认 60 秒，最小 10 秒；HTTP 查询单次时间窗口最大 7 天，最多返回 1440 个点，超过限制返回 `INVALID_ARGUMENT`。AI 只读工具路径（`ops/ai-contract.md` §10.12.1）允许超过 7 天、最长 30 天的窗口，但 `period` 不得小于 3600（小时级），仍受 1440 点上限约束。`project_id` 可选；缺省时按账号或 `extra_config.region_projects` 的 region 映射解析。多项目账号建议显式传入，避免查询到错误项目导致空序列。
+
+响应 `unit` 优先取 provider 数据点单位；provider 未返回时按官方文档固定表推断（`rds001/rds002/rds039` 使用率、`rds072/rds083` 连接数使用率为 `Percent`，`rds045` 为 `MiB`，`rds073` 为 `s`，`rds042`/`active_connections` 为 `Count`，`oldest_transaction_duration` 为 `ms`）。未登记指标保持空字符串，不得按名称后缀臆造单位。
 
 响应：
 
@@ -381,13 +383,19 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 
 ### 5.5 云资源同步（Asset Sync，阶段 2 部分落地：CES P0/P1 主路径完成，hybrid 增强存在已知缺口）
 
-> **实现状态**：`huawei_cloud` + `auth_type=ak_sk` 默认 `sync_mode=ces`，走 CES 资源分组/资源列表发现，同步范围为指定资源分组下资源；`sync_mode=hybrid` 先按指定资源分组入库，再按权限调用 ECS/CCE/RDS/ELB/EVS/VPC/DCS/DMS 原生 API 补充详情；VPC 子资源（EIP/带宽/子网/对等连接）客户端与 mapper 已接入且匹配键成立，hybrid 增强实际生效；EVS 客户端虽已接入但匹配键不成立，当前不承诺详情增强命中；`sync_mode=native` 才走旧 ECS/CCE/RDS/ELB 兼容路径。`auth_type=none` 仍为 fake，供 CI/E2E。同步写 `asset_resource`（`source=cloud_sync`）与 `asset_sync_batch`。完整功能依赖迁移链：`0023`（`asset_resource`/`asset_sync_batch` 基表）、`0024`（`integration_account.extra_config` 存放 `sync_mode`/`max_resources`/`region_projects` 等配置）、`0025`（`asset_resource.labels`）、`0026`（含 `region` 的部分唯一索引，区分多区域同类型同云 ID）、`0028`（`asset_sync_batch` 账号级 running 互斥与租约自愈）、`0031`（`asset_sync_batch.summary` 结构化摘要，替代 `message` 作为协议解析来源）、`0032`（破坏性 DELETE：按 `application_id = 'cloud-' || trim(account_id)` 精确关联 `integration_account` 删除旧格式 `cloud-<account_id>` 应用及其关联 `asset_resource`/`asset_match_rule`，不处理 `alert_alert`/`inspection_policy` 由 `0039` 补全清理）、`0033`（`asset_sync_batch.triggered_by` 触发用户，用于 reap 审计归因）、`0034`（按 `labels->>'dim_name'` 把 `SYS.VPC` 子资源拆分为 `eip`/`bandwidth`/`subnet`/`peering`/`vpc`）、`0035`（按 rune 截取修复多字节账号字节版 `application_id`，无损改写为 rune 版并合并子表引用，纯 ASCII 账号无影响）、`0036`（云同步应用名称追加 `account_id`，避免多账号同名混淆，影响 `asset_application.name`）、`0037`（修复 legacy/new `application_id` 并存时的安全合并：先迁移去重子表引用再删旧应用，仅 legacy 时安全重命名，仅 new 时幂等）、`0038`（归一化反向格式云同步应用名 `<provider>-<account_id>-cloud` 为契约格式 `<provider>-cloud-<account_id>`，收敛 `ensureCloudApplication` 代码曾误用的反向格式，仅改 `asset_application.name`，不改 `application_id`）、`0039`（清理 `0032` DELETE 遗留的 `alert_alert`/`inspection_policy` 孤儿引用，按 `integration_account` 计算 old->new 映射改写为新格式，不依赖 `has_old`）、`0040`（创建持久视图 `v_asset_app_ref_integrity` 暴露指向不存在 `asset_application` 的孤儿引用，不修改数据不阻断迁移，验收方式 `SELECT * FROM v_asset_app_ref_integrity` 期望 0 行）、`0041`（legacy 应用收敛硬阻断守卫：若 `asset_application` 中仍存在 `cloud-<account_id>` 格式 legacy 应用则 `CHECK(n=0)` 失败导致迁移终止，不修改业务数据；若 0041 阻断需排查 0032/0037 收敛失败或代码路径仍在创建旧格式应用，修复后由 `0042` 收口补建）、`0042`（补建 0039 改写后仍被引用但不存在的新格式 cloud application ID 对应的 `asset_application` 记录，字段与 `ensureCloudApplication` 一致，并将 `v_asset_app_ref_integrity` 作为硬验收 `CHECK(n=0)`，补建后仍有孤儿则迁移失败；幂等 `ON CONFLICT DO NOTHING`；依赖 pgcrypto `digest()`）；升级后需对已有接入账号重新触发同步，无需重新录入账号。
+> **实现状态**：`huawei_cloud` + `auth_type=ak_sk` 默认 `sync_mode=ces`，走 CES 资源分组/资源列表发现，同步范围为指定资源分组下资源；`sync_mode=hybrid` 先按指定资源分组入库，再按权限调用 ECS/CCE/RDS/ELB/EVS/VPC/DCS/DMS 原生 API 补充详情；VPC 子资源（EIP/带宽/子网/对等连接）客户端与 mapper 已接入且匹配键成立，hybrid 增强实际生效；EVS 客户端虽已接入但匹配键不成立，当前不承诺详情增强命中；`sync_mode=native` 才走旧 ECS/CCE/RDS/ELB 兼容路径。`auth_type=none` 仍为 fake，供 CI/E2E。同步写 `asset_resource`（`source=cloud_sync`）与 `asset_sync_batch`。完整功能依赖迁移链：`0023`（`asset_resource`/`asset_sync_batch` 基表）、`0024`（`integration_account.extra_config` 存放 `sync_mode`/`max_resources`/`region_projects` 等配置）、`0025`（`asset_resource.labels`）、`0026`（含 `region` 的部分唯一索引，区分多区域同类型同云 ID）、`0028`（`asset_sync_batch` 账号级 running 互斥与租约自愈）、`0031`（`asset_sync_batch.summary` 结构化摘要，替代 `message` 作为协议解析来源）、`0032`（破坏性 DELETE：按 `application_id = 'cloud-' || trim(account_id)` 精确关联 `integration_account` 删除旧格式 `cloud-<account_id>` 应用及其关联 `asset_resource`/`asset_match_rule`，不处理 `alert_alert`/`inspection_policy` 由 `0039` 补全清理）、`0033`（增加 `asset_sync_batch.triggered_by` 列；当前运行时写入与原操作者归因尚未完整落地，见本节差距说明）、`0034`（按 `labels->>'dim_name'` 把 `SYS.VPC` 子资源拆分为 `eip`/`bandwidth`/`subnet`/`peering`/`vpc`）、`0035`（按 rune 截取修复多字节账号字节版 `application_id`，无损改写为 rune 版并合并子表引用，纯 ASCII 账号无影响）、`0036`（云同步应用名称追加 `account_id`，避免多账号同名混淆，影响 `asset_application.name`）、`0037`（修复 legacy/new `application_id` 并存时的安全合并：先迁移去重子表引用再删旧应用，仅 legacy 时安全重命名，仅 new 时幂等）、`0038`（归一化反向格式云同步应用名 `<provider>-<account_id>-cloud` 为契约格式 `<provider>-cloud-<account_id>`，收敛 `ensureCloudApplication` 代码曾误用的反向格式，仅改 `asset_application.name`，不改 `application_id`）、`0039`（清理 `0032` DELETE 遗留的 `alert_alert`/`inspection_policy` 孤儿引用，按 `integration_account` 计算 old->new 映射改写为新格式，不依赖 `has_old`）、`0040`（创建持久视图 `v_asset_app_ref_integrity` 暴露指向不存在 `asset_application` 的孤儿引用，不修改数据不阻断迁移，验收方式 `SELECT * FROM v_asset_app_ref_integrity` 期望 0 行）、`0041`（legacy 应用收敛硬阻断守卫：若 `asset_application` 中仍存在 `cloud-<account_id>` 格式 legacy 应用则 `CHECK(n=0)` 失败导致迁移终止，不修改业务数据；若 0041 阻断需排查 0032/0037 收敛失败或代码路径仍在创建旧格式应用，修复后由 `0042` 收口补建）、`0042`（补建 0039 改写后仍被引用但不存在的新格式 cloud application ID 对应的 `asset_application` 记录，字段与 `ensureCloudApplication` 一致，并将 `v_asset_app_ref_integrity` 作为硬验收 `CHECK(n=0)`，补建后仍有孤儿则迁移失败；幂等 `ON CONFLICT DO NOTHING`；依赖 pgcrypto `digest()`）；升级后需对已有接入账号重新触发同步，无需重新录入账号。
 >
-> **目标状态**：华为云真实账号资产同步以 CES 资源分组为主路径，同步范围为**指定资源分组**下资源（默认候选名“全部资源”需用户在 CES 控制台预先创建；不存在“CES 总览全量”隐式口径，未命中指定组即失败，不回退最大资源组），覆盖 EVS/VPC/OBS/DCS/DMS/RDS/ELB/ECS 等 CES 可见资源。完整实现顺序、分页、映射、权限和验收标准见 `ops/huawei-ces-sync-contract.md`。
+> **当前资源组口径**：华为云真实账号资产同步以 CES 资源分组为主路径。显式指定 `resource_group_id` 或非默认 `resource_group_name` 时，未命中即失败；未指定或默认候选名（全部资源 / All resources / All Resources）均未命中时，进入 `all_groups`，同步该 region/project 下全部资源组的并集。该并集仍不等于 CES 总览中未分组资源的全量口径，stale 必须按 `all_groups` 的保守门控处理。完整实现顺序、分页、映射、权限和验收标准见 `ops/huawei-ces-sync-contract.md`。
 >
 > **同步模式**：`ces` 是默认推荐模式，仅依赖 CES 资源分组发现指定分组下资源；`hybrid` 是增强模式，先按指定资源分组入库，再按权限调用原生 API 补详情。当前已支持 ECS/RDS/DCS/DMS 与 VPC 子资源（EIP/带宽/子网/对等连接）的 label 增强；EVS 原生客户端虽已接入调用链，但因 CES 维度与原生资源匹配键不成立，详情增强尚未支持；`native` 仅为兼容旧 ECS/CCE/RDS/ELB 路径，不作为资源分组完整性验收口径。
 >
-> **当前增强状态**：`sync_mode=hybrid` 已落地指定资源分组发现 + 原生 API 增强路由；ECS 当前补充 `private_ip`、`flavor`、`vpc_id`、`az`，RDS 当前补充 `private_ip`、`vpc_id`、`subnet_id`、`flavor`，DCS 补充 `instance_name/engine/engine_version/capacity_gb/spec_code/private_ip/az/vpc_id/charging_mode/created_at`，DMS（Kafka+RocketMQ 合并）补充 `instance_name/engine/engine_version/spec_code/capacity_gb/vpc_id/charging_mode/created_at`（Kafka 含 `private_ip`、无 `az`；RocketMQ 含 `az`、无 `private_ip`），VPC 子资源补充：EIP `public_ip/private_ip/bandwidth_id/share_type/status/ip_type`、带宽 `size_mbps/share_type/charge_mode/status`、子网 `cidr/gateway_ip/vpc_id/az/available_ip_count`、对等连接 `request_vpc_id/accept_vpc_id/status`。EVS 当前仅保证 CES 基础 labels（`namespace/dim_name/resource_group` 等）入库，`volume_type/size_gb/attached_to` 等详情增强因匹配键不成立尚未支持，原因见 `docs/huawei-ces-sync-backlog.md` 的 EVS/VPC 缺口章节，或参考 `ops/huawei-ces-sync-contract.md` §21.4。增强按 `ProviderRef` 匹配并只新增缺失 label，不覆盖 CES 已有 label；增强失败不影响 CES 基础资源入库，批次 `message` 追加 `enriched=N enrichment_failed=type1,type2` 摘要。OBS 原生增强仍属于后续扩展（需另引 OBS SDK）。
+> **当前增强状态**：`sync_mode=hybrid` 已落地指定资源分组发现 + 原生 API 增强路由；ECS 当前补充 `private_ip`、`flavor`、`vpc_id`、`az`，RDS 当前补充 `private_ip`、`vpc_id`、`subnet_id`、`flavor`，DCS 补充 `instance_name/engine/engine_version/capacity_gb/spec_code/private_ip/az/vpc_id/charging_mode/created_at`，DMS（Kafka+RocketMQ 合并）补充 `instance_name/engine/engine_version/spec_code/capacity_gb/vpc_id/charging_mode/created_at`（Kafka 含 `private_ip`、无 `az`；RocketMQ 含 `az`、无 `private_ip`），VPC 子资源补充：EIP `public_ip/private_ip/bandwidth_id/share_type/status/ip_type`、带宽 `size_mbps/share_type/charge_mode/status`、子网 `cidr/gateway_ip/vpc_id/az/available_ip_count`、对等连接 `request_vpc_id/accept_vpc_id/status`。EVS 当前仅保证 CES 基础 labels（`namespace/dim_name/resource_group` 等）入库，`volume_type/size_gb/attached_to` 等详情增强因匹配键不成立尚未支持，原因见 `docs/huawei-ces-sync-backlog.md` 的 EVS/VPC 缺口章节，或参考 `ops/huawei-ces-sync-contract.md` §21。增强按 `ProviderRef` 匹配并只新增缺失 label，不覆盖 CES 已有 label；增强失败不影响 CES 基础资源入库，批次 `message` 追加 `enriched=N enrichment_failed=type1,type2` 摘要。OBS 原生增强仍属于后续扩展（需另引 OBS SDK）。
+>
+> **2026-11-23 代码复核差距**：以下历史契约目标尚未完整落地，不能计入当前完成度：
+> 1. Sync 触发和批次查询的数据范围校验未按 §5.5.1/§5.5.2 接入；AI 资源读取的独立校验不能替代证明。
+> 2. 审计仍统一使用 `action=sync`，没有独立的 `sync_started/sync_finished/sync_reaped`，也没有完整的嵌套 summary/scopes 审计载荷。
+> 3. `triggered_by` 未在 TriggerSync 写入，reap actor 仍取当次请求用户；过期批次只在下次同账号触发时内联 reap，未装配周期后台 reaper。
+> 4. 新建云同步应用名仍可能为 `<provider>-cloud`，0036/0038 的历史迁移归一化不保证后续新建名称附带 account_id。
 
 #### 5.5.1 触发同步
 
@@ -395,7 +403,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 - Path: `/api/assets/sync`
 - Auth: Bearer + `app:assets:write`
 
-> **数据范围校验**：HTTP 中间件完成 RBAC（`app:assets:write`）后，application 层通过注入的 `AuthorizationPort` 按 `integration_account.owner_team`（及 `regions`）做数据范围二次校验。具备 `app:assets:write` 但数据范围不覆盖目标账号 `owner_team`/`region` 的用户将收到 `403 PERMISSION_DENIED`，不会创建同步批次。用户无数据范围或具备 `all` 范围时不做过滤。多 region 账号逐 region 校验，**所有目标 region 都必须命中** 才放行；只命中部分 region 仍然拒绝，以避免跨区域越权触发同步。
+> **当前数据范围边界**：HTTP 中间件完成 RBAC（`app:assets:write`）后，`SyncService` 校验账号 enabled 与 assets capability，但当前没有调用 `AuthorizationPort` 对 `integration_account.owner_team`/`regions` 做二次授权。因而不能宣称仅数据范围不覆盖的用户会收到 403，也不能宣称多 region 已逐一校验。AI 资源读取/发现有独立对象级校验，是另一条调用链。若后续补齐 Sync 授权，必须增加 owner_team、region、all/无范围、多 region 全命中和部分命中的专项测试。
 
 请求体：
 
@@ -513,7 +521,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 
 **账号级并发互斥**：同一 `integration_account_id` 同一时刻仅允许一个 `running` 批次（迁移 `0028` 部分唯一索引 `(integration_account_id) WHERE status='running'`）。若已有 `running` 批次，`POST /api/assets/sync` 返回 `409 ALREADY_EXISTS`，`message` 为 `sync already in progress for this account`，前端应提示「该账号正在同步，请稍后重试」。
 
-**异步生命周期与租约续租**：同步在后台 goroutine 执行（`runCtx` 派生自进程级 `shutdownCtx` + 30 分钟硬超时），与 HTTP 请求生命周期解耦。`running` 批次写入 `lease_expires_at`（单次窗口 TTL 5 分钟）；后台 goroutine 每 60 秒续租一次，把 `lease_expires_at` 推进到 `now+TTL`，保证正常同步不会因超时被 reap。终态写入与审计使用独立短 context（10 秒超时），即便 `runCtx` 取消（进程关闭/硬超时）也能落终态，不卡 `running`。进程崩溃遗留的 `running` 批次由下一次同步在插入前 reap 为 `failed`（`message=lease expired; previous sync batch interrupted`），实现自愈，不依赖 Redis。该约束避免并发批次交错执行 `MarkStaleByAccountScopeExceptBatch` 时把对方刚写入的资源错误标记为 stale。批次表 `triggered_by`（迁移 `0033`）持久化触发人：`TriggerSync` 创建 running 批次后立即写 `sync_started` 审计，payload 包括 `account_id`、`provider`、`sync_mode`、`regions`、`resource_group`、`resource_group_id`、`projects`、`scopes[]`、`fencing_token`、`triggered_by`，进程崩溃仍可据此按 region/project/group 还原原批次操作范围；reap 崩溃批次时写 `sync_reaped` 审计，actor 取 `triggered_by` 而非当次请求用户，当次请求用户记入 payload `reaped_by`。
+**异步生命周期与租约续租**：同步在后台 goroutine 执行（`runCtx` 派生自进程级 `shutdownCtx` + 30 分钟硬超时），与 HTTP 请求生命周期解耦。`running` 批次写入 `lease_expires_at`（TTL 5 分钟），后台 goroutine 每 60 秒续租；终态写入与审计使用独立短 context（10 秒），保证取消后仍尽可能落终态。同账号 running 互斥与 fencing 防止并发批次交错污染 stale。进程崩溃遗留的 running 批次当前由**下一次同账号 TriggerSync** 在插入前 reap；没有装配周期后台 reaper，因此无人再次触发时不保证自动自愈。migration 0033 增加了 `triggered_by` 列，但当前 TriggerSync 未写入该字段，也没有独立的 `sync_started` 即时审计；reap 与终态审计统一使用 `action=sync`，reap actor 取当次请求用户。
 
 #### 5.5.2 同步批次列表
 
@@ -521,7 +529,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 - Path: `/api/assets/sync/batches?page=1&page_size=20&account_id=acc_xxx`
 - Auth: Bearer + `app:assets:read`
 
-> **数据范围过滤**：application 层解析用户数据范围允许的 `owner_team` 集合，仓储通过子查询 `integration_account` 按 `owner_team IN (...)` 过滤批次（分页 count 准确）。用户无数据范围或具备 `all` 范围时不做过滤；具备 `team` 范围时仅返回归属团队匹配的批次；仅有非 `team`/`all` 范围（如 `region`）时列表返回空集（单批次详情 `GET /api/assets/sync/batches/:batch_id` 仍按完整数据范围校验，region 用户可按 `batch_id` 查看）。
+> **当前数据范围边界**：批次列表只按 `account_id` 和分页参数查询，当前没有按 `owner_team` 过滤；批次详情也只按 `batch_id` 读取，没有契约早期所述的完整数据范围校验。`app:assets:read` 仍是当前路由准入条件。若后续补齐过滤，需分别覆盖无范围、all、team、region-only 和单批次详情，不能只修改仓储 SQL 而遗漏 actor/user_id 传递。
 
 响应使用统一 envelope，`data` 为 `pagination.PageData<SyncBatch>`：
 
@@ -555,7 +563,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 | `sync_batch_id` | 最近成功批次 |
 | `labels` | 云同步标签对象，空时返回 `{}`。CES 同步写入 `namespace/dim_name/resource_group`；原生 API 增强按类型写入 ECS `private_ip/flavor/vpc_id/az`、RDS `private_ip/vpc_id/subnet_id/flavor`、DCS `engine/capacity_gb`、DMS `engine/spec_code`、EIP `public_ip/private_ip/bandwidth_id`、带宽 `size_mbps/share_type`、子网 `cidr/gateway_ip/vpc_id/az`、对等连接 `request_vpc_id/accept_vpc_id/status` 等；EVS 当前仅保证 CES 基础 labels，`volume_type/size_gb/attached_to` 等详情增强尚未支持；manual 资源为 `{}`。每次同步整体覆盖 |
 
-审计：`resource_type=asset_sync_batch`，`action=sync_started`/`sync_finished`/`sync_reaped`（见 §8）。批次表 `triggered_by` 持久化触发人，`sync_reaped` 审计 actor 取 `triggered_by` 而非当次请求用户。
+审计：当前 `resource_type=asset_sync_batch`、`action=sync`，终态 payload 含 status、基础计数和部分同步摘要；内联 reap 额外带 `event=reap_expired_running`。`triggered_by` 运行时归因、三个独立 action、完整嵌套 summary/scopes 和周期 reaper 尚未按早期契约落地。
 
 #### 5.5.4 资产注册表列表分页
 
@@ -600,6 +608,24 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 - 未传 `page` / `page_size` 时分别回退为 `1` / `20`；`page_size > 100` 时按 `100` 返回。
 - 列表接口只承诺返回当前页数据，不是完整字典接口。前端用于下拉选择、按 URL 业务 ID 回显或跨页定位时，不能假设当前页包含目标应用/资源；如需完整选择能力，应使用搜索型选择接口或补充按业务 ID 查询接口。
 - 当前阶段尚未提供 `GET /api/assets/applications/:application_id` 或 `GET /api/assets/resources/:resource_id` 的公开详情接口；新增这类接口时必须同步更新本节、`web/src/api/README.md` 和对应权限/测试。
+
+#### 5.5.4.1 应用、资源和匹配规则写接口
+
+以下写接口均要求 Bearer + `app:assets:write`：
+
+| 接口 | Method/Path | 关键字段与语义 |
+| --- | --- | --- |
+| 创建应用 | `POST /api/assets/applications` | `id` 可选，`name` 必填；`environment/namespace/description` 可选 |
+| 更新应用 | `PUT /api/assets/applications/:id` | 按业务 ID 更新名称、环境、namespace 和描述 |
+| 删除应用 | `DELETE /api/assets/applications/:id` | 资源、匹配规则、未关闭告警或 Inspection Policy 引用按删除保护处理 |
+| 创建资源 | `POST /api/assets/resources` | `application_id` 必填；`name/resource_type/namespace/pod/node/instance` 按注册表写入，云同步字段只读 |
+| 更新资源 | `PUT /api/assets/resources/:id` | 更新注册表基础字段，不能借该接口伪造云同步归属 |
+| 删除资源 | `DELETE /api/assets/resources/:id` | 存在匹配规则或资源关系时返回 `FAILED_PRECONDITION` |
+| 创建匹配规则 | `POST /api/assets/match-rules` | `name/label_key/label_value_pattern/application_id` 必填；支持 priority、source_type、target_type、resource_id |
+| 更新匹配规则 | `PUT /api/assets/match-rules/:id` | 按业务 ID 更新规则与 enabled 状态 |
+| 删除匹配规则 | `DELETE /api/assets/match-rules/:id` | 删除后后续告警回退默认匹配 |
+
+上述 `:id` 都是业务 ID 路径参数，不是数据库自增 ID。创建/更新/删除写 Operation Audit，审计失败不回滚主业务。应用删除还需遵循跨上下文引用完整性：未关闭告警阻断，已关闭告警可在事务内解除引用，Inspection Policy 引用阻断。
 
 #### 5.5.5 资源筛选字典
 
@@ -814,7 +840,7 @@ pending -> running -> success|partial|failed|cancelled
 | resource_type | action |
 | --- | --- |
 | `integration_account` | `create` / `update` / `delete` / `check` |
-| `asset_sync_batch` | `sync_started` / `sync_finished` / `sync_reaped` |
+| `asset_sync_batch` | 当前统一为 `sync`；payload 以 status 或 `event=reap_expired_running` 区分阶段。早期目标 `sync_started` / `sync_finished` / `sync_reaped` 尚未落地 |
 | `observability_query` | `metrics_query` / `logs_search` / `traces_query` / `topology_get` |
 | `inspection_policy` | `create` / `update` / `enable` / `disable` / `delete` |
 | `inspection_run` | `create` / `start` / `finish` / `cancel` |

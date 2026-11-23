@@ -136,6 +136,8 @@ type ChatService struct {
 	audit                   AuditRecorder
 	// alertRules 为可选的告警规则查询能力；nil 表示规则体检工具不可用。
 	alertRules AlertRuleListPort
+	// ruleHealth 为可选的批量规则体检能力；nil 表示 alert.rules.health 不可用。
+	ruleHealth RuleHealthPort
 	// accounts 为可选的集成账号发现能力；nil 表示关闭 accounts.list。
 	accounts AccountListPort
 	// assets 为可选的资源上下文读取能力；nil 表示关闭 resource.analyze。

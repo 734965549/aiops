@@ -57,7 +57,7 @@ docker-compose.host.yml（主机专用兼容覆盖）
 | --- | --- | --- |
 | `Dockerfile` | 源码、go.mod、go.sum | 构建后端二进制（`aiops-api` + `aiops-migrate`） |
 | `web/Dockerfile` | `web/` 目录（`package*.json`、源码） | 构建前端镜像，**构建上下文为 `web/`** |
-| `docker-compose.yml` | 可选 `JWT_SECRET`、可选 `AIOPS_VERSION` | 编排后端服务；PG 默认 aiops/aiops；Web 登录 admin/admin123 由完整迁移种子 |
+| `docker-compose.yml` | 可选 `JWT_SECRET`、可选 `AIOPS_VERSION` | 编排后端服务；PG 默认 aiops/aiops；完整迁移会经过 0016 种子与 0044 默认管理员锁定，不保证 admin/admin123 可登录 |
 | `docker-compose.dev.yml` | 叠加于主文件 | dev 就绪：迁移 + admin + YAML |
 | `docker-compose.prod.yml` | `.env.production`（`AIOPS_IMAGE`、`POSTGRES_PASSWORD`、JWT/凭据密钥等） | 生产链路：预构建镜像 + secrets + 不暴露端口 |
 | `docker-compose.web.yml` | 叠加于主文件 | 独立 `aiops-web` 前端服务（端口 80） |
@@ -99,7 +99,7 @@ docker build -f web/Dockerfile -t aiops-web:dev web
 
 ## 安全提示
 
-- PostgreSQL 默认 `aiops/aiops`、Web 登录 `admin/admin123`、dev JWT 占位值**只适用于本机联调或受控初始化**。
+- PostgreSQL 默认 `aiops/aiops`、dev JWT 占位值**只适用于本机联调或受控初始化**。`admin/admin123` 还依赖 dev/test bootstrap 重新激活被 0044 锁定的默认账号，不能作为完整迁移或生产环境的通用登录前提。
 - 生产部署：勿将 PostgreSQL / Redis 端口发布到公网或宿主机；JWT、DB 密码、Integration 凭据加密密钥、`AIOPS_EXECUTION__AGENT_REGISTER_TOKEN` 须通过 secrets / CI 注入；关闭 bootstrap；`database.auto_migrate=false`；先执行 `/app/aiops-migrate`（或 `go run ./cmd/migrate`）再启 API。迁移 `0044` 已按 `username=admin` + 已知 admin123 哈希锁定默认管理员（status=locked、清空 password_hash），API 对外开放前运行 `scripts/provision-prod-admin.ps1` 创建安全管理员（bcrypt cost 12 + admin 角色），不得依赖默认账号（详见 `docs/release-checklist.md` §2.8 / §5.1）。JWT TTL 生产默认 60min / 72h；API 容器非 root + read_only + cap_drop + no-new-privileges。
 - `aiops-api:1.2` 起，非 dev 环境必须配置 `AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY`。该密钥用于加密云账号 AK/SK、Token 等接入凭据，必须是独立强随机值，不能为空、不能使用 dev 占位符、不能与 `AIOPS_AUTH__JWT_SECRET` 相同。
 

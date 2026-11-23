@@ -269,8 +269,9 @@ func (f *fakeChatToolGateway) Validate(_ context.Context, req toolgateway.ToolRe
 func allowAllChatTools() *fakeChatToolGateway {
 	return &fakeChatToolGateway{allowed: map[string]bool{
 		chatToolAlarmAnalyze: true, chatToolMetricsQuery: true, chatToolAlertRulesList: true,
+		chatToolAlertRulesHealth: true,
 		chatToolPostgresActivity: true,
-		chatToolAccountsList: true, chatToolResourceAnalyze: true, chatToolResourcesList: true,
+		chatToolAccountsList:     true, chatToolResourceAnalyze: true, chatToolResourcesList: true,
 		chatToolExecutionPropose: true,
 	}}
 }
@@ -1584,6 +1585,76 @@ func TestSendMessageAgentLoopQueriesAlertRules(t *testing.T) {
 	}
 	if auditChatLoopRounds(audit) != 1 {
 		t.Fatalf("loop_rounds = %d", auditChatLoopRounds(audit))
+	}
+}
+
+type fakeRuleHealthPort struct {
+	got    RuleHealthQuery
+	userID string
+	result *RuleHealthResult
+	err    error
+	calls  int
+}
+
+func (f *fakeRuleHealthPort) Check(_ context.Context, userID string, q RuleHealthQuery) (*RuleHealthResult, error) {
+	f.got = q
+	f.userID = userID
+	f.calls++
+	return f.result, f.err
+}
+
+func TestSendMessageAgentLoopRunsRuleHealth(t *testing.T) {
+	svc, repo, _, chat, audit, _ := newChatTestService(t)
+	threshold := 80.0
+	port := &fakeRuleHealthPort{result: &RuleHealthResult{
+		Status: EvidenceStatusOK, WindowStart: 1700000000, WindowEnd: 1700003600,
+		Period: 3600, Aggregator: "max", RuleCount: 1, CheckedCount: 1,
+		Rules: []RuleHealthRuleResult{{
+			RuleID: "r-1", Name: "CPU high", Metric: "rds001_cpu_util",
+			Operator: ">", Threshold: &threshold, Unit: "%", Status: EvidenceStatusOK,
+			PointCount: 3, BreachPoints: 1, EvidenceID: "ev-h1",
+		}},
+	}}
+	svc.SetRuleHealth(port)
+	chat.script = []string{
+		`{"tool_requests":[{"tool_code":"alert.rules.health","reason":"规则体检","params":{"namespace":"SYS.RDS","limit":5}}]}`,
+		chatAnswerJSON("批量规则体检完成"),
+	}
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "alerts", AlertID: "a1"})
+
+	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "SYS.RDS 规则阈值体检",
+		Context: &domain.SessionContext{Page: "alerts", AlertID: "a1"},
+	})
+	if err != nil {
+		t.Fatalf("send message: %v", err)
+	}
+	if result.Status != chatStatusOK {
+		t.Fatalf("status = %q", result.Status)
+	}
+	now := svc.now().Unix()
+	if port.got.AccountID != "acc-1" || port.got.Namespace != "SYS.RDS" || port.got.Limit != 5 {
+		t.Fatalf("rule health query = %+v", port.got)
+	}
+	if port.got.From != now-ruleHealthDefaultWindowSeconds || port.got.To != now ||
+		port.got.Period != ruleHealthDefaultPeriod || port.got.Aggregator != "max" {
+		t.Fatalf("rule health window = %+v", port.got)
+	}
+	if !hasToolCall(result.ToolCalls, chatToolAlertRulesHealth, "ok") {
+		t.Fatalf("missing alert.rules.health call: %+v", result.ToolCalls)
+	}
+	if !hasReference(result.References, "ev-h1") {
+		t.Fatalf("missing rule health reference: %+v", result.References)
+	}
+	var healthAudit *AuditRecord
+	for i := range audit.rows {
+		row := audit.rows[i]
+		if row.Action == AuditToolInvoke && row.Payload["tool_code"] == chatToolAlertRulesHealth {
+			healthAudit = &audit.rows[i]
+		}
+	}
+	if healthAudit == nil || healthAudit.Payload["result"] != "success" || healthAudit.Payload["evidence_id"] != "ev-h1" {
+		t.Fatalf("unexpected rule health audit: %+v", healthAudit)
 	}
 }
 

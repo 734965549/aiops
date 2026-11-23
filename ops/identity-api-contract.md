@@ -6,10 +6,12 @@
 
 ## 1. 范围
 
-- 角色与权限只读分页查询。
+- 角色、权限、数据范围与 AI 工具权限字典查询。
 - 当前用户资料与当前用户绑定角色。
 - 统一授权校验调试接口（`POST /api/identity/authorize`）。
+- 用户角色、角色权限、角色数据范围和角色 AI 工具权限的查询与全量替换。
 - **管理员专用**：本地用户创建、外部身份预置、LDAP/AD 目录浏览与批量导入（不对外公开注册）。
+- 认证审计分页查询及权限变更 Operation Audit。
 
 ## 2. 鉴权要求
 
@@ -28,12 +30,16 @@ Authorization: Bearer <access_token>
 | `GET /api/identity/me` | `app:identity.profile:read` |
 | `GET /api/identity/me/roles` | `app:identity.profile.roles:read` |
 | `POST /api/identity/authorize` | `app:identity.authorization:execute` |
+| `GET /api/identity/data-scopes` | `app:identity.data_scopes:read` |
+| `GET /api/identity/ai-tool-permissions` | `app:identity.ai_tool_permissions:read` |
+| `GET /api/identity/admin/users` | `app:identity.users:read` |
 | `POST /api/identity/admin/users` | `app:identity.users:create` |
 | `POST /api/identity/admin/external-identities` | `app:identity.external_identities:create` |
 | `POST /api/identity/admin/users/:user_id/external-identities` | `app:identity.external_identities:create` |
 | `POST /api/identity/admin/ldap/connect` 及同前缀 LDAP 会话接口 | `app:identity.external_identities:create` |
 | `GET /api/identity/admin/ldap/:provider_id/*`（已配置身份源） | `app:identity.external_identities:create` |
 | `GET /api/identity/admin/auth-audits` | `app:identity.auth_audits:read` |
+| 用户角色与角色授权 PUT（详见 §9） | `app:identity.access_control:write` |
 
 授权失败返回 `PERMISSION_DENIED`（HTTP 403）。未登录或 token 无效返回 `UNAUTHENTICATED`（HTTP 401）。
 
@@ -239,7 +245,14 @@ Authorization: Bearer <access_token>
 }
 ```
 
-授权拒绝时 HTTP 仍为 403，`code` 为 `PERMISSION_DENIED`，`message` 为具体原因（如 `missing operation permission`）。
+授权拒绝时 HTTP 为 403，`code` 为 `PERMISSION_DENIED`，`message` 为具体原因（如 `missing operation permission`）。当前服务在拒绝时同时返回授权结果和错误，HTTP Handler 会走统一错误响应，因此调用方不能假设一定收到 HTTP 200 + `data.allowed=false`；`allowed/reason` 主要用于服务内部判断和成功结果。
+
+#### 数据范围的运行时边界
+
+- `AuthorizeStatic` 静态路由设置 `SkipDataScope=true`，只校验固定 RBAC 权限。
+- 动态调用必须显式传入 `object_owner/object_dept/object_team/object_region/object_tags`，或使用专门的数据查询过滤，才会执行数据范围隔离。
+- 非 all 数据范围缺少对象上下文时拒绝；无数据范围或 all 按当前实现放行。
+- 当前已有 AI 告警/账号证据访问、Asset 云同步及同步批次 owner_team 过滤等调用点。绑定数据范围不等于所有业务列表、详情都自动隔离，新增调用点必须单独验收。
 
 ### 4.6 认证审计查询
 
@@ -368,7 +381,7 @@ Authorization: Bearer <access_token>
 | 预置后方可登录 | 外部用户首次 LDAP/OAuth 登录前，必须已有 `iam_external_identity` 绑定；**禁止**按用户名自动关联已有本地账号 |
 | 身份源 ID | 导入时填写的 `provider_id` 须与 `configs/config.yaml` → `identity.providers[].id` 一致，导入后用户方可域登录 |
 | 平台用户名 | 未指定时自动生成 `{provider_id}:{外部登录名}`，避免与本地账号重名 |
-| LDAP 会话 | 前端填写连接参数后，`POST .../ldap/connect` 建立约 **30 分钟**短期会话；Bind 密码存 Redis/内存，**不**写入前端 localStorage |
+| LDAP 会话 | 前端填写连接参数后，`POST .../ldap/connect` 建立约 **30 分钟**短期会话，并绑定创建它的管理员 user_id；Bind 密码存 Redis/内存，**不**写入前端 localStorage。prod 依赖 Redis，内存模式仅限单实例 dev |
 | 导入上限 | 单次批量导入最多 **200** 人；导入时可同时绑定多个平台角色（`role_codes`） |
 
 **推荐运维流程**：
@@ -441,6 +454,7 @@ Authorization: Bearer <access_token>
 | `insecure_skip_verify` | boolean | 否 | 跳过 TLS 校验（仅 dev） |
 | `browse_org_filter` | string | 否 | 浏览 OU 的 LDAP 过滤；空则用默认 |
 | `browse_user_filter` | string | 否 | 浏览用户的 LDAP 过滤；空则按类型默认 |
+| `attr_subject` | string | 否 | 外部唯一主体属性，如 entryUUID/objectGUID；须与后续登录身份源配置一致 |
 
 #### 响应 `data`
 
@@ -568,7 +582,7 @@ Authorization: Bearer <access_token>
 
 ### 9.3 审计
 
-权限写接口成功后写 Operation Audit，审计失败只记录告警日志，不回滚主业务写入。
+权限写接口成功后尝试写 Operation Audit。当前 `AccessControlService` 忽略审计 recorder 返回错误，不回滚主业务写入；调用方不能把审计落库成功作为授权写接口已提交的前提。认证审计写失败由 HTTP Handler 记录 Warn，同样不阻断认证主流程。
 
 | resource_type | action |
 | --- | --- |
@@ -578,3 +592,18 @@ Authorization: Bearer <access_token>
 | `identity_role` | `set_role_ai_tools` |
 
 审计 payload 记录 old/new 业务 ID 和 `actor_user_id`，不得记录密码、token、密钥。
+
+## 10. 前端与验证边界
+
+前端已有登录、LDAP/AD 导入和权限管理页：
+
+- 登录页支持本地、LDAP/AD、OAuth2/OIDC；OAuth state 与 provider 的对应关系暂存 sessionStorage。
+- 权限管理页支持用户筛选、manual 用户角色替换和三类角色授权全量替换，403 保留页面结构。
+- 本地用户创建、认证审计查询、身份源配置没有专门管理 UI，需通过 Admin API、认证审计 API 或配置文件完成。
+- 当前 `web/src/stores/auth.ts` 会将 access/refresh token 写入 localStorage，与项目“不将 Token 写入前端持久化状态”的安全约束存在差距，需单独整改，不能视为合规项。
+
+验证证据应分开记录：
+
+- 单元/HTTP 测试覆盖本地认证、外部身份预置、OAuth state、RBAC、数据范围、工具权限、权限替换、JWT/密码/限流/IP 白名单等。
+- `scripts/e2e-identity-access.ps1` 仅覆盖本地用户创建、viewer manual 绑定、Dashboard 读取、权限写 403 和 `set_user_roles` 审计。
+- 该 E2E 不覆盖 refresh/logout、Redis 轮换/吊销、LDAP/OAuth、认证审计查询、其他角色授权写接口和前端 UI；这些项目不得仅凭该脚本标记为端到端通过。

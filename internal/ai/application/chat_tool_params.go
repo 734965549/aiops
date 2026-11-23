@@ -15,18 +15,19 @@ const (
 	chatMetricMinPeriod              = 10
 	chatMetricMaxWindowSec           = 7 * 24 * 3600
 	chatMetricMaxLongWindowSec       = 30 * 24 * 3600
-	chatMetricDailyPeriodSec         = 24 * 3600
+	chatMetricLongWindowMinPeriodSec = 3600
 	chatMetricMaxPoints              = 1440
 	chatMetricMaxDimensions          = 20
 	chatMetricMaxDimensionKeyRunes   = 64
 	chatMetricMaxDimensionValueRunes = 128
 	chatMetricMaxIdentityRunes       = 128
 
-	chatRulesDefaultLimit   = 50
-	chatRulesMaxLimit       = 50
-	chatRulesMaxKeywordRune = 100
-	chatRuleDescriptionRune = 300
-	chatRuleMaxLabels       = 20
+	chatRulesDefaultLimit      = 50
+	chatRulesMaxLimit          = 50
+	chatRulesMaxKeywordRune    = 100
+	chatRuleDescriptionRune    = 300
+	chatRuleMaxLabels          = 20
+	chatRuleMaxResourceSamples = 3
 
 	chatResourceListDefaultLimit   = 20
 	chatResourceListMaxLimit       = 50
@@ -271,8 +272,8 @@ func validateMetricToolQuery(q MetricEvidenceQuery) string {
 	}
 	window := q.To - q.From
 	if window > chatMetricMaxWindowSec {
-		if period < chatMetricDailyPeriodSec {
-			return "time range exceeds 7 days; period must be at least 86400"
+		if period < chatMetricLongWindowMinPeriodSec {
+			return "time range exceeds 7 days; period must be at least 3600"
 		}
 		if window > chatMetricMaxLongWindowSec {
 			return "time range exceeds maximum 30 days"
@@ -415,14 +416,48 @@ func buildResourceListQuery(resource *AssetContext, raw map[string]any) (Resourc
 	return query, "", ""
 }
 
-// capAlertRulesForObservation 控制单次规则观测体积：描述截断、标签数限制。
+// capAlertRulesForObservation 控制单次规则观测体积：描述/标签/资源样本截断。
 func capAlertRulesForObservation(rules []AlertRuleSummary) []AlertRuleSummary {
 	out := make([]AlertRuleSummary, 0, len(rules))
 	for _, rule := range rules {
 		rule.Description = truncateRunes(rule.Description, chatRuleDescriptionRune)
 		rule.Labels = sanitizeRuleLabels(rule.Labels)
 		rule.MetricLabel = chatMetricLabel(rule.Metric)
+		rule.Unit = truncateRunes(strings.TrimSpace(rule.Unit), 32)
+		rule.Resources = sanitizeRuleResources(rule.Resources)
 		out = append(out, rule)
+	}
+	return out
+}
+
+// sanitizeRuleResources 限制资源维度样本数量与长度；空资源返回 nil。
+func sanitizeRuleResources(resources []map[string]string) []map[string]string {
+	if len(resources) == 0 {
+		return nil
+	}
+	out := make([]map[string]string, 0, min(len(resources), chatRuleMaxResourceSamples))
+	for _, dims := range resources {
+		clean := make(map[string]string, len(dims))
+		for key, value := range dims {
+			key = truncateRunes(strings.TrimSpace(key), chatMetricMaxDimensionKeyRunes)
+			value = truncateRunes(strings.TrimSpace(value), chatMetricMaxDimensionValueRunes)
+			if key == "" || value == "" {
+				continue
+			}
+			clean[key] = value
+			if len(clean) >= chatMetricMaxDimensions {
+				break
+			}
+		}
+		if len(clean) > 0 {
+			out = append(out, clean)
+		}
+		if len(out) >= chatRuleMaxResourceSamples {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

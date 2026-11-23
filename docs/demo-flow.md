@@ -2,8 +2,11 @@
 
 本文档描述如何在本地或演示环境，按顺序走完 **告警 → 资产匹配 → Runbook 推荐 → 执行确认 → Dashboard 汇总 → 审计** 的完整闭环。适合产品演示、新人上手与发布前抽检。
 
-**默认账号**：`admin` / `admin123`（仅开发/演示环境）
+**默认账号**：`admin` / `admin123`（仅开发/演示环境，且已启用 bootstrap）
+
 **默认端口**：API `8080`，前端 `5173`
+
+迁移 `0044` 会锁定仍使用已知默认密码的管理员；dev/test 可由 bootstrap 重新激活，生产不能使用本演示账号，须通过 `scripts/provision-prod-admin.ps1` 初始化安全管理员。
 
 ---
 
@@ -47,6 +50,8 @@ npm run dev
 
 ## 1. 管理员登录
 
+前置：使用方式 A 的 dev bootstrap，或已在本地 `configs/config.yaml` 启用 dev/test bootstrap。若只执行迁移而未启用 bootstrap，不要假设默认账号仍可登录。
+
 | 步骤 | 操作 | 预期 |
 |------|------|------|
 | 1.1 | 打开登录页，输入 `admin` / `admin123` | 进入系统，侧栏显示各模块 |
@@ -77,7 +82,7 @@ curl -X POST http://127.0.0.1:8080/api/identity/login `
 .\scripts\e2e-asset.ps1
 ```
 
-脚本会创建应用/资源、配置匹配规则、接入告警并验证绑定，最后清理测试数据。
+脚本会创建应用/资源、配置匹配规则、检查筛选排序和 facets、接入告警验证绑定、验证删除保护，最后清理测试数据；不覆盖云同步或拓扑。
 
 ---
 
@@ -97,6 +102,27 @@ curl -X POST http://127.0.0.1:8080/api/identity/login `
 
 保存后，新接入的告警将按规则优先级匹配，未命中时回退默认 §9.1 逻辑。
 
+### 3.1 云同步扩展（fake 或真实账号）
+
+非生产环境可先运行 fake 同步：
+
+```powershell
+.\scripts\e2e-asset-sync.ps1
+```
+
+脚本验证 running 批次、终态 success、云资源入库、批次历史和稳定清单不产生 stale。真实 CES/hybrid 对账必须使用独立只读账号并运行 `e2e-asset-sync-real.ps1`，不能用 fake 结果替代。默认候选名未命中时可进入全部资源组并集，显式指定组未命中仍失败。
+
+当前同步数据范围、完整审计生命周期、周期后台 reaper 和云应用命名仍有实现差距，演示时不要讲成已经全部闭环。
+
+### 3.2 CMDB 资源拓扑扩展
+
+1. 打开 `/assets/topology?application_id=<application_id>`，确认应用与资源来自注册表，而不是 Observability fake 调用拓扑。
+2. 在同一应用和跨应用资源间创建手工 `depends_on` 关系，再选择根资源并切换 1–3 层和上下游，检查完整路径、循环保护与列表降级。
+3. 构造无法唯一解析的云派生端点，确认不出现幽灵节点，页面展示 `unresolved_relation_count`；超过 299 个资源时展示 `truncated`。
+4. 使用 `/api/assets/resources/resolve` 分别验证唯一、未注册和多候选，页面不得默认选择多候选第一项。
+
+拓扑目前没有独立 E2E 脚本，演示结果需结合后端测试和前端 Vitest 记录。
+
 ---
 
 ## 4. 创建告警源
@@ -105,22 +131,26 @@ curl -X POST http://127.0.0.1:8080/api/identity/login `
 
 | 步骤 | 操作 | 预期 |
 |------|------|------|
-| 4.1 | 创建 Alertmanager 类型告警源，`enabled=true` | 返回 `source_id` |
-| 4.2 | 记录 Webhook Token | 用于下一步 ingest |
+| 4.1 | 创建 Alertmanager 类型告警源，`enabled=true` | 返回接入源业务字段 `id` |
+| 4.2 | 创建前自行安全保存 Webhook secret | 用于下一步 ingest；响应只返回 `secret_masked`，不会返回明文 Token |
 
 **API 示例**：
 
 ```powershell
-# 需先登录获取 Bearer token
+# 需先登录获取 Bearer token；当前创建源还需要 app:integrations:read
 POST /api/alerts/sources
 {
-  "source_id": "demo-am",
+  "id": "demo-am",
   "name": "演示 Alertmanager",
   "type": "prometheus_alertmanager",
   "enabled": true,
-  "webhook_secret": "demo-webhook-secret"
+  "secret": "demo-webhook-secret"
 }
 ```
+
+创建成功后，Webhook 路径使用 `/api/alerts/ingest/alertmanager/demo-am`，请求头使用创建时保存的 secret。更新时省略 `secret` 会保留原哈希。
+
+**CES 拉取扩展演示**：非生产环境可执行 `.\scripts\e2e-alert-sync.ps1`，脚本使用 fake 华为账号完成三轮同步、独立恢复和审计检查。该脚本不验证真实云账号、后台 worker 或多实例租约争抢。
 
 ---
 
@@ -131,6 +161,8 @@ POST /api/alerts/sources
 ```powershell
 .\scripts\e2e-alert.ps1
 ```
+
+该脚本会继续验证重复 firing、resolved、关闭后新 lifecycle、认领、处理、手动恢复和 AI 入口；转派、静默、备注与通用 Webhook 需另行演示或验收。
 
 或手工调用：
 
@@ -179,6 +211,10 @@ GET /api/runbooks/recommendations?alert_id={id}
 ```powershell
 .\scripts\e2e-runbook.ps1
 ```
+
+脚本会构造 processing 告警，验证推荐、多步任务、CONFIRM、模拟执行、首步 dry_run 标记和执行时间线；不覆盖模板 CRUD、非 processing 拒绝、low 风险、步骤失败或完整 UI。
+
+当前 `/runbooks` 页面只提供列表、详情和启停。后端支持创建、全量更新和软停用，但页面没有新建、完整编辑或删除入口。推荐 API 本身不限制告警状态，只有创建执行任务时强制 processing。`command_spec_id`、`medium_selector` 和 Runbook→Agent 展开仍是规划能力，不在本演示中宣称已落地。
 
 ---
 

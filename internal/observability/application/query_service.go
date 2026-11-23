@@ -17,18 +17,20 @@ import (
 const (
 	maxMetricWindowSec     = 7 * 24 * 3600 // 7d
 	maxMetricLongWindowSec = 30 * 24 * 3600
-	metricDailyPeriodSec   = 24 * 3600
-	minMetricPeriodSec     = 10
-	defaultMetricPeriod    = 60
-	maxMetricPoints        = 1440
-	defaultLogLimit        = 100
-	maxLogLimit            = 500
-	defaultTraceLimit      = 50
-	maxTraceLimit          = 1000
-	defaultAssetLimit      = 100
-	maxAssetLimit          = 500
-	defaultAlertLimit      = 100
-	maxAlertLimit          = 500
+	// metricLongWindowMinPeriodSec 是 >7 天窗口的最小聚合粒度；
+	// 30 天 × 1 小时 = 720 点，仍在 1440 点上限内（CES 支持 3600 粒度）。
+	metricLongWindowMinPeriodSec = 3600
+	minMetricPeriodSec           = 10
+	defaultMetricPeriod          = 60
+	maxMetricPoints              = 1440
+	defaultLogLimit              = 100
+	maxLogLimit                  = 500
+	defaultTraceLimit            = 50
+	maxTraceLimit                = 1000
+	defaultAssetLimit            = 100
+	maxAssetLimit                = 500
+	defaultAlertLimit            = 100
+	maxAlertLimit                = 500
 )
 
 // QueryService 统一编排观测查询：账号解析 -> 能力校验 -> Provider Port -> 证据引用 -> 审计。
@@ -482,8 +484,8 @@ func normalizeMetricQuery(q domain.MetricQuery) (domain.MetricQuery, error) {
 		if !q.AllowLongWindow {
 			return domain.MetricQuery{}, apperr.New(apperr.CodeInvalidArgument, "time range exceeds maximum 7 days")
 		}
-		if period < metricDailyPeriodSec {
-			return domain.MetricQuery{}, apperr.New(apperr.CodeInvalidArgument, "time range exceeds 7 days; period must be at least 86400")
+		if period < metricLongWindowMinPeriodSec {
+			return domain.MetricQuery{}, apperr.New(apperr.CodeInvalidArgument, "time range exceeds 7 days; period must be at least 3600")
 		}
 		if window > maxMetricLongWindowSec {
 			return domain.MetricQuery{}, apperr.New(apperr.CodeInvalidArgument, "time range exceeds maximum 30 days")

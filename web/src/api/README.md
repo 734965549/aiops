@@ -18,14 +18,18 @@
 
 | 函数 | 接口 | 说明 |
 | --- | --- | --- |
-| `login` | `POST /api/identity/login` | 公开；返回 TokenPair |
-| `loginExternal` | `POST /api/identity/login/external` | 公开；LDAP/AD 域登录 |
-| `fetchLoginProviders` | `GET /api/identity/login/providers` | 公开；已启用身份源 |
-| `refresh` | `POST /api/identity/refresh` | 公开；凭 refresh_token 换发 |
-| `logout` | `POST /api/identity/logout` | 公开；吊销 refresh token |
+| `login` | `POST /api/identity/login` | 公开；返回 TokenPair；可选 `provider_id` 切换外部密码身份源 |
+| `loginExternal` | `POST /api/identity/login/external` | 公开；LDAP/AD 域登录，必须传 `provider_id` |
+| `fetchLoginProviders` | `GET /api/identity/login/providers` | 公开；已启用身份源，不含连接密码或 client_secret |
+| `refresh` | `POST /api/identity/refresh` | 公开；凭 refresh_token 换发；Redis 模式轮换并作废旧 JTI |
+| `logout` | `POST /api/identity/logout` | 公开；吊销当前 refresh token，不吊销既有 access token |
 | `fetchOAuthAuthorizeURL` | `GET /api/identity/oauth/:provider_id/authorize` | 公开；获取 OAuth/OIDC 授权跳转 URL 与 state |
 | `completeOAuthCallback` | `POST /api/identity/oauth/:provider_id/callback` | 公开；OAuth 回调换发 TokenPair |
-| `authorize` | `POST /api/identity/authorize` | 需 Bearer + RBAC |
+| `authorize` | `POST /api/identity/authorize` | 需 Bearer + RBAC；拒绝时按 403 错误响应处理，不能假设 HTTP 200 + `allowed=false` |
+
+登录页只暂存 OAuth state 与 provider 的对应关系到 sessionStorage，用于回调匹配；身份源仍由后端配置，外部用户必须已预置绑定。dev 无 Redis 时 refresh 轮换/吊销和 OAuth state 共享会降级，不能用该模式替代生产验收。
+
+`stores/auth.ts` 负责 TokenPair、当前用户、并发 refresh 复用与 logout。**当前实现会将 access/refresh token 和用户摘要写入 localStorage，与项目“不将 Token 写入前端持久化状态”的安全约束存在差距，需单独整改。**
 
 契约：`ops/auth-contract.md`、`ops/identity-api-contract.md`。
 
@@ -50,7 +54,14 @@
 | `fetchRoleDataScopes` / `replaceRoleDataScopes` | `GET/PUT /api/identity/admin/roles/:role_id/data-scopes` | 查询或替换角色数据范围 |
 | `fetchRoleAIToolPermissions` / `replaceRoleAIToolPermissions` | `GET/PUT /api/identity/admin/roles/:role_id/ai-tool-permissions` | 查询或替换角色 AI 工具权限 |
 
-403 时页面必须保留结构并显示权限不足提示；动态菜单权限不在当前阶段内。
+实现边界：
+
+- LDAP 连接支持 `attr_subject`，须与后续登录身份源的主体属性一致；Bind 密码只进入约 30 分钟的服务端会话，不写前端本地存储。
+- 用户角色 PUT 只替换 `manual` 来源，`ldap_import` 与 `external_group` 来源由页面保留并禁用编辑；三类角色授权 PUT 都是幂等全量替换，空数组表示清空。
+- 权限写操作由服务端审计；当前审计失败不回滚授权变更，前端不能把“保存成功”解释为审计一定落库。
+- 本地用户创建、外部身份手工预置、认证审计查询和身份源配置目前没有专门前端封装/管理页，不能仅凭权限管理页宣称这些 UI 已完成。
+
+403 时页面必须保留结构并显示权限不足提示；当前路由只校验登录、侧栏为静态配置，动态菜单权限不在当前阶段内。
 
 ## 系统（`system.ts`）
 
@@ -72,23 +83,35 @@
 
 | 函数 | 接口 | 说明 |
 | --- | --- | --- |
-| `listAlerts` | `GET /api/alerts` | 告警分页查询 |
-| `getAlert` | `GET /api/alerts/:alert_id` | 告警详情与时间线 |
+| `listAlerts` | `GET /api/alerts` | 告警分页查询；`active_only=true` 只排除 closed |
+| `getAlert` | `GET /api/alerts/:alert_id` | 告警详情与时间线，`related` 当前为空对象 |
 | `acknowledgeAlert` | `POST /api/alerts/:alert_id/acknowledge` | 认领告警 |
 | `assignAlert` | `POST /api/alerts/:alert_id/assign` | 转派负责人 |
 | `startProcessingAlert` | `POST /api/alerts/:alert_id/start-processing` | 开始处理 |
 | `recoverAlert` | `POST /api/alerts/:alert_id/recover` | 人工标记恢复 |
 | `closeAlert` | `POST /api/alerts/:alert_id/close` | 关闭告警 |
-| `silenceAlert` / `unsilenceAlert` | `POST /api/alerts/:alert_id/silence` / `unsilence` | 静默或取消静默 |
+| `silenceAlert` / `unsilenceAlert` | `POST /api/alerts/:alert_id/silence` / `unsilence` | 静默或取消静默；到期不会自动恢复状态 |
 | `commentAlert` | `POST /api/alerts/:alert_id/comments` | 追加时间线评论 |
-| `requestAlertAIAnalysis` | `POST /api/alerts/:alert_id/ai-analysis` | 请求 AI 分析，写时间线与审计 |
+| `requestAlertAIAnalysis` | `POST /api/alerts/:alert_id/ai-analysis` | 请求 AI 分析，写时间线与审计；实际结果再调 `analyzeAlert` |
 | `listAlertSources` / `getAlertSource` | `GET /api/alerts/sources` | 告警源查询 |
-| `createAlertSource` / `updateAlertSource` / `deleteAlertSource` | `/api/alerts/sources` | 告警源维护；secret 只写入不回显；`delivery_mode=pull` 时提交 `account_id`/`pull_config` |
+| `createAlertSource` / `updateAlertSource` / `deleteAlertSource` | `/api/alerts/sources` | 告警源维护；创建字段为 `id/secret`，不是 `source_id/webhook_secret` |
 | `syncAlertSource` | `POST /api/alerts/sources/:source_id/sync` | 手动触发 CES 拉取；返回 `AlertSyncResult`，`status` 区分 `success/partial/failed` |
 
 页面：`views/alerts/index.vue`（接入源弹窗拆分为 `views/alerts/components/AlertSourceManager.vue` 与 `AlertSourceForm.vue`）。契约：`ops/alert-contract.md`、`ops/huawei-ces-alert-sync-contract.md`。
 
+实现边界：
+
+- Webhook secret 必须在创建前由调用方安全保存；后端只存哈希，响应只有 `secret_masked`，不会返回可用于 ingest 的明文 Token。
+- 当前创建/更新任何来源类型都要求 `app:alerts:ingest` + `app:integrations:read`；删除/查询只要求 `app:alerts:ingest`。拉取源还会校验账号数据范围。
+- 手动同步是等待本轮结果的 API，HTTP `code=OK` 时仍须检查 `data.status` 和 `failed_scopes`；worker 默认关闭，真实 CES 验收不能用 fake E2E 替代。
+- 告警列表/详情当前仅做 RBAC，未自动应用数据范围过滤；AI 分析的对象级数据范围校验是独立链路。
+- 详情支持友好/原始字段、指标语义、完整 ID 复制、敏感值掩码和 matched/unregistered/ambiguous 资源解析；多候选不得默认选择。
+- 告警 AI 弹窗目前展示风险、摘要、建议和引用，未完整展示 `diagnosis`；完整诊断卡片在 AI 助手，不能将弹窗视为已覆盖 RDS 结构化诊断展示。
+- `/alerts?alert_id=` 支持深链；“问 AI 助手”写入当前告警上下文并打开会话选择。
+
 调用链：Webhook / 页面操作 -> Alert Handler -> AlertService / IngestService -> Asset matcher -> Audit recorder。告警状态流转必须遵守 domain 状态机，不能在页面里模拟。
+
+验证边界：`e2e-alert.ps1` 不含转派、静默、备注、无效 token、通用 Webhook 或完整 UI；`e2e-alert-sync.ps1` 使用 fake，不覆盖真实 CES、多实例、worker 定时调度及全部规则富化分支。
 
 ## Asset（`asset.ts`）
 
@@ -97,10 +120,6 @@
 | `listApplications` / `createApplication` / `updateApplication` / `deleteApplication` | `/api/assets/applications` | 应用注册表 CRUD；`listApplications` 返回 `PageResult<Application>`，支持 `page` / `page_size` |
 | `listResources` / `createResource` / `updateResource` / `deleteResource` | `/api/assets/applications/:application_id/resources`、`/api/assets/resources` | 资源注册表 CRUD，云同步字段只由后端同步链路写入；`listResources` 按 `application_id` 返回 `PageResult<Resource>`，支持 `page` / `page_size`、`cloud_resource_type` / `region` / `sync_status` / `source` 精确筛选、`keyword` 跨字段模糊筛选，以及 `sort_by` / `sort_order` 服务端排序（排序字段白名单见 `ops/cloud-observability-contract.md` §5.5.4）；筛选与排序均为服务端行为，前端不做跨页本地假筛选/假排序 |
 | `getResourceFilterOptions` | `GET /api/assets/applications/:application_id/resource-facets` | 资源页云类型/Region 下拉字典；仅返回当前应用下非空去重值，按字典序升序；只作候选值，实际过滤仍走 `listResources` 的精确参数（契约 §5.5.5） |
-| `getAssetTopology` | `GET /api/assets/topology` | CMDB 应用归属、手工与云派生关系图；按 `application_id` 或 `root_resource_id + depth + direction` 查询，支持跨应用链路和已验证 labels 派生边；必须展示 `meta.truncated` 与 `unresolved_relation_count` |
-| `getAssetResourceResolution` | `GET /api/assets/resources/resolve` | 按云 ID、账号、Region 和云类型解析真实资源及应用；区分 `matched` / `unregistered` / `ambiguous`，多候选不得默认选择 |
-| `listAssetResourceRelations` | `GET /api/assets/resource-relations` | 查询同一应用内的手工资源关系 |
-| `createAssetResourceRelation` / `deleteAssetResourceRelation` | `POST/DELETE /api/assets/resource-relations` | 创建/删除手工关系；写权限和服务端校验优先，前端不伪造 `origin` 或云端关系 |
 | `listMatchRules` / `createMatchRule` / `updateMatchRule` / `deleteMatchRule` | `/api/assets/match-rules` | 匹配规则 CRUD；`listMatchRules` 返回 `PageResult<MatchRule>` |
 | `triggerAssetSync` | `POST /api/assets/sync` | 触发云资源同步，立即返回 `running` 批次 |
 | `pollSyncBatch` | 轮询 `GET /api/assets/sync/batches/:batch_id` | 触发后轮询到终态（`success`/`partial`/`failed`）或超时（默认 10 分钟）抛 `SyncStillRunningError`；`hybrid` 下只要任一增强失败就应落 `partial`；支持 `shouldStop` 取消（组件卸载） |
@@ -111,6 +130,8 @@
 页面：`views/assets/index.vue`；拓扑 API 独立封装于 `asset-topology.ts`，页面为 `views/assets/topology/index.vue`（路由 `/assets/topology`）。契约：`ops/cloud-observability-contract.md` §5.5、`ops/huawei-ces-sync-contract.md` §15。
 
 分页约定：`page` 从 1 开始，默认 `page_size=20`，后端最大按 `100` 处理。上述 `list*` 函数只返回当前页，不能当作完整应用/资源字典；下拉选择、深链回显或跨页定位需要额外维护已选项，或后续补充按业务 ID 查询/搜索接口。
+
+排序边界：后端白名单已包含 `created_at` 与 `updated_at`，但前端 `SORTABLE_RESOURCE_FIELDS` 当前只开放 `created_at` 等字段，`updated_at` 可展示和导出、暂不提供表头排序。不能写成“后端尚未支持 updated_at”，也不能默认前端已开放。
 
 云同步字段由后端写入，前端只读展示：`source`、`integration_account_id`、`cloud_resource_id`、`cloud_resource_type`、`region`、`sync_status`、`last_synced_at`、`sync_batch_id`、`labels`。未知 `cloud_resource_type` 必须原样展示，不能在前端丢弃。`sync_status=stale` 应明显标识。资源列表的 `cloud_resource_type`、`region`、`sync_status` 筛选必须经 `listResources` 透传到后端，不能做跨页本地假筛选。
 
@@ -124,18 +145,51 @@
 
 调用链：页面触发 -> `asset.ts` -> Asset SyncService -> Observability discovery port -> Provider Adapter。同步失败或局部失败不得破坏 P0 告警匹配闭环。
 
+当前同步实现差距：
+
+- Sync 触发只有 `app:assets:write` 和账号 enabled/assets capability 校验，未按早期契约接入 owner_team/region 数据范围；批次列表没有 owner_team 过滤，详情也没有完整对象级校验。
+- 审计统一使用 `action=sync`，不是三个独立生命周期 action；没有独立即时 `sync_started` 审计或完整嵌套 summary/scopes 审计载荷。
+- `triggered_by` 未在 TriggerSync 写入，过期 running 只在下一次同账号触发时内联 reap；未装配周期后台 reaper。
+- 新建云应用名仍可能为 `<provider>-cloud`，历史迁移归一化不代表后续新建名称附带 account_id。
+
+## Asset Topology / CMDB（`asset-topology.ts`）
+
+| 函数 | 接口 | 说明 |
+| --- | --- | --- |
+| `getAssetTopology` | `GET /api/assets/topology` | CMDB 应用归属、手工与云派生关系图；按 `application_id` 或 `root_resource_id + depth + direction` 查询，支持跨应用链路；必须展示 `meta.truncated` 与 `unresolved_relation_count` |
+| `listAssetResourceRelations` | `GET /api/assets/resource-relations` | 按应用查询手工关系；跨应用关系可出现在源应用和目标应用列表中，不限同一应用 |
+| `createAssetResourceRelation` / `deleteAssetResourceRelation` | `POST/DELETE /api/assets/resource-relations` | 创建/删除手工关系；允许跨应用，禁止自环和重复三元组；前端不伪造 `origin` 或云端关系 |
+| `getAssetResourceResolution` | `GET /api/assets/resources/resolve` | 按云 ID、账号、Region 和云类型解析真实资源及应用；区分 `matched` / `unregistered` / `ambiguous`，多候选不得默认选择 |
+
+页面：`views/assets/topology/index.vue`，路由 `/assets/topology`。拓扑数据来自 Asset 注册表、`asset_resource_relation` 和查询期已验证 labels 派生边，不使用 Observability fake 调用拓扑。
+
+实现边界：手工关系类型为 `depends_on/attached_to/located_in/routes_to`；应用归属为 `origin=registry`、手工关系为 `manual`、云派生为 `cloud_sync`。根资源支持 1–3 层、上下游和循环保护；最多 299 个资源节点，超出必须展示截断提示。普通拓扑与解析路由当前只有静态 RBAC，没有自动数据范围过滤。拓扑没有独立 E2E 脚本，依赖后端单元/HTTP 测试和前端 Vitest。
+
+契约：`ops/cloud-observability-contract.md` §5.5.6。
+
 ## Runbook（`runbook.ts`）
 
 | 函数 | 接口 | 说明 |
 | --- | --- | --- |
-| `listRunbookRecommendations` | `GET /api/runbooks/recommendations?alert_id=` | 按告警上下文推荐模板 |
-| `listRunbookTemplates` | `GET /api/runbooks/templates` | 模板分页查询 |
-| `getRunbookTemplate` | `GET /api/runbooks/templates/:template_id` | 模板详情与步骤 |
-| `updateRunbookTemplate` | `PUT /api/runbooks/templates/:template_id` | 更新模板状态或字段 |
+| `listRunbookRecommendations` | `GET /api/runbooks/recommendations?alert_id=` | 按告警上下文推荐模板；API 本身不限制告警状态，创建 Execution 时才强制 processing |
+| `listRunbookTemplates` | `GET /api/runbooks/templates` | 模板分页查询，支持 page/page_size/keyword |
+| `getRunbookTemplate` | `GET /api/runbooks/templates/:template_id` | 模板详情与有序步骤 |
+| `updateRunbookTemplate` | `PUT /api/runbooks/templates/:template_id` | 全量更新模板并替换步骤；启停前先读取完整详情 |
 
 页面：`views/runbooks/index.vue`。契约：`ops/runbook-contract.md`。
 
+实现边界：
+
+- 后端另有 `POST /templates` 和 `DELETE /templates/:template_id`，DELETE 实际是 enabled=false 软停用；当前前端没有 create/delete API 封装，也没有新建、完整编辑或删除 UI。
+- 更新模板会全量替换步骤，历史 Execution 使用创建时保存的 runbook_snapshot，不随模板变化。
+- 告警页只在 processing 显示推荐处置入口，支持任务名、dry-run 和 JSON object 参数；后端仍再次校验 processing、模板 enabled、步骤和 schema。
+- 有效 dry-run 为任务 `dry_run && step.dry_run_supported`；模板 `default_dry_run` 只是 snapshot 元数据，不单独触发模拟。
+- `command_spec_id`、`medium_selector` 和 Runbook→Agent 展开属于规划，当前步骤模型未实现。
+- 当前没有独立 Runbook 前端 Vitest，不能把告警页其他测试当作 Runbook 交互覆盖。
+
 调用链：告警详情 / Runbook 页面 -> Runbook TemplateService -> Alert port / Execution adapter。多步骤任务必须保留步骤结构，不能在前端拼成纯文本。
+
+验证边界：`e2e-runbook.ps1` 覆盖推荐、创建、确认、模拟执行和时间线，不覆盖模板 CRUD E2E、非 processing 拒绝、low 风险、步骤失败、完整 UI、Command Spec 或 Runbook→Agent。
 
 ## Execution（`execution.ts`）
 
@@ -197,7 +251,7 @@
 - `data.answer.actions` 由服务端按权限生成；`execution.propose.allowed=false` 时必须禁用按钮并展示 `reason`。
 - 「生成执行计划」调用既有 `createExecutionTask`（`source_type=ai_conversation`，`source_id=session_id`），任务进入 Execution `pending_confirm`；前端不得提供任何直接执行入口。
 - 工具调用结果必须检查 `allowed`；被拒绝是业务结果，需展示 `reason`（`toolReason.ts` 负责原因码的中文映射）。
-- 对话只读工具：`alarm.analyze`、自由参数 `metrics.query`、`alert.rules.list`、`postgres.activity.query`（RDS for PostgreSQL 历史会话，§10.21）；`status=invalid_argument / skipped / unsupported / permission_denied` 都需展示原因，不能当作网络错误。
+- 对话只读工具：`alarm.analyze`、自由参数 `metrics.query`、`alert.rules.list`、`alert.rules.health`（批量规则体检）、`postgres.activity.query`（RDS for PostgreSQL 历史会话，§10.21）；`status=invalid_argument / skipped / unsupported / permission_denied` 都需展示原因，不能当作网络错误。
 - 引用类型：`alert`、`observability_evidence` 带 `url` 可跳转；`memory_case`（相似案例记忆，`ops/ai-contract.md` §10.14）与 `knowledge_item`（知识沉淀，§10.15）无 `url`，只展示标签与条数提示。
 - 知识沉淀管理接口（§10.15）要求 `app:ai:knowledge:manage`（当前仅 admin），入口在「系统设置 → AI 配置 → 知识沉淀」（`KnowledgeManager.vue`）；未授权时返回 403。
 - 记忆管理接口（§10.19）要求 `app:ai:memory:manage`（当前仅 admin），入口在「系统设置 → AI 配置 → 记忆管理」（`MemoryManager.vue`）；停用/启用只影响后续检索并写 `memory_review` 审计，回答注入仍按归属用户隔离。

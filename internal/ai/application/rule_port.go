@@ -21,11 +21,16 @@ type AlertRuleSummary struct {
 	Description string `json:"description,omitempty"`
 	Metric      string `json:"metric,omitempty"`
 	// MetricLabel 是指标中文名；空表示未映射，模型必须保留原始指标代码并注明未映射。
-	MetricLabel   string            `json:"metric_label,omitempty"`
-	Operator      string            `json:"operator,omitempty"`
-	Threshold     *float64          `json:"threshold,omitempty"`
+	MetricLabel string   `json:"metric_label,omitempty"`
+	Operator    string   `json:"operator,omitempty"`
+	Threshold   *float64 `json:"threshold,omitempty"`
+	// Unit 是规则阈值的量纲（如 % / ms / MiB）；空表示 provider 未提供，不得臆造。
+	Unit          string            `json:"unit,omitempty"`
 	WindowSeconds int               `json:"window_seconds,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
+	// ResourceCount 是规则关联资源总数；Resources 是其维度样本（服务端已截断）。
+	ResourceCount int                 `json:"resource_count,omitempty"`
+	Resources     []map[string]string `json:"resources,omitempty"`
 }
 
 // AlertRuleListResult 查询结果；status 非 ok 时 Rules 为空且 Reason 说明原因。

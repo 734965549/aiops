@@ -1,6 +1,6 @@
 # AI 助手记忆与自我优化演进设计
 
-> 状态：**三个阶段均已落地**：阶段 1（migration 0051，契约 §10.14）、阶段 2（migration 0052，契约 §10.15）、阶段 3（无新迁移，契约 §10.16）。2026-11 规则体检场景落地了只读工具扩展的第一阶段（`alert.rules.list` + 自由参数 `metrics.query`，migration 0055，契约 §10.12.1）；上下文不足修复随后补齐 `accounts.list` / `resource.analyze` / `resources.list`（migration 0056）。本文档保留原始设计与演进记录。 AI 运维助手从“固定管线 + 单轮编排”演进为“带记忆、可自我优化、受限 Agent Loop”的设计意图与实施路径。实现前不得把本文内容当作已交付能力写进 `ops/ai-contract.md` 的接口契约。
+> 状态：**三个阶段均已落地**：阶段 1（migration 0051，契约 §10.14）、阶段 2（migration 0052，契约 §10.15）、阶段 3（无新迁移，契约 §10.16）。2026-11 规则体检场景落地了只读工具扩展的第一阶段（`alert.rules.list` + 自由参数 `metrics.query`，migration 0055，契约 §10.12.1）；上下文不足修复随后补齐 `accounts.list` / `resource.analyze` / `resources.list`（migration 0056）；批量规则体检 `alert.rules.health`、规则单位/资源范围透传与 30 天小时级指标窗口随后落地（migration 0062）。本文档保留原始设计与演进记录。 AI 运维助手从“固定管线 + 单轮编排”演进为“带记忆、可自我优化、受限 Agent Loop”的设计意图与实施路径。实现前不得把本文内容当作已交付能力写进 `ops/ai-contract.md` 的接口契约。
 
 ## 1. 背景与目标
 
@@ -209,10 +209,12 @@ feedback(valid/invalid) + 审计质量字段
 ### 6.4 工具扩展：规则体检 MVP（2026-11 重启）
 
 - 场景：用户询问「某 namespace 下哪些告警规则阈值设置不合理」，助手需要读取规则阈值并对照最近指标破限点。
-- 新增 `alert.rules.list`：按 `namespace` 查询规则（`rule_id` / `name` / `severity` / `enabled` / `metric` / `operator` / `threshold` / `window_seconds` 等），单次最多 50 条；账号级数据范围由 `AccountAccessAuthorizer` 前置校验。huawei `ak_sk` 已接真实 CES V2 `ListAlarmRules`，`auth_type=none` 走 fake，`agency` 返回 unsupported。
-- `metrics.query` 改为自由参数：模型可传 `account_id/region/project_id/namespace/metric/dimensions/from/to/period/aggregator`，服务端按告警推导兜底并校验窗口（日聚合最多 30 天、任意情况下最多 1440 点）。
-- Loop 白名单扩展为 `alarm.analyze` / `metrics.query` / `alert.rules.list`；轮数、token、单轮申请数与执行类拒绝约束不变。
-- 验收：`scripts/e2e-ai-rules.ps1`（脚本化 mock 模型 + fake huawei 账号）覆盖规则查询、自由指标取数、证据引用与审计。
+- 新增 `alert.rules.list`：按 `namespace` 查询规则（`rule_id` / `name` / `severity` / `enabled` / `metric` / `operator` / `threshold` / `unit` / `window_seconds` / `resource_count` / `resources` 等），单次最多 50 条；账号级数据范围由 `AccountAccessAuthorizer` 前置校验。huawei `ak_sk` 已接真实 CES V2 `ListAlarmRules`，`auth_type=none` 走 fake，`agency` 返回 unsupported。规则资源样本最多 3 条，用于按规则范围取数。
+- `metrics.query` 改为自由参数：模型可传 `account_id/region/project_id/namespace/metric/dimensions/from/to/period/aggregator`，服务端按告警推导兜底并校验窗口（超过 7 天最长 30 天且 period≥3600、任意情况下最多 1440 点）。
+- 新增 `alert.rules.health`（migration `0062`）：按规则批量取历史曲线，返回 `point_count/avg/p95/peak/last/breach_points/breach_ratio/unit`；规则关联多个资源时只取第一个资源样本并标记 `sampled=true`，无资源范围返回 `skipped/no_resource_scope`。默认最近 30 天、`period=3600`、`aggregator=max`，单次最多 20 条规则，总预算 30s；单条失败不阻断其它规则。
+- 指标单位推断：provider 未返回 `unit` 时按官方固定表推断（`rds045`=MiB、`rds073`=s、`rds042`/`active_connections`=Count、`oldest_transaction_duration`=ms、`*_util`/`conn_usage`=Percent），未登记指标保持空，禁止按后缀臆造。
+- Loop 白名单扩展为 `alarm.analyze` / `metrics.query` / `alert.rules.list` / `alert.rules.health`；轮数、token、单轮申请数与执行类拒绝约束不变。
+- 验收：`scripts/e2e-ai-rules.ps1`（脚本化 mock 模型 + fake huawei 账号）覆盖规则查询、自由指标取数、证据引用与审计；批量体检统计、资源采样、无资源范围降级与长窗口边界由单测覆盖（`rule_health_test.go`、`chat_tool_params_test.go`）。
 
 ## 7. 数据库与迁移规划
 
@@ -223,6 +225,7 @@ feedback(valid/invalid) + 审计质量字段
 | 阶段 3 | 无新表 | 仅代码编排变更；`ai_session_message.tool_calls_json` 沿用现有结构 |
 | 规则体检 MVP | `0055_ai_alert_rules_tool_permission` | 仅种子 `alert.rules.list` AI 工具权限并绑定 admin；无表结构变更 |
 | 上下文发现 | `0056_ai_discovery_tools_permission` | 仅种子 `accounts.list` / `resource.analyze` / `resources.list` AI 工具权限并绑定 admin；无表结构变更 |
+| 批量规则体检 | `0062_ai_rule_health_tool_permission` | 仅种子 `alert.rules.health` AI 工具权限并绑定 admin；无表结构变更 |
 
 - 版本号从当前最新 `0049` 后连续递增，不插队、不改写已发布版本。
 - pgvector 为可选增强（阶段 2）：如启用，迁移内 `CREATE EXTENSION IF NOT EXISTS vector` 需 DBA 确认生产实例支持；未启用时关键词检索为默认路径，不得因缺少扩展阻塞迁移。
@@ -252,7 +255,7 @@ feedback(valid/invalid) + 审计质量字段
 
 1. 阶段 1 先做最小闭环：`0051` 建表 + 反馈写记忆 + ChatService 检索注入 + references 回显（约 3–5 天量级，不动模型调用方式）。
 2. 阶段 1 验收通过后再评估阶段 2；知识审核 UI 放在「系统管理 / AI 配置」新增页签。
-3. 阶段 3 依赖阶段 1 的 `memory_status` 审计字段稳定；Agent Loop 已按「只读工具 + 预算控制」形态落地（契约 §10.16）。2026-11 规则体检 MVP 落地 `alert.rules.list` + 自由参数 `metrics.query`（契约 §10.12.1、migration 0055）；上下文不足修复随后落地 `accounts.list` / `resource.analyze` / `resources.list`（migration 0056）。日志/变更类工具与 `cloud.*` 仍推迟。
+3. 阶段 3 依赖阶段 1 的 `memory_status` 审计字段稳定；Agent Loop 已按「只读工具 + 预算控制」形态落地（契约 §10.16）。2026-11 规则体检 MVP 落地 `alert.rules.list` + 自由参数 `metrics.query`（契约 §10.12.1、migration 0055）；上下文不足修复随后落地 `accounts.list` / `resource.analyze` / `resources.list`（migration 0056）；批量规则体检 `alert.rules.health`、规则单位/资源范围透传与 30 天小时级指标窗口已落地（migration 0062）。日志/变更类工具与 `cloud.*` 仍推迟。
 
 ## 11. 文档同步要求
 

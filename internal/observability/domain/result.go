@@ -92,11 +92,17 @@ type AlertRule struct {
 	Description string `json:"description,omitempty"`
 	// Metric / Operator / Threshold / WindowSeconds 为可选阈值字段，
 	// 供 AI 规则体检判断阈值合理性；provider 不提供时省略。
-	Metric        string            `json:"metric,omitempty"`
-	Operator      string            `json:"operator,omitempty"`
-	Threshold     *float64          `json:"threshold,omitempty"`
+	Metric    string   `json:"metric,omitempty"`
+	Operator  string   `json:"operator,omitempty"`
+	Threshold *float64 `json:"threshold,omitempty"`
+	// Unit 来自 provider 规则策略（如 % / ms / MiB）；缺失时省略，用于阈值量纲核对。
+	Unit          string            `json:"unit,omitempty"`
 	WindowSeconds int               `json:"window_seconds,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
+	// ResourceCount 是规则关联资源/资源分组总数；0 表示云产品级或 provider 未返回。
+	ResourceCount int `json:"resource_count,omitempty"`
+	// Resources 是前若干个关联资源的维度样本（最多 3 条），用于按规则范围取数。
+	Resources []map[string]string `json:"resources,omitempty"`
 }
 
 // EvidenceRef 查询证据引用，供巡检与 AI 分析复用。

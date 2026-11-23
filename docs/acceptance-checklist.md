@@ -11,7 +11,7 @@
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
 | 0.1 | 依赖启动 | `docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.dev.yml up -d` | Postgres 健康 |
-| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0001–0061，无报错；当前仓库未包含 `0021` Notification 迁移 |
+| 0.2 | 迁移 | `go run ./cmd/migrate` | 含 0001–0062，无报错；当前仓库未包含 `0021` Notification 迁移 |
 | 0.3 | API 启动 | `go run ./cmd/api` 或 compose 内 api 服务 | 登录接口可用 |
 | 0.4 | 前端（UI 验收） | `cd web && npm run dev` | 可登录并访问各页面 |
 | 0.5 | 自动化冒烟 | 见 [§7 推荐验收顺序](#7-推荐验收顺序自动化) | 全部输出 `PASS` |
@@ -20,8 +20,8 @@
 
 ## 1. 告警接入
 
-**权限**：`app:alerts:ingest`（管理源）、`app:alerts:read`（查询）
-**脚本**：`scripts/e2e-alert.ps1`
+**权限**：`app:alerts:read/acknowledge/assign/update/close/silence/ingest`；当前创建/更新源及手动同步还需要 `app:integrations:read`
+**脚本**：`scripts/e2e-alert.ps1`、`scripts/e2e-alert-sync.ps1`（fake CES）
 
 ### 1.1 Webhook 接入
 
@@ -41,7 +41,14 @@
 | 1.2.1 | 认领 | `POST /api/alerts/{id}/acknowledge` | `status=acknowledged` |
 | 1.2.2 | 开始处理 | `POST /api/alerts/{id}/start-processing` | `status=processing` |
 | 1.2.3 | 手动恢复 | `POST /api/alerts/{id}/recover` | 状态更新，时间线有对应 event |
-| 1.2.4 | 详情完整性 | `GET /api/alerts/{id}` | 含 `labels`、`events[]`、`severity`、`environment` |
+| 1.2.4 | 详情完整性 | `GET /api/alerts/{id}` | 含 `labels`、`events[]`、`severity`、`environment`；`related` 当前为空对象 |
+| 1.2.5 | 转派 | `POST /api/alerts/{id}/assign` | 处理人更新，时间线含 `assigned`；closed 返回 400 |
+| 1.2.6 | 静默与取消 | `POST /silence`、`/unsilence` | `silenced → new`，记录截止时间和原因；最长 30 天 |
+| 1.2.7 | 静默到期边界 | 等待或构造已过期 `silenced_until` | 当前无到期自动恢复 worker；状态不会仅因到期自动变回 new，需手动取消或外部恢复 |
+| 1.2.8 | 备注 | `POST /api/alerts/{id}/comments` | 时间线含 `commented`；closed 返回 400，最长 2000 字符 |
+| 1.2.9 | 数据范围边界 | 用非 all 数据范围用户调用列表/详情，再调用 AI 分析 | 列表/详情当前只做 RBAC；AI 分析对象校验是独立链路，不得混写为同一隔离能力 |
+
+> 1.2.5–1.2.8 不在当前 `e2e-alert.ps1` 内，需通过领域/应用测试、专项接口或 UI 单独记录。
 
 ### 1.3 前端（可选）
 
@@ -53,6 +60,7 @@
 | 1.3.4 | 友好字段 | 打开含 `prod`、`critical`、Region、资源类型和规则注解的告警 | 环境、严重程度、字段名和规则摘要使用中文并保留原值；长 ID 可复制，未知 key 不丢失 |
 | 1.3.5 | 原始追溯与未匹配 | 切换“友好字段 / 原始字段”，并打开未匹配应用和未注册资源的告警 | 原始 key/value 完整可见，敏感 key 仍掩码；显示“未匹配应用”和“未注册资源”，可跳转匹配规则页 |
 | 1.3.6 | 指标语义与资源解析 | 打开 `oldest_transaction_duration > 600000ms` 的 RDS 告警，分别准备唯一匹配、无匹配和多候选资源 | 标题显示“最长事务存活时长超过 10 分钟”，阈值含原毫秒值；唯一匹配显示真实资源/应用名，无匹配和多候选不乱选；原始摘要、描述与 ID 可追溯 |
+| 1.3.7 | AI 入口与诊断边界 | 分别打开“AI 分析”和“问 AI 助手” | 前者写时间线并展示风险/摘要/建议/引用；后者携带告警上下文并选择会话。告警弹窗尚未完整展示 `diagnosis`，不得以 AI 助手卡片替代该项验收 |
 
 ### 1.4 CES 拉取接入
 
@@ -69,6 +77,9 @@
 | 1.4.7 | scope 隔离与重放 | 单 region 失败，另测后续页超时及部分记录入库后写失败 | 报告已提交计数与 `failed_scopes`，失败窗口不推进游标，重试无重复变更 |
 | 1.4.8 | 权限及账号状态 | 用只有告警 ingest 权限的用户绑定或同步，另测已停用和已删除账号 | 权限不足为 403，账号停用为 412，账号删除为 404 |
 | 1.4.9 | 审计与收尾 | 完成后查 `GET /api/audits`，另模拟摘要或审计写入失败 | 存在 `alert_source_sync` 记录，状态、计数与 trace 可关联。收尾失败返回 500，保留原最近同步状态 |
+| 1.4.10 | 可选 worker | 默认启动核对配置，再在单实例显式启用 worker | 默认 `alert_sync.worker_enabled=false`；`pull_interval_seconds=0` 只手动；多实例只在一个 API 实例启用 |
+
+> 当前 `e2e-alert-sync.ps1` 实际覆盖 Pull 创建、Webhook sync 400、三轮拉取、独立恢复、重复观测、最近同步状态和审计。1.4.3–1.4.9 中的真实云、多实例、权限负向、失效/缺页及全部规则富化分支不因 fake 脚本 PASS 而自动通过。
 
 ---
 
@@ -94,7 +105,7 @@
 | 2.1.11 | 筛选状态入 URL | 设置筛选/排序后复制或刷新 `/assets?application_id=...&keyword=...&sort_by=...` | 刷新后筛选、排序、页码（第 1 页）与列表结果一致；清空筛选同步移除 URL 参数 |
 | 2.1.12 | URL 前进/后退 | 改变筛选条件后用浏览器后退/前进，或手工改地址栏 `keyword` / `sort_by` | 筛选控件、表头箭头与列表结果随 URL 复原，且不产生重复请求 |
 | 2.1.13 | 空结果态 | 应用无资源 / 筛选条件无匹配 | 分别显示「该应用下还没有资源 + 新建资源」与「没有符合条件 + 清空筛选条件」，加载中不闪现空态 |
-| 2.1.14 | 列设置持久化 | 勾选附加列（含创建/更新时间）后刷新页面 | 列保持勾选；创建时间列可按服务端字段排序（`updated_at` 待后端补白名单后再开放）；localStorage 脏值被白名单过滤 |
+| 2.1.14 | 列设置持久化 | 勾选附加列（含创建/更新时间）后刷新页面 | 列保持勾选；后端已支持 created_at/updated_at 排序，前端当前只开放 created_at 排序；localStorage 脏值被白名单过滤 |
 | 2.1.15 | 导出 CSV | 设置筛选后点击「导出 CSV」 | 导出的是当前筛选+排序下的全量结果（非仅当前页）；CSV 带 UTF-8 BOM，逗号/引号/Labels JSON 正确转义；超过 2000 条时提示上限 |
 
 ### 2.2 §9.1 标签匹配
@@ -106,84 +117,114 @@
 | 2.2.3 | 精确环境优先 | 同名应用：一条 `environment=''`，一条 `environment=prod` | prod 告警归 prod 应用 |
 | 2.2.4 | 未匹配降级 | 无对应注册表 | 告警仍保存，资产 ID 为空 |
 
-### 2.4 云资源同步（migration 0023，阶段 2）
+### 2.3 云资源同步（migration 0023 起，部分能力仍有差距）
 
-**脚本**：`scripts/e2e-asset-sync.ps1`
-
-| # | 检查项 | 操作 | 预期 |
-|---|--------|------|------|
-| 2.4.1 | 触发同步 | `POST /api/assets/sync`（`app:assets:write`） | 返回 `batch_id`、`status`、计数摘要 |
-| 2.4.2 | fake 账号同步 | `huawei_cloud` + `auth_type=none` | 资产表出现 `source=cloud_sync` 资源，含 `cloud_resource_id` |
-| 2.4.3 | 批次查询 | `GET /api/assets/sync/batches?account_id=` | 分页返回历史批次 |
-| 2.4.4 | stale 标记 | 二次同步且云端清单变化 | 未出现资源标记 `sync_status=stale`，不物理删除 |
-| 2.4.5 | 前端展示 | `/assets` 资源列表 | 来源、云资源 ID、region、同步状态可见 |
-| 2.4.6 | P0 不受影响 | 同步失败或禁用账号 | 告警 ingest / 匹配 / 执行闭环仍可跑 |
-| 2.4.7 | CES 资源分组口径 | `huawei_cloud` + `auth_type=ak_sk` + CES 只读权限 | 平台 `cloud_sync` active 资源数与**指定 CES 资源分组**（默认候选名“全部资源”，需预先创建）数量一致，或批次摘要能解释差异 |
-| 2.4.8 | CES 类型覆盖 | CES 中存在 EVS/VPC/OBS/DCS/DMS 等非 ECS 资源 | 对应资源进入 `asset_resource`，`cloud_resource_type` 与 namespace 映射正确 |
-| 2.4.9 | hybrid 增强 | `sync_mode=hybrid` 且授予部分云服务只读权限 | CES 基础资源数不下降；当前已落地 ECS/RDS/VPC/DCS/DMS 详情补充（EVS/OBS 待办）；任一增强失败时批次应为 `partial`，且摘要必须暴露 `enrichment_failed_count` / `enrichment_failed_types` |
-| 2.4.10 | native 兼容 | `sync_mode=native` | 沿用旧 ECS/CCE/RDS/ELB 同步路径，但页面和批次摘要不承诺与 CES 总览数量一致 |
-| 2.4.11 | 多区域 project_id | `extra_config.region_projects` 配置多 region 映射 | 每个 region 使用对应 project_id 调 CES；未命中回落账号 `project_id` |
-| 2.4.12 | 真实账号对账（可选，不进 CI） | 手工执行 `scripts/e2e-asset-sync-real.ps1` | 打印 region 摘要与 type 分组计数，人工比对 CES 控制台总数 |
-
-### 2.3 可配置匹配规则（migration 0014）
+**脚本**：`scripts/e2e-asset-sync.ps1`（fake）；`scripts/e2e-asset-sync-real.ps1`（真实账号，可选）
 
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
-| 2.3.1 | 创建规则 | `POST /api/assets/match-rules`（`label_key=service`, `label_value_pattern=payment-*`） | 返回 `id`，`enabled=true` |
-| 2.3.2 | 规则优先匹配 | 告警 `service=payment-xxx` 但应用名不同 | 按规则绑定 `application_id`/`resource_id` |
-| 2.3.3 | 禁用规则 | `enabled=false` 后 ingest | 规则不生效，回退默认匹配 |
-| 2.3.4 | 删除规则 | `DELETE /api/assets/match-rules/:id` | 规则移除，后续 ingest 走默认逻辑 |
+| 2.3.1 | 触发与轮询 | `POST /api/assets/sync` 后查询批次详情 | 立即返回 `batch_id` 和 running；轮询到 success/partial/failed 后读取 summary/message |
+| 2.3.2 | fake 账号同步 | `huawei_cloud` + `auth_type=none` | 资产表出现 `source=cloud_sync` 资源，含 `cloud_resource_id` |
+| 2.3.3 | 批次查询 | `GET /api/assets/sync/batches?account_id=` | 分页返回历史批次 |
+| 2.3.4 | stale 标记 | 通过单元测试或变化清单二次同步 | 未出现资源标记 `sync_status=stale`，不物理删除；当前 fake E2E 只验证稳定清单 stale_count=0 |
+| 2.3.5 | 前端展示 | `/assets` 资源列表与批次详情 | 来源、云资源 ID、region、同步状态和 scopes 明细可见 |
+| 2.3.6 | P0 不受影响 | 同步失败或禁用账号 | 告警 ingest / 匹配 / 执行闭环仍可跑 |
+| 2.3.7 | CES 资源分组口径 | 分别测试显式组、默认候选名未命中和全部资源组并集 | 显式组未命中失败；默认候选未命中可进入 `all_groups`；聚合数量差异可由 summary 解释，不宣称覆盖未分组资源 |
+| 2.3.8 | CES 类型覆盖 | CES 中存在 EVS/VPC/OBS/DCS/DMS 等非 ECS 资源 | 对应资源进入 `asset_resource`，`cloud_resource_type` 与 namespace 映射正确 |
+| 2.3.9 | hybrid 增强 | `sync_mode=hybrid` 且授予部分云服务只读权限 | CES 基础资源数不下降；ECS/RDS/DCS/DMS/VPC 子资源增强已生效；EVS 不命中、ELB/CCE 空跑、OBS 等无增强；逐类型失败、阶段错误或回写失败置 partial，warnings 单独判断 |
+| 2.3.10 | native 兼容 | `sync_mode=native` | 沿用旧 ECS/CCE/RDS/ELB 同步路径，但不承诺与 CES 总览数量一致 |
+| 2.3.11 | 多区域 project_id | `extra_config.region_projects` 配置多 region 映射 | 每个 region 使用对应 project_id 调 CES；未命中回落账号 `project_id` |
+| 2.3.12 | 真实账号对账（可选，不进 CI） | 手工执行 `scripts/e2e-asset-sync-real.ps1` | 打印 region 摘要与 type 分组计数，人工比对 CES 控制台总数 |
+| 2.3.13 | 数据范围差距 | 用非 all 数据范围用户触发 Sync、查询批次列表和详情 | 当前只有 RBAC 和账号 capability 校验；owner_team/region 二次授权与批次过滤未完整接入，不得按早期契约记为通过 |
+| 2.3.14 | 审计、reaper 与命名差距 | 查询同步审计、过期批次和新建云应用名 | 当前统一 `action=sync`，triggered_by 未写入，无周期后台 reaper；新应用名仍可能为 `provider-cloud`，均需单独整改 |
 
-### 2.4 前端（可选）
+### 2.4 可配置匹配规则（migration 0014）
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 2.4.1 | 创建规则 | `POST /api/assets/match-rules`（`label_key=service`, `label_value_pattern=payment-*`） | 返回 `id`，`enabled=true` |
+| 2.4.2 | 规则优先匹配 | 告警 `service=payment-xxx` 但应用名不同 | 按规则绑定 `application_id`/`resource_id` |
+| 2.4.3 | 禁用规则 | `enabled=false` 后 ingest | 规则不生效，回退默认匹配 |
+| 2.4.4 | 删除规则 | `DELETE /api/assets/match-rules/:id` | 规则移除，后续 ingest 走默认逻辑 |
+
+### 2.5 前端（可选）
 
 | # | 检查项 | 预期 |
 |---|--------|------|
-| 2.4.1 | 资产页 `/assets` | 注册表 + 匹配规则 Tab，可选中/新建/编辑/删除 |
-| 2.4.2 | 告警跳转 | 从告警详情点资源链 → `?application_id=&resource_id=` | 选中应用，资源行高亮并滚动到视口 |
+| 2.5.1 | 资产页 `/assets` | 注册表、云同步、匹配规则 Tab 可用，可选中/新建/编辑/删除 |
+| 2.5.2 | 告警跳转 | 从告警详情点资源链 → `?application_id=&resource_id=` | 选中应用，资源行高亮并滚动到视口 |
+| 2.5.3 | 时间列与排序 | 展示 created_at/updated_at，并检查排序白名单 | 后端已支持两者排序；前端当前只开放 created_at 排序，updated_at 可展示和导出，不误写为后端缺口 |
 
-### 2.5 CMDB 资源拓扑与手工关系（migration 0058）
+### 2.6 CMDB 资源拓扑与手工关系（migration 0058）
 
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
-| 2.5.1 | 真实归属图 | 创建应用和两个资源后访问 `/assets/topology?application_id=...` | 应用与资源来自注册表，显示两条 `contains` 边，不出现 fake Provider 节点 |
-| 2.5.2 | 手工关系 | 在同一应用及跨应用资源间分别创建 `depends_on`，再刷新拓扑 | 返回唯一关系、两端应用 ID 和手工边；重复创建返回 `ALREADY_EXISTS`，自环返回 400，跨应用链路可见 |
-| 2.5.3 | 链路与全景 | 选择根资源、切换 1–3 层和上下游方向，再切全景与列表 | 链路按上下游分层并高亮完整路径；全景使用力导向；列表数据一致，循环依赖不死循环 |
-| 2.5.4 | 云派生关系 | 准备带真实 `vpc_id` / `subnet_id` / `attached_to` / `bandwidth_id` / Peering 字段的同步资源 | 仅账号、Region、类型和云 ID 唯一匹配时生成 `cloud_sync` 边；不匹配端点计入 `unresolved_relation_count`，无幽灵节点 |
-| 2.5.5 | 筛选与截断 | 使用 Region、云类型、关键字、关系类型、stale 筛选；构造超过 299 个资源 | 服务端过滤生效；默认不含 stale；超限时明确显示 `truncated` 提示 |
-| 2.5.6 | 删除保护 | 删除仍有关联的资源，随后先删关系再删资源 | 首次返回 `FAILED_PRECONDITION`；关系删除写审计后可继续删除资源 |
-| 2.5.7 | 云资源解析 | 调 `/api/assets/resources/resolve`，分别使用唯一、缺失、重复及跨账号/Region 云 ID | 唯一匹配返回真实资源与应用；缺失为 `unregistered`，重复为 `ambiguous`；跨账号/Region 不误匹配 |
-| 2.5.8 | 权限 | 无 token、只读用户写关系、无资产权限用户查询 | 分别为 401、403、403，页面保留结构且不泄露资源 |
+| 2.6.1 | 真实归属图 | 创建应用和两个资源后访问 `/assets/topology?application_id=...` | 应用与资源来自注册表，显示两条 `contains` 边，不出现 fake Provider 节点 |
+| 2.6.2 | 手工关系 | 在同一应用及跨应用资源间分别创建 `depends_on`，再刷新拓扑 | 返回唯一关系、两端应用 ID 和手工边；重复创建返回 `ALREADY_EXISTS`，自环返回 400，跨应用链路可见 |
+| 2.6.3 | 链路与全景 | 选择根资源、切换 1–3 层和上下游方向，再切全景与列表 | 链路按上下游分层并高亮完整路径；全景使用力导向；列表数据一致，循环依赖不死循环 |
+| 2.6.4 | 云派生关系 | 准备带真实 `vpc_id` / `subnet_id` / `attached_to` / `bandwidth_id` / Peering 字段的同步资源 | 仅账号、Region、类型和云 ID 唯一匹配时生成 `cloud_sync` 边；不匹配端点计入 `unresolved_relation_count`，无幽灵节点 |
+| 2.6.5 | 筛选与截断 | 使用 Region、云类型、关键字、关系类型、stale 筛选；构造超过 299 个资源 | 服务端过滤生效；默认不含 stale；超限时明确显示 `truncated` 提示 |
+| 2.6.6 | 删除保护 | 删除仍有关联的资源，随后先删关系再删资源 | 首次返回 `FAILED_PRECONDITION`；关系删除写审计后可继续删除资源 |
+| 2.6.7 | 云资源解析 | 调 `/api/assets/resources/resolve`，分别使用唯一、缺失、重复及跨账号/Region 云 ID | 唯一匹配返回真实资源与应用；缺失为 `unregistered`，重复为 `ambiguous`；跨账号/Region 不误匹配 |
+| 2.6.8 | 权限与数据范围 | 无 token、只读用户写关系、非 all 数据范围用户查询拓扑 | 分别为 401、403、403；普通拓扑/解析目前只有静态 RBAC，无自动数据范围过滤，页面保留结构 |
+
+> 拓扑目前没有独立 E2E 脚本，以上项目需结合后端单元/HTTP 测试和前端 Vitest 验收，不能写成 `e2e-asset.ps1` 已覆盖。
+
+### 2.7 Asset E2E 覆盖边界
+
+- `e2e-asset.ps1` 覆盖注册表、规则、筛选排序/facets、告警绑定和删除保护，不覆盖云同步、拓扑、资源解析、CSV 或完整 UI。
+- `e2e-asset-sync.ps1` 覆盖 fake running/终态、批次列表、云资源入库和稳定清单 stale_count=0，不覆盖真实 CES、变化清单 stale、hybrid、数据范围或租约并发。
+- `e2e-asset-sync-real.ps1` 是带真实凭据的可选对账脚本，不属于默认可直接运行的 CI 验收。
 
 ---
 
-## 3. Runbook 推荐
+## 3. Runbook 处置预案
 
-**权限**：`app:runbooks:read`
+**权限**：`app:runbooks:read/create/update/delete`
 **脚本**：`scripts/e2e-runbook.ps1`（依赖 migration 0012 种子模板）
 
-### 3.1 推荐 API
+### 3.1 推荐与状态边界
 
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
-| 3.1.1 | 前置状态 | 告警 `status=processing` | — |
-| 3.1.2 | 拉取推荐 | `GET /api/runbooks/recommendations?alert_id={id}` | `items.length >= 1` |
-| 3.1.3 | 匹配维度 | HighCPU + pod + prod 场景 | 命中种子或自定义模板 |
-| 3.1.4 | 推荐内容 | 检查返回项 | 含 `template_id`、`steps_count >= 1`、`risk_level` |
+| 3.1.1 | 推荐告警 | `GET /api/runbooks/recommendations?alert_id={id}` | 返回匹配项，含 template_id、steps_count、risk_level、dry_run_supported、parameter_schema |
+| 3.1.2 | 匹配维度 | HighCPU + pod + prod 场景 | 命中种子或自定义模板，matched_reason 可解释 |
+| 3.1.3 | 推荐状态 | 对 processing 和非 processing 告警分别调推荐 API | API 只要求告警存在，不强制 processing；前端只在 processing 显示创建入口 |
+| 3.1.4 | 创建状态拦截 | 对非 processing 告警创建 Runbook Execution Task | 后端返回 `INVALID_ARGUMENT`，不能仅依赖前端隐藏按钮 |
+| 3.1.5 | 禁用/空步骤 | 使用 disabled 或无步骤模板创建任务 | 后端拒绝，不生成任务 |
 
-### 3.2 模板管理（可选）
+### 3.2 模板 CRUD 与审计
 
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
-| 3.2.1 | 列表 | `GET /api/runbooks/templates` | 含已启用模板 |
-| 3.2.2 | 详情 | `GET /api/runbooks/templates/{id}` | 含多步骤 `steps[]` |
+| 3.2.1 | 列表与详情 | `GET /api/runbooks/templates`、`GET .../:template_id` | 分页返回模板，详情含有序 steps；支持 keyword/enabled 查询 |
+| 3.2.2 | 创建 | `POST /api/runbooks/templates`，至少一个步骤 | 模板和步骤同事务创建；空步骤、非法 action/risk 返回 400 |
+| 3.2.3 | 全量更新 | `PUT /api/runbooks/templates/:template_id` | 模板与步骤全量替换；历史任务 snapshot 不变 |
+| 3.2.4 | 软停用 | `DELETE /api/runbooks/templates/:template_id` | enabled=false，不再推荐或创建新任务；模板、历史任务和 snapshot 保留 |
+| 3.2.5 | 启停审计 | 切换 enabled 后查询审计 | 有 runbook_update，并追加 runbook_enable 或 runbook_disable；失败不回滚主业务 |
 
-### 3.3 前端（可选）
+### 3.3 Runbook 到 Execution
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 3.3.1 | 多步与 snapshot | 从 processing 告警创建 Runbook 任务 | 按 step_order 生成多个 exec_step，保存 runbook_template_id 和 runbook_snapshot |
+| 3.3.2 | 参数合并 | 提供模板/步骤默认参数和用户 parameters | 用户值覆盖默认值，模板与步骤 schema 均通过；非法参数不创建任务 |
+| 3.3.3 | 风险与确认 | 分别验证 low、medium/prod command 和降低 override | low 为 pending_execute，其余 pending_confirm；override 只能提高 |
+| 3.3.4 | Dry-run | 任务 dry_run=true，包含支持和不支持 dry-run 的步骤 | 有效值为任务 dry_run 且步骤支持；支持步骤输出 dry_run 标记，不支持步骤为 skipped_real_execution |
+| 3.3.5 | default_dry_run 边界 | 仅设置模板步骤 default_dry_run，任务 dry_run=false | 不单独触发 dry-run；default_dry_run 仅保留为模板/snapshot 元数据 |
+| 3.3.6 | 时间线 | 创建、确认、执行后查看告警 | 出现 execution_created/started/finished，Runbook 信息可关联 |
+| 3.3.7 | Agent 边界 | 检查 Runbook 步骤字段及 execution_mode=agent | 当前无 command_spec_id/medium_selector，Agent 走独立 createAgentTask，不按 Runbook 展开；不得按已落地验收 |
+
+### 3.4 前端与 E2E 覆盖
 
 | # | 检查项 | 预期 |
 |---|--------|------|
-| 3.3.1 | Runbook 页 `/runbooks` | 模板列表、启用状态可见 |
-| 3.3.2 | 告警页推荐区 | processing 告警可看到推荐预案 |
-| 3.3.3 | Dashboard Runbook 区 | 显示已启用/总数，最近 Runbook 执行列表 |
+| 3.4.1 | Runbook 页 `/runbooks` | 列表、详情、启停可用；当前无新建、完整编辑或删除 UI |
+| 3.4.2 | 告警页推荐区 | processing 告警可选择模板，填写任务名、dry-run 和 JSON object 参数 |
+| 3.4.3 | Dashboard Runbook 区 | 显示已启用/总数，最近 Runbook 执行列表 |
+| 3.4.4 | 前端测试边界 | 检查 Runbook 专项 Vitest | 当前无独立 Runbook 前端 Vitest，不能用告警页其他测试替代 |
+
+`e2e-runbook.ps1` 实际覆盖 processing 告警、推荐、prod medium 多步任务、pending_confirm、CONFIRM、模拟执行成功、首步 dry_run 标记和三类执行时间线。它不覆盖模板 CRUD E2E、非 processing 拒绝、low 风险、步骤失败、完整 UI、Command Spec 或 Runbook→Agent。
 
 ---
 
@@ -258,36 +299,76 @@
 
 ---
 
-## 6. 权限校验
+## 6. Identity 认证与权限校验
 
 ### 6.1 权限矩阵（admin 应具备）
 
+执行到目标迁移版本后再核对权限；只跑到早期版本不代表后续权限种子已齐全。
+
 | 资源 | 权限 code | 典型 API |
 |------|-----------|----------|
+| identity.profile | `app:identity.profile:read`、`app:identity.profile.roles:read` | `/api/identity/me*` |
+| identity.roles / permissions | `app:identity.roles:read`、`app:identity.permissions:read` | `/api/identity/roles`、`/permissions` |
+| identity.users | `app:identity.users:read`、`app:identity.users:create` | `/api/identity/admin/users*` |
+| identity.external_identities | `app:identity.external_identities:create` | 外部身份预置与 LDAP/AD 导入 |
+| identity.data_scopes / ai_tool_permissions | `app:identity.data_scopes:read`、`app:identity.ai_tool_permissions:read` | 数据范围与 AI 工具权限字典、角色绑定查询 |
+| identity.access_control | `app:identity.access_control:write` | 用户角色及三类角色授权 PUT |
+| identity.auth_audits | `app:identity.auth_audits:read` | `/api/identity/admin/auth-audits` |
+| identity.authorization | `app:identity.authorization:execute` | `/api/identity/authorize` |
 | alerts | `app:alerts:read/acknowledge/update/close/silence/ingest` | `/api/alerts/*` |
 | assets | `app:assets:read/write` | `/api/assets/*` |
 | runbooks | `app:runbooks:read/create/update/delete` | `/api/runbooks/*` |
 | executions | `app:executions:read/create/confirm/execute` | `/api/executions/*` |
 | dashboard | `app:dashboard:read` | `/api/dashboard/summary` |
 
-### 6.2 负向用例
+### 6.2 自动化脚本的实际覆盖
+
+`e2e-identity-access.ps1` 只证明以下主链路，不得扩大为全部 Identity E2E：
+
+| 覆盖项 | 预期 |
+| --- | --- |
+| admin 登录、创建本地用户 | 返回业务用户 ID，不返回密码哈希 |
+| viewer 查询与 manual 绑定 | 绑定来源为 `manual` |
+| viewer 登录与 Dashboard 读取 | 请求成功 |
+| viewer 越权修改用户角色 | `403 PERMISSION_DENIED` |
+| 用户角色审计 | 可查询 `identity_user / set_user_roles` |
+
+该脚本不覆盖 refresh/logout、Redis JTI 轮换/吊销、LDAP/OAuth、认证审计查询、角色权限/数据范围/AI 工具权限写接口和前端 UI。这些项目按 6.3、6.4 单独验收。
+
+### 6.3 负向与运行时用例
 
 | # | 场景 | 操作 | 预期 |
 |---|------|------|------|
-| 6.2.1 | 未登录 | 无 Bearer 访问受保护 API | `401 UNAUTHENTICATED` |
-| 6.2.2 | 无权限用户 | 登录后访问 `GET /api/dashboard/summary` | `403 PERMISSION_DENIED` |
-| 6.2.3 | Webhook 无 Token | ingest 不带 token | 拒绝，不创建告警 |
-| 6.2.4 | 越权写 | 无 `assets:write` 创建资源 | `403` |
-| 6.2.5 | 越权执行 | 无 `executions:execute` 触发 execute | `403` |
+| 6.3.1 | 未登录 | 无 Bearer 访问受保护 API | `401 UNAUTHENTICATED` |
+| 6.3.2 | 无权限用户 | 登录后访问 `GET /api/dashboard/summary` | `403 PERMISSION_DENIED` |
+| 6.3.3 | Webhook 无 Token | ingest 不带 token | 拒绝，不创建告警 |
+| 6.3.4 | 越权写 | 无 `assets:write` 创建资源 | `403` |
+| 6.3.5 | 越权执行 | 无 `executions:execute` 触发 execute | `403` |
+| 6.3.6 | 统一认证失败 | 分别使用不存在用户、错误密码、disabled/locked 用户登录 | 均不泄露账号存在性，按认证失败处理 |
+| 6.3.7 | 登录限流/IP 白名单 | 超过限流阈值；从白名单外 IP 调用登录/refresh | 分别 `429 RESOURCE_EXHAUSTED`、`403 PERMISSION_DENIED` |
+| 6.3.8 | 未预置外部身份 | 即使用户名与本地账号相同，也使用未绑定 external_subject 登录 | 不自动开户、不自动绑定、不签发 token |
 
-> 建议：创建仅含 `app:alerts:read` 的测试用户，逐接口验证 403 边界。
+### 6.4 会话、外部身份与授权管理
 
-### 6.3 前端路由（可选）
+| # | 检查项 | 操作与预期 |
+| --- | --- | --- |
+| 6.4.1 | Redis refresh 轮换 | refresh 后旧 JTI 失效、新 TokenPair 可用；dev 无 Redis 的 Noop 结果不计入此项 |
+| 6.4.2 | Logout | 当前 refresh token 不可再换发；既有 access token 是否仍可用按 TTL 边界说明，不误判为即时吊销 |
+| 6.4.3 | LDAP/AD 导入 | 连接、OU 浏览、预览、勾选/整 OU 导入、角色绑定和逐条结果符合契约；`attr_subject` 与登录配置一致 |
+| 6.4.4 | OAuth state | state 与 provider/IP/UA 绑定且只能消费一次；错误 state 不换发 token |
+| 6.4.5 | 用户角色来源 | PUT 只替换 manual；ldap_import、external_group 绑定保留且不重复写成 manual |
+| 6.4.6 | 三类角色授权 | 权限、数据范围、AI 工具权限均可全量替换和清空；无效引用返回 `NOT_FOUND`，对应审计动作可查询 |
+| 6.4.7 | 数据范围调用点 | 分别验证动态对象校验和查询过滤；不得仅凭绑定数据范围就认定所有列表已隔离 |
+| 6.4.8 | 认证审计 | 本地/外部/OAuth/refresh/logout 成功与失败事件可按用户、provider、event、result 分页查询 |
 
-| # | 检查项 | 预期 |
-|---|--------|------|
-| 6.3.1 | 无权限菜单 | 侧栏不显示或无入口 |
-| 6.3.2 | 直链访问 | 无权限时 API 403，页面有错误提示 |
+### 6.5 前端路由与页面
+
+| # | 检查项 | 当前预期 |
+|---|--------|----------|
+| 6.5.1 | 未登录直链 | 重定向 `/login` |
+| 6.5.2 | 无权限直链 | API 返回 403，权限管理页保留结构、提示并禁用操作，不白屏 |
+| 6.5.3 | 静态菜单边界 | 当前无权限入口仍可能显示；动态隐藏菜单属于未落地能力，不能按“菜单已隐藏”验收 |
+| 6.5.4 | 前端 Token 存储 | 当前 access/refresh token 会进入 localStorage，与项目安全约束存在差距，应记录为整改项而非通过项 |
 
 ---
 
@@ -326,7 +407,7 @@ go run ./cmd/migrate
 # 5. 简单执行任务（可选）
 .\scripts\e2e-execution.ps1 -AlertId <processing_alert_id>
 
-# 6. 权限管理 P1：viewer 角色、授权写接口、403 边界、审计
+# 6. Identity：本地用户、viewer manual 角色绑定、403 与 set_user_roles 审计
 .\scripts\e2e-identity-access.ps1
 
 # 7. AI 运维助手（migration 0049 / 0050；建议先配置类型 b provider）
@@ -345,7 +426,7 @@ go run ./cmd/migrate
 #     同时覆盖 accounts.list + resources.list 上下文发现分支）
 .\scripts\e2e-ai-agent-loop.ps1
 
-# 7.5 AI 规则体检（migration 0055；脚本自带本地 mock 模型和 fake huawei 账号）
+# 7.5 AI 规则体检（migration 0055/0062；脚本自带本地 mock 模型和 fake huawei 账号，批量体检由单测覆盖）
 .\scripts\e2e-ai-rules.ps1
 
 # 7.6 AI 证据快照（migration 0060；本地 mock + Docker PostgreSQL，比对模型输入与 payload hash）
@@ -369,7 +450,7 @@ go run ./cmd/migrate
 | Runbook 推荐 | ☐ | `e2e-runbook.ps1` ☐ | ☐ | ☐ | ☐ |
 | 执行记录 | ☐ | `e2e-runbook.ps1` ☐ | ☐ | ☐ | ☐ |
 | Dashboard 摘要 | ☐ | 手工/API ☐ | ☐ | ☐ | ☐ |
-| 权限管理 P1 | ☐ | `e2e-identity-access.ps1` ☐ | ☐ | ☐ | ☐ |
+| Identity 认证与权限 | ☐ | 用户角色主链路 `e2e-identity-access.ps1` ☐；其余专项 ☐ | ☐ | ☐ | ☐ |
 | AI 运维助手 | ☐ | `e2e-ai-assistant.ps1` / `e2e-ai-memory.ps1` / `e2e-ai-knowledge.ps1` / `e2e-ai-stream.ps1` / `e2e-ai-agent-loop.ps1` / `e2e-ai-rules.ps1` / `e2e-ai-evidence.ps1` / `e2e-postgres-history.ps1` ☐ | ☐ | ☐ | ☐ |
 | 审计中心 UI | ☐ | 手工/API ☐ | ☐ | ☐ | ☐ |
 | 权限校验 | ☐ | 负向用例 ☐ | ☐ | ☐ | ☐ |
@@ -589,19 +670,21 @@ go run ./cmd/migrate
 | 9.13.9 | 未装配降级 | 未注入分享仓储的环境调用分享接口 | 返回 503 `UNAVAILABLE`；普通对话、流式与归档不受影响 |
 
 > 前置：已执行迁移 `0053`；分享为**对内只读**，不提供匿名/对外链接。契约见 `ops/ai-contract.md` §10.18；应用层用例见 `internal/ai/application/chat_share_test.go`；E2E 脚本 `scripts/e2e-ai-assistant.ps1` 自动覆盖 9.13.1/9.13.2/9.13.3/9.13.8（跨账号访问、过期与上限仍需人工验证）。
-### 9.14 规则体检只读工具（migration 0055，契约 §10.12.1）
+### 9.14 规则体检只读工具（migration 0055/0062，契约 §10.12.1）
 
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
-| 9.14.1 | 工具权限种子 | `go run ./cmd/migrate` 后查 `iam_ai_tool_permission` / `iam_role_ai_tool_permission` | 存在 `alert.rules.list`（read_only）且绑定 admin；非 admin 调用 `tool_requests` 返回 `allowed=false` |
-| 9.14.2 | 规则列表参数与证据 | 让模型申请 `alert.rules.list`，params 带 `namespace=SYS.RDS`、`limit<=50` | 观测 `status=ok`，`data.rule_count>=1`，规则含 `metric/operator/threshold/window_seconds`；回答 `references` 含 `observability_evidence`；`tool_invoke` 审计带 `evidence_id` |
-| 9.14.3 | 自由指标参数 | 让模型申请 `metrics.query`，params 带 `namespace/metric/dimensions/from/to/period` | 观测 `status=ok`；缺省字段由告警推导；`period=86400` 时 30 天窗口通过，>30 天或点数>1440 返回 `status=invalid_argument` |
+| 9.14.1 | 工具权限种子 | `go run ./cmd/migrate` 后查 `iam_ai_tool_permission` / `iam_role_ai_tool_permission` | 存在 `alert.rules.list` 与 `alert.rules.health`（均 read_only）且绑定 admin；非 admin 调用 `tool_requests` 返回 `allowed=false` |
+| 9.14.2 | 规则列表参数与证据 | 让模型申请 `alert.rules.list`，params 带 `namespace=SYS.RDS`、`limit<=50` | 观测 `status=ok`，`data.rule_count>=1`，规则含 `metric/operator/threshold/unit/window_seconds/resource_count/resources`；回答 `references` 含 `observability_evidence`；`tool_invoke` 审计带 `evidence_id` |
+| 9.14.3 | 自由指标参数 | 让模型申请 `metrics.query`，params 带 `namespace/metric/dimensions/from/to/period` | 观测 `status=ok`；缺省字段由告警推导；`period=3600` 时 30 天窗口通过，>30 天、>7 天且 `period<3600`、或点数>1440 返回 `status=invalid_argument` |
 | 9.14.4 | 账号数据范围 | 用无权访问该 integration 账号的账号发起规则/指标工具 | 观测 `allowed=true`、`status=permission_denied`，不返回规则/指标数据；审计 `result=partial` |
-| 9.14.5 | Loop 审计 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | `chat_message` 含 `loop_rounds` 与两个工具码；每个 `tool_invoke` 含 `evidence_id`；无执行类工具调用 |
+| 9.14.5 | Loop 审计 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | `chat_message` 含 `loop_rounds` 与实际规则/指标工具码；每个 `tool_invoke` 含 `evidence_id`；无执行类工具调用 |
 | 9.14.6 | huawei ak_sk 真实规则 | 用带 `alerts` 能力的真实 ak_sk 账号申请规则列表（参数含 account_id/namespace/region） | 观测 `status=ok`、`rule_count>=1`；规则含 metric/operator/threshold/window_seconds；`tool_invoke` 审计带 `evidence_id` |
 | 9.14.7 | huawei agency 不支持 | 用 agency 账号申请规则列表 | 观测 `status=unsupported`、reason 稳定；回答仍正常返回 |
+| 9.14.8 | 批量规则体检 | 让模型申请 `alert.rules.health`，params 带 `namespace=SYS.RDS`、`limit<=20`、30 天窗口与 `period=3600` | 观测 `status=ok`，每条规则含 `point_count/avg/p95/peak/last/breach_ratio/unit/rule_unit`；`sampled=true` 表示只取了样本资源；无关联资源的规则 `skipped/no_resource_scope`；`tool_invoke` 审计的 `evidence_id` 取首条成功规则证据 |
+| 9.14.9 | 规则体检边界 | `limit=21`、超过 30 天、>7 天且 `period<3600`、只传 `from` | 均返回 `status=invalid_argument` 且不取数；单条规则取数失败不影响其它规则；总预算耗尽时剩余规则 `skipped/rule health query timeout` |
 
-> 前置：已执行迁移 `0055`；契约见 `ops/ai-contract.md` §10.12.1 / §10.16。E2E 脚本：`scripts/e2e-ai-rules.ps1`（脚本化 mock 模型 + fake `auth_type=none` 账号，自动覆盖 9.14.1/9.14.2/9.14.3/9.14.5；9.14.4 数据范围拒绝、9.14.6 real ak_sk 与 9.14.7 agency 不支持由单测覆盖，真实账号需手工回归）。
+> 前置：已执行迁移 `0055` 与 `0062`；契约见 `ops/ai-contract.md` §10.12.1 / §10.16。E2E 脚本：`scripts/e2e-ai-rules.ps1`（脚本化 mock 模型 + fake `auth_type=none` 账号，自动覆盖 9.14.1/9.14.2/9.14.3/9.14.5；9.14.4 数据范围拒绝、9.14.6 real ak_sk、9.14.7 agency 不支持、9.14.8/9.14.9 批量体检由单测覆盖，真实账号需手工回归）。
 
 ### 9.15 AI 上下文发现工具（migration 0056，契约 §10.12.1）
 

@@ -14,6 +14,8 @@ const (
 	ruleListPageLimit = 100
 	ruleListMaxPages  = 10
 	ruleListCapMax    = 500
+	// ruleResourceSampleMax 限制单条规则返回的资源维度样本，避免观测体积膨胀。
+	ruleResourceSampleMax = 3
 )
 
 // ruleListAPI 抽象 SDK 调用，便于 fixture 单测（同 alarmHistoryAPI 模式）。
@@ -116,6 +118,7 @@ func mapListAlarmRule(item cesv2model.ListAlarmRespBodyAlarms) domain.AlertRule 
 		}
 		rule.Metric = strings.TrimSpace(valueOf(policy.MetricName))
 		rule.Operator = strings.TrimSpace(valueOf(policy.ComparisonOperator))
+		rule.Unit = strings.TrimSpace(valueOf(policy.Unit))
 		if policy.Value != nil {
 			threshold := *policy.Value
 			rule.Threshold = &threshold
@@ -131,5 +134,38 @@ func mapListAlarmRule(item cesv2model.ListAlarmRespBodyAlarms) domain.AlertRule 
 		}
 		break
 	}
+	if item.Resources != nil && len(*item.Resources) > 0 {
+		rule.ResourceCount = len(*item.Resources)
+		rule.Resources = mapRuleResourceSamples(*item.Resources)
+	}
 	return rule
+}
+
+// mapRuleResourceSamples 提取前若干个关联资源的维度样本；资源分组无维度时只计数不采样。
+func mapRuleResourceSamples(resources []cesv2model.ResourcesInListResp) []map[string]string {
+	out := make([]map[string]string, 0, ruleResourceSampleMax)
+	for i := range resources {
+		if len(out) >= ruleResourceSampleMax {
+			break
+		}
+		if resources[i].Dimensions == nil || len(*resources[i].Dimensions) == 0 {
+			continue
+		}
+		dims := make(map[string]string, len(*resources[i].Dimensions))
+		for _, dim := range *resources[i].Dimensions {
+			name := strings.TrimSpace(valueOf(dim.Name))
+			value := strings.TrimSpace(valueOf(dim.Value))
+			if name == "" || value == "" {
+				continue
+			}
+			dims[name] = value
+		}
+		if len(dims) > 0 {
+			out = append(out, dims)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

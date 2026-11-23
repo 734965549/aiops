@@ -14,7 +14,7 @@
 
 ### 决策
 
-以 CES 资源分组接口（`ListResourceGroups` / `ShowResourceGroup` / `ListResourceGroupsServicesResources`）为主路径，将用户指定 CES 资源分组下的资源同步到 `asset_resource`。同步范围严格等同于“指定资源分组下资源”，而不是“CES 总览页所有资源”。
+以 CES 资源分组接口（`ListResourceGroups` / `ShowResourceGroup` / `ListResourceGroupsServicesResources`）为主路径，将用户指定 CES 资源分组下的资源同步到 `asset_resource`。显式指定组时严格等同于该组；未指定或默认候选名未命中时，使用全部资源组并集的 `all_groups` 聚合口径。两种口径都不等同于“CES 总览页包括未分组资源在内的所有资源”。
 
 ### 动因
 
@@ -24,7 +24,7 @@
 
 ### 关键口径
 
-- 默认候选名“全部资源”并非 CES 系统内置分组，需要用户在 CES 控制台预先创建同名资源分组；未创建且未显式指定 `resource_group_id` 时，同步批次将失败，**不会**静默回退到任意资源组。
+- 默认候选名“全部资源”并非 CES 系统内置分组。当前实现先尝试默认候选名精确匹配，未命中时进入全部资源组并集的 `all_groups` 聚合口径；显式指定非默认名称或 ID 未命中仍直接失败。聚合口径必须采用保守 stale 门控，不能解释为未分组资源也被覆盖。
 - `ShowResourceGroupResponse.product_names` 完整定义了资源组内的类型集合，是权威 scope。需要注意，华为官方把 `product_names` 放在“云产品资源层级”语境下定义，因此它只有在**非空**且**资源组层级适用**时，才能作为 `stale` 类型的权威边界；当其为空或不适用于资源组层级时，不能把它误解为“全局云产品全集”。
 
 ## 决策 2：`sync_mode=ces` 为默认同步模式
@@ -84,6 +84,8 @@
 - 不依赖 Redis，所有互斥通过 DB 部分唯一索引 + fencing token 实现，与现有技术栈一致。
 - `triggered_by` 保证崩溃批次被 reap 时审计 actor 归因到原操作者，而非当次请求用户。
 - `RenewLease` 同样校验 `lease_expires_at 未过期`：过期租约不可续租（标准 lease 语义），避免宽松续租架空 upsert/stale 写入门控，并消除“过期批次复活抢走 reap 窗口、导致新 TriggerSync 伪 409”的竞态。过期批次只能由 `ReapExpiredRunning` 回收。
+
+> **2026-11-23 实现差距**：上述 lease/fencing 主路径已落地，但审计生命周期未完全达到本 ADR 目标。当前 TriggerSync 未写 `triggered_by`，审计统一使用 `action=sync`，reap actor 为当次请求用户；过期批次仅在下一次同账号 TriggerSync 内联回收，未装配周期后台 reaper。新建云应用名称也仍可能为 `<provider>-cloud`，需与历史迁移归一化分开核对。
 
 ## 决策 5：CES/hybrid 权威 scope 采用反向 stale 标记
 

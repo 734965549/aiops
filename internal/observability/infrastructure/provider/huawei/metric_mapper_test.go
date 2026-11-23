@@ -68,6 +68,40 @@ func TestMapMetricDataResult(t *testing.T) {
 	}
 }
 
+func TestMapMetricDataResultInfersUnit(t *testing.T) {
+	value := 20480.0
+	series := MapMetricDataResult(domain.MetricQuery{
+		Metric:     "rds045_oldest_replication_slot_lag",
+		Aggregator: "avg",
+	}, MetricDataResult{
+		MetricName: "rds045_oldest_replication_slot_lag",
+		Points:     []MetricDataPoint{{TimestampMS: 1710000000000, Average: &value}},
+	})
+	if len(series) != 1 || series[0].Unit != "MiB" {
+		t.Fatalf("expected inferred MiB unit, got %+v", series)
+	}
+}
+
+func TestInferUnitFromMetric(t *testing.T) {
+	cases := map[string]string{
+		"rds039_disk_util":                   "Percent",
+		"rds072_conn_usage":                  "Percent",
+		"rds083_conn_usage":                  "Percent",
+		"rds045_oldest_replication_slot_lag": "MiB",
+		"rds073_replication_delay":           "s",
+		"rds042_database_connections":        "Count",
+		"oldest_transaction_duration":        "ms",
+		// _usage 后缀不是百分比：复制插槽使用量是 MiB，不能按后缀臆造。
+		"rds040_transaction_logs_usage": "",
+		"unknown_metric":                "",
+	}
+	for metric, want := range cases {
+		if got := inferUnitFromMetric(metric); got != want {
+			t.Fatalf("inferUnitFromMetric(%q) = %q, want %q", metric, got, want)
+		}
+	}
+}
+
 func TestMapMetricQueryRejectsTooManyDimensions(t *testing.T) {
 	dims := map[string]string{
 		"d0": "v0", "d1": "v1", "d2": "v2", "d3": "v3", "d4": "v4",
