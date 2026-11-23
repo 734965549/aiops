@@ -93,7 +93,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, provide, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { IconRobot } from '@arco-design/web-vue/es/icon'
 import { useAuthStore } from '@/stores/auth'
@@ -101,11 +101,13 @@ import { useAIContextStore } from '@/stores/aiContext'
 import { fetchCurrentUser } from '@/api/system'
 import AIAssistantOverlay from './components/AIAssistantOverlay.vue'
 import { navigationGroups, navigationItems } from './navigation'
+import { ChatControllerKey, useChat } from '@/views/ai-assistant/composables/useChat'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const aiContext = useAIContextStore()
+provide(ChatControllerKey, useChat())
 
 const activeMenuKey = computed(() => {
   const metaMenu = route.meta.activeMenu as string | undefined

@@ -122,7 +122,7 @@ import SessionList from './components/SessionList.vue'
 import ChatPanel from './components/ChatPanel.vue'
 import ContextPanel from './components/ContextPanel.vue'
 import ShareDialog from './components/ShareDialog.vue'
-import { useChat, formatModelLabel } from './composables/useChat'
+import { useSharedChat, formatModelLabel } from './composables/useChat'
 import { useAIContextStore } from '@/stores/aiContext'
 import PageHeader from '@/components/PageHeader.vue'
 
@@ -164,7 +164,7 @@ const {
   unarchiveSession,
   deleteSession,
   proposeExecution
-} = useChat()
+} = useSharedChat()
 
 const modelLabel = computed(() => formatModelLabel(selectedModel.value))
 

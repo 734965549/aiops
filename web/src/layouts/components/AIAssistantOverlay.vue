@@ -33,7 +33,27 @@
         </a-link>
       </div>
 
+      <div
+        v-if="sessionPickerVisible"
+        class="session-picker"
+      >
+        <div class="session-picker-header">
+          <span class="session-picker-title">选择会话</span>
+          <span class="session-picker-description">继续历史会话，或新建会话分析当前告警。</span>
+        </div>
+        <SessionList
+          compact
+          :sessions="sessions"
+          :active-id="activeSessionId"
+          :loading="loadingSessions || loadingMessages"
+          @create="onCreateSession"
+          @select="onSelectSession"
+          @refresh="loadSessionChoices"
+        />
+      </div>
+
       <ChatPanel
+        v-else
         compact
         :messages="messages"
         :sending="sending"
@@ -64,16 +84,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { IconLocation } from '@arco-design/web-vue/es/icon'
 import ChatPanel from '@/views/ai-assistant/components/ChatPanel.vue'
-import { useChat } from '@/views/ai-assistant/composables/useChat'
+import SessionList from '@/views/ai-assistant/components/SessionList.vue'
+import { useSharedChat } from '@/views/ai-assistant/composables/useChat'
 import { useAIContextStore } from '@/stores/aiContext'
 
 const router = useRouter()
 const contextStore = useAIContextStore()
 const {
+  sessions,
   messages,
   sending,
   proposing,
@@ -89,15 +111,21 @@ const {
   selectedModel,
   selectModel,
   activeSessionId,
+  loadingSessions,
+  loadingMessages,
   loadSessions,
+  loadSessionChoices,
+  selectSession,
+  startNewSession,
   send,
   retry,
   stop,
   submitFeedback,
   proposeExecution
-} = useChat()
+} = useSharedChat()
 
 const quickQuestions = ['分析当前页面', '生成排查步骤', 'SYS.RDS 规则体检', '有什么风险']
+const sessionPickerVisible = ref(false)
 
 // 窄屏（手机 / 小窗）使用全宽，避免固定宽度抽屉超出视口。
 const drawerWidth = typeof window !== 'undefined' && window.innerWidth < 560 ? '100%' : 480
@@ -110,13 +138,30 @@ const visible = computed({
   }
 })
 
-watch(visible, async (open) => {
+watch([visible, () => contextStore.overlaySessionPicker], async ([open, picker]) => {
   if (!open) return
-  // 打开时同步一次会话列表；无会话时发送首条消息会自动创建。
-  if (!activeSessionId.value) {
+  sessionPickerVisible.value = picker
+  if (picker) {
+    await loadSessionChoices()
+  } else if (!activeSessionId.value) {
+    // 普通入口保持原行为：首次打开时加载并选中最近会话。
     await loadSessions()
   }
 })
+
+async function onSelectSession(sessionId: string) {
+  try {
+    await selectSession(sessionId)
+    sessionPickerVisible.value = false
+  } catch {
+    /* 加载失败时保留会话选择页。 */
+  }
+}
+
+async function onCreateSession() {
+  const session = await startNewSession()
+  if (session) sessionPickerVisible.value = false
+}
 
 async function onSend(content: string, images?: string[]) {
   try {
@@ -151,6 +196,31 @@ function openWorkbench() {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.session-picker {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.session-picker-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.session-picker-title {
+  color: var(--color-text-1);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.session-picker-description {
+  color: var(--color-text-3);
+  font-size: 12px;
 }
 
 .context-bar {

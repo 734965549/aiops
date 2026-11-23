@@ -61,4 +61,21 @@ describe('aiContext store', () => {
     expect(store.current.resource_id).toBeUndefined()
     expect(store.current.page).toBe('executions')
   })
+
+  it('enables the session picker only for an explicit overlay entry', () => {
+    const store = useAIContextStore()
+    store.openOverlay({ selectSession: true })
+    expect(store.overlayVisible).toBe(true)
+    expect(store.overlaySessionPicker).toBe(true)
+
+    store.closeOverlay()
+    store.toggleOverlay()
+    expect(store.overlayVisible).toBe(true)
+    expect(store.overlaySessionPicker).toBe(false)
+
+    store.closeOverlay()
+    store.openOverlay()
+    expect(store.overlayVisible).toBe(true)
+    expect(store.overlaySessionPicker).toBe(false)
+  })
 })

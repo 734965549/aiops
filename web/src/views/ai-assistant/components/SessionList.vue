@@ -51,6 +51,7 @@
           </a-tag>
           <span>{{ formatTime(session.updated_at) }}</span>
           <span
+            v-if="!compact"
             class="session-actions"
             @click.stop
           >
@@ -109,11 +110,14 @@
 import { IconPlus } from '@arco-design/web-vue/es/icon'
 import type { ChatSession } from '@/api/ai'
 
-defineProps<{
+withDefaults(defineProps<{
   sessions: ChatSession[]
   activeId: string
   loading: boolean
-}>()
+  compact?: boolean
+}>(), {
+  compact: false
+})
 
 const emit = defineEmits<{
   (e: 'create'): void

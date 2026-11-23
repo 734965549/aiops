@@ -12,6 +12,8 @@ import {
 } from '@/api/alert'
 import { getApiError } from '@/api/request'
 
+const { openOverlayMock } = vi.hoisted(() => ({ openOverlayMock: vi.fn() }))
+
 vi.mock('@/api/alert', () => ({
   listAlerts: vi.fn(),
   listAlertSources: vi.fn(),
@@ -44,7 +46,7 @@ vi.mock('@/stores/aiContext', () => ({
     summary: '',
     setPageContext: vi.fn(),
     clearResourceContext: vi.fn(),
-    openOverlay: vi.fn()
+    openOverlay: openOverlayMock
   }))
 }))
 vi.mock('vue-router', () => ({
@@ -241,6 +243,20 @@ describe('alert detail: block order and baseline regions', () => {
     expect(el.querySelector('.detail-desc')).not.toBeNull()
     expect(el.querySelector('.action-bar')).not.toBeNull()
     expect(el.querySelector('.timeline-card')).not.toBeNull()
+  })
+})
+
+describe('alert detail: AI assistant entry', () => {
+  it('opens the overlay in session selection mode', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await openRow(wrapper)
+
+    const askButton = wrapper.findAll('button').find((button) => button.text() === '问 AI 助手')
+    expect(askButton).toBeDefined()
+    await askButton!.trigger('click')
+
+    expect(openOverlayMock).toHaveBeenCalledWith({ selectSession: true })
   })
 })
 

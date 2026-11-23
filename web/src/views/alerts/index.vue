@@ -680,7 +680,7 @@ function askAI() {
     return
   }
   syncAlertAIContext(alert)
-  aiContext.openOverlay()
+  aiContext.openOverlay({ selectSession: true })
 }
 
 function onRowClick(record: TableData) {

@@ -1,4 +1,4 @@
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref, type InjectionKey } from 'vue'
 import { useRouter } from 'vue-router'
 import Message from '@arco-design/web-vue/es/message'
 import {
@@ -242,10 +242,18 @@ export function useChat() {
   }
 
   async function loadSessions() {
+    await loadSessionList(true)
+  }
+
+  async function loadSessionChoices() {
+    await loadSessionList(false)
+  }
+
+  async function loadSessionList(autoSelect: boolean) {
     loadingSessions.value = true
     try {
       sessions.value = await listChatSessions(20)
-      if (!activeSessionId.value && sessions.value.length > 0) {
+      if (autoSelect && !activeSessionId.value && sessions.value.length > 0) {
         await selectSession(sessions.value[0].session_id)
       }
     } catch {
@@ -286,10 +294,12 @@ export function useChat() {
 
   async function startNewSession() {
     try {
-      await createSession()
+      const session = await createSession()
       Message.success('已创建新会话')
+      return session
     } catch {
       /* 错误已由拦截器提示。 */
+      return null
     }
   }
 
@@ -587,6 +597,7 @@ export function useChat() {
     selectedModel,
     selectModel,
     loadSessions,
+    loadSessionChoices,
     selectSession,
     startNewSession,
     ensureSession,
@@ -601,6 +612,15 @@ export function useChat() {
     proposeExecution,
     executionAction
   }
+}
+
+export type ChatController = ReturnType<typeof useChat>
+export const ChatControllerKey: InjectionKey<ChatController> = Symbol('ChatController')
+
+export function useSharedChat(): ChatController {
+  const controller = inject(ChatControllerKey)
+  if (!controller) throw new Error('AI chat controller is not provided')
+  return controller
 }
 
 function truncate(value: string, limit: number): string {

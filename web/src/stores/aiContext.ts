@@ -14,6 +14,7 @@ export interface AIPageContext extends ChatSessionContext {
 export const useAIContextStore = defineStore('aiContext', () => {
   const current = ref<AIPageContext>({ page: '', page_title: '' })
   const overlayVisible = ref(false)
+  const overlaySessionPicker = ref(false)
 
   const hasResourceContext = computed(
     () =>
@@ -78,7 +79,8 @@ export const useAIContextStore = defineStore('aiContext', () => {
     return payload
   }
 
-  function openOverlay() {
+  function openOverlay(options?: { selectSession?: boolean }) {
+    overlaySessionPicker.value = options?.selectSession ?? false
     overlayVisible.value = true
   }
 
@@ -87,12 +89,14 @@ export const useAIContextStore = defineStore('aiContext', () => {
   }
 
   function toggleOverlay() {
+    if (!overlayVisible.value) overlaySessionPicker.value = false
     overlayVisible.value = !overlayVisible.value
   }
 
   return {
     current,
     overlayVisible,
+    overlaySessionPicker,
     hasResourceContext,
     summary,
     setPageContext,
