@@ -58,6 +58,16 @@ export const STATUS_LABELS: Record<ChatUIStatus, string> = {
   failed: 'AI 回答失败'
 }
 
+export interface QueuedChatMessage {
+  queue_id: string
+  session_id: string
+  content: string
+  images: string[]
+  context: ChatSessionContext
+  provider_id?: string
+  client_message_id: string
+}
+
 /** 模型展示文案：provider 显示名与模型 ID 相同时去重，避免 "X（X）"。 */
 export function formatModelLabel(model: ChatModelInfo | null | undefined): string {
   if (!model) return ''
@@ -86,6 +96,7 @@ export function useChat() {
   const loadingSessions = ref(false)
   const loadingMessages = ref(false)
   const sending = ref(false)
+  const queuedMessages = ref<QueuedChatMessage[]>([])
   const proposing = ref(false)
   const error = ref('')
   const stage = ref<ChatStage>('idle')
@@ -134,7 +145,6 @@ export function useChat() {
   }
 
   function selectModel(providerID: string) {
-    if (sending.value) return
     selectedProviderID.value = providerID
     if (activeSession.value) {
       activeSession.value = {
@@ -168,7 +178,10 @@ export function useChat() {
     streamController = null
   }
 
-  onUnmounted(() => streamController?.abort())
+  onUnmounted(() => {
+    queuedMessages.value = []
+    streamController?.abort()
+  })
 
   /** 把服务端 stage 事件映射到既有 UI 阶段。 */
   function mapServerStage(serverStage: string): ChatStage {
@@ -265,6 +278,7 @@ export function useChat() {
 
   async function selectSession(sessionId: string) {
     if (!sessionId) return
+    if (sessionId !== activeSessionId.value && !canChangeSession()) return
     loadingMessages.value = true
     error.value = ''
     try {
@@ -293,6 +307,7 @@ export function useChat() {
   }
 
   async function startNewSession() {
+    if (!canChangeSession()) return null
     try {
       const session = await createSession()
       Message.success('已创建新会话')
@@ -315,32 +330,50 @@ export function useChat() {
 
   async function send(rawContent: string, clientMessageId?: string, images: string[] = []) {
     const content = rawContent.trim()
-    if ((!content && images.length === 0) || sending.value) return
-    // 纯图片消息与服务端兜底提问保持一致（ops/ai-contract.md §10.20）。
-    const effectiveContent = content || IMAGE_ONLY_PROMPT
-    // 归档会话只读：服务端会返回 409，前端提前拦截避免丢失已输入内容。
+    if (!content && images.length === 0) return
     if (activeSession.value?.status === 'archived') {
       Message.warning('会话已归档，请先恢复归档或新建会话再继续提问')
       return
     }
-    const sessionId = await ensureSession()
-    if (!sessionId) return
+    const clientId = clientMessageId || newClientMessageId()
+    const item: QueuedChatMessage = {
+      queue_id: newClientMessageId(),
+      session_id: activeSessionId.value,
+      content: content || IMAGE_ONLY_PROMPT,
+      images: [...images],
+      context: chatRequestContext(),
+      provider_id: selectedProviderID.value || undefined,
+      client_message_id: clientId
+    }
+    if (sending.value) {
+      queuedMessages.value = [...queuedMessages.value, item]
+      return
+    }
+    await sendNow(item)
+  }
+
+  async function sendNow(item: QueuedChatMessage) {
+    sending.value = true
+    const sessionId = item.session_id || await ensureSession()
+    if (!sessionId) {
+      sending.value = false
+      await sendNextQueued()
+      return
+    }
 
     error.value = ''
-    sending.value = true
     deltaChars.value = 0
-    lastUserContent.value = effectiveContent
-    lastUserImages.value = [...images]
+    lastUserContent.value = item.content
+    lastUserImages.value = [...item.images]
     // 同一条提问的重试复用同一个幂等键，服务端据此返回首次结果而不是重复落消息。
-    const clientId = clientMessageId || newClientMessageId()
-    lastClientMessageId.value = clientId
+    lastClientMessageId.value = item.client_message_id
     beginStage()
     const optimisticUserMessage: ChatMessage = {
       message_id: `local-${Date.now()}`,
       session_id: sessionId,
       role: 'user',
-      content: effectiveContent,
-      images: images.length > 0 ? [...images] : undefined,
+      content: item.content,
+      images: item.images.length > 0 ? [...item.images] : undefined,
       tool_calls: [],
       references: [],
       created_at: new Date().toISOString()
@@ -353,11 +386,11 @@ export function useChat() {
       const result = await streamChatMessage(
         sessionId,
         {
-          content: effectiveContent,
-          images: images.length > 0 ? images : undefined,
-          context: chatRequestContext(),
-          provider_id: selectedProviderID.value || undefined,
-          client_message_id: clientId
+          content: item.content,
+          images: item.images.length > 0 ? item.images : undefined,
+          context: item.context,
+          provider_id: item.provider_id,
+          client_message_id: item.client_message_id
         },
         {
           signal: controller.signal,
@@ -419,11 +452,40 @@ export function useChat() {
     } finally {
       sending.value = false
       endStage()
+      void sendNextQueued()
     }
   }
 
-  /** 用户主动停止生成：中断流读取，服务端按取消语义不写 assistant 消息。 */
+  async function sendNextQueued() {
+    if (sending.value || queuedMessages.value.length === 0) return
+    const [next, ...remaining] = queuedMessages.value
+    queuedMessages.value = remaining
+    await sendNow(next)
+  }
+
+  function removeQueuedMessage(queueId: string) {
+    queuedMessages.value = queuedMessages.value.filter((item) => item.queue_id !== queueId)
+  }
+
+  function prioritizeQueuedMessage(queueId: string) {
+    const target = queuedMessages.value.find((item) => item.queue_id === queueId)
+    if (!target) return
+    queuedMessages.value = [target, ...queuedMessages.value.filter((item) => item.queue_id !== queueId)]
+  }
+
+  function clearQueuedMessages() {
+    queuedMessages.value = []
+  }
+
+  function canChangeSession() {
+    if (!sending.value && queuedMessages.value.length === 0) return true
+    Message.warning('正在生成或存在排队消息，请先停止生成或清空队列')
+    return false
+  }
+
+  /** 用户主动停止：取消当前请求并清空队列，避免停止后又自动发送下一条。 */
   function stop() {
+    clearQueuedMessages()
     streamController?.abort()
     streamController = null
   }
@@ -581,6 +643,7 @@ export function useChat() {
     loadingSessions,
     loadingMessages,
     sending,
+    queuedMessages,
     proposing,
     error,
     stage,
@@ -604,6 +667,9 @@ export function useChat() {
     send,
     retry,
     stop,
+    removeQueuedMessage,
+    prioritizeQueuedMessage,
+    clearQueuedMessages,
     refreshSessionList,
     submitFeedback,
     archiveSession,

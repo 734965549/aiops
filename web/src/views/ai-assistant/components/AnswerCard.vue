@@ -27,46 +27,6 @@
           上下文不足
         </a-tag>
       </div>
-      <div
-        v-if="messageId"
-        class="answer-feedback"
-      >
-        <a-button
-          size="mini"
-          type="text"
-          :disabled="busy"
-          @click="copyAnswer"
-        >
-          <template #icon>
-            <IconCopy />
-          </template>
-          复制全文
-        </a-button>
-        <a-button
-          size="mini"
-          type="text"
-          :class="{ 'is-active': feedback === 'valid' }"
-          :disabled="busy"
-          @click="emit('feedback', messageId, 'valid')"
-        >
-          <template #icon>
-            <IconThumbUp />
-          </template>
-          有效
-        </a-button>
-        <a-button
-          size="mini"
-          type="text"
-          :class="{ 'is-active--bad': feedback === 'invalid' }"
-          :disabled="busy"
-          @click="emit('feedback', messageId, 'invalid')"
-        >
-          <template #icon>
-            <IconThumbDown />
-          </template>
-          无效
-        </a-button>
-      </div>
     </div>
 
     <section class="answer-section answer-summary">
@@ -124,14 +84,6 @@
     </section>
 
     <section
-      v-if="answer.diagnosis?.missing_evidence.length"
-      class="answer-section answer-uncertainty"
-    >
-      <h4>缺失 / 失败证据</h4>
-      <p>{{ answer.diagnosis.missing_evidence.join('、') }}</p>
-    </section>
-
-    <section
       v-if="answer.evidence.length"
       class="answer-section"
     >
@@ -185,14 +137,14 @@
     </section>
 
     <section
-      v-if="answer.uncertainties.length"
+      v-if="pendingItems.length"
       class="answer-section answer-uncertainty"
     >
-      <h4>不确定性说明</h4>
+      <h4>待确认事项</h4>
       <ul>
         <li
-          v-for="(item, index) in answer.uncertainties"
-          :key="`uncertainty-${index}`"
+          v-for="(item, index) in pendingItems"
+          :key="`pending-${index}`"
         >
           {{ item }}
         </li>
@@ -281,6 +233,47 @@
         不可执行原因：{{ deniedReason }}
       </span>
     </div>
+
+    <div
+      v-if="messageId"
+      class="answer-feedback answer-feedback--bottom"
+    >
+      <a-button
+        size="mini"
+        type="text"
+        :disabled="busy"
+        @click="copyAnswer"
+      >
+        <template #icon>
+          <IconCopy />
+        </template>
+        复制全文
+      </a-button>
+      <a-button
+        size="mini"
+        type="text"
+        :class="{ 'is-active': feedback === 'valid' }"
+        :disabled="busy"
+        @click="emit('feedback', messageId, 'valid')"
+      >
+        <template #icon>
+          <IconThumbUp />
+        </template>
+        有效
+      </a-button>
+      <a-button
+        size="mini"
+        type="text"
+        :class="{ 'is-active--bad': feedback === 'invalid' }"
+        :disabled="busy"
+        @click="emit('feedback', messageId, 'invalid')"
+      >
+        <template #icon>
+          <IconThumbDown />
+        </template>
+        无效
+      </a-button>
+    </div>
   </div>
 </template>
 
@@ -320,6 +313,7 @@ const knowledgeItemCount = computed(
 const deniedReason = computed(
   () => props.answer.actions?.find((action) => !action.allowed && action.reason)?.reason ?? ''
 )
+const pendingItems = computed(() => collectPendingItems(props.answer))
 
 function rootCauseStatusLabel(status: string): string {
   const labels: Record<string, string> = {
@@ -380,6 +374,22 @@ function formatMarkdownList(items?: string[]): string {
     .join('\n')
 }
 
+function collectPendingItems(answer: ChatAnswer): string[] {
+  const rootStatement = answer.diagnosis?.root_cause.statement.trim() || ''
+  const missingEvidence = answer.diagnosis?.missing_evidence.filter(Boolean) ?? []
+  const missingText = missingEvidence.length ? `缺失证据：${missingEvidence.join('、')}` : ''
+  const items: string[] = []
+  const seen = new Set<string>()
+  for (const rawItem of answer.uncertainties) {
+    const item = (rawItem ?? '').trim()
+    if (!item || item === rootStatement || item === missingText || seen.has(item)) continue
+    seen.add(item)
+    items.push(item)
+  }
+  if (missingText && !seen.has(missingText)) items.push(missingText)
+  return items
+}
+
 /** 复制全文：拼成可直接贴入工单/值班报告的 Markdown。 */
 function answerMarkdown(answer: ChatAnswer): string {
   const sections: string[] = []
@@ -395,9 +405,6 @@ function answerMarkdown(answer: ChatAnswer): string {
     if (diagnosis.hypotheses.length) {
       sections.push(`## 待验证假设\n${diagnosis.hypotheses.map((item) => `- ${item.statement}`).join('\n')}`)
     }
-    if (diagnosis.missing_evidence.length) {
-      sections.push(`## 缺失 / 失败证据\n${diagnosis.missing_evidence.join('、')}`)
-    }
   }
   const evidence = formatMarkdownList(answer.evidence)
   if (evidence) sections.push(`## 分析依据\n${evidence}`)
@@ -406,8 +413,8 @@ function answerMarkdown(answer: ChatAnswer): string {
   const recommendations = formatMarkdownList(answer.recommendations)
   if (recommendations) sections.push(`## 推荐操作\n${recommendations}`)
   if (answer.rollback) sections.push(`## 回滚建议\n${answer.rollback}`)
-  const uncertainties = formatMarkdownList(answer.uncertainties)
-  if (uncertainties) sections.push(`## 不确定性\n${uncertainties}`)
+  const pending = formatMarkdownList(collectPendingItems(answer))
+  if (pending) sections.push(`## 待确认事项\n${pending}`)
   return sections.join('\n\n')
 }
 
@@ -465,6 +472,12 @@ function onNavigate(url?: string) {
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
+}
+
+.answer-feedback--bottom {
+  justify-content: flex-end;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(81, 102, 63, 0.16);
 }
 
 .answer-feedback .is-active {

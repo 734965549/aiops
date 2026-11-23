@@ -211,6 +211,13 @@
     </div>
 
     <div class="chat-input">
+      <QueuedMessageList
+        v-if="queuedMessages?.length"
+        :messages="queuedMessages"
+        @remove="emit('remove-queued', $event)"
+        @prioritize="emit('prioritize-queued', $event)"
+        @clear="emit('clear-queued')"
+      />
       <div
         v-if="quickQuestions && quickQuestions.length && !messages.length"
         class="quick-questions"
@@ -221,7 +228,6 @@
           :key="question"
           size="mini"
           type="outline"
-          :disabled="sending"
           @click="onQuickQuestion(question)"
         >
           {{ question }}
@@ -231,14 +237,12 @@
         ref="pickerRef"
         v-model="images"
         v-model:attaching="attaching"
-        :sending="sending"
         :vision-enabled="visionEnabled"
       />
       <a-textarea
         v-model="input"
         :auto-size="{ minRows: compact ? 2 : 3, maxRows: 6 }"
         :placeholder="placeholder"
-        :disabled="sending"
         @keydown.enter.exact.prevent="submit"
         @paste="onPaste"
       />
@@ -248,7 +252,7 @@
             size="mini"
             type="text"
             class="attach-button"
-            :disabled="sending || !visionEnabled || attaching"
+            :disabled="!visionEnabled || attaching"
             :title="attachHint"
             @click="pickerRef?.onPickImages()"
           >
@@ -258,7 +262,6 @@
             v-if="modelOptions.length"
             :models="modelOptions"
             :model-value="modelValue"
-            :disabled="sending"
             @select-model="onSelectModel"
           />
           <span
@@ -268,23 +271,24 @@
             Enter 发送 · Shift + Enter 换行 · 执行类动作需人工确认
           </span>
         </div>
-        <a-button
-          v-if="sending"
-          size="small"
-          status="warning"
-          @click="emit('stop')"
-        >
-          停止生成
-        </a-button>
-        <a-button
-          v-else
-          type="primary"
-          size="small"
-          :disabled="(!input.trim() && images.length === 0) || attaching"
-          @click="submit"
-        >
-          发送
-        </a-button>
+        <div class="input-actions">
+          <a-button
+            v-if="sending"
+            size="small"
+            status="warning"
+            @click="emit('stop')"
+          >
+            {{ queuedMessages?.length ? '停止全部' : '停止生成' }}
+          </a-button>
+          <a-button
+            type="primary"
+            size="small"
+            :disabled="(!input.trim() && images.length === 0) || attaching"
+            @click="submit"
+          >
+            发送
+          </a-button>
+        </div>
       </div>
     </div>
   </div>
@@ -298,14 +302,16 @@ import AnswerCard from './AnswerCard.vue'
 import ModelControl from './ModelControl.vue'
 import ChatImagePicker from './ChatImagePicker.vue'
 import ChatUserMessage from './ChatUserMessage.vue'
+import QueuedMessageList from './QueuedMessageList.vue'
 import { MAX_CHAT_IMAGES } from '../composables/imageInput'
 import { formatMessageTime } from '../composables/format'
 import { toolLabel, toolReasonLabel, toolStatusLabel } from '../toolReason'
-import { STAGE_LABELS, type ChatStage, type ChatUIStatus } from '../composables/useChat'
+import { STAGE_LABELS, type ChatStage, type ChatUIStatus, type QueuedChatMessage } from '../composables/useChat'
 
 const props = defineProps<{
   messages: ChatMessage[]
   sending: boolean
+  queuedMessages?: QueuedChatMessage[]
   stage: ChatStage
   stageDeltaChars?: number
   status: ChatUIStatus
@@ -330,6 +336,9 @@ const emit = defineEmits<{
   (e: 'send', content: string, images?: string[]): void
   (e: 'retry'): void
   (e: 'stop'): void
+  (e: 'remove-queued', queueId: string): void
+  (e: 'prioritize-queued', queueId: string): void
+  (e: 'clear-queued'): void
   (e: 'feedback', messageId: string, feedback: 'valid' | 'invalid'): void
   (e: 'propose', answer: ChatAnswer, messageId?: string): void
   (e: 'navigate', url: string): void
@@ -503,7 +512,7 @@ watch(
 
 function submit() {
   const content = input.value.trim()
-  if ((!content && images.value.length === 0) || props.sending) return
+  if (!content && images.value.length === 0) return
   const payload = [...images.value]
   input.value = ''
   images.value = []
@@ -511,7 +520,6 @@ function submit() {
 }
 
 function onQuickQuestion(question: string) {
-  if (props.sending) return
   emit('send', question)
 }
 
@@ -731,6 +739,12 @@ function onNavigate(url: string) {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.input-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .input-foot-main {

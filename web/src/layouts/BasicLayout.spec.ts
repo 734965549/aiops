@@ -236,4 +236,75 @@ describe('BasicLayout shared chat controller', () => {
     expect(signal?.aborted).toBe(true)
     await sendPromise
   })
+
+  it('queues messages in order and supports priority and removal across pages', async () => {
+    const resolvers: Array<(result: SendChatMessageResult) => void> = []
+    const requestedContent: string[] = []
+    vi.mocked(streamChatMessage).mockImplementation((_sessionId, input) => {
+      requestedContent.push(input.content)
+      return new Promise((resolve) => {
+        resolvers.push(resolve)
+      })
+    })
+    const { controllers, switchPage } = mountLayout()
+    await flushPromises()
+    const chat = controllers[0]
+
+    const firstSend = chat.send('第一条')
+    await vi.waitFor(() => expect(resolvers).toHaveLength(1))
+    await chat.send('第二条')
+    await chat.send('第三条')
+    await chat.send('第四条')
+    expect(chat.queuedMessages.value.map((item) => item.content)).toEqual(['第二条', '第三条', '第四条'])
+
+    const queued = chat.queuedMessages.value
+    chat.prioritizeQueuedMessage(queued[1].queue_id)
+    chat.removeQueuedMessage(queued[2].queue_id)
+    expect(chat.queuedMessages.value.map((item) => item.content)).toEqual(['第三条', '第二条'])
+
+    switchPage()
+    await nextTick()
+    expect(controllers[1]).toBe(chat)
+    expect(controllers[1].queuedMessages.value.map((item) => item.content)).toEqual(['第三条', '第二条'])
+
+    resolvers[0](makeResult())
+    await firstSend
+    await vi.waitFor(() => expect(resolvers).toHaveLength(2))
+    expect(requestedContent).toEqual(['第一条', '第三条'])
+
+    resolvers[1](makeResult())
+    await vi.waitFor(() => expect(resolvers).toHaveLength(3))
+    resolvers[2](makeResult())
+    await vi.waitFor(() => expect(chat.sending.value).toBe(false))
+    expect(requestedContent).toEqual(['第一条', '第三条', '第二条'])
+    expect(chat.queuedMessages.value).toEqual([])
+  })
+
+  it('stops the current stream and clears all queued messages', async () => {
+    let signal: AbortSignal | undefined
+    vi.mocked(streamChatMessage).mockImplementation((_sessionId, _input, handlers) => {
+      signal = handlers?.signal
+      return new Promise((_resolve, reject) => {
+        handlers?.signal?.addEventListener('abort', () => {
+          const error = new Error('aborted')
+          error.name = 'AbortError'
+          reject(error)
+        })
+      })
+    })
+    const { controllers } = mountLayout()
+    await flushPromises()
+    const chat = controllers[0]
+
+    const firstSend = chat.send('当前问题')
+    await vi.waitFor(() => expect(streamChatMessage).toHaveBeenCalledTimes(1))
+    await chat.send('排队问题')
+    expect(chat.queuedMessages.value).toHaveLength(1)
+
+    chat.stop()
+    expect(signal?.aborted).toBe(true)
+    expect(chat.queuedMessages.value).toEqual([])
+    await firstSend
+    expect(streamChatMessage).toHaveBeenCalledTimes(1)
+  })
 })

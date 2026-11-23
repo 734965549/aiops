@@ -15,7 +15,6 @@
       <button
         type="button"
         class="image-preview-remove"
-        :disabled="sending"
         aria-label="移除图片"
         @click="removeImage(index)"
       >
@@ -46,7 +45,6 @@ import {
 
 const props = defineProps<{
   modelValue: string[]
-  sending: boolean
   visionEnabled?: boolean
   attaching: boolean
 }>()
@@ -59,7 +57,7 @@ const emit = defineEmits<{
 const fileInput = ref<HTMLInputElement | null>(null)
 
 async function addImageFiles(files: ArrayLike<File> | null) {
-  if (!files || files.length === 0 || props.sending) return
+  if (!files || files.length === 0) return
   if (!props.visionEnabled) {
     Message.warning('当前模型未开启图片输入，请先在 AI 配置开启视觉能力')
     return

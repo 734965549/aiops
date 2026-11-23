@@ -57,6 +57,7 @@
         compact
         :messages="messages"
         :sending="sending"
+        :queued-messages="queuedMessages"
         :stage="stage"
         :stage-delta-chars="deltaChars"
         :live-tools="liveTools"
@@ -75,6 +76,9 @@
         @send="onSend"
         @retry="retry"
         @stop="stop"
+        @remove-queued="removeQueuedMessage"
+        @prioritize-queued="prioritizeQueuedMessage"
+        @clear-queued="clearQueuedMessages"
         @feedback="submitFeedback"
         @propose="proposeExecution"
         @navigate="onNavigate"
@@ -98,6 +102,7 @@ const {
   sessions,
   messages,
   sending,
+  queuedMessages,
   proposing,
   error,
   stage,
@@ -120,6 +125,9 @@ const {
   send,
   retry,
   stop,
+  removeQueuedMessage,
+  prioritizeQueuedMessage,
+  clearQueuedMessages,
   submitFeedback,
   proposeExecution
 } = useSharedChat()
