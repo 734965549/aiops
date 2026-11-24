@@ -156,8 +156,8 @@ func (s *ChatService) refreshRuleHealthObservation(ctx context.Context, userID s
 		"checked_resource_count": sampled,
 		"rules":                  rules,
 		"granularity_note": "破限比例与越限时长按请求的 period 聚合口径统计（越限时长为 breach_points × period 的上限估计）；" +
-			"规则原始采样窗口小于 period 时，不能据此推断原始窗口的误报频率，需缩小窗口用原始粒度复查；" +
-			"规则关联多实例时按预算尽量覆盖全部实例（先每条规则 1 个，再轮转补全，单规则上限 200）；覆盖不全时 sampled=true，实际覆盖见 checked_resources。统计取越限最严重的样本；scope_source=resource_discovery 时 resource_count 为空表示规则资源总数未知，scope_note 给出未匹配原因（引擎/维度/发现条数）。point_count=0 的规则附带 probe_point_count（近 1 小时/60s 探针）：大于 0 说明主窗口无点但近期有数据，等于 0 说明近期也无数据（事件型指标无事件/未上报/维度不匹配）。recent_* 是近端分钟级复核（默认近 24 小时/60s）的越限统计，用于判断触发频率；30 天小时级统计只能用于趋势，不能据此声称 1s/15s 窗口的精确误报率",
+			"规则采样窗口小于 period 时，平台已自动补充 recent_*（近 24 小时/60s）复核；60s 是 CES 可用的最细历史粒度，1s/15s 精确频率不可还原、也不需要再要求原始粒度复查；频率结论按 recent_* 的 60s 口径给出近似值并注明。" +
+			"规则多实例时按预算尽量覆盖全部实例（先每条规则 1 个，再轮转补全，单规则上限 200）；覆盖不全时 sampled=true，实际覆盖见 checked_resources。统计取越限最严重的样本；scope_source=resource_discovery 时 resource_count 为空表示规则资源总数未知，scope_note 给出未匹配原因（引擎/维度/发现条数）。point_count=0 的规则附带 probe_point_count（近 1 小时/60s 探针）：大于 0 说明主窗口无点但近期有数据，等于 0 说明近期也无数据（事件型指标无事件/未上报/维度不匹配）",
 	}
 	appendRuleHealthReferences(data, result.Rules)
 	s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)
