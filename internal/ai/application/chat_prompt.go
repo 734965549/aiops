@@ -51,6 +51,7 @@ const chatSystemPrompt = `你是企业运维平台的 AI 运维助手。你只�
 - alert.rules.health：params 支持 account_id / region / namespace / keyword / limit（默认 10，最多 20）/ from / to / period / aggregator；一次为多条规则批量取历史曲线并统计 point_count / avg / p95 / peak / last / breach_points / breach_ratio（按规则 operator+threshold 计算）。缺省最近 30 天、period=3600、aggregator=max；超过 7 天窗口 period 不得小于 3600。规则无关联资源维度时该条返回 skipped/no_resource_scope，需先用 resources.list 发现实例再逐条 metrics.query。
 - alarm.analyze：无参数，重新读取当前告警快照。
 若用户要求体检多条告警规则（例如判断阈值是否合理），优先申请 alert.rules.health 一次获取批量曲线；仅当需要指定实例、规则无资源维度或需要原始粒度复查时，再逐条申请 metrics.query。阈值量纲以 alert.rules.list 的 unit 与 alert.rules.health 的 unit 为准，不得臆造。
+规则数量多、时间窗口长（如近一个月）或涉及多个实例时，按命名空间/项目/关键词分批体检（每批 5-10 条规则），先给最需要调整的规则；避免单次上下文过长导致生成中断或输出超限。
 需要实例维度但上下文缺少 instance_id 时，先申请 resources.list（如 resource_type=rds）获取资源列表，再对目标实例申请 metrics.query。
 收敛要求：最多 3 轮追加取数，单轮最多申请 3 个工具（可并列申请多个不同指标/窗口的 metrics.query），请一次规划好所需数据；当现有 observations 已足以回答时必须立即输出最终 answer JSON，不得继续申请工具；同一工具与同一参数（同一 namespace / metric / 时间窗口等）在一次对话中只会执行一次，重复申请会收到 denied「已查询过相同数据」，不会获得新证据。不得申请执行类工具。
 回答务必精炼，避免超出输出长度限制：summary 不超过 200 字；recommendations 只逐条列出最需要调整的前 6 条规则，其余规则用一句话概括；evidence / impact / uncertainties 各不超过 6 条。`
@@ -286,9 +287,10 @@ func chatResultStatus(answer ChatAnswer) string {
 	return chatStatusOK
 }
 
-// degradedChatAnswer 是模型不可用/输出非法时的保守降级结果。
+// degradedChatAnswer 是模型不可用/输出非法/流式中断时的保守降级结果。
 func degradedChatAnswer(reason string, evidence []string) ChatAnswer {
-	uncertainties := []string{"模型或编排服务不可用时平台返回保守降级结果，未生成新的分析结论"}
+	summary := "AI 助手暂未生成有效分析结论，已展示可用的只读上下文，请结合告警与监控人工判断。"
+	uncertainties := make([]string, 0, 2)
 	switch reason {
 	case chatDegradedModelUnavailable:
 		uncertainties = append(uncertainties, "尚未配置可用的平台直连模型（类型 b），请联系管理员在系统管理 / AI 配置中完成配置")
@@ -301,15 +303,21 @@ func degradedChatAnswer(reason string, evidence []string) ChatAnswer {
 	case chatDegradedTurnBudgetExceeded:
 		uncertainties = append(uncertainties, "本轮对话已超过总时间预算，已停止继续取数与模型调用；请缩小问题范围或稍后重试")
 	case chatDegradedStreamInterrupted:
-		uncertainties = append(uncertainties, "模型输出在生成过程中中断，未获得完整结构化回答；已保留本轮已获取的只读证据")
+		summary = "AI 回答在生成过程中中断，已保留本轮已获取的只读证据；请缩小问题范围或稍后重试。"
+		uncertainties = append(uncertainties, "模型流式输出中断，未获得完整结构化回答；已保留本轮已获取的只读证据")
+	case chatDegradedOutputTruncated:
+		summary = "AI 回答达到模型输出长度上限，已保留本轮已获取的只读证据；建议缩小问题范围后重试。"
+		uncertainties = append(uncertainties, "模型输出达到长度上限，未获得完整结构化回答；已保留本轮已获取的只读证据，建议减少规则条数或缩短时间窗口")
 	case chatDegradedRateLimited:
 		uncertainties = append(uncertainties, "模型服务当前限流，重试后仍未恢复")
+	default:
+		uncertainties = append(uncertainties, "平台返回保守降级结果，未生成新的分析结论")
 	}
 	if len(evidence) == 0 {
 		evidence = []string{"暂无可用只读观测数据，请结合告警详情与监控页面人工判断"}
 	}
 	return ChatAnswer{
-		Summary:         "AI 助手暂未生成有效分析结论，已展示可用的只读上下文，请结合告警与监控人工判断。",
+		Summary:         summary,
 		Evidence:        evidence,
 		Impact:          []string{},
 		Recommendations: []string{"稍后重试；涉及变更时通过自动化执行创建待确认任务，由人工确认后执行。"},

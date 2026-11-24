@@ -93,7 +93,7 @@ AI 助手只做分析、解释、建议与执行计划，不直接执行任何�
 | `base_url` | string | 是 | provider 基础地址；类型 `b` 填含版本段的模型 API 根地址（如 `https://ark.cn-beijing.volces.com/api/v3`、`https://api.openai.com/v1`），平台只追加 `/chat/completions` |
 | `model` | string | 类型 `b` 必填 | 模型名或推理接入点 ID（如 `ep-20241128xxxxx`） |
 | `api_key` | string | 新增必填；更新可省略 | 调用凭据；更新时省略则保留原密钥 |
-| `timeout_ms` | number | 否 | 非流式请求总时长上限，默认 `300000`；流式对话使用首块 60s + 空闲 180s，总时长受 `ai.turn_budget_s` 约束 |
+| `timeout_ms` | number | 否 | 非流式请求总时长上限，默认 `300000`；流式对话使用首块 60s + 空闲默认 180s（`ai.stream_idle_timeout_s` 可调），总时长受 `ai.turn_budget_s` 约束 |
 | `reasoning_effort` | string | 否 | 思考型模型推理强度 `low` / `high` / `max`，随 chat/completions 发送 `reasoning_effort`；空串不发送。不支持该参数的模型可能 400，按 provider 配置 |
 | `headers` | object | 否 | 额外请求头 |
 | `enabled` | boolean | 否 | 是否启用 |
@@ -493,7 +493,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | `ok` | 模型正常返回并通过结构校验 |
 | `degraded` | 模型未配置、调用失败或输出非法；`answer.degraded=true` 且 `answer.degraded_reason` 为 `model_unavailable` / `model_failed` / `model_output_invalid` / `agent_loop_exhausted` / `turn_budget_exceeded` / `stream_interrupted` / `provider_rate_limited`，保留已获取的只读上下文 |
 | `insufficient_context` | 模型显式声明上下文不足（`answer.insufficient_context=true`） |
-| `incomplete` | 流式生成中断但已保留部分输出/已获取观测；`answer.incomplete=true`、`answer.incomplete_reason` 说明中断原因（如 `stream_idle_timeout`）。不按普通失败处理 |
+| `incomplete` | 流式生成中断但已保留部分输出/已获取观测；`answer.incomplete=true`、`answer.incomplete_reason` 说明中断原因（如 `stream_idle_timeout` / `stream_read_error` / `output_truncated`）。不按普通失败处理 |
 
 #### 10.6.2 `answer` 字段
 
@@ -514,7 +514,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 无 `alert_id` 但会话带 `resource_id` 时触发 `resource.analyze`：读取资源并推导 `account_id/region/namespace/dimensions`；资源数据范围由 Asset 应用层按账号归属团队/区域收口（拒绝记为 `status=denied`、`reason=data_scope_denied`）。
 - 模型可在 Agent Loop 中申请 `metrics.query`（自由参数）、`alert.rules.list`（规则体检）、`alert.rules.health`（批量规则体检）、`accounts.list`、`resource.analyze` 与 `resources.list`（资源发现）；执行类工具仍在白名单之外。
 - 每次工具校验/调用都写入审计：`resource_type=ai`、`resource_id=session_id`、`action=tool_invoke`，payload 含 `tool_code/allowed/mode/status/reason/evidence_id/result`，不含 prompt 与凭据。
-- 回答写入审计：`action=chat_message`，含 `status/risk_level/require_confirm/tool_codes/tool_denied/reference_count/provider_id/tokens/degraded_reason`。
+- 回答写入审计：`action=chat_message`，含 `status/risk_level/require_confirm/tool_codes/tool_denied/reference_count/provider_id/tokens/degraded_reason/incomplete_reason`。
 - 数据范围校验口径：
   - 告警快照的对象级数据范围在 `AlertReader` 收口（`POST /api/ai/analyze-alert` 与对话共用同一入口），拒绝时返回 `PERMISSION_DENIED`，不返回任何告警字段；
   - 对话路径把拒绝降级为一次观测：`alarm.analyze` 的 `allowed=true`、`status=denied`、`reason=data_scope_denied`（工具权限本身已通过，拒绝来自对象数据范围），不产生告警 `references`，也不返回 `view.alert` 跳转入口，模型仍可基于其它上下文（或降级结果）作答；
@@ -1047,16 +1047,17 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 使用 `fetch` + `ReadableStream` 读取，不用 `EventSource`（需要 POST 与 Bearer 头）；实现见 `web/src/api/sse.ts` 与 `web/src/api/ai.ts` 的 `streamChatMessage`。
 - `stage` 事件驱动阶段提示，`tool` 事件用于即时展示工具校验结果，`delta` 事件只做“已生成 N 字”进度（不渲染半成品 JSON），`answer.result` 走与同步接口相同的渲染与 `actions` 权限判断；`:` 注释心跳必须忽略，未知事件类型优雅忽略。
 - 发送中允许「停止生成」：`AbortController.abort()` 中断读取；服务端按 §10.17.4 不落回答。停止后应回读会话，避免本地乐观消息与服务端不一致。
-- `status=incomplete` 时展示橙色“生成中断”提示与「重新提问」入口，按普通回答卡渲染已保留的 `summary/uncertainties`，不得展示为红色失败卡。
+- `status=incomplete` 时展示橙色“生成中断”提示与「重新提问」入口，按普通回答卡渲染已保留的 `summary/uncertainties`，不得展示为红色失败卡；提示文案必须带 `answer.incomplete_reason` 的具体原因（空闲超时/连接中断/空响应/输出超限），未识别原因原样透出。
 
 #### 10.17.7 模型超时、重试与部分保留
 
-- **超时语义**：流式调用不再用单个总超时罩住整个 SSE。首块超时 **60s**、空闲超时 **180s**（仅在连续无任何 `data` 增量时计时），总时长只受 `ai.turn_budget_s`（默认 600s）约束，并与 nginx/server 660s 对齐；provider `timeout_ms` 仅约束非流式请求总时长（默认 300000ms）。
+- **超时语义**：流式调用不再用单个总超时罩住整个 SSE。首块超时 **60s**、空闲超时默认 **180s**（`ai.stream_idle_timeout_s` 可配，低于 30s 按 30s 处理，建议 180–300s），总时长只受 `ai.turn_budget_s`（默认 600s）约束，并与 nginx/server 660s 对齐；provider `timeout_ms` 仅约束非流式请求总时长（默认 300000ms）。**任意非空 SSE 行（包括 provider 的注释/心跳）都会重置空闲计时**，只有连接真正无字节时才按空闲超时处理。
 - **重试条件**（仅在尚未向客户端输出任何 `delta` 时）：429（解析 `Retry-After`）/5xx/网络错误/首块超时/空响应；指数退避 1s、2s 加抖动，单次回合最多 **2 次**重试，且必须落在回合预算内。非流式调用采用同一错误分类与固定退避预算；`Retry-After`/配额提示只用于用户文案，不改变其退避间隔。
 - **不重试**：3xx/400/401/403 等配置与鉴权错误；客户端断开（`ABORTED`）；已产生任何 `thinking`/`answer` 增量后的中断（避免前端文本重复）。
 - **429 配额提示**：退避优先使用 `Retry-After`；缺失时从响应体解析 `resets in 5h` / `quotaResetDelay: 1h` / `try again in 30m` 等文本，只保留时长、不记录响应体。重试耗尽后返回 `degraded_reason=provider_rate_limited`，答案 `uncertainties` 直接给出“预计约 X 后恢复”，前端失败提示同步展示该文案。
-- **部分保留**：已输出增量后中断时，返回 `Partial=true` 的部分结果；application 层优先解析部分 JSON，失败则返回带已获取观测的保守回答，`status=incomplete`、`answer.incomplete=true`、`answer.incomplete_reason=stream_idle_timeout|stream_read_error|empty_model_response`。不完整回答仍会落库，重放时保留 `incomplete` 标记。
-- 审计：`chat_message.status=incomplete`、`degraded_reason=stream_interrupted`（保守回答场景），`result=partial`。
+- **部分保留**：已输出增量后中断时，返回 `Partial=true` 的部分结果；application 层优先解析部分 JSON，失败则返回带已获取观测的保守回答，`status=incomplete`、`answer.incomplete=true`、`answer.incomplete_reason=stream_idle_timeout|stream_first_chunk_timeout|stream_read_error|empty_model_response|output_truncated`。不完整回答仍会落库，重放时保留 `incomplete` 标记。
+- **输出超限**：provider 返回 `finish_reason=length`（或 `max_tokens` / `max_output_tokens`）且正文不是完整 JSON 时，按 `incomplete_reason=output_truncated` 保留部分结果；前端显示“达到模型输出长度上限”，并提示减少规则条数/缩短时间窗口，不再笼统归因于超时。
+- 审计：`chat_message.status=incomplete`、`degraded_reason=stream_interrupted|output_truncated`（保守回答场景）、`incomplete_reason=<具体原因>`、`result=partial`；前端中断横幅展示 `incomplete_reason` 的中文原因，不再使用“模型或编排服务不可用”的通用文案。
 
 ### 10.18 会话只读分享
 

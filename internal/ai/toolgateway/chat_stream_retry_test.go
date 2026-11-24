@@ -104,6 +104,73 @@ func TestCompleteStreamIdleTimeoutRetainsPartial(t *testing.T) {
 	}
 }
 
+func TestCompleteStreamIdleTimerResetsOnProviderComments(t *testing.T) {
+	withFastRetries(t)
+	withStreamTimeouts(t, 2*time.Second, 60*time.Millisecond)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 只发注释/心跳，不发 data：连接仍存活，空闲计时必须被重置。
+		for i := 0; i < 3; i++ {
+			writeSSE(w, ": ping")
+			time.Sleep(40 * time.Millisecond)
+		}
+		writeSSE(w,
+			`data: {"choices":[{"delta":{"content":"ok"}}]}`,
+			`data: [DONE]`,
+		)
+	}))
+	defer srv.Close()
+
+	registry := chatTestRegistry(t, srv.URL)
+	result, err := registry.CompleteStream(context.Background(), "ark", "sys", "user", nil)
+	if err != nil {
+		t.Fatalf("complete stream: %v", err)
+	}
+	if result.Partial || result.Content != "ok" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestCompleteStreamOutputTruncatedRetainsPartial(t *testing.T) {
+	withFastRetries(t)
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		writeSSE(w,
+			`data: {"choices":[{"delta":{"content":"{\"summary\":\"半成品\""}}]}`,
+			`data: {"choices":[{"delta":{},"finish_reason":"length"}]}`,
+			`data: [DONE]`,
+		)
+	}))
+	defer srv.Close()
+
+	registry := chatTestRegistry(t, srv.URL)
+	result, err := registry.CompleteStream(context.Background(), "ark", "sys", "user", nil)
+	if err != nil {
+		t.Fatalf("complete stream: %v", err)
+	}
+	if !result.Partial || result.PartialReason != "output_truncated" {
+		t.Fatalf("result = %+v", result)
+	}
+	if !strings.Contains(result.Content, "半成品") {
+		t.Fatalf("content = %q", result.Content)
+	}
+	if attempts.Load() != 1 {
+		t.Fatalf("output truncation must not retry, attempts = %d", attempts.Load())
+	}
+}
+
+func TestChatCompletionExecutorStreamIdleTimeoutOverride(t *testing.T) {
+	exec := NewChatCompletionExecutor(ProviderTypeB, "/chat/completions")
+	if got := exec.effectiveStreamIdleTimeout(); got != chatStreamIdleTimeout {
+		t.Fatalf("default idle timeout = %v", got)
+	}
+	exec.SetStreamIdleTimeout(42 * time.Second)
+	if got := exec.effectiveStreamIdleTimeout(); got != 42*time.Second {
+		t.Fatalf("override idle timeout = %v", got)
+	}
+}
+
 func TestCompleteStreamRetriesOn429WithRetryAfter(t *testing.T) {
 	withFastRetries(t)
 	var retryDelay time.Duration

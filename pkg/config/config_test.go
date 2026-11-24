@@ -225,3 +225,15 @@ func TestAITurnBudgetTimeout(t *testing.T) {
 		t.Fatalf("explicit turn budget = %v", got)
 	}
 }
+
+func TestAIStreamIdleTimeout(t *testing.T) {
+	if got := (AIConfig{}).StreamIdleTimeout(); got != 180*time.Second {
+		t.Fatalf("default stream idle timeout = %v", got)
+	}
+	if got := (AIConfig{StreamIdleTimeoutS: 300}).StreamIdleTimeout(); got != 5*time.Minute {
+		t.Fatalf("explicit stream idle timeout = %v", got)
+	}
+	if got := (AIConfig{StreamIdleTimeoutS: 5}).StreamIdleTimeout(); got != 30*time.Second {
+		t.Fatalf("minimum stream idle timeout = %v", got)
+	}
+}

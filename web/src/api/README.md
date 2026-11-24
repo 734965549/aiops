@@ -77,7 +77,17 @@
 | --- | --- | --- |
 | `fetchDashboardSummary` | `GET /api/dashboard/summary` | 告警、执行、资产、Runbook 聚合摘要 |
 
-页面：`views/dashboard/index.vue`。权限：`app:dashboard:read`。
+页面：`views/dashboard/index.vue`。权限：`app:dashboard:read`。契约：`ops/dashboard-contract.md`。
+
+实现边界：
+
+- `alerts.active_total/p0/p1` 只排除 closed；recovered 和 silenced 仍可能计入。
+- `executions.recent` 最近最多 10 条，不限成功任务；`processing_alerts` 最多 5 条，实际包含 new/acknowledged/processing，不是仅 processing。
+- 推荐由前端再取前 3 条告警调用 `listRunbookRecommendations`，每组最多展示 3 个模板；单条推荐失败会被忽略。
+- 后端单项统计失败返回 0/空列表，响应没有 degraded/error 字段，真实 0 与降级 0 不可区分。
+- 前端 summary 整体失败时指标显示 `—`，最近执行和推荐为空，当前没有专门错误 Alert；版本与 readiness 独立加载。
+- 聚合只有静态 RBAC，没有对象级数据范围过滤。
+- 当前没有独立 Dashboard E2E 或前端 Vitest；`e2e-identity-access.ps1` 只以 viewer 调用一次摘要，不逐项验证字段、降级或 UI。
 
 ## Alert（`alert.ts`）
 
@@ -195,15 +205,26 @@
 
 | 函数 | 接口 | 说明 |
 | --- | --- | --- |
-| `listExecutionTasks` | `GET /api/executions/tasks` | 执行任务分页查询 |
+| `listExecutionTasks` | `GET /api/executions/tasks` | 任务分页查询，支持状态/来源/keyword |
 | `getExecutionTask` | `GET /api/executions/tasks/:task_id` | 任务详情与步骤 |
-| `createExecutionTask` | `POST /api/executions/tasks` | 创建任务；中高风险进入 `pending_confirm` |
-| `confirmExecutionTask` | `POST /api/executions/tasks/:task_id/confirm` | 输入确认文本，推进到 `pending_execute` |
-| `executeTask` | `POST /api/executions/tasks/:task_id/execute` | 执行已确认任务 |
+| `createExecutionTask` | `POST /api/executions/tasks` | 创建普通模拟或 Runbook 任务；alert 必须 processing |
+| `confirmExecutionTask` | `POST /api/executions/tasks/:task_id/confirm` | 固定提交 confirm=true 和 CONFIRM，推进到 pending_execute |
+| `executeTask` | `POST /api/executions/tasks/:task_id/execute` | 同步模拟执行；Agent 任务返回 FAILED_PRECONDITION |
 
 页面：`views/executions/index.vue`。契约：`ops/execution-contract.md`、`ops/execution-agent-contract.md`。
 
+实现边界：
+
+- 后端支持 confirm=false 将 pending_confirm 转为 cancelled，但当前 API 封装和页面没有拒绝入口；pending_execute/running 也没有通用取消接口。
+- 来源 alert/manual/ai_conversation/inspection 已有后端路径；前端 Create 类型和 Agent 字段并不完整，不能据此认为 Agent 创建 UI 已落地。
+- 后端另有 `GET /tasks/:task_id/logs?step_id=`、Medium 和 Command Spec 查询/创建接口，当前 `execution.ts` 未封装日志、Medium、Command Spec、execution_mode/medium_id/command_spec_id/arguments 或 Agent 协议。
+- `/executions` 只有列表、详情、CONFIRM、同步执行、Runbook/dry-run 和 task_id 深链；无拒绝按钮、Agent 管理/创建、租约视图或实时日志流，也没有独立 Execution 前端 Vitest。
+- Agent 任务创建/lease/result 当前不回写 Alert execution_created/started/finished；不能将模拟任务时间线能力直接套用到 Agent。
+- `adapter` 是保留枚举，不是可用生产执行模式。
+
 调用链：Runbook / AI / Inspection 只能创建 Execution Task；真实执行必须由 Execution 状态机、权限、风险、确认文本和审计共同约束。
+
+验证边界：`e2e-execution.ps1` 只覆盖普通 alert 模拟闭环；`e2e-execution-agent.ps1` 使用 PowerShell fake Agent，不运行真实命令、不检查日志读取/脱敏、审计、幂等、Alert 时间线或 Runbook→Agent；permission 脚本实际只验证错误注册令牌。
 
 ## AI（`ai.ts`）
 
@@ -266,9 +287,21 @@
 
 | 函数 | 接口 | 说明 |
 | --- | --- | --- |
-| `fetchAudits` | `GET /api/audits` | 操作审计分页查询，支持 `resource_type` / `resource_id` / `user_id` / `action` / `trace_id` 筛选 |
+| `fetchAudits` | `GET /api/audits` | 操作审计分页查询，支持 `resource_type` / `resource_id` / `user_id` / `action` / `trace_id` 精确筛选；每页最多 100 条 |
 
-页面：`views/audits/index.vue`。权限：`app:audits:read`。
+页面：`views/audits/index.vue`。权限：`app:audits:read`。契约：`ops/audit-contract.md`；真实资源类型和 action 目录见 `internal/audit/README.md`。
+
+实现边界：
+
+- 五个筛选均为精确匹配，资源 ID 输入框的“模糊或精确匹配”提示不代表后端支持模糊查询；`trace_id` 匹配 `payload.trace_id`。
+- 明细支持分页、详情抽屉、Payload 格式化、Trace 复制和点击反向筛选；详情/CSV 的敏感键掩码只影响前端展示，不改变原始 API 响应或数据库内容。
+- 总数卡使用当前筛选 `total`，Alert/Execution/AI 分类卡和 Resource/User/Trace 聚合只统计当前页 `items`，不能当作全量聚合。
+- 无 Trace 的记录被合入前端 `NO_TRACE` 占位组，不是真实链路 ID。
+- CSV 在浏览器生成，固定请求第一页 `page_size=1000`，后端截为 100，因此实际最多 100 条；没有循环翻页、服务端全量导出或独立导出审计。
+- 资源类型下拉中的 `asset/identity/inspection/observability/integration` 与实际写入类型不一致，多个真实类型也无快捷选项；需要精确查询这些记录时使用 API。该差距本轮只登记，未修改代码。
+- 操作审计只有静态 RBAC，无业务对象数据范围过滤；路由和侧栏不按该权限动态控制。
+- 登录/refresh/logout 属于 Identity `iam_auth_audit`，通过 `/api/identity/admin/auth-audits` 独立查询，不会出现在 `fetchAudits` 结果中。
+- 当前无专用 Audit E2E、Handler/仓储专项测试或前端 Vitest；跨模块 E2E 审计断言不能替代页面和导出边界验收。
 
 ## Integration（`integration.ts`）
 

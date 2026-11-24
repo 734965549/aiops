@@ -42,7 +42,7 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 ### 后端与契约索引
 
 - `internal/README.md`：补齐全部业务上下文职责、输入输出和运行时形态，明确 Asset goroutine、可选 Alert worker、可选 ai-orchestrator 和外部 Execution Agent。
-- `ops/README.md`：收录全部 13 份契约，建立契约到代码、前端、迁移和验证证据的映射，明确 fake 与真实验收、规划与已实现章节的区别。
+- `ops/README.md`：收录全部 14 份契约，建立契约到代码、前端、迁移和验证证据的映射，明确 fake 与真实验收、规划与已实现章节的区别。
 
 ### Identity 模块（第二轮）
 
@@ -78,6 +78,31 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 - 明确 `default_dry_run` 只是元数据，实际 dry-run 由任务请求和步骤支持共同决定。
 - 同步前端 API、验收和演示：后端 CRUD 完整，前端仅列表、详情、启停，当前无独立 Runbook 前端 Vitest。
 
+### Execution / Execution Agent（第六轮）
+
+- 新增 `internal/execution/README.md`，说明核心状态机、确认/拒绝、模拟执行、Runbook、Medium/Spec、Agent 协议、前端、审计和验证覆盖。
+- 重写 `ops/execution-contract.md`：补齐任务日志、AI/Inspection 来源、confirm=false 拒绝、Agent 同步执行拦截和 adapter 保留边界。
+- 重写 `ops/execution-agent-contract.md`：修正 Medium 权限、静态注册令牌、Agent Token、无 mTLS、显式介体、租约响应、日志/结果和实际 E2E 范围。
+- 明确 Agent 创建/lease/result 不回写 Alert execution_created/started/finished，不能套用普通模拟任务时间线结论。
+- 同步前端 API、验收和演示：Agent 是服务端控制面 + PowerShell fake，不是独立 Agent 产品或完整管理 UI。
+
+### Dashboard 首页驾驶舱（第七轮）
+
+- 新增 `internal/dashboard/README.md` 和 `ops/dashboard-contract.md`，把 Dashboard 从“只有一页聚合摘要”补齐为独立模块与稳定契约。
+- 明确聚合字段：active 只排除 closed，recent 最多 10 条，processing_alerts 包含 new/acknowledged/processing 且最多 5 条。
+- 明确后端单项失败降级为 0/空且没有 degraded 字段，真实 0 与降级 0 不可区分；前端整体失败显示 `—`，无专门错误 Alert。
+- 补充 Runbook 推荐组装、Readiness 独立加载、静态 RBAC 与无数据范围过滤。
+- 同步前端 API、验收和演示：当前无专用 Dashboard E2E 或前端 Vitest，Identity E2E 只调用一次摘要。
+
+### Audit 审计中心（第八轮）
+
+- 新增 `internal/audit/README.md`，重写 `ops/audit-contract.md`，补齐写入链路、真实 resource_type/action 目录、精确查询、权限、认证审计和完整性边界。
+- 明确前端 Resource/User/Trace 聚合只基于当前页，分类卡与 total 口径不同；CSV 请求 1000 条会被后端截为 100，实际最多导出第一页 100 条。
+- 登记资源类型快捷选项与真实写入类型不一致、标准 recorder 不传 IP/UA、服务端无通用 Payload 脱敏、无专用 Audit E2E/前端 Vitest 等差距。
+- 明确审计写入不与业务共享统一事务，当前主要调用点为 best-effort；修正 Alert CES“最终状态与审计同事务提交”的旧描述，实际为先提交状态再独立写审计。
+- 明确 login/refresh/logout 属于 Identity `iam_auth_audit` 和独立接口，不在 `/api/audits`；无修改/删除 HTTP API 不等于 WORM 或存储级不可篡改。
+- 顺带修正 Identity 文档中 Asset Sync 数据范围旧引用，与 Asset 轮次结论对齐；未修改任何业务实现。
+
 ## 4. 已确认的实现边界
 
 这些边界应在对应模块文档中保留，不能在后续整理时被简化成“全部完成”。
@@ -88,9 +113,9 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 | Alert | Webhook、状态流转、CES 手动拉取 | 创建/更新所有源均需 Integration 读权限；列表/详情无自动数据范围过滤；静默无到期自动恢复；worker 默认关闭；真实账号验收与 fake E2E 分开 |
 | Asset | 注册表、匹配规则、异步同步、批次、CMDB 拓扑和关系 | Sync 数据范围、审计生命周期、triggered_by/后台 reaper、云应用命名有差距；真实云对账与增强缺口单独验收 |
 | Runbook | 模板、推荐、模拟路径结构化多步任务 | 前端仅列表/详情/启停；Command Spec 与 Runbook→Agent 未落地；default_dry_run 不单独触发模拟 |
-| Execution | 核心状态机、模拟执行、Agent 服务端控制面 | 独立 Agent 程序、介体/Agent/Command Spec 专门 UI 未提供 |
-| Dashboard | 聚合摘要 API 与页面 | 无独立 Dashboard E2E |
-| Audit | 后端分页检索，前端详情、聚合和 CSV 导出 | 无独立 Audit E2E；导出范围不是服务端全量导出任务 |
+| Execution | 核心状态机、模拟执行、Agent 服务端控制面 | 独立 Agent/管理 UI、自动选择、mTLS、Runbook→Agent 未落地；Agent Alert 时间线未闭环；前端无拒绝和日志流 |
+| Dashboard | 聚合摘要 API 与页面 | 无专用 Dashboard E2E/前端 Vitest；降级 0 与真实 0 不可区分；无数据范围过滤 |
+| Audit | 操作审计写入与精确分页检索，前端详情、当前页聚合和 CSV | CSV 实际最多 100 条；资源类型快捷选项未对齐；标准 recorder 无 IP/UA；写入多为 best-effort；认证审计独立；无专用 E2E/前端 Vitest，无存储级防篡改/保留机制 |
 | AI | 会话、SSE、工具循环、记忆/知识、分享、多模态、执行提议、证据诊断 | 前端消息队列不持久化；分享页图片和告警 AI 弹窗诊断存在前端缺口；type=c 仅为参考服务 |
 | Integration | 账号、凭据密文、能力与连通性 | 连通性不代表所有观测能力都有真实 Adapter |
 | Observability | 四类统一查询、华为 CES 部分真实路径、AI 证据快照 | 真实日志/链路/拓扑仍有限制；快照无公共详情 API/UI |
@@ -100,7 +125,6 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 
 ### 5.1 契约和目录 README
 
-- `ops/execution-agent-contract.md`：仍含草案措辞，且注册 token、介体权限码、验收范围与当前代码存在差异；不能只把“草案”改成“稳定”。
 - `ops/ai-contract.md`：前部“当前工具”清单需补 `postgres.activity.query`，并统一分享、多模态、证据和诊断边界。
 - `cmd/api/README.md`：装配说明仍偏 Identity/AI，需对齐当前 11 个业务上下文及后台任务。
 - `web/src/views/README.md`、`web/src/stores/README.md`、`web/src/router/README.md`：仍停留在早期概念说明，需补实际页面、aiContext、共享会话和权限边界。
@@ -119,12 +143,13 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 
 - 分享会话页未复用普通用户消息的图片渲染，与多模态分享验收项不完全一致。
 - 后端告警分析已有 `diagnosis`，但告警 AI 弹窗类型和展示尚未完整接入；AI 助手回答卡片已有诊断展示。
-- Execution Agent 管理 UI、Inspection 建议转执行入口、动态菜单仍未实现。
+- Execution Agent 独立进程、管理 UI、自动介体选择、mTLS 和 Runbook→Agent 未实现；Agent 创建/lease/result 不写 Alert 时间线。Inspection 建议转执行入口、动态菜单仍未实现。
 - 前端 `stores/auth.ts` 将 access/refresh token 写入 localStorage，与项目“不将 Token 写入前端持久化状态”的安全约束冲突，需独立安全整改。
 - Asset Sync 未按早期契约接入 owner_team/region 数据范围，批次列表和详情也未完整隔离；AI 资源读取的独立校验不能替代该缺口。
 - Asset Sync 审计仍统一 `action=sync`，缺少独立生命周期 action 和完整 summary/scopes 载荷；`triggered_by` 未写入，周期后台 reaper 未装配。
 - `ensureCloudApplication` 新建应用名仍为 `<provider>-cloud`，历史迁移归一化不能保证后续新建名称符合目标。
 - Runbook 步骤尚无 command_spec_id/medium_selector，Agent 模式不会展开 Runbook 模板；不能由 Execution Agent 控制面存在反推该集成已完成。
+- Audit 前端资源类型快捷选项与真实写入目录不一致，聚合只覆盖当前页，CSV 实际最多 100 条；标准 recorder 不传 IP/UA，写入多为 best-effort，不能靠文档将其升级为全量统计、完整客户端审计或强事务保证。
 - 这些项目应在文档中标为缺口；是否补代码由后续需求单独确认。
 
 ## 6. 逐模块更新队列
@@ -132,7 +157,7 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 每轮只处理一个模块，同时核对后端、前端、契约、权限、审计、迁移和验证证据。
 
 1. 全局基线：根 README、文档复核记录、internal/ops 索引。
-2. P0 主链路：Identity（已完成）→ Alert（已完成）→ Asset/CMDB/拓扑（文档已完成，实现差距已登记）→ Runbook（文档已完成，Command Spec 边界已登记）→ Execution/Execution Agent → Dashboard → Audit。
+2. P0 主链路：Identity（已完成）→ Alert（已完成，CES 审计事务旧描述已修正）→ Asset/CMDB/拓扑（文档已完成，实现差距已登记）→ Runbook（文档已完成，Command Spec 边界已登记）→ Execution/Execution Agent（文档已完成，控制面边界已登记）→ Dashboard（文档已完成，降级边界已登记）→ Audit（文档已完成，聚合/导出与写入边界已登记）。
 3. 云与观测：Integration → Observability/证据快照 → Inspection；CES 告警拉取归入 Alert，CES 资源同步归入 Asset。
 4. AI：Provider/工具网关 → 会话/Agent Loop → 记忆/知识 → 分享/多模态 → 浮层/消息排队 → RDS 诊断 → ai-orchestrator。
 5. 前端公共能力：API/request/SSE → Router/导航 → Stores/布局与跨页状态。
@@ -143,7 +168,7 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 - 修改范围：仅 `README.md`、`internal/README.md`、`ops/README.md`、`docs/documentation-review.md`。
 - `git diff --check`：通过，无尾随空格或空白错误。
 - Markdown 本地链接与代码围栏检查：4 份修改文档均通过，未发现缺失链接目标或未闭合围栏。
-- 索引完整性检查：13 份契约均进入根 README 与 ops 索引；19 个默认 E2E 和 2 个带外部前提的可选 E2E 均有入口；`internal` 顶层模块均有说明。
+- 索引完整性检查：14 份契约均进入根 README 与 ops 索引；19 个默认 E2E 和 2 个带外部前提的可选 E2E 均有入口；`internal` 顶层模块均有说明。
 - 本轮为文档修改，未执行 Go 测试、前端构建/Vitest 或业务 E2E；以上结果不构成业务验收通过结论。
 
 ## 8. Identity 模块检查记录
@@ -174,3 +199,24 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 - 路由/权限自动比对：6 个 Runbook 路由注册（3 个唯一路径）均能在契约中找到；`app:runbooks:read/create/update/delete` 均有说明。
 - Runbook 相关 8 份文档均通过尾随空格、代码围栏和本地链接检查；`git diff --check` 无错误。
 - 本轮未执行 Go 测试、前端测试或 `e2e-runbook.ps1`，不记为运行通过；Command Spec 和 Runbook→Agent 仅登记为规划，未修改实现。
+
+## 12. Execution 模块检查记录
+
+- Execution 轮次修改：新增 `internal/execution/README.md`，重写两份 Execution 契约，更新根 README、internal/ops 索引、前端 API、验收、演示及本记录，共 10 份文档。
+- 路由/权限自动比对：16 个用户侧与 Agent 路由注册（14 个唯一路径）均能在契约中找到；7 个用户侧权限码均有说明，Agent Token 路由单独标注。
+- Execution 相关 10 份文档均通过尾随空格、代码围栏和本地链接检查；`git diff --check` 无错误。
+- 本轮未执行 Go 测试、前端测试或 Execution E2E，不记为运行通过；未修改独立 Agent、自动选择、mTLS、Runbook→Agent 或 Agent Alert 时间线实现。
+
+## 13. Dashboard 模块检查记录
+
+- Dashboard 轮次修改：新增 `internal/dashboard/README.md` 和 `ops/dashboard-contract.md`，更新根 README、internal/ops 索引、前端 API、验收、演示及本记录，共 9 份文档。
+- 路由/权限自动比对：`GET /api/dashboard/summary` 与 `app:dashboard:read` 均进入独立 Dashboard 契约。
+- 契约索引检查：当前 14 份 `ops/*-contract.md` 均进入根 README 与 ops 索引。
+- Dashboard 相关 9 份文档均通过尾随空格、代码围栏和本地链接检查；本轮未执行 Go 测试、前端测试或业务 E2E，不记为运行通过。
+
+## 14. Audit 模块检查记录
+
+- Audit 轮次修改：新增 `internal/audit/README.md`，重写 `ops/audit-contract.md`，更新根 README、internal/ops 索引、前端 API、验收、演示及本记录；同步修正 Alert CES 审计事务旧描述和 Identity 的 Asset Sync 数据范围旧引用。
+- 路由/权限自动比对：唯一路由 `GET /api/audits`、权限 `app:audits:read`、migration `0009_init_audit` 均进入 Audit 契约；认证审计独立接口和权限另行标注。
+- 前端行为比对：精确筛选、当前页聚合、分类卡口径、`NO_TRACE`、CSV 100 条上限和资源类型选项差距均来自页面代码，不把视觉存在等同于全量能力。
+- 相关 Markdown 通过尾随空格、代码围栏和本地链接检查；本轮未执行 Go 测试、前端测试或业务 E2E，不记为运行通过，未修改任何业务代码。

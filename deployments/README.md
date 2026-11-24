@@ -139,7 +139,8 @@ AIOPS_CORS__ALLOW_CREDENTIALS=true
 
 AI 助手 SSE 对话：
   ai.turn_budget_s（默认 600s）+ 60s 余量 <= nginx / 服务器 660s
-  服务端每 15s 写 `: ping` 注释心跳，避免长思考被代理判为空闲。
+  ai.stream_idle_timeout_s（默认 180s，建议 180-300s）只约束模型连续无输出，不影响总预算
+  服务端每 15s 写 `: ping` 注释心跳，避免长思考被代理判为空闲；provider 的注释/心跳也重置空闲计时。
 ```
 
 **配置要点：**

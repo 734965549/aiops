@@ -235,25 +235,27 @@ GET /api/runbooks/recommendations?alert_id={id}
 .\scripts\e2e-runbook.ps1
 ```
 
-### 8.5 P1+ 执行介体演示扩展
+### 8.5 Execution Agent 服务端控制面扩展
 
-后续演示“AI 分析后到指定介体上排查/处理”时，不把它讲成 AI 直接登录机器执行命令，而是讲成受控执行链路：
+本扩展演示的是 **API 控制面 + PowerShell fake Agent**，不是仓库内独立 Agent 在目标机器真实执行命令。AI/前端仍不能直接 SSH 或执行任意 shell。
 
 | 步骤 | 操作 | 预期 |
 |------|------|------|
-| 8.5.1 | 管理员注册执行介体，例如 `prod-jumpbox-01` 或目标主机 Agent | 介体状态 `online`，能力、环境、网络区域、风险上限可见 |
-| 8.5.2 | AI 根据 CES/APM/AOM/Signoz 证据生成诊断建议 | 建议包含证据、目标资源、推荐 Command Spec 和参数 |
-| 8.5.3 | 运维人员从建议创建执行任务 | 任务状态 `pending_confirm`，展示 `medium_id`、`command_spec_id`、参数和风险 |
-| 8.5.4 | 输入 `CONFIRM` 后确认 | 状态进入 `pending_execute`，Agent 才能领取租约 |
-| 8.5.5 | Fake Agent 或真实 Agent 上报日志与结果 | 任务进入 `running -> success|failed`，日志脱敏，审计可追踪 |
-| 8.5.6 | 回到告警或巡检详情页 | 时间线出现执行创建、开始、完成事件，并能跳转到执行详情 |
+| 8.5.1 | 使用 `app:executions:media:create` 创建 jumpbox Medium | 返回 medium_id，能力、环境和风险上限可查询 |
+| 8.5.2 | 使用静态 X-Register-Token 注册 fake Agent | 返回随机 Agent Token，数据库只存 hash；注册令牌不是一次性，当前无 mTLS |
+| 8.5.3 | Agent Token 心跳 online，创建 manual Agent 任务 | 顶层传 execution_mode=agent、medium_id、command_spec_id、arguments；中高风险 pending_confirm |
+| 8.5.4 | 确认前 lease，再输入 CONFIRM 后 lease | 确认前为空，确认后返回 lease_id 和受控 argv；Agent 任务不能调同步 `/execute` |
+| 8.5.5 | 回传一条 stdout 和 success result | 服务端保存日志并更新 step/task；日志查询需另调 `/tasks/:id/logs?step_id=`，当前 E2E 不检查读取/脱敏 |
+| 8.5.6 | 检查当前边界 | 无自动介体选择、Runbook→Agent、专门前端或真实 Agent；Alert execution_created/started/finished 当前也未闭环 |
 
-自动化脚本建议后续补充：
+自动化脚本已存在：
 
 ```powershell
 .\scripts\e2e-execution-agent.ps1
 .\scripts\e2e-execution-agent-permission.ps1
 ```
+
+第一个脚本覆盖创建 Medium、注册/心跳、确认前后 lease、日志写入、结果和非法参数；第二个实际只验证错误注册令牌。它们不覆盖真实命令、日志读取/脱敏、审计、幂等、禁用、Alert 时间线或 Runbook→Agent。
 
 ---
 
@@ -278,30 +280,46 @@ GET /api/dashboard/summary
 # code=OK，各聚合字段有值
 ```
 
+补充边界：
+
+- `processing_alerts` 实际包含 new/acknowledged/processing，前端再取前 3 条分别获取推荐，不是仅 processing。
+- 后端单项统计失败会降级为 0/空数组，响应没有 degraded 标记，真实 0 与降级 0 不可区分。
+- 前端 summary 整体失败时指标显示 `—`，没有专门错误 Alert；`/version` 与 `/readyz` 独立展示。
+- 当前没有专用 Dashboard E2E 或前端 Vitest；`e2e-identity-access.ps1` 只以 viewer 调一次摘要，不能替代完整 UI 和降级验收。
+
 ---
 
 ## 10. 查看审计日志
 
-关键操作（登录、资产变更、告警处理、Runbook 启停、执行确认/拒绝、AI 分析等）均会写入审计。
+资产变更、告警处理、Runbook 启停、执行确认/拒绝、AI 分析等已接入路径会尝试写操作审计。当前多数写入为 best-effort，业务成功不等于审计必定落库；登录、refresh、logout 则写入 Identity 独立认证审计，不出现在 `/api/audits`。
 
-**前端查询**：进入 `/audits`，按资源类型、资源 ID、用户 ID、动作筛选，点击行查看 Payload 详情，必要时导出 CSV。
+**前端查询**：进入 `/audits`，按资源类型、资源 ID、用户 ID、动作或 Trace 精确筛选，点击“详情”查看 Payload。Resource/User/Trace 聚合只统计当前页；CSV 实际最多导出当前筛选第一页 100 条，不是全量导出。
+
+资源类型下拉尚有差距：`asset/identity/integration/observability/inspection` 与实际写入类型不一致，多个真实类型也没有快捷选项。演示这些模块时直接用 API 传真实类型，不要把下拉无结果解释为没有审计。
 
 **API 查询**：
 
 ```powershell
-GET /api/audits?page=1&page_size=20
+curl.exe -H "Authorization: Bearer <token>" "http://127.0.0.1:8080/api/audits?page=1&page_size=100&resource_type=execution"
+curl.exe -H "Authorization: Bearer <token>" "http://127.0.0.1:8080/api/identity/admin/auth-audits?page=1&page_size=20"
 ```
 
-筛选近期操作，确认包含：
+第一个接口要求 `app:audits:read`，第二个要求 `app:identity.auth_audits:read`。操作审计筛选近期操作时，可按真实目录确认：
 
-| 模块 | 典型 action |
-|------|-------------|
-| 认证 | `login`、`refresh` |
-| 资产 | `application_create/update/delete`、`resource_create/update/delete` |
-| 告警 | `ingest`、`acknowledge`、`close` |
-| Runbook | `runbook_create`、`runbook_enable` |
-| 执行 | `execution_create`、`execution_confirm`、`execution_execute` |
-| AI | `analyze_alert` |
+| 模块 | `resource_type` | 典型 action |
+|------|-----------------|-------------|
+| Identity 权限管理 | `identity_user`、`identity_role` | `set_user_roles`、`set_role_permissions` |
+| 认证审计（独立接口） | 不适用 | `login`、`refresh`、`logout` |
+| 资产 | `application`、`resource`、`asset_sync_batch` | `create/update/delete`、`sync` |
+| 告警 | `alert`、`alert_source` | `ingest`、`acknowledge`、`close`、`alert_source_sync` |
+| Runbook | `runbook`、`alert` | `runbook_create`、`runbook_enable`、`runbook_recommend` |
+| 执行 | `execution`、`alert` | `create`、`confirm`、`reject`、`execute`、`execution_create` |
+| AI | `ai` | `analyze_alert`、`chat_message`、`tool_invoke` |
+| Integration | `integration_account` | `create`、`update`、`check` |
+| Observability | `observability_query` | `metrics_query`、`logs_search` |
+| Inspection | `inspection_policy`、`inspection_run` | `create`、`start`、`finish` |
+
+完整目录和边界见 `ops/audit-contract.md`。标准操作审计 recorder 当前不传 IP/User-Agent；页面掩码只影响详情和 CSV，不能据此宣称数据库或原始 API 已完成统一脱敏。
 
 ---
 
@@ -335,7 +353,7 @@ cd web && npm run build
 2. **资产**：「我们先注册 payment 应用和 Pod 资源，并配置 service=payment-* 匹配规则。」
 3. **告警**：「模拟 Alertmanager 推送一条 CPU 告警，系统自动绑定到对应应用和资源。」
 4. **处置**：「进入处理中后，平台推荐 Runbook 预案；我们创建执行任务，人工确认后自动执行。」
-5. **闭环**：「执行结果回写告警时间线；Dashboard 实时汇总；所有操作可在审计日志中追溯。」
+5. **闭环**：「普通模拟执行结果回写告警时间线；Dashboard 实时汇总；已接入动作可在操作审计中追溯，认证事件走独立认证审计。审计写入多为 best-effort，验收时需单独核对落库。」
 
 ---
 

@@ -76,7 +76,7 @@
 | 1.4.6 | 跨实例互斥 | 两实例同源手动争抢，另测手动与定时重叠、在途停用与租约过期 | 仅一轮获租约。竞争手动请求和在途停用返回 `ABORTED`（409），过期持有者无法写入 |
 | 1.4.7 | scope 隔离与重放 | 单 region 失败，另测后续页超时及部分记录入库后写失败 | 报告已提交计数与 `failed_scopes`，失败窗口不推进游标，重试无重复变更 |
 | 1.4.8 | 权限及账号状态 | 用只有告警 ingest 权限的用户绑定或同步，另测已停用和已删除账号 | 权限不足为 403，账号停用为 412，账号删除为 404 |
-| 1.4.9 | 审计与收尾 | 完成后查 `GET /api/audits`，另模拟摘要或审计写入失败 | 存在 `alert_source_sync` 记录，状态、计数与 trace 可关联。收尾失败返回 500，保留原最近同步状态 |
+| 1.4.9 | 审计与收尾 | 完成后查 `GET /api/audits`，分别模拟同步状态提交失败和审计写入失败 | 正常完成时存在 `alert_source_sync`，状态、计数与 trace 可关联；状态提交失败返回 500 并保留原最近同步状态；状态已提交后的审计失败不回滚同步结果 |
 | 1.4.10 | 可选 worker | 默认启动核对配置，再在单实例显式启用 worker | 默认 `alert_sync.worker_enabled=false`；`pull_interval_seconds=0` 只手动；多实例只在一个 API 实例启用 |
 
 > 当前 `e2e-alert-sync.ps1` 实际覆盖 Pull 创建、Webhook sync 400、三轮拉取、独立恢复、重复观测、最近同步状态和审计。1.4.3–1.4.9 中的真实云、多实例、权限负向、失效/缺页及全部规则富化分支不因 fake 脚本 PASS 而自动通过。
@@ -228,74 +228,140 @@
 
 ---
 
-## 4. 执行记录
+## 4. Execution 核心任务
 
 **权限**：`app:executions:read/create/confirm/execute`
-**脚本**：`scripts/e2e-execution.ps1`（简单任务）、`e2e-runbook.ps1`（Runbook 多步）
+**脚本**：`scripts/e2e-execution.ps1`（普通模拟）、`e2e-runbook.ps1`（Runbook 多步）
 
-### 4.1 从告警创建任务
-
-| # | 检查项 | 操作 | 预期 |
-|---|--------|------|------|
-| 4.1.1 | 简单任务 | `POST /api/executions/tasks`（`operation_type=restart`） | `status=pending_confirm` |
-| 4.1.2 | Runbook 任务 | 同上 + `runbook_template_id` + `dry_run=true` | 多步骤，`runbook_template_id` 非空 |
-| 4.1.3 | 确认 | `POST .../confirm`（`confirm=true, confirm_text=CONFIRM`） | `status=pending_execute` |
-| 4.1.4 | 执行 | `POST .../execute` | `status=success` |
-| 4.1.5 | Dry-run 标记 | Runbook dry-run 任务 | 步骤 `output.dry_run=true` |
-
-### 4.2 告警时间线回写
-
-| # | 检查项 | 预期 |
-|---|--------|------|
-| 4.2.1 | `execution_created` | payload 含 `execution_id`、`runbook_template_id`（如有） |
-| 4.2.2 | `execution_started` | 执行开始后写入 |
-| 4.2.3 | `execution_finished` | `payload.status=success` |
-
-### 4.3 执行列表与详情
+### 4.1 创建、确认、拒绝与执行
 
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
-| 4.3.1 | 列表 | `GET /api/executions/tasks` | 含刚创建的任务 |
-| 4.3.2 | 详情 | `GET /api/executions/tasks/{id}` | 含 `task` + `steps[]` |
+| 4.1.1 | 简单 alert 任务 | processing 告警 + `operation_type=restart` | `status=pending_confirm`，非 processing 后端拒绝 |
+| 4.1.2 | Runbook 任务 | `runbook_template_id` + `dry_run=true` | 多步骤，保存 template_id 和 snapshot |
+| 4.1.3 | 低风险 | 创建 low 任务 | `pending_execute`，不是创建后自动执行 |
+| 4.1.4 | 确认 | `confirm=true, confirm_text=CONFIRM` | `pending_confirm → pending_execute`；错误文本、重复确认失败 |
+| 4.1.5 | 拒绝 | `confirm=false` | `pending_confirm → cancelled`，写 reject 审计；不是预留状态 |
+| 4.1.6 | 模拟执行 | `POST .../execute` | 顺序步骤，全部成功为 success；失败停止，后续 pending |
+| 4.1.7 | Dry-run | Runbook dry-run 任务 | 支持步骤 output.dry_run=true，不支持步骤 skipped_real_execution |
+| 4.1.8 | Agent 同步执行拦截 | 对 execution_mode=agent 调 `/execute` | `FAILED_PRECONDITION`，必须确认后由 Agent lease |
+| 4.1.9 | adapter 边界 | 检查执行模式和实现 | adapter 只是保留枚举，没有独立执行链路，不按已落地验收 |
 
-### 4.4 前端（可选）
+### 4.2 普通 Alert 任务时间线
 
 | # | 检查项 | 预期 |
 |---|--------|------|
-| 4.4.1 | 执行页 `/executions` | 列表、状态标签、详情可展开 |
-| 4.4.2 | Dashboard「最近执行结果」 | 与 API 一致，点击可跳转 |
+| 4.2.1 | `execution_created` | 普通 alert 创建后写入，payload 含 execution_id、Runbook 信息（如有） |
+| 4.2.2 | `execution_started` | 模拟执行开始后写入 |
+| 4.2.3 | `execution_finished` | 完成后写 success/failed 和结果摘要 |
+| 4.2.4 | Agent 时间线差距 | Agent 创建/lease/result 当前不写这三类 Alert 事件，不得套用普通模拟结论 |
+
+### 4.3 列表、详情与日志
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 4.3.1 | 列表 | `GET /api/executions/tasks` | 支持 page/page_size/status/source_type/source_id/keyword |
+| 4.3.2 | 详情 | `GET /api/executions/tasks/{id}` | 含 task + steps，Runbook/Agent 字段按模式返回 |
+| 4.3.3 | 日志查询 | `GET /api/executions/tasks/{id}/logs?step_id=` | step_id 必填，返回脱敏日志；当前前端未封装和展示 |
+
+### 4.4 前端与 E2E 覆盖
+
+| # | 检查项 | 预期 |
+|---|--------|------|
+| 4.4.1 | 执行页 `/executions` | 列表、详情、CONFIRM、同步执行、Runbook/dry-run 和深链可用 |
+| 4.4.2 | 当前缺口 | 检查拒绝、Agent、日志和专项测试 | 无拒绝按钮、Agent 创建/管理/日志 UI、execution.ts Agent 封装或独立 Execution 前端 Vitest |
+| 4.4.3 | Dashboard 最近执行 | 与 API 一致，点击可跳转 |
+
+`e2e-execution.ps1` 只覆盖 processing alert、restart pending_confirm、CONFIRM、模拟 success 和三类 Alert 时间线；`e2e-runbook.ps1` 覆盖 Runbook 多步 dry-run。二者不覆盖拒绝、low、步骤失败、日志、adapter、完整 UI 或 Agent。
 
 ---
 
-## 5. Dashboard 摘要
+## 5. Dashboard 首页驾驶舱
 
 **权限**：`app:dashboard:read`（migration 0013）
-**API**：`GET /api/dashboard/summary`
+**API**：`GET /api/dashboard/summary`；契约：`ops/dashboard-contract.md`
 
 ### 5.1 聚合字段
 
 | # | 字段 | 预期 |
 |---|------|------|
-| 5.1.1 | `alerts.active_total / p0 / p1` | 与活跃告警计数一致 |
+| 5.1.1 | `alerts.active_total / p0 / p1` | 只排除 closed；recovered 和 silenced 仍可能计入，不与“仅 firing”混淆 |
 | 5.1.2 | `executions.pending_confirm` | 与待确认任务数一致 |
-| 5.1.3 | `executions.recent` | 最近 ≤10 条任务 |
-| 5.1.4 | `assets.applications / resources` | 与资产注册表 count 一致 |
-| 5.1.5 | `runbooks.total / enabled` | 与模板总数/启用数一致 |
-| 5.1.6 | `processing_alerts` | 最多 5 条活跃处理中告警 |
+| 5.1.3 | `executions.recent` | 最近最多 10 条，按 created_at DESC，不限 success |
+| 5.1.4 | `assets.applications / resources` | 与注册表总量一致；当前无数据范围过滤 |
+| 5.1.5 | `runbooks.total / enabled` | 与模板总数/启用数一致，推荐模板不直接包含在 summary |
+| 5.1.6 | `processing_alerts` | 最多 5 条，按 last_seen_at DESC，包含 new/acknowledged/processing，不是仅 processing |
 
-### 5.2 容错（best-effort）
-
-| # | 检查项 | 预期 |
-|---|--------|------|
-| 5.2.1 | 部分统计失败 | API 仍返回 `code=OK`，失败块为 0/空 |
-
-### 5.3 前端（可选）
+### 5.2 容错与降级
 
 | # | 检查项 | 预期 |
 |---|--------|------|
-| 5.3.1 | 首页 Dashboard | 指标卡有数（活跃告警/P0/P1/待确认/应用/资源等） |
-| 5.3.2 | 卡片跳转 | 点击跳转对应模块 |
-| 5.3.3 | 刷新 | 点击刷新后数据更新 |
+| 5.2.1 | 单项统计失败 | 其他块继续返回，失败块为 0/空数组 |
+| 5.2.2 | 降级可观测性 | 响应没有 degraded/error 字段，真实 0 与降级 0 不可区分；不得把 0 当作依赖健康证明 |
+| 5.2.3 | 数据范围 | 只有 `app:dashboard:read` 静态 RBAC，不能按各业务模块专用数据范围推断聚合已隔离 |
+
+### 5.3 前端聚合与降级
+
+| # | 检查项 | 预期 |
+|---|--------|------|
+| 5.3.1 | 指标卡与跳转 | 活跃/P0/P1/待确认/资源/平台状态正确，可跳转对应模块 |
+| 5.3.2 | Runbook 推荐 | 取前 3 条提示告警分别推荐，每组最多 3 个模板；单条失败不影响其他组；最近 Runbook 执行最多 5 条 |
+| 5.3.3 | 最近执行 | 展示最近任务，点击 `/executions?task_id=` |
+| 5.3.4 | Readiness | `/version` 与 `/readyz` 独立加载，展示版本、环境、运行时长和 ok/down/degraded |
+| 5.3.5 | summary 整体失败 | 指标显示 `—`，最近执行和推荐为空；当前没有专门错误 Alert |
+| 5.3.6 | 刷新 | 并行重取 summary 和健康信息，状态与错误不混淆 |
+
+### 5.4 验证覆盖
+
+- 单元测试覆盖正常聚合和 Alert 块失败；Handler 覆盖未登录、权限不足和成功响应。
+- `e2e-identity-access.ps1` 只以 viewer 调用一次摘要，不逐项验证字段、降级或 UI。
+- 当前没有专用 Dashboard E2E 或前端 Vitest；processing_alerts 排序/状态、全部块失败、推荐组装和页面跳转需专项验收。
+
+---
+
+## 5A. Audit 审计中心
+
+**权限**：`app:audits:read`（migration 0009，默认绑定 admin）
+**API**：`GET /api/audits`；契约：`ops/audit-contract.md`
+
+### 5A.1 查询与权限
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 5A.1.1 | 认证与授权 | 分别使用无 Token、无审计权限和 admin 请求列表 | 分别为 401、403 和成功；migration 0009 只默认绑定 admin，其他角色需单独授权 |
+| 5A.1.2 | 精确筛选 | 分别传 resource_type/resource_id/user_id/action，另试资源 ID 子串 | 条件均按相等匹配；子串不会变成模糊搜索，不能相信输入框提示而误判 |
+| 5A.1.3 | Trace 筛选 | 对同一请求的多个写操作使用 trace_id 查询 | 精确匹配 `payload.trace_id`，与本次响应顶层 trace_id 区分；无 Payload Trace 的记录不被误命中 |
+| 5A.1.4 | 分页与排序 | 构造多页数据，传 page_size=1000 并检查时间相同记录 | 每页最多 100 条，按 created_at DESC、数据库 id DESC 排序；`total` 是筛选总数，`items` 只含当前页 |
+| 5A.1.5 | 响应字段 | 检查普通、系统/匿名及空 IP/UA 记录 | 审计 id 为 UUID，created_at 为 Unix 秒，payload 为对象；空 user_id/ip/user_agent 可省略 |
+| 5A.1.6 | 数据范围 | 给非 all 数据范围角色只授 app:audits:read 后查询跨团队记录 | 当前只做静态 RBAC，不按业务对象数据范围过滤；不得把 Alert/Asset 的专用校验套用到 Audit |
+
+### 5A.2 写入、认证审计与完整性
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 5A.2.1 | 真实资源目录 | 按 `application/resource/match_rule/resource_relation/asset_sync_batch`、`identity_user/identity_role`、`integration_account`、`observability_query`、`inspection_*` 等实际类型查询 | 能按对应模块真实类型和 action 检索；完整目录以 Audit 契约为准，不使用 `asset` 等臆造类型替代 |
+| 5A.2.2 | best-effort | 让审计仓储写失败后分别执行业务写操作和 Alert CES 轮次 | 按当前主要调用点，业务结果不被审计失败回滚；CES 先提交同步状态再独立写审计，不是同事务 |
+| 5A.2.3 | IP/UA 与 Payload | 检查标准模块 recorder 产生的记录，并核对敏感值 | 当前标准 recorder 不传 IP/UA，字段通常为空；服务端无通用 Payload 脱敏，写入方不得保存凭据、Token、完整 Prompt 或原始敏感日志 |
+| 5A.2.4 | 认证审计分离 | 完成本地/外部登录、refresh、logout 后分别查两类接口 | `/api/identity/admin/auth-audits` 可查认证事件；`/api/audits` 不包含 login/refresh/logout，当前 `/audits` 页面也不是统一认证审计视图 |
+| 5A.2.5 | 完整性边界 | 检查可用 API、表结构和保留机制 | 无修改/删除操作审计的 HTTP API；同时没有哈希链、WORM、签名、保留或归档策略，不宣称存储级不可篡改或永久保留 |
+
+### 5A.3 前端明细、聚合与导出
+
+| # | 检查项 | 操作 | 预期 |
+|---|--------|------|------|
+| 5A.3.1 | 明细与详情 | 组合筛选、翻页、点击资源/用户/Trace，打开详情并复制 Trace | 页面通过 `audit.ts` 精确查询，详情展示结构化 Payload；敏感键掩码只影响显示，不能据此推断 API/数据库已脱敏 |
+| 5A.3.2 | 指标卡口径 | 在筛选总数大于当前页条数时比较四张卡 | 总卡使用筛选 `total`；Alert/Execution/AI 卡只统计当前页，数值口径不同，不要求分类卡总和等于 total |
+| 5A.3.3 | 三类聚合 | 构造跨页同资源/用户/Trace 数据并切换页码和 page_size | Resource/User/Trace 只聚合当前页；跨页记录不会自动合并，不能当作服务端全量统计 |
+| 5A.3.4 | NO_TRACE | 混合有 Trace 和无 Trace 的当前页记录 | 无 Trace 记录进入本地 `NO_TRACE` 占位组；该值不是真实 Trace，不应作为链路查询依据 |
+| 5A.3.5 | CSV 上限 | 准备超过 100 条同筛选记录并导出 | 文件带 UTF-8 BOM，实际最多包含第一页 100 条；页面成功条数不等于筛选 total，无全量导出保证 |
+| 5A.3.6 | 类型快捷选项差距 | 分别用页面下拉和 API 查询 Asset、Identity、Integration、Observability、Inspection 记录 | 页面 `asset/identity/integration/observability/inspection` 与真实类型不一致且缺少多个真实选项；API 可按真实类型查询，前端整改前不记该快捷项通过 |
+| 5A.3.7 | 权限体验 | 无权限用户直接访问 `/audits` | 页面路由可进入但后端返回 403 并提示，不出现越权数据；侧栏为静态配置，不代表动态菜单已落地 |
+
+### 5A.4 验证覆盖
+
+- `operation_service_test.go` 只覆盖 Record、自动 Trace 注入和 Trace 查询命中/未命中；当前没有 Audit Handler、真实 GORM 仓储、分页上限或 401/403 专项测试。
+- `e2e-identity-access.ps1`、`e2e-alert-sync.ps1` 和多个 `e2e-ai-*.ps1` 含跨模块审计断言，但没有专用 `e2e-audit.ps1`，不覆盖上述全部查询和页面边界。
+- 当前没有 Audit 前端 Vitest；当前页聚合、分类卡、`NO_TRACE`、类型选项、CSV 100 条上限及脱敏展示需要专项验收。
 
 ---
 
@@ -320,6 +386,7 @@
 | runbooks | `app:runbooks:read/create/update/delete` | `/api/runbooks/*` |
 | executions | `app:executions:read/create/confirm/execute` | `/api/executions/*` |
 | dashboard | `app:dashboard:read` | `/api/dashboard/summary` |
+| audits | `app:audits:read` | `/api/audits` |
 
 ### 6.2 自动化脚本的实际覆盖
 
@@ -435,8 +502,10 @@ go run ./cmd/migrate
 # 7.7 RDS for PostgreSQL 历史会话（migration 0061；传长事务告警 ID，使用现有真实云账号）
 .\scripts\e2e-postgres-history.ps1 -AlertId <long-transaction-alert-id>
 
-# 8. Dashboard API 抽检
+# 8. Dashboard / Audit API 抽检
 # curl -H "Authorization: Bearer <token>" http://127.0.0.1:8080/api/dashboard/summary
+# curl -H "Authorization: Bearer <token>" "http://127.0.0.1:8080/api/audits?page=1&page_size=100&resource_type=alert"
+# Audit 无专用 E2E；跨页聚合、类型快捷选项和 CSV 100 条上限按 5A 专项验收
 ```
 
 ---
@@ -452,7 +521,7 @@ go run ./cmd/migrate
 | Dashboard 摘要 | ☐ | 手工/API ☐ | ☐ | ☐ | ☐ |
 | Identity 认证与权限 | ☐ | 用户角色主链路 `e2e-identity-access.ps1` ☐；其余专项 ☐ | ☐ | ☐ | ☐ |
 | AI 运维助手 | ☐ | `e2e-ai-assistant.ps1` / `e2e-ai-memory.ps1` / `e2e-ai-knowledge.ps1` / `e2e-ai-stream.ps1` / `e2e-ai-agent-loop.ps1` / `e2e-ai-rules.ps1` / `e2e-ai-evidence.ps1` / `e2e-postgres-history.ps1` ☐ | ☐ | ☐ | ☐ |
-| 审计中心 UI | ☐ | 手工/API ☐ | ☐ | ☐ | ☐ |
+| Audit 审计中心 | 精确筛选/分页 ☐ | 跨模块审计断言 ☐；无专用 E2E | 明细/当前页聚合/CSV 上限 ☐ | 401/403/静态 RBAC ☐ | ☐ |
 | 权限校验 | ☐ | 负向用例 ☐ | ☐ | ☐ | ☐ |
 
 **签字**：验收人 ______　日期 ______　环境 ______（dev/staging/prod）
@@ -503,25 +572,35 @@ go run ./cmd/migrate
 
 > Notification 模块与 `scripts/e2e-notification.ps1` 暂未落地，不纳入当前 P1+ 自动化验收。
 
-### 9.5 Execution Agent 执行介体验收
+### 9.5 Execution Agent 服务端控制面验收
 
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
-| 9.5.1 | 创建执行介体 | `POST /api/executions/media` | 返回 `medium_id`，不返回任何登录凭据 |
-| 9.5.2 | 注册 fake agent | `POST /api/executions/agents/register` | agent 绑定 medium，状态可心跳为 online |
-| 9.5.3 | 创建受控命令任务 | `POST /api/executions/tasks`，含 `execution_mode=agent`、`medium_id`、`command_spec_id` | 任务进入 `pending_confirm` 或 `pending_execute` |
-| 9.5.4 | 未确认不可领取 | fake agent 领取 `pending_confirm` 任务 | 返回空任务或拒绝 |
-| 9.5.5 | 确认后领取 | `CONFIRM` 后 fake agent lease | 返回单个 `lease_id` 和受控 argv |
-| 9.5.6 | 日志回传 | fake agent 回传 stdout/stderr | 任务详情可见日志流，敏感内容被脱敏 |
-| 9.5.7 | 结果回传 | fake agent 回传 exit_code/result | step 和 task 状态更新，审计可查 |
-| 9.5.8 | 参数校验 | 提交不符合 schema 的 arguments | `INVALID_ARGUMENT`，不创建任务 |
+| 9.5.1 | 创建/查询 Medium | `POST/GET /api/executions/media` | 权限为 media:create/read，不返回登录凭据；无 update/disable/delete 管理路由 |
+| 9.5.2 | Command Spec 查询 | `GET /api/executions/command-specs*` | 返回种子只读规格；无创建/更新/禁用管理路由 |
+| 9.5.3 | 注册 fake Agent | 静态 X-Register-Token 调 `/agents/register` | 返回随机 Agent Token，数据库只存 hash；注册令牌可复用，不是一次性；当前无 mTLS |
+| 9.5.4 | 心跳 | Agent Token 上报 online/running_tasks/free_slots | 只有 online 可 lease；无自动离线 worker 或管理禁用接口 |
+| 9.5.5 | 创建受控命令任务 | 顶层 execution_mode=agent、medium_id、command_spec_id、arguments | 显式字段必填，校验 Medium/Spec/schema/argv/风险；无自动介体选择，不展开 Runbook |
+| 9.5.6 | 未确认不可领取 | fake Agent 领取 pending_confirm 任务 | 返回空任务，不提前执行 |
+| 9.5.7 | 确认后领取 | CONFIRM 后 fake Agent lease | 返回 lease_id 和受控 argv；当前无独立 redaction 字段、续租或过期重派 |
+| 9.5.8 | 日志写入与读取 | fake Agent 回传 stdout，再调用户侧日志 API | 服务端双重脱敏，查询需 step_id；当前 E2E 只写不读，读取/脱敏需专项断言 |
+| 9.5.9 | 结果与幂等 | fake Agent 回传 exit_code/result，再重复请求 | 首次更新 step/task 并释放租约；终态重复请求返回当前详情；当前 E2E 未验证幂等 |
+| 9.5.10 | 参数校验 | 提交不符合 schema 或含 shell 元字符的 arguments | `INVALID_ARGUMENT`，不创建任务 |
+| 9.5.11 | 审计 | 查询 register/heartbeat/dispatch/agent_log/agent_result | 业务摘要可追踪，敏感 Token/日志不进入审计；当前 E2E 未断言 |
+| 9.5.12 | Alert 时间线差距 | 使用 alert 来源 Agent 任务检查时间线 | 当前创建/lease/result 不写 execution_created/started/finished，不按已闭环验收 |
+| 9.5.13 | 前端与独立 Agent | 检查 `/executions` 和 cmd | 无 Agent 管理/创建/日志 UI，无 cmd/execution-agent；PowerShell fake 不是实际命令执行 |
 
-推荐脚本：
+推荐脚本及真实覆盖：
 
 ```powershell
 .\scripts\e2e-execution-agent.ps1
+# Medium 创建、静态 token 注册、心跳、manual high 任务、确认前后 lease、单条 stdout、success result、非法参数
+
 .\scripts\e2e-execution-agent-permission.ps1
+# 实际只验证错误注册令牌 PERMISSION_DENIED，不覆盖低权限 Medium/Execution 403
 ```
+
+真实 Agent、自动选择、Runbook→Agent、日志读取/脱敏、审计、幂等、禁用、Alert 时间线和前端不得因上述脚本 PASS 自动记为通过。
 
 ### 9.6 AI 告警分析指标证据
 
@@ -643,7 +722,7 @@ go run ./cmd/migrate
 | 9.12.7 | 前端阶段提示与停止 | AI 助手页发送长问题；发送中点击「停止生成」 | 阶段提示按服务端事件切换（思考 → 查询工具 → 生成回答），不再依赖固定定时器；`delta` 只展示“已生成 N 字”；停止后输入区恢复、无半成品回答、提示「已停止生成」 |
 | 9.12.8 | SSE 心跳 | 让模型调用持续 >15s（或临时调小 `sseHeartbeatInterval`） | 事件之间出现 `: ping` 注释且连接不断；客户端解析器忽略注释行 |
 | 9.12.9 | 回合时间预算 | 临时设置 `AIOPS_AI__TURN_BUDGET_S=2`，让模型调用阻塞超过预算 | 返回 `status=degraded`、`degraded_reason=turn_budget_exceeded`；保留已获取的只读观测；审计 `chat_message` 记录该原因 |
-| 9.12.10 | 流式长回答超时语义 | provider `timeout_ms=30000`，mock 持续输出增量超过 30s | 不被 30s 总超时切断；首块 60s/空闲 180s 内持续输出即继续，最终 `status=ok`；总时长受 `turn_budget_s` 约束 |
+| 9.12.10 | 流式长回答超时语义 | provider `timeout_ms=30000`，mock 持续输出增量超过 30s | 不被 30s 总超时切断；首块 60s / 空闲默认 180s 内持续输出即继续，最终 `status=ok`；总时长受 `turn_budget_s` 约束；`ai.stream_idle_timeout_s` 可调且低于 30s 按 30s 处理 |
 | 9.12.11 | 首块前重试 | mock 首次返回 429（带 `Retry-After`）或 5xx，随后成功 | 服务端退避后重试，最多 2 次；最终正常返回 `answer`；审计可见本轮成功 |
 | 9.12.12 | 部分保留 | mock 输出部分 `delta` 后断开/静默超过空闲阈值 | 返回 `status=incomplete`、`answer.incomplete=true`、`incomplete_reason` 有值；已获取观测保留；assistant 消息落库且重放保留标记；前端显示橙色“生成中断”与重新提问入口 |
 | 9.12.13 | 已输出不重试 | mock 输出部分内容后断开 | 不发起第二次模型请求（避免重复文本）；走 9.12.12 的部分保留路径 |
@@ -652,8 +731,12 @@ go run ./cmd/migrate
 | 9.12.16 | 429 配额恢复提示 | mock 持续 429，响应体含 `quota resets in 2h` | `status=degraded`、`degraded_reason=provider_rate_limited`；`uncertainties` 含“预计约 2 小时后恢复”；前端失败提示直接展示该文案 |
 | 9.12.17 | 慢流不被总超时切断 | mock 慢流持续输出约 45s | `status=ok` 且耗时 >30s，证明流式不再受 30s 总超时约束 |
 | 9.12.18 | 首块等待提示 | 前端发送长问题，模型 1s 内无回答增量 | 阶段提示显示“已等待 Ns”；收到首个回答增量后切换为“已生成 N 字” |
+| 9.12.19 | 跨会话并发与同会话排队 | 会话 A 生成中：新建会话 B 并发送；再在 B 连续发送第二条 | A/B 可同时生成，会话列表分别显示「生成中」；切回 A 不串消息、不丢后台回答；B 第二条进入队列，首条完成后自动发送；同一会话内不并发 |
+| 9.12.20 | 空闲计时不被心跳误判 | mock 只发送 `: ping` 注释（间隔小于空闲阈值）后再发送正文 | 空闲计时被注释行重置，不返回 `incomplete`，最终正常 `answer` |
+| 9.12.21 | 输出超限 | mock 输出部分正文后返回 `finish_reason=length`，再发 `[DONE]` | 返回 `status=incomplete`、`incomplete_reason=output_truncated`、`degraded_reason=output_truncated`；不重试；前端提示“达到模型输出长度上限”，不出现“模型不可用”文案 |
+| 9.12.22 | 中断原因透出 | mock 触发 `stream_idle_timeout` / `stream_read_error` / `empty_model_response` | `chat_message` 审计含 `incomplete_reason`；assistant `answer.incomplete_reason` 保留具体值；前端橙色横幅显示中文原因，未知原因原样透出 |
 
-> 前置：契约见 `ops/ai-contract.md` §10.17 / §10.17.7；`ai.turn_budget_s` 默认 600s，服务端 read/write timeout 必须 ≥ 预算+60s。E2E 脚本：`scripts/e2e-ai-stream.ps1`（通过脚本化 mock 模型自动覆盖 9.12.1/9.12.3/9.12.4/9.12.5/9.12.6，含 `delta(thinking/answer)` 断言；9.12.2 工具事件需要告警上下文，9.12.7/9.12.8 前端与心跳需人工抽检，9.12.9 由单测覆盖；9.12.10–9.12.17 由 `internal/ai/toolgateway/chat_stream_retry_test.go` 与 `internal/ai/application/chat_service_test.go` 覆盖；E2E 脚本的 `MOCK_STREAM_429` / `MOCK_STREAM_429_ALWAYS` / `MOCK_STREAM_PARTIAL` / `MOCK_STREAM_SLOW` 分支覆盖 9.12.11/9.12.12/9.12.15/9.12.16/9.12.17（`-SkipSlow` 可跳过 45s 慢流）；9.12.18 需人工抽检前端）。
+> 前置：契约见 `ops/ai-contract.md` §10.17 / §10.17.7；`ai.turn_budget_s` 默认 600s，服务端 read/write timeout 必须 ≥ 预算+60s；`ai.stream_idle_timeout_s` 默认 180s（最低 30s，建议 180–300s）。E2E 脚本：`scripts/e2e-ai-stream.ps1`（通过脚本化 mock 模型自动覆盖 9.12.1/9.12.3/9.12.4/9.12.5/9.12.6，含 `delta(thinking/answer)` 断言；9.12.2 工具事件需要告警上下文，9.12.7/9.12.8 前端与心跳需人工抽检，9.12.9 由单测覆盖；9.12.10–9.12.17 由 `internal/ai/toolgateway/chat_stream_retry_test.go` 与 `internal/ai/application/chat_service_test.go` 覆盖；E2E 脚本的 `MOCK_STREAM_429` / `MOCK_STREAM_429_ALWAYS` / `MOCK_STREAM_PARTIAL` / `MOCK_STREAM_SLOW` 分支覆盖 9.12.11/9.12.12/9.12.15/9.12.16/9.12.17（`-SkipSlow` 可跳过 45s 慢流）；9.12.18 需人工抽检前端；9.12.19 由 `web/src/views/ai-assistant/composables/useChat.spec.ts` 覆盖跨会话并发与同会话排队，UI 表现需人工抽检；9.12.20/9.12.21 由 `chat_stream_retry_test.go` 覆盖，9.12.22 由 `chat_service_test.go` 与 `toolReason.spec.ts` 覆盖，前端横幅需人工抽检）。
 
 ### 9.13 会话只读分享（migration 0053，契约 §10.18）
 

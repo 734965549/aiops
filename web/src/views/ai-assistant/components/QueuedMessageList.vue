@@ -45,7 +45,7 @@
 </template>
 
 <script setup lang="ts">
-import type { QueuedChatMessage } from '../composables/useChat'
+import type { QueuedChatMessage } from '../composables/chatSessionState'
 
 defineProps<{
   messages: QueuedChatMessage[]

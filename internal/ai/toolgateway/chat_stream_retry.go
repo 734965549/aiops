@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -60,7 +61,8 @@ func (e *ChatCompletionExecutor) streamOnce(
 	defer cancel()
 
 	var timedOut atomic.Bool
-	receivedChunk := false
+	receivedLine := false
+	finishReason := ""
 	timer := time.AfterFunc(chatStreamFirstChunkTimeout, func() {
 		timedOut.Store(true)
 		cancel()
@@ -128,12 +130,18 @@ func (e *ChatCompletionExecutor) streamOnce(
 		if totalBytes > chatMaxResponseBytes {
 			return nil, false, 0, apperr.New(apperr.CodeUnavailable, "model provider response exceeds size limit")
 		}
+		// 任意非空 SSE 行（含 provider 的注释/心跳）都说明连接仍存活，重置空闲计时。
+		if len(bytes.TrimSpace(line)) > 0 {
+			receivedLine = true
+			timer.Reset(e.effectiveStreamIdleTimeout())
+		}
 		delta, ok := parseChatStreamLine(line)
 		if !ok {
 			continue
 		}
-		receivedChunk = true
-		timer.Reset(chatStreamIdleTimeout)
+		if delta.FinishReason != "" {
+			finishReason = delta.FinishReason
+		}
 		if delta.Usage > 0 {
 			tokens = delta.Usage
 		}
@@ -158,7 +166,7 @@ func (e *ChatCompletionExecutor) streamOnce(
 		}
 		if timedOut.Load() {
 			reason := "stream_first_chunk_timeout"
-			if receivedChunk {
+			if receivedLine {
 				reason = "stream_idle_timeout"
 			}
 			if emittedAny {
@@ -172,6 +180,11 @@ func (e *ChatCompletionExecutor) streamOnce(
 		return nil, true, 0, apperr.Wrap(err, apperr.CodeUnavailable, "read model provider stream failed")
 	}
 	finalContent := content.String()
+	// provider 明确返回 length/max_tokens 时，优先按输出超限保留部分结果；
+	// 若正文恰好仍是完整 JSON（极少数 provider 误标），继续走正常解析。
+	if isLengthFinishReason(finishReason) && !json.Valid([]byte(strings.TrimSpace(finalContent))) {
+		return partialStreamResult(finalContent, tokens, "output_truncated"), false, 0, nil
+	}
 	if strings.TrimSpace(finalContent) == "" {
 		if emittedAny {
 			return partialStreamResult(finalContent, tokens, "empty_model_response"), false, 0, nil
@@ -179,6 +192,15 @@ func (e *ChatCompletionExecutor) streamOnce(
 		return nil, true, 0, apperr.New(apperr.CodeUnavailable, "empty model response")
 	}
 	return &ChatCompletionResult{Content: finalContent, Tokens: tokens}, false, 0, nil
+}
+
+func isLengthFinishReason(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "length", "max_tokens", "max_output_tokens":
+		return true
+	default:
+		return false
+	}
 }
 
 // partialStreamResult 把已输出的部分内容包装为可保留结果；不触发重试。

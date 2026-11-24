@@ -1,167 +1,117 @@
 # Execution 执行任务工程契约
 
-本文档定义 Execution 模块第一阶段工程契约，覆盖从告警创建执行任务、确认、执行、状态查询，以及结果回写告警时间线。
+本文档定义 Execution 任务、步骤、风险、确认/拒绝、同步模拟执行和告警时间线的当前契约。Runbook 展开见 `runbook-contract.md`，Agent 控制面见 `execution-agent-contract.md`。
 
-架构来源：
+## 1. 当前实现状态
 
-- `docs/AI运维平台技术架构设计.md` §4.8、§6.3.2
-- `ops/alert-contract.md` §9.3
-
-## 1. 范围
-
-第一阶段覆盖：
-
-- 创建执行任务（来源：`alert` / `manual`）。
-- 风险等级评估与待确认状态流转。
-- 同步模拟执行（无真实云厂商/集群适配器）。
-- 任务列表、详情、步骤状态查询。
-- 来源为 `alert` 时回写告警时间线：`execution_created`、`execution_started`、`execution_finished`。
-- 关键操作写入 `audit_operation`。
-
-第一阶段暂不做：
-
-- 多级审批、回滚编排、执行代理调度。
-- 任务模板、脚本库 UI。
-- AI 会话来源自动建单（接口预留 `source_type=ai_conversation`）。
-
-## 1.1 P1+ 执行介体与执行代理演进
-
-当平台从“同步模拟执行”演进到真实诊断和处置时，Execution 模块将增加执行介体与执行代理能力。该能力用于支持 AI 分析后生成建议，运维人员确认后，在指定跳板机、诊断 VM、目标机器、Kubernetes Pod 或云厂商受控执行通道上执行命令或脚本。
-
-关键约束：
-
-- AI 只能生成执行计划和参数，不能直接执行命令。
-- 前端不能直接 SSH、K8s exec、云 API 写操作或数据库写操作。
-- 任意真实执行都必须创建 `exec_task`，进入 Execution 状态机。
-- 中高风险动作仍必须 `pending_confirm -> CONFIRM -> pending_execute -> running`。
-- 执行介体必须注册、授权、健康检查、能力匹配和审计。
-- 命令必须匹配平台预置 Command Spec，并通过参数 schema 校验；禁止 AI 或前端提交任意自由 shell 字符串直接执行。
-
-详细契约见 `ops/execution-agent-contract.md`。
-
-## 2. 统一响应格式
-
-与平台其它接口一致，成功时 `code` 为 `"OK"`。分页接口返回 `PageData<T>`（`items` / `total` / `page` / `page_size`）。
-
-## 3. 鉴权与权限
-
-所有 `/api/executions/**` 接口要求：
-
-```http
-Authorization: Bearer <access_token>
-```
-
-| 权限 code | resource | action | 说明 |
-| --- | --- | --- | --- |
-| `app:executions:read` | `executions` | `read` | 查看任务列表与详情 |
-| `app:executions:create` | `executions` | `create` | 创建执行任务 |
-| `app:executions:confirm` | `executions` | `confirm` | 确认待执行任务 |
-| `app:executions:execute` | `executions` | `execute` | 触发执行 |
-
-## 4. 领域枚举
-
-### 4.1 任务状态
-
-| 值 | 展示 | 说明 |
+| 能力 | 状态 | 边界 |
 | --- | --- | --- |
-| `pending_confirm` | 待确认 | 中高风险，需用户确认 |
-| `pending_execute` | 待执行 | 已确认或低风险直进 |
-| `running` | 执行中 | 正在运行步骤 |
-| `success` | 成功 | 终态 |
-| `failed` | 失败 | 终态 |
-| `cancelled` | 已取消 | 终态（预留） |
+| 任务创建与查询 | 已落地 | 来源 alert/manual/ai_conversation/inspection；alert 创建必须 processing |
+| 风险与确认 | 已落地 | low 直达 pending_execute，其余 pending_confirm；CONFIRM 大小写敏感 |
+| 拒绝 | 已落地 | confirm=false 将 pending_confirm 转为 cancelled；前端暂无拒绝按钮 |
+| 同步模拟执行 | 已落地 | 顺序执行步骤，失败停止；不调用真实 SSH/K8s/云 API |
+| Runbook 多步任务 | 已落地 | 非 Agent 路径展开模板并保存 snapshot |
+| 任务日志查询 | 已落地 | `GET /tasks/:task_id/logs?step_id=`，主要服务 Agent 日志 |
+| Agent 控制面 | 已落地 | 见专项契约；不能通过同步 execute 执行 Agent 任务 |
+| adapter 模式 | 未实现 | 枚举保留，没有独立外部适配器执行链路 |
 
-状态机（第一阶段）：
+非目标包括多级审批、通用运行中取消、自动回滚编排，以及前端直接执行任何真实动作。
 
-```mermaid
-stateDiagram-v2
-    [*] --> pending_confirm: create (medium/high risk)
-    [*] --> pending_execute: create (low risk)
-    pending_confirm --> pending_execute: confirm
-    pending_confirm --> cancelled: cancel (预留)
-    pending_execute --> running: execute
-    running --> success: all steps ok
-    running --> failed: step error
-```
+## 2. 统一响应与权限
 
-### 4.2 来源类型
+成功响应为 `code/message/trace_id/data`，成功码为字符串 `OK`。列表使用 PageData，默认 page=1、page_size=20，最大 100。
 
-| 值 | 说明 |
+| 路由 | 权限 |
 | --- | --- |
-| `alert` | 告警详情发起 |
-| `manual` | 手动创建 |
-| `ai_conversation` | AI 会话（预留） |
-| `inspection` | 巡检建议或观测智能体发现（P1+ 预留） |
+| `GET /api/executions/tasks` | `app:executions:read` |
+| `GET /api/executions/tasks/:task_id` | `app:executions:read` |
+| `GET /api/executions/tasks/:task_id/logs?step_id=` | `app:executions:read` |
+| `POST /api/executions/tasks` | `app:executions:create` |
+| `POST /api/executions/tasks/:task_id/confirm` | `app:executions:confirm` |
+| `POST /api/executions/tasks/:task_id/execute` | `app:executions:execute` |
 
-### 4.3 操作类型
+用户路由使用静态 RBAC，当前没有任务对象级数据范围过滤。Medium、Command Spec 和 Agent 路由权限见专项契约，不能笼统写成所有 Agent 接口都要求用户 Bearer。
 
-| 值 | 说明 | 默认风险 |
-| --- | --- | --- |
-| `restart` | 重启服务/实例 | medium |
-| `scale` | 扩缩容 | medium |
-| `script` | 脚本执行 | low |
-| `runbook` | 预案执行 | low |
-| `command` | 受控命令执行（P1+，需 Command Spec） | medium |
-| `diagnose` | 只读诊断动作（P1+） | low |
-| `custom` | 自定义 | medium |
+## 3. 领域枚举与状态机
 
-### 4.4 风险等级
+### 3.1 任务状态
 
-`low` / `medium` / `high` / `critical`。第一阶段按 `operation_type` 映射，`low` 创建后直达 `pending_execute`，其余为 `pending_confirm`。
+| 状态 | 说明 |
+| --- | --- |
+| `pending_confirm` | 中高风险，等待确认或拒绝 |
+| `pending_execute` | 低风险直进或已确认；Agent 任务此时才可被 lease |
+| `running` | 正在执行步骤 |
+| `success` / `failed` | 终态 |
+| `cancelled` | confirm=false 拒绝后的终态 |
 
-## 5. 领域模型
+```text
+create(low)                    -> pending_execute
+create(medium/high/critical)   -> pending_confirm
+pending_confirm + CONFIRM      -> pending_execute
+pending_confirm + confirm=false -> cancelled
+pending_execute + execute      -> running
+running + all steps success    -> success
+running + any step failure     -> failed
+```
 
-### 5.1 `ExecutionTask`
+没有 pending_execute/running 的通用取消接口。
 
-| 字段 | 类型 | 必有 | 说明 |
-| --- | --- | --- | --- |
-| `id` | string | 是 | 任务业务 ID（UUID） |
-| `name` | string | 是 | 任务名称 |
-| `source_type` | string | 是 | 来源类型 |
-| `source_id` | string | 否 | 来源 ID（alert_id 等） |
-| `operation_type` | string | 是 | 操作类型 |
-| `target_type` | string | 否 | 目标类型 |
-| `target_id` | string | 否 | 目标 ID |
-| `target_name` | string | 否 | 目标名称快照 |
-| `environment` | string | 否 | 环境 |
-| `risk_level` | string | 是 | 风险等级 |
-| `status` | string | 是 | 任务状态 |
-| `parameters` | object | 是 | 执行参数，空 `{}` |
-| `rollback_plan` | object | 否 | 回滚方案 |
-| `result_summary` | string | 否 | 执行结果摘要 |
-| `error_message` | string | 否 | 失败原因 |
-| `created_by` | string | 是 | 创建人用户 ID |
-| `confirmed_by` | string | 否 | 确认人 |
-| `executed_by` | string | 否 | 执行触发人 |
-| `created_at` | number | 是 | Unix 秒 |
-| `confirmed_at` | number | 否 | Unix 秒 |
-| `started_at` | number | 否 | Unix 秒 |
-| `finished_at` | number | 否 | Unix 秒 |
+### 3.2 来源类型
 
-### 5.2 `ExecutionStep`
+| 来源 | 当前用途 |
+| --- | --- |
+| `alert` | 告警处置，必须 processing，模拟路径回写时间线 |
+| `manual` | API/Agent 手工任务 |
+| `ai_conversation` | AI 助手生成待确认执行计划 |
+| `inspection` | Inspection Recommendation 转执行 |
 
-| 字段 | 类型 | 必有 | 说明 |
-| --- | --- | --- | --- |
-| `id` | string | 是 | 步骤 ID |
-| `task_id` | string | 是 | 所属任务 |
-| `step_order` | number | 是 | 顺序，从 1 开始 |
-| `name` | string | 是 | 步骤名称 |
-| `action_type` | string | 是 | 动作类型 |
-| `status` | string | 是 | `pending` / `running` / `success` / `failed` |
-| `output` | object | 是 | 输出，空 `{}` |
-| `error_message` | string | 否 | 错误信息 |
-| `started_at` | number | 否 | Unix 秒 |
-| `finished_at` | number | 否 | Unix 秒 |
+### 3.3 操作类型与风险
 
-## 6. HTTP API
+支持 restart、scale、script、runbook、command、custom。`diagnose` 不是当前任务 operation_type；Command Spec 的 action_type=diagnose 会生成 operation_type=command 的 Agent 任务。
 
-### 6.1 创建任务
+风险为 low/medium/high/critical：
 
-- Method: `POST`
-- Path: `/api/executions/tasks`
-- 权限: `app:executions:create`
+- restart/scale/custom 默认 medium。
+- script/runbook 非 prod 默认 low，prod 默认 medium。
+- Runbook 叠加模板、步骤和 prod command/script/custom 风险。
+- Agent 叠加 Medium 类型、max_risk_level、Spec 和环境风险。
+- 用户 override 只能提高，降低返回 INVALID_ARGUMENT。
 
-请求体：
+### 3.4 执行模式
+
+- `simulated`：默认，使用同步模拟执行。
+- `agent`：确认后由 Agent lease/log/result，不能调用同步 execute。
+- `adapter`：枚举保留，没有独立实现，不应作为可用生产模式验收。
+
+## 4. 任务与步骤模型
+
+ExecutionTask 主要字段：
+
+- 身份与来源：id、name、source_type、source_id。
+- 操作与目标：operation_type、target_type、target_id、target_name、environment。
+- 风险与状态：risk_level、status、execution_mode、dispatch_status。
+- 参数与计划：parameters、rollback_plan、dry_run。
+- Runbook：runbook_template_id、runbook_snapshot、runbook_name（由 snapshot 派生）。
+- Agent：medium_id、agent_id、lease_id、command_spec_id。
+- 结果：result_summary、error_message。
+- 人员与时间：created_by、confirmed_by、executed_by、created_at、confirmed_at、started_at、finished_at。
+
+ExecutionStep 主要字段：
+
+- id、task_id、step_order、name、action_type、status。
+- runbook_step_id 或 command_spec_id。
+- parameters/arguments、risk_level、dry_run/dry_run_supported、rollback_plan、timeout_seconds。
+- output、error_message、started_at、finished_at。
+
+公开 DTO 不直接返回数据库自增 ID。Runbook 历史任务使用创建时 snapshot，模板后续更新不改变历史任务。
+
+## 5. HTTP API
+
+### 5.1 创建任务
+
+`POST /api/executions/tasks`，权限 `app:executions:create`。
+
+普通模拟任务示例：
 
 ```json
 {
@@ -169,9 +119,6 @@ stateDiagram-v2
   "source_type": "alert",
   "source_id": "alert-001",
   "operation_type": "restart",
-  "target_type": "service",
-  "target_id": "svc-payment",
-  "target_name": "payment-service",
   "environment": "prod",
   "parameters": { "grace_period_s": 30 },
   "rollback_plan": { "description": "如异常持续，回滚到上一版本" },
@@ -179,14 +126,9 @@ stateDiagram-v2
 }
 ```
 
-可选 `risk_level`：未填时按 `operation_type` 与环境计算默认风险；仅允许指定不低于默认值的风险等级。
+可提供 runbook_template_id 和 dry_run，此时 operation_type 可省略，由模板补充。source_type=alert 时 source_id 必填、状态必须 processing，缺省名称、目标和环境可从告警补充。
 
-`source_type=alert` 时：
-
-- `source_id` 必填，且告警状态必须为 `processing`。
-- 未填 `name` / `target_*` / `environment` 时从告警快照补全。
-
-响应 `data`：
+成功响应：
 
 ```json
 {
@@ -197,96 +139,102 @@ stateDiagram-v2
 }
 ```
 
-同时向告警时间线写入 `execution_created`，`payload.execution_id` 为任务 ID。
+普通 alert 任务创建后写 execution_created；Agent 创建路径当前不写该时间线，见专项契约差距。
 
-### 6.2 任务列表
+### 5.2 列表与详情
 
-- Method: `GET`
-- Path: `/api/executions/tasks`
-- 权限: `app:executions:read`
+- `GET /api/executions/tasks`：page/page_size/status/source_type/source_id/keyword。
+- `GET /api/executions/tasks/:task_id`：返回 `{ "task": {}, "steps": [] }`。
 
-查询参数：`page`、`page_size`、`status`、`source_type`、`source_id`、`keyword`。
+### 5.3 确认或拒绝
 
-### 6.3 任务详情
+`POST /api/executions/tasks/:task_id/confirm`，权限 `app:executions:confirm`。
 
-- Method: `GET`
-- Path: `/api/executions/tasks/:task_id`
-- 权限: `app:executions:read`
-
-响应 `data`：
+确认：
 
 ```json
-{
-  "task": { },
-  "steps": [ ]
-}
+{ "confirm": true, "confirm_text": "CONFIRM" }
 ```
 
-### 6.4 确认任务
+仅 pending_confirm → pending_execute；Agent 任务同时进入 pending_dispatch。
 
-- Method: `POST`
-- Path: `/api/executions/tasks/:task_id/confirm`
-- 权限: `app:executions:confirm`
-
-请求体：
+拒绝：
 
 ```json
-{
-  "confirm": true,
-  "confirm_text": "CONFIRM"
-}
+{ "confirm": false }
 ```
 
-`confirm_text` 必须为 `CONFIRM`（大小写敏感）。仅 `pending_confirm → pending_execute`。
+仅 pending_confirm → cancelled，不要求 CONFIRM，并写 reject 审计。重复确认、重复拒绝或非法状态返回错误。
 
-### 6.5 执行任务
+### 5.4 同步模拟执行
 
-- Method: `POST`
-- Path: `/api/executions/tasks/:task_id/execute`
-- 权限: `app:executions:execute`
+`POST /api/executions/tasks/:task_id/execute`，权限 `app:executions:execute`。
 
-仅 `pending_execute → running → success|failed`。第一阶段为同步模拟执行。
+- 仅 pending_execute 可执行。
+- execution_mode=agent 返回 FAILED_PRECONDITION，必须由 Agent 领取。
+- 普通任务 pending_execute → running，串行执行步骤。
+- 任一步失败则任务 failed，后续步骤保持 pending；全部成功任务 success。
+- 无步骤、读取步骤失败或步骤持久化失败不能把任务标记为成功。
+- alert 来源写 execution_started/finished。
 
-来源为 `alert` 时：
+### 5.5 查询任务日志
 
-- 开始执行写 `execution_started` 时间线事件。
-- 结束写 `execution_finished`，`payload.status` 为 `success` 或 `failed`。
+`GET /api/executions/tasks/:task_id/logs?step_id=<step_id>`，权限 `app:executions:read`。
 
-## 7. 与 Alert 关系
+step_id 必填，返回指定任务和步骤的 Agent 日志条目，包含 stream、sequence、content、truncated、redacted、observed_at。当前前端未封装该接口，也没有实时日志 UI。
 
-| 场景 | Alert 时间线事件 | payload 建议 |
+## 6. Runbook 与 Alert 关系
+
+Runbook 非 Agent 路径：
+
+1. 校验 processing、模板 enabled 和步骤。
+2. 校验模板/步骤 schema，合并默认与用户参数。
+3. 生成多步骤、保存 snapshot、聚合风险。
+4. 写 execution_created 和 create_from_runbook 审计。
+5. 确认/执行后写 execution_started/finished。
+
+普通 alert 模拟任务时间线：
+
+| 场景 | 事件 | 关键 payload |
 | --- | --- | --- |
-| 创建任务 | `execution_created` | `execution_id`, `operation_type`, `risk_level` |
-| 开始执行 | `execution_started` | `execution_id`, `operation_type` |
-| 执行结束 | `execution_finished` | `execution_id`, `status`, `result_summary` |
+| 创建 | `execution_created` | execution_id、operation_type、risk_level、dry_run、Runbook 信息 |
+| 开始 | `execution_started` | execution_id、operation_type |
+| 完成 | `execution_finished` | execution_id、status、result_summary/error |
 
-审计 `resource_type=execution`，`resource_id=task_id`；来源为 alert 时额外写 `resource_type=alert` 的 `execution_create` 动作。
+时间线写入为业务旁路，失败记 Warn，不回滚已创建或已执行任务。审计 `resource_type=execution`、`resource_id=task_id`；普通 alert 创建还写 `resource_type=alert`、`action=execution_create`。
 
-## 8. 数据表
+## 7. 数据与完整性
 
-| 表名 | 说明 |
+| 迁移 | 作用 |
 | --- | --- |
-| `exec_task` | 执行任务主表 |
-| `exec_step` | 执行步骤 |
+| `0011` | exec_task / exec_step 与基础权限 |
+| `0012` | Runbook snapshot、多步参数、风险、dry-run、rollback、timeout |
+| `0022` | Agent/Medium/Command Spec/Lease/Log Stream 及任务扩展 |
 
-迁移：`0011_init_execution.up.sql`。
+应用层完整性：
 
-### 8.1 数据完整性（应用层，不使用外键）
+- CreateWithSteps 在同一事务创建任务和步骤。
+- 创建前至少一步，step.task_id 必须等于 task.task_id。
+- StepRepository.Create 拒绝父任务不存在的孤儿步骤。
+- `(task_id, step_order)` 唯一。
+- Execute 对无步骤任务落 failed，不允许零步骤成功。
 
-`exec_step.task_id` 与 `exec_task.task_id` **不建立数据库外键**，由应用层保证：
+## 8. 前端实现
 
-| 机制 | 说明 |
-| --- | --- |
-| `CreateWithSteps` 事务 | 任务与步骤在同一 DB 事务内写入，任一步失败整体回滚 |
-| `ValidateStepsForTask` | 创建前要求至少 1 个步骤，且每个 `step.task_id` 必须等于 `task.task_id` |
-| `StepRepository.Create` | 插入前校验父任务存在于 `exec_task`，禁止孤儿步骤 |
-| `Execute` | 无步骤时任务标记为 `failed`，禁止零步骤成功 |
-| `UNIQUE (task_id, step_order)` | 同任务步骤序号不重复 |
+`/executions` 支持列表筛选、详情、步骤输出、CONFIRM、同步执行、Runbook/dry-run 展示和 task_id 深链。
 
-## 9. 第一阶段验收标准
+当前未提供拒绝按钮、Agent 任务创建表单、Medium/Agent/Command Spec 管理页、租约/自动匹配视图或实时日志流。`web/src/api/execution.ts` 未封装日志、Medium、Command Spec 和 Agent 创建字段。没有独立 Execution 前端 Vitest。
 
-- 告警 `processing` 态可从详情创建执行任务。
-- 中风险任务需确认后才能执行。
-- 执行完成后任务状态为 `success`，告警时间线含 `execution_created` / `execution_started` / `execution_finished`。
-- 前端 `/executions` 可查看任务列表与详情。
-- E2E 脚本 `scripts/e2e-execution.ps1` 覆盖主路径。
+## 9. 验证覆盖
+
+### 单元与 HTTP 测试
+
+现有覆盖状态机、风险、重复确认/执行、非 processing、无步骤、Runbook 多步、snapshot、时间线、持久化和 Handler 权限。Command argv、schema 和输出脱敏另有测试。
+
+### E2E 的实际范围
+
+- `e2e-execution.ps1`：processing alert、restart pending_confirm、CONFIRM、模拟 success、execution_created/started/finished。
+- `e2e-runbook.ps1`：Runbook 多步 dry-run 模拟闭环。
+- Agent 脚本只覆盖专项契约列出的 fake 控制面路径。
+
+核心脚本不覆盖 confirm=false 拒绝、low 风险、步骤失败、任务日志查询、adapter、完整前端或真实执行。测试和脚本存在不代表本轮已执行通过。

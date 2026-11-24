@@ -313,7 +313,11 @@ func humanizeRetryAfter(delay time.Duration) string {
 // partialChatGeneration 把流式中断包装为“不完整回答”：部分输出可解析时优先保留结构化结论，
 // 否则返回带已获取证据的保守回答；状态为 incomplete，不按普通失败丢弃上下文。
 func partialChatGeneration(result *toolgateway.ChatCompletionResult, evidence []string, providerID string, tokens int) chatGeneration {
-	answer := degradedChatAnswer(chatDegradedStreamInterrupted, evidence)
+	degradedReason := chatDegradedStreamInterrupted
+	if result != nil && strings.TrimSpace(result.PartialReason) == chatDegradedOutputTruncated {
+		degradedReason = chatDegradedOutputTruncated
+	}
+	answer := degradedChatAnswer(degradedReason, evidence)
 	if result != nil {
 		if parsed, err := parseChatAnswer(result.Content); err == nil {
 			answer = parsed

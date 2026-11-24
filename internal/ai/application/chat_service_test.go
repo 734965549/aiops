@@ -2007,6 +2007,11 @@ func TestSendMessageStreamPartialRetention(t *testing.T) {
 	if len(result.Answer.Evidence) == 0 {
 		t.Fatal("partial answer must retain observed evidence")
 	}
+	for _, item := range result.Answer.Uncertainties {
+		if strings.Contains(item, "模型或编排服务不可用") {
+			t.Fatalf("stream interruption must not claim model unavailability: %+v", result.Answer.Uncertainties)
+		}
+	}
 	// 不完整回答仍需落库，重放时保留 incomplete 标记。
 	rows := repo.messages["s-1"]
 	if len(rows) != 2 || rows[1].Role != domain.RoleAssistant {
@@ -2023,6 +2028,54 @@ func TestSendMessageStreamPartialRetention(t *testing.T) {
 	for _, row := range audit.rows {
 		if row.Action == AuditChatMessage && row.Payload["status"] == chatStatusIncomplete {
 			found = true
+			if row.Payload["incomplete_reason"] != "stream_idle_timeout" {
+				t.Fatalf("incomplete_reason audit = %v", row.Payload["incomplete_reason"])
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected incomplete chat audit, got %+v", audit.rows)
+	}
+}
+
+func TestSendMessageStreamOutputTruncated(t *testing.T) {
+	svc, repo, _, chat, audit, _ := newChatTestService(t)
+	chat.partial = true
+	chat.partialReason = "output_truncated"
+	chat.content = `{"summary":"被截断的结论"`
+	seedChatSession(t, repo, "u-1", domain.SessionContext{Page: "alerts", AlertID: "a1"})
+
+	result, err := svc.SendMessageStream(context.Background(), SendChatMessageInput{
+		UserID: "u-1", SessionID: "s-1", Content: "分析告警",
+		Context: &domain.SessionContext{Page: "alerts", AlertID: "a1"},
+	}, func(ChatEvent) error { return nil })
+	if err != nil {
+		t.Fatalf("stream message: %v", err)
+	}
+	if result.Status != chatStatusIncomplete {
+		t.Fatalf("status = %q", result.Status)
+	}
+	if !result.Answer.Incomplete || result.Answer.IncompleteReason != chatDegradedOutputTruncated {
+		t.Fatalf("answer flags = %+v", result.Answer)
+	}
+	if result.Answer.DegradedReason != chatDegradedOutputTruncated {
+		t.Fatalf("degraded reason = %q", result.Answer.DegradedReason)
+	}
+	if !strings.Contains(result.Answer.Summary, "长度上限") {
+		t.Fatalf("summary = %q", result.Answer.Summary)
+	}
+	for _, item := range result.Answer.Uncertainties {
+		if strings.Contains(item, "模型或编排服务不可用") {
+			t.Fatalf("output truncation must not claim model unavailability: %+v", result.Answer.Uncertainties)
+		}
+	}
+	var found bool
+	for _, row := range audit.rows {
+		if row.Action == AuditChatMessage && row.Payload["status"] == chatStatusIncomplete {
+			found = true
+			if row.Payload["incomplete_reason"] != chatDegradedOutputTruncated {
+				t.Fatalf("incomplete_reason audit = %v", row.Payload["incomplete_reason"])
+			}
 		}
 	}
 	if !found {

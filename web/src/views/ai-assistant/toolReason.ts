@@ -112,3 +112,19 @@ export function toolStatusLabel(status?: string): string {
   if (!key) return '完成'
   return TOOL_STATUS_LABELS[key] ?? key
 }
+
+const INCOMPLETE_REASON_LABELS: Record<string, string> = {
+  stream_idle_timeout: '流式输出空闲超时',
+  stream_first_chunk_timeout: '首块响应超时',
+  stream_read_error: '与模型服务的连接中断',
+  empty_model_response: '模型未返回最终正文',
+  output_truncated: '模型输出达到长度上限',
+  stream_interrupted: '流式输出中断'
+}
+
+/** 不完整回答的具体中断原因；未识别时原样透出，避免静默吞掉。 */
+export function incompleteReasonLabel(reason?: string): string {
+  const key = (reason ?? '').trim()
+  if (!key) return ''
+  return INCOMPLETE_REASON_LABELS[key] ?? key
+}

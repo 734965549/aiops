@@ -28,8 +28,10 @@ const (
 	chatDegradedOutputInvalid      = "model_output_invalid"
 	chatDegradedTurnBudgetExceeded = "turn_budget_exceeded"
 	chatDegradedStreamInterrupted  = "stream_interrupted"
-	chatDegradedRateLimited        = "provider_rate_limited"
-	chatDefaultTurnBudget          = 10 * time.Minute
+	// chatDegradedOutputTruncated 对应 provider finish_reason=length/max_tokens 的输出超限。
+	chatDegradedOutputTruncated = "output_truncated"
+	chatDegradedRateLimited     = "provider_rate_limited"
+	chatDefaultTurnBudget       = 10 * time.Minute
 
 	chatToolAlarmAnalyze     = "alarm.analyze"
 	chatToolMetricsQuery     = "metrics.query"
@@ -462,6 +464,7 @@ func (s *ChatService) sendMessage(ctx context.Context, in SendChatMessageInput, 
 		"provider_fallback":     generation.FallbackNote != "",
 		"tokens":                generation.Tokens,
 		"degraded_reason":       generation.Answer.DegradedReason,
+		"incomplete_reason":     generation.Answer.IncompleteReason,
 		"memory_used":           len(contextData.Memories),
 		"memory_status":         contextData.MemoryStatus,
 		"knowledge_used":        len(contextData.KnowledgeItems),
@@ -551,6 +554,7 @@ func (s *ChatService) replayOrConflict(ctx context.Context, session *domain.Sess
 		"tool_denied":       deniedToolCodes(assistant.ToolCalls),
 		"reference_count":   len(assistant.References),
 		"degraded_reason":   answer.DegradedReason,
+		"incomplete_reason": answer.IncompleteReason,
 		"replayed":          true,
 		"result":            auditResult(status),
 	})

@@ -194,11 +194,11 @@ cmd/api/main.go
 | `ABORTED` | 409 | 同源租约正在被持有 |
 | `FAILED_PRECONDITION` | 412 | 已绑定账号在运行前被停用，或 provider、认证、能力已不符合准入条件 |
 | `UNAVAILABLE` | 503 | 拉取端口未装配 |
-| `INTERNAL` | 500 | 本轮最终状态或审计无法持久化 |
+| `INTERNAL` | 500 | 本轮最终同步状态无法持久化；状态提交后的审计写失败不单独返回 500 |
 
 - `success` 表示全部计划 scope 均完整处理。`partial` 表示至少有一个 scope 完成或有记录已成功提交，同时有查询、写入或超时失败。`failed` 表示轮次开始后无 scope 完成且无成功提交，例如凭据解析失败、零有效 scope 或全部 scope 失败。
 - 失败只影响相关 scope。失败 scope 给出稳定原因码，例如 `PROJECT_ID_MISSING`、`REGION_UNAVAILABLE`、`UPSTREAM_TIMEOUT`、`PAGE_INCOMPLETE`、`RECORD_WRITE_FAILED`、`ROUND_TIMEOUT`。部分写入时报告已提交的条数，并保留失败窗口游标。
-- 最终状态和轮次审计使用同一事务提交。收尾失败返回 500，原 `last_sync_*` 保留，已提交的告警可在重试时安全重放。日志记录脱敏的轮次、scope 和原因码。
+- 最终状态通过同步状态事务提交。该提交失败返回 500，原 `last_sync_*` 保留，已提交的告警可在重试时安全重放；提交成功后独立尝试写轮次审计，审计失败不回滚同步结果。日志记录脱敏的轮次、scope 和原因码。
 
 ## §11 审计
 
@@ -223,7 +223,7 @@ cmd/api/main.go
 - **Provider** 使用符合 V2 响应结构的脱敏 fixture 验证字段、分页、相同 `alarm_id` 的多流水、多维度、权限错误和后续页失败。另需覆盖：历史记录无 `metric`/`condition` 时由 `ListAlarmRules` 富化、同一 `alarm_id` 缓存命中、规则 404/查询失败降级且不改变 scope `Complete`、事件规则不补指标、产品级多资源规则不猜测实例。
 - **应用** 覆盖重复观测零变更、旧 firing 在恢复后到达、人工恢复或关闭后再拉取、新流水可触发、缺页/失效不推断恢复、游标不越过失败窗口、写入失败后重试。
 - **权限和兼容** 覆盖存量 CES Webhook 更新及接入、拉取源拒绝公开 Webhook、普通角色缺账号权限、账号禁用/删除，以及拉取期更新/停用冲突。
-- **集成** 两个 API 实例同源争抢，以及租约过期旧持有者写入失败。测试部分已落库、轮次超时和最终状态/审计事务失败。
+- **集成** 两个 API 实例同源争抢，以及租约过期旧持有者写入失败。测试部分已落库、轮次超时、最终状态提交失败，以及状态已提交但审计写失败的 best-effort 边界。
 - **E2E** 采用仅测试装配可启用的 fake Provider。测试控制同一 scope 两次返回的 V2 fixture，从两条同规则、不同资源流水的 `alarm` 切到一条 `ok`、另一条仍为 `alarm`。核对资产关联、恢复时间线及 `alert_source_sync` 审计。已有凭据账号禁止降级到 fake。见 [验收清单 §1.4](../docs/acceptance-checklist.md#14-ces-拉取接入)。
 
 ### 13.2 实施顺序与剩余验收

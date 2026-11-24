@@ -46,6 +46,7 @@
           :sessions="sessions"
           :active-id="activeSessionId"
           :loading="loadingSessions || loadingMessages"
+          :sending-ids="sendingSessionIds"
           @create="onCreateSession"
           @select="onSelectSession"
           @refresh="loadSessionChoices"
@@ -102,6 +103,7 @@ const {
   sessions,
   messages,
   sending,
+  sendingSessionIds,
   queuedMessages,
   proposing,
   error,

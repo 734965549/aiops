@@ -13,9 +13,9 @@
 | Alert 告警中心 | 已落地 | `/alerts` | `e2e-alert.ps1`、`e2e-alert-sync.ps1` | Webhook、状态流转、CES 手动拉取已落地；后台拉取 worker 可选且默认关闭 |
 | Asset 资源与应用 | 已落地，云同步分模式支持 | `/assets`、`/assets/topology` | `e2e-asset.ps1`、`e2e-asset-sync.ps1`；真实云对账另有可选脚本 | 应用/资源、匹配规则、异步同步、CMDB 拓扑已落地；原生增强、同步数据范围、审计生命周期和云应用命名仍有专项差距 |
 | Runbook 处置预案 | 已落地 | `/runbooks`、告警详情 | `e2e-runbook.ps1` | 模板管理、告警推荐、结构化多步任务生成；真实动作仍交给 Execution |
-| Execution 自动化执行 | 核心闭环与 Agent 控制面已落地 | `/executions` | `e2e-execution.ps1`、`e2e-execution-agent*.ps1` | 默认模拟执行；独立 Agent 进程及介体/Agent/Command Spec 专门 UI 未随仓库提供 |
-| Dashboard 首页驾驶舱 | 已落地 | `/dashboard` | API 抽检，无独立 E2E | 告警、执行、资产、Runbook 聚合摘要 |
-| Audit 审计中心 | 已落地 | `/audits` | 跨模块 E2E 审计断言，无独立 E2E | 后端分页检索；前端详情、当前查询结果聚合与 CSV 导出 |
+| Execution 自动化执行 | 核心闭环与 Agent 控制面已落地 | `/executions` | `e2e-execution.ps1`、`e2e-execution-agent*.ps1` | 默认模拟执行；独立 Agent、专门 UI、自动选择、mTLS、Runbook→Agent 和 Agent Alert 时间线未完整交付 |
+| Dashboard 首页驾驶舱 | 已落地 | `/dashboard` | 单元/HTTP 测试；Identity E2E 单次摘要调用，无专用 E2E | 告警、执行、资产、Runbook 聚合摘要；降级 0 与真实 0 不可区分，无数据范围过滤 |
+| Audit 审计中心 | 已落地，前端聚合与导出有范围限制 | `/audits` | 服务单元测试与跨模块 E2E 审计断言，无独立 E2E/前端 Vitest | 精确分页检索；聚合仅当前页，CSV 实际最多 100 条；资源类型快捷选项未与真实目录对齐，认证审计独立查询 |
 | AI 运维助手 | 多轮助手与受限工具循环已落地 | `/ai-assistant`、全局浮层、`/system/ai-config` | `e2e-ai-*.ps1` 等专项脚本 | 会话、SSE、记忆、知识、分享、多模态和前端内存队列按专项契约验收；只生成待确认执行计划 |
 | Integration 接入账号 | 已落地 | `/integrations` | `e2e-integration.ps1` | 账号、凭据密文、能力声明与连通性检查；实际能力取决于对应 Provider Adapter |
 | Observability 统一观测 | 统一查询已落地，真实 Provider 部分落地 | `/observability` | `e2e-observability.ps1` 使用 fake；AI 证据另有专项脚本 | 华为 CES 指标与证据快照已落地；真实日志/链路/拓扑仍有限制，快照暂无公共详情 API/UI |
@@ -398,7 +398,8 @@ AI Provider 以数据库为事实源。API 启动时，如果 Provider 表为空
 - `ops/runbook-contract.md`：处置预案模板、告警推荐、多步骤任务生成。
 - `ops/execution-contract.md`：执行任务创建、确认、执行与时间线回写。
 - `ops/execution-agent-contract.md`：执行介体、Agent 控制面、Command Spec、租约和日志回传；各章节需区分已实现与规划项。
-- `ops/audit-contract.md`：审计检索、Trace/资源/用户聚合与导出边界。
+- `ops/audit-contract.md`：操作审计写入、精确检索、当前页聚合、CSV 实际上限、认证审计和防篡改边界。
+- `ops/dashboard-contract.md`：Dashboard 只读聚合、降级、推荐组装、前端跳转与验证边界。
 - `ops/ai-contract.md`：Provider、工具网关、AI 助手、记忆/知识、分享、多模态、证据与 RDS 诊断。
 - `ops/cloud-observability-contract.md`：云账号只读接管、统一观测查询、巡检策略和建议转执行契约。
 - `ops/huawei-ces-sync-contract.md`：华为云 CES 资源同步范围、模式、批次、计数与对账契约。
@@ -412,7 +413,7 @@ AI Provider 以数据库为事实源。API 启动时，如果 Provider 表为空
 3. **Runbook 推荐**：按告警标签/严重级别匹配预案，支持多步骤 dry-run 执行。
 4. **执行确认**：`pending_confirm` → 人工 CONFIRM → 执行 → 结果回写告警时间线。
 5. **Dashboard 汇总**：活跃告警、待确认执行、资产计数、最近执行与 Runbook 使用。
-6. **审计追溯**：登录、资产变更、告警处理、Runbook 启停、执行确认/拒绝、AI 分析等关键操作均可查询。
+6. **审计追溯**：资产变更、告警处理、Runbook 启停、执行确认/拒绝、AI 分析等已接入动作可通过操作审计查询；登录/refresh/logout 走 Identity 认证审计独立接口。审计写入多为 best-effort，业务成功不等于审计必定落库。
 
 ### 认证与权限
 
@@ -427,7 +428,7 @@ AI Provider 以数据库为事实源。API 启动时，如果 Provider 表为空
 - 系统与身份页面：AI Provider/工具/知识/记忆配置、域账号导入、用户角色、角色权限、数据范围与 AI 工具权限管理。
 - AI 助手同时提供独立工作台、全局浮层和登录后的只读分享页；工作台与浮层共享会话状态，消息排队属于前端内存能力，不是服务端持久队列。
 - 路由守卫当前只校验登录状态，侧栏为静态配置；接口权限仍由后端强制校验，不能把“页面可进入”理解为“拥有全部操作权限”。
-- 审计中心走 `GET /api/audits`，支持资源、用户、动作、Trace 筛选，以及详情、当前查询结果聚合和 CSV 导出。
+- 审计中心走 `GET /api/audits`，支持资源、用户、动作、Trace 精确筛选和详情；Resource/User/Trace 聚合仅基于当前页，CSV 实际最多导出第一页 100 条，资源类型快捷选项尚有实现差距。
 
 ### 已落地的 P1 权限管理能力
 

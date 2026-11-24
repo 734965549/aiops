@@ -43,6 +43,13 @@
         </div>
         <div class="session-meta">
           <a-tag
+            v-if="sendingIds.includes(session.session_id)"
+            size="small"
+            color="arcoblue"
+          >
+            生成中
+          </a-tag>
+          <a-tag
             v-if="session.status === 'archived'"
             size="small"
             color="gray"
@@ -115,8 +122,10 @@ withDefaults(defineProps<{
   activeId: string
   loading: boolean
   compact?: boolean
+  sendingIds?: string[]
 }>(), {
-  compact: false
+  compact: false,
+  sendingIds: () => []
 })
 
 const emit = defineEmits<{

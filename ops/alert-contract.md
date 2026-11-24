@@ -831,7 +831,7 @@ Alert 时间线写 `execution_created` / `execution_started` / `execution_finish
 | `resource_id` | `alert_id` 或 `source_id` |
 | `action` | 上述动作编码 |
 
-Alert 人工操作、Webhook 和 Source CRUD 的审计写入为 best-effort，失败不回滚主业务。CES 轮次最终状态与 `alert_source_sync` 审计按拉取契约在同一事务提交。Execution 创建/开始/结束通过 Alert 时间线关联，具体审计归 Execution 模块。
+Alert 人工操作、Webhook、Source CRUD 和 CES 轮次的审计写入均为 best-effort，失败不回滚主业务。CES 轮次先提交最终同步状态，再独立尝试写 `alert_source_sync`，二者不是同一事务。Execution 创建/开始/结束通过 Alert 时间线关联，具体审计归 Execution 模块。
 
 ## 10. 错误语义
 

@@ -152,7 +152,7 @@ CES 拉取复用同一归一化管道，但按云端 record_id 和触发时间�
 - 接入源：`source_create`、`source_update`、`source_delete`、`alert_source_sync`。
 - Execution 关联：时间线 `execution_created`、`execution_started`、`execution_finished`。
 
-Alert/Source 审计写入均为 best-effort，失败不回滚主业务；Pull 轮次最终状态和 `alert_source_sync` 审计按 CES 契约在同一事务提交。
+Alert/Source 审计写入均为 best-effort，失败不回滚主业务；Pull 轮次先提交最终同步状态，再独立尝试写 `alert_source_sync`，二者不是同一事务。
 
 ## 9. 验证覆盖
 

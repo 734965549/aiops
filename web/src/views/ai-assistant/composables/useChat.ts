@@ -1,4 +1,4 @@
-import { computed, inject, onMounted, onUnmounted, ref, type InjectionKey } from 'vue'
+import { computed, inject, onMounted, onUnmounted, reactive, ref, type InjectionKey } from 'vue'
 import { useRouter } from 'vue-router'
 import Message from '@arco-design/web-vue/es/message'
 import {
@@ -17,29 +17,20 @@ import {
   type ChatResultStatus,
   type ChatSession,
   type ChatSessionContext,
-  type ChatStreamEvent,
-  type ChatToolCall,
-  type SendChatMessageResult
+  type ChatStreamEvent
 } from '@/api/ai'
 import { createExecutionTask } from '@/api/execution'
 import { getApiError, isApiHttpError } from '@/api/request'
 import { isAbortError } from '@/api/sse'
 import { useAIContextStore } from '@/stores/aiContext'
 import { IMAGE_ONLY_PROMPT } from './imageInput'
-
-/** 请求进行中的可见阶段（同步接口，仅作进度提示）。 */
-export type ChatStage = 'idle' | 'thinking' | 'querying_tools' | 'generating'
-
-/** 回答结束后的 UI 状态（页面原型 §23.2）。 */
-export type ChatUIStatus =
-  | 'idle'
-  | 'ok'
-  | 'needs_confirm'
-  | 'not_executable'
-  | 'insufficient_context'
-  | 'incomplete'
-  | 'inconclusive'
-  | 'failed'
+import {
+  createSessionChatState,
+  type ChatStage,
+  type ChatUIStatus,
+  type QueuedChatMessage,
+  type SessionChatState
+} from './chatSessionState'
 
 export const STAGE_LABELS: Record<Exclude<ChatStage, 'idle'>, string> = {
   thinking: 'AI 思考中…',
@@ -56,16 +47,6 @@ export const STATUS_LABELS: Record<ChatUIStatus, string> = {
   incomplete: 'AI 回答生成中断',
   inconclusive: 'AI 未得出结论',
   failed: 'AI 回答失败'
-}
-
-export interface QueuedChatMessage {
-  queue_id: string
-  session_id: string
-  content: string
-  images: string[]
-  context: ChatSessionContext
-  provider_id?: string
-  client_message_id: string
 }
 
 /** 模型展示文案：provider 显示名与模型 ID 相同时去重，避免 "X（X）"。 */
@@ -92,30 +73,56 @@ export function useChat() {
   const selectedProviderID = ref('')
   const activeSessionId = ref('')
   const activeSession = ref<ChatSession | null>(null)
-  const messages = ref<ChatMessage[]>([])
   const loadingSessions = ref(false)
   const loadingMessages = ref(false)
-  const sending = ref(false)
-  const queuedMessages = ref<QueuedChatMessage[]>([])
   const proposing = ref(false)
-  const error = ref('')
-  const stage = ref<ChatStage>('idle')
-  // delta 事件只做“已生成 N 字”进度提示，不渲染半成品 JSON。
-  const deltaChars = ref(0)
-  // 发送中的实时过程：工具调用逐条到达（SSE tool 事件）与模型思考增量（reasoning_content）。
-  // 思考内容只在流中展示，不落库；发送开始时清空，结束后由最终回答的工具调用展示接管。
-  const liveTools = ref<ChatToolCall[]>([])
-  const liveThinking = ref('')
-  const uiStatus = ref<ChatUIStatus>('idle')
-  const lastUserContent = ref('')
-  // 最近一次提问的附图（data URL），重试时与幂等键一起复用。
-  const lastUserImages = ref<string[]>([])
-  // 最近一次提问的幂等键，重试时复用（ops/ai-contract.md §10.6.5）。
-  const lastClientMessageId = ref('')
-  const lastResult = ref<SendChatMessageResult | null>(null)
 
-  // 流式请求的取消句柄；用户点「停止」时中断，服务端按 §10.17.4 不落 assistant 消息。
-  let streamController: AbortController | null = null
+  // 流式请求的取消句柄按会话保存在 SessionChatState 中；组合式函数销毁时统一取消。
+  let disposed = false
+  const DRAFT_SESSION_KEY = '__draft__'
+  const sessionStates = reactive<Record<string, SessionChatState>>({})
+  function getSessionState(sessionId: string): SessionChatState {
+    const key = sessionId || DRAFT_SESSION_KEY
+    if (!sessionStates[key]) sessionStates[key] = createSessionChatState()
+    return sessionStates[key]
+  }
+  getSessionState('')
+
+  const activeStateKey = computed(() => activeSessionId.value || DRAFT_SESSION_KEY)
+  const activeState = computed(
+    () => sessionStates[activeStateKey.value] ?? getSessionState(activeStateKey.value)
+  )
+
+  // 以可写 computed 暴露当前会话字段，现有多数组件与模板无需感知会话级状态容器。
+  function stateField<K extends keyof SessionChatState>(key: K) {
+    return computed<SessionChatState[K]>({
+      get: () => activeState.value[key],
+      set: (value) => {
+        activeState.value[key] = value
+      }
+    })
+  }
+
+  const messages = stateField('messages')
+  const sending = stateField('sending')
+  const queuedMessages = stateField('queuedMessages')
+  const error = stateField('error')
+  const stage = stateField('stage')
+  const deltaChars = stateField('deltaChars')
+  const liveTools = stateField('liveTools')
+  const liveThinking = stateField('liveThinking')
+  const uiStatus = stateField('uiStatus')
+  const lastUserContent = stateField('lastUserContent')
+  const lastUserImages = stateField('lastUserImages')
+  const lastClientMessageId = stateField('lastClientMessageId')
+  const lastResult = stateField('lastResult')
+
+  // 会话列表用于标记后台仍在生成的会话。
+  const sendingSessionIds = computed(() =>
+    Object.entries(sessionStates)
+      .filter(([key, value]) => key !== DRAFT_SESSION_KEY && value.sending)
+      .map(([key]) => key)
+  )
 
   const contextSummary = computed(() => contextStore.summary)
   const requestContext = computed<ChatSessionContext>(() => contextStore.toRequestContext())
@@ -166,21 +173,25 @@ export function useChat() {
     void loadModels()
   })
 
-  function beginStage() {
-    stage.value = 'thinking'
-    liveTools.value = []
-    liveThinking.value = ''
+  function beginStage(state: SessionChatState) {
+    state.stage = 'thinking'
+    state.liveTools = []
+    state.liveThinking = ''
   }
 
-  function endStage() {
-    stage.value = 'idle'
-    deltaChars.value = 0
-    streamController = null
+  function endStage(state: SessionChatState) {
+    state.stage = 'idle'
+    state.deltaChars = 0
+    state.streamController = null
   }
 
   onUnmounted(() => {
-    queuedMessages.value = []
-    streamController?.abort()
+    disposed = true
+    for (const state of Object.values(sessionStates)) {
+      state.queuedMessages = []
+      state.streamController?.abort()
+      state.streamController = null
+    }
   })
 
   /** 把服务端 stage 事件映射到既有 UI 阶段。 */
@@ -190,20 +201,20 @@ export function useChat() {
     return 'thinking'
   }
 
-  function handleStreamEvent(event: ChatStreamEvent) {
+  function handleStreamEvent(state: SessionChatState, event: ChatStreamEvent) {
     if (event.type === 'stage') {
-      stage.value = mapServerStage(event.stage)
+      state.stage = mapServerStage(event.stage)
     } else if (event.type === 'tool') {
       // 工具观测到达即说明正在取数，先于模型阶段给出提示；新一轮模型输出重新计数。
-      stage.value = 'querying_tools'
-      deltaChars.value = 0
-      if (event.tool) liveTools.value = [...liveTools.value, event.tool]
+      state.stage = 'querying_tools'
+      state.deltaChars = 0
+      if (event.tool) state.liveTools = [...state.liveTools, event.tool]
     } else if (event.type === 'delta') {
       if (event.phase === 'thinking' && event.text) {
         // 思考增量实时展示在过程面板中（仅流中可见，不落库）。
-        liveThinking.value += event.text
+        state.liveThinking += event.text
       } else if (event.phase === 'answer' && event.text) {
-        deltaChars.value += Array.from(event.text).length
+        state.deltaChars += Array.from(event.text).length
       }
     }
     // 未知事件类型（例如未来新增的通知）直接忽略，避免破坏现有流。
@@ -224,12 +235,9 @@ export function useChat() {
     return 'ok'
   }
 
-  function applySessionDetail(detail: { session: ChatSession; messages: ChatMessage[] }) {
-    activeSession.value = detail.session
-    activeSessionId.value = detail.session.session_id
-    messages.value = detail.messages
+  function applyProviderFromSession(session: ChatSession | null) {
     // 优先展示会话上下文保存的 provider，列表未加载或模型已删除时回退默认。
-    const sessionProvider = detail.session.context?.provider_id || ''
+    const sessionProvider = session?.context?.provider_id || ''
     if (sessionProvider && (models.value.length === 0 || models.value.some(
       (model) => model.provider_id === sessionProvider
     ))) {
@@ -237,20 +245,44 @@ export function useChat() {
     } else if (models.value.length > 0) {
       selectedProviderID.value = models.value[0].provider_id
     }
-    const lastAssistant = [...detail.messages].reverse().find((message) => message.role === 'assistant')
-    if (lastAssistant?.answer) {
-      uiStatus.value = deriveUIStatus(
-        lastAssistant.answer.incomplete
-          ? 'incomplete'
-          : lastAssistant.answer.degraded
-            ? 'degraded'
-            : lastAssistant.answer.insufficient_context
-              ? 'insufficient_context'
-              : 'ok',
-        lastAssistant.answer
-      )
-    } else {
-      uiStatus.value = 'idle'
+  }
+
+  function uiStatusFromMessages(messages: ChatMessage[]): ChatUIStatus {
+    const lastAssistant = [...messages].reverse().find((message) => message.role === 'assistant')
+    if (!lastAssistant?.answer) return 'idle'
+    return deriveUIStatus(
+      lastAssistant.answer.incomplete
+        ? 'incomplete'
+        : lastAssistant.answer.degraded
+          ? 'degraded'
+          : lastAssistant.answer.insufficient_context
+            ? 'insufficient_context'
+            : 'ok',
+      lastAssistant.answer
+    )
+  }
+
+  /** 只填充目标会话状态；activeSession 由 selectSession 按请求返回时的当前选择决定。 */
+  function fillSessionState(
+    state: SessionChatState,
+    detail: { session: ChatSession; messages: ChatMessage[] },
+    options: { preserveRetry?: boolean } = {}
+  ) {
+    state.messages = detail.messages
+    state.loaded = true
+    state.error = ''
+    if (!options.preserveRetry) {
+      state.lastResult = null
+      state.lastUserContent = ''
+      state.lastUserImages = []
+      state.lastClientMessageId = ''
+    }
+    state.uiStatus = uiStatusFromMessages(detail.messages)
+    if (!state.sending) {
+      state.stage = 'idle'
+      state.deltaChars = 0
+      state.liveTools = []
+      state.liveThinking = ''
     }
   }
 
@@ -278,14 +310,26 @@ export function useChat() {
 
   async function selectSession(sessionId: string) {
     if (!sessionId) return
-    if (sessionId !== activeSessionId.value && !canChangeSession()) return
+    if (sessionId === activeSessionId.value) return
+    const state = getSessionState(sessionId)
+    const sessionMeta = sessions.value.find((session) => session.session_id === sessionId) ?? null
+    activeSessionId.value = sessionId
+    activeSession.value = sessionMeta
+    applyProviderFromSession(sessionMeta)
+    // 本地已有消息或正在后台生成：直接接管本地状态，避免覆盖乐观消息与在途回答。
+    if (state.loaded || state.sending || state.queuedMessages.length > 0) {
+      return
+    }
     loadingMessages.value = true
-    error.value = ''
     try {
       const detail = await getChatSession(sessionId)
-      applySessionDetail(detail)
+      fillSessionState(state, detail)
+      if (activeSessionId.value === sessionId) {
+        activeSession.value = detail.session
+        applyProviderFromSession(detail.session)
+      }
     } catch (err) {
-      error.value = '加载会话失败，请稍后重试'
+      state.error = '加载会话失败，请稍后重试'
       throw err
     } finally {
       loadingMessages.value = false
@@ -298,16 +342,15 @@ export function useChat() {
       context: chatRequestContext()
     })
     sessions.value = [session, ...sessions.value]
+    const state = getSessionState(session.session_id)
+    Object.assign(state, createSessionChatState(), { loaded: true })
     activeSession.value = session
     activeSessionId.value = session.session_id
-    messages.value = []
-    uiStatus.value = 'idle'
-    lastResult.value = null
+    applyProviderFromSession(session)
     return session
   }
 
   async function startNewSession() {
-    if (!canChangeSession()) return null
     try {
       const session = await createSession()
       Message.success('已创建新会话')
@@ -335,39 +378,54 @@ export function useChat() {
       Message.warning('会话已归档，请先恢复归档或新建会话再继续提问')
       return
     }
+    const sessionId = activeSessionId.value || (await ensureSession())
+    if (!sessionId) return
     const clientId = clientMessageId || newClientMessageId()
     const item: QueuedChatMessage = {
       queue_id: newClientMessageId(),
-      session_id: activeSessionId.value,
+      session_id: sessionId,
       content: content || IMAGE_ONLY_PROMPT,
       images: [...images],
       context: chatRequestContext(),
       provider_id: selectedProviderID.value || undefined,
       client_message_id: clientId
     }
-    if (sending.value) {
-      queuedMessages.value = [...queuedMessages.value, item]
+    const state = getSessionState(sessionId)
+    if (state.sending) {
+      // 同一会话内继续串行：当前回答结束后自动发送下一条。
+      state.queuedMessages = [...state.queuedMessages, item]
       return
     }
     await sendNow(item)
   }
 
-  async function sendNow(item: QueuedChatMessage) {
-    sending.value = true
-    const sessionId = item.session_id || await ensureSession()
-    if (!sessionId) {
-      sending.value = false
-      await sendNextQueued()
-      return
+  /** 回读单个会话并填充对应状态；不改变当前选中的会话。 */
+  async function reloadSessionState(sessionId: string) {
+    const state = sessionStates[sessionId]
+    if (!state) return
+    const detail = await getChatSession(sessionId)
+    if (sessionStates[sessionId] !== state) return
+    fillSessionState(state, detail, { preserveRetry: true })
+    if (activeSessionId.value === sessionId) {
+      activeSession.value = detail.session
+      applyProviderFromSession(detail.session)
     }
+  }
 
-    error.value = ''
-    deltaChars.value = 0
-    lastUserContent.value = item.content
-    lastUserImages.value = [...item.images]
+  async function sendNow(item: QueuedChatMessage) {
+    const sessionId = item.session_id || (await ensureSession())
+    if (!sessionId) return
+    item.session_id = sessionId
+    const state = getSessionState(sessionId)
+    state.sending = true
+    state.loaded = true
+    state.error = ''
+    state.deltaChars = 0
+    state.lastUserContent = item.content
+    state.lastUserImages = [...item.images]
     // 同一条提问的重试复用同一个幂等键，服务端据此返回首次结果而不是重复落消息。
-    lastClientMessageId.value = item.client_message_id
-    beginStage()
+    state.lastClientMessageId = item.client_message_id
+    beginStage(state)
     const optimisticUserMessage: ChatMessage = {
       message_id: `local-${Date.now()}`,
       session_id: sessionId,
@@ -378,10 +436,10 @@ export function useChat() {
       references: [],
       created_at: new Date().toISOString()
     }
-    messages.value = [...messages.value, optimisticUserMessage]
+    state.messages = [...state.messages, optimisticUserMessage]
 
     const controller = new AbortController()
-    streamController = controller
+    state.streamController = controller
     try {
       const result = await streamChatMessage(
         sessionId,
@@ -394,10 +452,11 @@ export function useChat() {
         },
         {
           signal: controller.signal,
-          onEvent: handleStreamEvent
+          onEvent: (event) => handleStreamEvent(state, event)
         }
       )
-      lastResult.value = result
+      if (sessionStates[sessionId] !== state || disposed) return
+      state.lastResult = result
       const assistantMessage: ChatMessage = {
         message_id: result.message_id,
         session_id: result.session_id,
@@ -408,58 +467,64 @@ export function useChat() {
         references: result.references,
         created_at: result.created_at
       }
-      messages.value = [...messages.value, assistantMessage]
-      uiStatus.value = deriveUIStatus(result.status, result.answer)
-      if (activeSession.value) {
+      state.messages = [...state.messages, assistantMessage]
+      state.uiStatus = deriveUIStatus(result.status, result.answer)
+      if (activeSessionId.value === sessionId && activeSession.value) {
         activeSession.value = { ...activeSession.value, context: result.context }
       }
       await refreshSessionList()
     } catch (err) {
+      if (sessionStates[sessionId] !== state || disposed) return
       if (isAbortError(err)) {
         // 用户主动停止：服务端不落回答，回读会话以去掉本地乐观消息。
-        error.value = ''
-        uiStatus.value = 'idle'
+        state.error = ''
+        state.uiStatus = 'idle'
         try {
-          await selectSession(sessionId)
+          await reloadSessionState(sessionId)
         } catch {
           /* 回读失败时保留本地状态。 */
         }
-        Message.info('已停止生成')
+        if (activeSessionId.value === sessionId) Message.info('已停止生成')
         return
       }
       const apiError = getApiError(err) ?? (isApiHttpError(err) ? err : null)
       // 后端可能已落库用户消息；失败后回读服务端会话，避免本地与服务端漂移。
       try {
-        await selectSession(sessionId)
+        await reloadSessionState(sessionId)
       } catch {
         /* 回读失败时保留本地错误提示。 */
       }
+      let message = 'AI 回答失败，请稍后重试'
       if (apiError?.code === 'FAILED_PRECONDITION') {
         // 409 有两种业务语义：会话被归档，或幂等键对应的上一次请求仍在处理/已中断。
         const detail = apiError.message || ''
-        error.value = detail.includes('archived')
+        message = detail.includes('archived')
           ? '会话已归档，请先恢复归档或新建会话再继续提问'
           : '上一次相同提问仍在处理或已中断；请刷新会话查看结果后再决定是否重新提问'
       } else if (apiError?.status === 403) {
         // 流式接口不经过 axios 拦截器，这里补齐权限提示。
-        error.value = '当前账号缺少 AI 对话权限，请联系管理员'
+        message = '当前账号缺少 AI 对话权限，请联系管理员'
       } else if (apiError?.status === 503) {
-        error.value = 'AI 对话服务暂不可用，请检查后端配置与模型 Provider'
-      } else {
-        error.value = 'AI 回答失败，请稍后重试'
+        message = 'AI 对话服务暂不可用，请检查后端配置与模型 Provider'
       }
-      uiStatus.value = 'failed'
+      const current = sessionStates[sessionId]
+      if (current === state) {
+        state.error = message
+        state.uiStatus = 'failed'
+      }
     } finally {
-      sending.value = false
-      endStage()
-      void sendNextQueued()
+      if (!disposed && sessionStates[sessionId] === state) {
+        state.sending = false
+        endStage(state)
+        void sendNextQueued(state)
+      }
     }
   }
 
-  async function sendNextQueued() {
-    if (sending.value || queuedMessages.value.length === 0) return
-    const [next, ...remaining] = queuedMessages.value
-    queuedMessages.value = remaining
+  async function sendNextQueued(state: SessionChatState) {
+    if (state.sending || state.queuedMessages.length === 0) return
+    const [next, ...remaining] = state.queuedMessages
+    state.queuedMessages = remaining
     await sendNow(next)
   }
 
@@ -477,17 +542,12 @@ export function useChat() {
     queuedMessages.value = []
   }
 
-  function canChangeSession() {
-    if (!sending.value && queuedMessages.value.length === 0) return true
-    Message.warning('正在生成或存在排队消息，请先停止生成或清空队列')
-    return false
-  }
-
   /** 用户主动停止：取消当前请求并清空队列，避免停止后又自动发送下一条。 */
   function stop() {
-    clearQueuedMessages()
-    streamController?.abort()
-    streamController = null
+    const state = activeState.value
+    state.queuedMessages = []
+    state.streamController?.abort()
+    state.streamController = null
   }
 
   async function retry() {
@@ -534,8 +594,12 @@ export function useChat() {
   /** 删除会话及其消息；删除当前会话后自动切到下一个会话。 */
   async function deleteSession(sessionId: string) {
     if (!sessionId) return
+    const state = sessionStates[sessionId]
+    state?.streamController?.abort()
+    if (state) state.queuedMessages = []
     try {
       await deleteChatSession(sessionId)
+      if (state) delete sessionStates[sessionId]
       sessions.value = sessions.value.filter((session) => session.session_id !== sessionId)
       if (activeSessionId.value === sessionId) {
         resetActiveSession()
@@ -560,11 +624,7 @@ export function useChat() {
   function resetActiveSession() {
     activeSession.value = null
     activeSessionId.value = ''
-    messages.value = []
-    uiStatus.value = 'idle'
-    deltaChars.value = 0
-    lastResult.value = null
-    error.value = ''
+    Object.assign(getSessionState(''), createSessionChatState())
   }
 
   async function submitFeedback(messageId: string, feedback: 'valid' | 'invalid') {
@@ -643,6 +703,7 @@ export function useChat() {
     loadingSessions,
     loadingMessages,
     sending,
+    sendingSessionIds,
     queuedMessages,
     proposing,
     error,

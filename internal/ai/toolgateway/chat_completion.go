@@ -107,10 +107,11 @@ type analysisOutput struct {
 // chatStreamDelta 是一行 "data: {...}" 的解析结果。
 // reasoning_content 只透传给前端思考进度；只有 content 累积成最终回答 JSON。
 type chatStreamDelta struct {
-	Reasoning string
-	Content   string
-	Usage     int
-	Done      bool
+	Reasoning    string
+	Content      string
+	Usage        int
+	Done         bool
+	FinishReason string
 }
 
 // parseChatStreamLine 解析单行 SSE；非 data 行/注释/非法 JSON 返回 ok=false。
@@ -135,6 +136,7 @@ func parseChatStreamLine(line []byte) (chatStreamDelta, bool) {
 				Content          string `json:"content"`
 				ReasoningContent string `json:"reasoning_content"`
 			} `json:"delta"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
 			TotalTokens int `json:"total_tokens"`
@@ -147,6 +149,7 @@ func parseChatStreamLine(line []byte) (chatStreamDelta, bool) {
 	if len(chunk.Choices) > 0 {
 		delta.Content = chunk.Choices[0].Delta.Content
 		delta.Reasoning = chunk.Choices[0].Delta.ReasoningContent
+		delta.FinishReason = strings.TrimSpace(chunk.Choices[0].FinishReason)
 	}
 	return delta, true
 }
@@ -154,12 +157,27 @@ func parseChatStreamLine(line []byte) (chatStreamDelta, bool) {
 // ChatCompletionExecutor 是 type b 的平台直连模型执行器：
 // 构造 chat/completions 请求，解析 choices[0].message.content 并校验分析 JSON。
 type ChatCompletionExecutor struct {
-	typeName    ProviderType
-	requestPath string
+	typeName          ProviderType
+	requestPath       string
+	streamIdleTimeout time.Duration
 }
 
 func NewChatCompletionExecutor(t ProviderType, requestPath string) *ChatCompletionExecutor {
 	return &ChatCompletionExecutor{typeName: t, requestPath: requestPath}
+}
+
+// SetStreamIdleTimeout 覆盖流式空闲超时；<=0 保持默认（chatStreamIdleTimeout）。
+func (e *ChatCompletionExecutor) SetStreamIdleTimeout(timeout time.Duration) {
+	if e != nil && timeout > 0 {
+		e.streamIdleTimeout = timeout
+	}
+}
+
+func (e *ChatCompletionExecutor) effectiveStreamIdleTimeout() time.Duration {
+	if e != nil && e.streamIdleTimeout > 0 {
+		return e.streamIdleTimeout
+	}
+	return chatStreamIdleTimeout
 }
 
 func (e *ChatCompletionExecutor) Type() ProviderType { return e.typeName }

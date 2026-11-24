@@ -2,7 +2,7 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import QueuedMessageList from './QueuedMessageList.vue'
-import type { QueuedChatMessage } from '../composables/useChat'
+import type { QueuedChatMessage } from '../composables/chatSessionState'
 
 vi.mock('@arco-design/web-vue', () => ({
   Button: {

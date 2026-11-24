@@ -116,6 +116,7 @@ func TestParseChatStreamLine(t *testing.T) {
 		{name: "content", line: `data: {"choices":[{"delta":{"content":"答案"}}]}`, ok: true, delta: chatStreamDelta{Content: "答案"}},
 		{name: "usage", line: `data: {"choices":[],"usage":{"total_tokens":42}}`, ok: true, delta: chatStreamDelta{Usage: 42}},
 		{name: "done", line: `data: [DONE]`, ok: true, delta: chatStreamDelta{Done: true}},
+		{name: "finish length", line: `data: {"choices":[{"delta":{},"finish_reason":"length"}]}`, ok: true, delta: chatStreamDelta{FinishReason: "length"}},
 		{name: "comment", line: `: ping`, ok: false},
 		{name: "blank", line: ``, ok: false},
 		{name: "garbage", line: `data: not-json`, ok: false},

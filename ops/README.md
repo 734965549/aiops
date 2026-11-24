@@ -13,7 +13,8 @@
 - `runbook-contract.md`：处置预案模板、告警推荐、多步骤执行任务生成契约。
 - `execution-contract.md`：告警处置执行任务创建、确认、执行与时间线回写契约。
 - `execution-agent-contract.md`：Execution Medium、Agent 控制面、Command Spec、租约和日志回传契约；已实现控制面与规划能力需按章节区分。
-- `audit-contract.md`：操作审计检索、Trace 聚合、资源画像与导出契约。
+- `audit-contract.md`：操作审计写入与精确检索、当前页聚合、CSV 实际上限、认证审计及完整性边界。
+- `dashboard-contract.md`：Dashboard 只读聚合、降级、推荐组装、前端跳转与验证边界。
 - `ai-contract.md`：AI Provider、工具网关、助手会话、Agent Loop、记忆/知识、分享、多模态、证据快照与 RDS 诊断契约。
 - `health-contract.md`：`/healthz`、`/readyz`、`/version` 契约。
 - `migration-contract.md`：数据库迁移 runner、版本文件、checksum 和回滚责任边界。
@@ -42,11 +43,12 @@
 | `alert-contract.md` | `internal/alert`、`web/src/api/alert.ts`、`web/src/views/alerts` | `migrations/0007` 及后续 Alert 迁移；`e2e-alert.ps1` | Webhook 与状态流转已落地 |
 | `huawei-ces-alert-sync-contract.md` | `internal/alert`、`internal/observability`、告警源页面 | `migrations/0046-0047`；`e2e-alert-sync.ps1` | 手动同步已落地；后台 worker 可选且默认关闭 |
 | `runbook-contract.md` | `internal/runbook`、告警详情、`web/src/views/runbooks` | `migrations/0012`；`e2e-runbook.ps1` | 模拟路径生成结构化 Execution Task；前端仅列表/详情/启停，Command Spec 与 Runbook→Agent 展开未落地 |
-| `execution-contract.md`、`execution-agent-contract.md` | `internal/execution`、`web/src/api/execution.ts` | `migrations/0011`、`0022`；`e2e-execution*.ps1` | 核心闭环和 Agent 控制面已落地；独立 Agent 进程和专门管理 UI 未提供 |
-| `audit-contract.md` | `internal/audit`、`web/src/api/audit.ts`、`web/src/views/audits` | `migrations/0009`；跨模块 E2E 审计断言 | 后端分页查询；前端完成当前查询结果的聚合和 CSV 导出 |
+| `execution-contract.md`、`execution-agent-contract.md` | `internal/execution`、`web/src/api/execution.ts` | `migrations/0011`、`0012`、`0022`；`e2e-execution*.ps1` | 模拟闭环和 Agent 控制面已落地；独立 Agent、管理 UI、自动选择、mTLS、Runbook→Agent 和 Agent Alert 时间线未完整交付 |
+| `audit-contract.md` | `internal/audit`、`web/src/api/audit.ts`、`web/src/views/audits` | `migrations/0009`；服务单元测试与跨模块 E2E 审计断言 | 精确分页查询；聚合仅当前页，CSV 实际最多 100 条；认证审计独立，资源类型快捷选项有差距 |
 | `ai-contract.md` | `internal/ai`、`cmd/ai-orchestrator`、`web/src/api/ai.ts`、`web/src/views/ai-assistant` | `migrations/0048-0057`、`0059-0062`；`e2e-ai-*.ps1`、`e2e-postgres-history.ps1` | type=b 是助手主路径；type=c 为可选参考服务；真实 RDS 验收需外部告警和云账号 |
 | `cloud-observability-contract.md` | `internal/integration`、`internal/observability`、`internal/inspection`、`internal/asset` 及对应前端 | `migrations/0018-0020` 及后续 Asset/拓扑/证据迁移；对应 E2E | fake 与真实 Provider 分开验收；定时巡检 worker、建议转执行前端入口未落地 |
 | `huawei-ces-sync-contract.md` | `internal/asset`、`internal/observability/infrastructure/provider/huawei`、资产与接入页 | `migrations/0023-0045`、`0058`；`e2e-asset-sync.ps1`、可选 `e2e-asset-sync-real.ps1` | fake E2E 不等于真实云对账；原生增强、Sync 数据范围、审计生命周期、周期 reaper 和云应用命名仍有差距 |
+| `dashboard-contract.md` | `internal/dashboard`、`web/src/api/dashboard.ts`、`web/src/views/dashboard` | `migrations/0013`；单元/HTTP 测试，Identity E2E 单次摘要调用 | 只读聚合；无专用 E2E/前端 Vitest；降级 0 与真实 0 不可区分，无数据范围过滤 |
 | `health-contract.md` | `internal/server`、`internal/bootstrap`、`pkg/config` | 后端单元测试和 `/readyz` 抽检 | liveness 与 readiness 语义不能混用 |
 | `migration-contract.md` | `pkg/database`、`cmd/migrate`、`cmd/api -migrate`、`migrations` | `go test ./pkg/database/...`、migration readiness | 只能使用自研 runner；当前版本顺序以 `migrations/README.md` 为准 |
 

@@ -285,6 +285,9 @@ type AIConfig struct {
 	PostgresEvidenceTimeoutMS int64 `mapstructure:"postgres_evidence_timeout_ms"`
 	// TurnBudgetS 是单次对话（含 Agent Loop 多轮）的总时间预算，0 使用默认 600s。
 	TurnBudgetS int `mapstructure:"turn_budget_s"`
+	// StreamIdleTimeoutS 是模型流式输出连续无新增量的最大等待时间（秒），
+	// 0 使用默认 180s；低于 30s 按 30s 处理。SSE 注释/心跳行也会重置该计时。
+	StreamIdleTimeoutS int `mapstructure:"stream_idle_timeout_s"`
 }
 
 // EvidenceTimeout 返回指标证据取数预算。
@@ -315,6 +318,17 @@ func (c AIConfig) TurnBudgetTimeout() time.Duration {
 		return 10 * time.Minute
 	}
 	return time.Duration(c.TurnBudgetS) * time.Second
+}
+
+// StreamIdleTimeout 返回模型流式输出空闲超时。
+func (c AIConfig) StreamIdleTimeout() time.Duration {
+	if c.StreamIdleTimeoutS <= 0 {
+		return 180 * time.Second
+	}
+	if c.StreamIdleTimeoutS < 30 {
+		return 30 * time.Second
+	}
+	return time.Duration(c.StreamIdleTimeoutS) * time.Second
 }
 
 // AIProviderConfig 描述单个 provider 的配置。

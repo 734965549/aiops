@@ -186,6 +186,9 @@ ai:
   # 单次对话（含 Agent Loop 多轮）的总时间预算（秒），0 使用默认 600。
   # server.read_timeout_s / write_timeout_s 必须 >= turn_budget_s + 60。
   turn_budget_s: 600
+  # 模型流式输出连续无新增量的最大等待时间（秒），0 使用默认 180，低于 30 按 30 处理。
+  # 思考型模型长时间不吐 token 时可调到 300；provider 的 SSE 注释/心跳也会重置该计时。
+  stream_idle_timeout_s: 180
   providers:
     - id: "demo-http-a"
       name: "Demo HTTP Provider A"

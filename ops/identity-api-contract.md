@@ -252,7 +252,7 @@ Authorization: Bearer <access_token>
 - `AuthorizeStatic` 静态路由设置 `SkipDataScope=true`，只校验固定 RBAC 权限。
 - 动态调用必须显式传入 `object_owner/object_dept/object_team/object_region/object_tags`，或使用专门的数据查询过滤，才会执行数据范围隔离。
 - 非 all 数据范围缺少对象上下文时拒绝；无数据范围或 all 按当前实现放行。
-- 当前已有 AI 告警/账号证据访问、Asset 云同步及同步批次 owner_team 过滤等调用点。绑定数据范围不等于所有业务列表、详情都自动隔离，新增调用点必须单独验收。
+- 当前明确调用点包括 AI 告警/账号证据访问、Asset 资源分析读取等。Asset 云同步授权及同步批次 owner_team 过滤未按早期描述完整接入。绑定数据范围不等于所有业务列表、详情都自动隔离，新增调用点必须单独验收。
 
 ### 4.6 认证审计查询
 

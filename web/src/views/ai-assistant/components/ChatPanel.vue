@@ -142,7 +142,7 @@
         type="warning"
         :show-icon="true"
       >
-        回答生成中断，以下为已保留的上下文与部分结果；可重新提问或缩小问题范围。
+        {{ incompleteHint }}
         <template #action>
           <a-button
             size="mini"
@@ -278,7 +278,7 @@
             status="warning"
             @click="emit('stop')"
           >
-            {{ queuedMessages?.length ? '停止全部' : '停止生成' }}
+            {{ queuedMessages?.length ? '停止并清空队列' : '停止生成' }}
           </a-button>
           <a-button
             type="primary"
@@ -305,8 +305,9 @@ import ChatUserMessage from './ChatUserMessage.vue'
 import QueuedMessageList from './QueuedMessageList.vue'
 import { MAX_CHAT_IMAGES } from '../composables/imageInput'
 import { formatMessageTime } from '../composables/format'
-import { toolLabel, toolReasonLabel, toolStatusLabel } from '../toolReason'
-import { STAGE_LABELS, type ChatStage, type ChatUIStatus, type QueuedChatMessage } from '../composables/useChat'
+import { toolLabel, toolReasonLabel, toolStatusLabel, incompleteReasonLabel } from '../toolReason'
+import { STAGE_LABELS } from '../composables/useChat'
+import type { ChatStage, ChatUIStatus, QueuedChatMessage } from '../composables/chatSessionState'
 
 const props = defineProps<{
   messages: ChatMessage[]
@@ -349,6 +350,21 @@ const input = ref('')
 const scrollRef = ref<HTMLElement | null>(null)
 const placeholder = props.placeholder || '请输入你的问题，例如：帮我分析当前告警并给出排查步骤'
 const modelOptions = computed(() => props.models ?? [])
+
+const incompleteReason = computed(() => {
+  if (props.status !== 'incomplete') return ''
+  const lastAssistant = [...props.messages].reverse().find((message) => message.role === 'assistant')
+  return (lastAssistant?.answer?.incomplete_reason ?? '').trim()
+})
+const incompleteHint = computed(() => {
+  if (incompleteReason.value === 'output_truncated') {
+    return '回答达到模型输出长度上限，以下为已保留的上下文与部分结果；建议减少规则条数或缩短时间窗口后重试。'
+  }
+  const label = incompleteReasonLabel(incompleteReason.value)
+  return label
+    ? `回答生成中断（${label}），以下为已保留的上下文与部分结果；可重新提问或缩小问题范围。`
+    : '回答生成中断，以下为已保留的上下文与部分结果；可重新提问或缩小问题范围。'
+})
 
 // 图片输入：由 ChatImagePicker 负责压缩与预览，submit 时随消息发送（最多 3 张）。
 const images = ref<string[]>([])

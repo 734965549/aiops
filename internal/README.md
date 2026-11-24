@@ -10,9 +10,9 @@
 - `alert`：Webhook 去重接入、CES 手动/可选后台拉取、列表/详情、认领/转派/处理/恢复/关闭、静默、评论和时间线；详见 `internal/alert/README.md`。
 - `asset`：应用/资源注册、资源解析、匹配规则、异步云同步与批次、CMDB 拓扑、手工及云派生关系；详见 `internal/asset/README.md`。
 - `runbook`：处置预案模板、告警推荐、多步骤执行任务生成；详见 `internal/runbook/README.md`。
-- `execution`：任务状态机、人工确认、模拟执行、时间线，以及 Agent 注册/心跳/租约/日志/结果控制面；独立 Agent 进程不在本目录。
-- `dashboard`：告警、资产、Runbook、执行任务聚合摘要。
-- `audit`：关键操作审计分页查询；聚合和 CSV 导出由前端基于查询结果完成。
+- `execution`：任务状态机、人工确认/拒绝、模拟执行、Runbook、时间线，以及 Medium/Command Spec/Agent 控制面；独立 Agent 与专门 UI 未提供，详见 `internal/execution/README.md`。
+- `dashboard`：告警、资产、Runbook、执行任务聚合摘要；详见 `internal/dashboard/README.md`。
+- `audit`：关键操作审计写入与精确分页查询；前端聚合仅基于当前页，CSV 实际最多 100 条，认证审计由 Identity 独立提供；详见 `internal/audit/README.md`。
 - `ai`：Provider、工具网关、告警分析、多轮会话、SSE/取消、受限 Agent Loop、记忆/知识、分享、多模态、证据诊断和执行提议。
 - `integration`：云账号/观测平台账号、凭据密文、能力声明和连通性测试。
 - `observability`：指标/日志/链路/拓扑统一只读查询，以及资源发现、CES 告警与规则、批量规则体检、RDS 历史会话端口和 AI 证据快照；真实 Provider 支持范围见契约。
