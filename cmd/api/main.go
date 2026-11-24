@@ -428,23 +428,26 @@ func main() {
 	aiChatSvc.SetPostgresEvidence(aiPostgresCollector, aiEvidenceSnapshots, app.Cfg.AI.EvidencePayloadLimit())
 	analyzeSvc.SetPostgresEvidence(aiPostgresCollector, aiEvidenceSnapshots, app.Cfg.AI.EvidencePayloadLimit())
 	aiChatSvc.SetAlertRules(aiRulesCollector)
-	// 批量规则体检：按规则关联资源批量取历史曲线，减少逐条 metrics.query 抽样。
-	aiRuleHealthCollector := aiobs.NewRuleHealthCollector(
-		obsQuerySvc,
-		obsQuerySvc,
-		obsAccountAdapter,
-		aiAccountAccess,
-		app.Cfg.AI.EvidenceTimeout(),
-	)
-	aiChatSvc.SetRuleHealth(aiRuleHealthCollector)
 	// 上下文不足修复：账号发现 + 资源上下文 + 云资源发现（ops/ai-contract.md §10.12.1）。
 	aiChatSvc.SetAccounts(aiintegration.NewAccountDiscovery(
 		integAccountSvc, aiAccountAccess, app.Cfg.AI.EvidenceTimeout(),
 	))
 	aiChatSvc.SetAssets(aiasset.NewReaderAdapter(assetSvc))
-	aiChatSvc.SetResources(aiasset.NewDiscoveryAdapter(
+	aiResourceDiscovery := aiasset.NewDiscoveryAdapter(
 		assetSvc, obsAccountAdapter, aiAccountAccess, app.Cfg.AI.EvidenceTimeout(),
-	))
+	)
+	aiChatSvc.SetResources(aiResourceDiscovery)
+	// 批量规则体检：按规则关联资源批量取历史曲线；云产品级规则无实例维度时，
+	// 复用资源发现按 namespace 兜底抽样（不再直接 no_resource_scope）。
+	aiRuleHealthCollector := aiobs.NewRuleHealthCollector(
+		obsQuerySvc,
+		obsQuerySvc,
+		obsAccountAdapter,
+		aiAccountAccess,
+		aiResourceDiscovery,
+		app.Cfg.AI.EvidenceTimeout(),
+	)
+	aiChatSvc.SetRuleHealth(aiRuleHealthCollector)
 	aiChatSvc.SetTurnBudget(app.Cfg.AI.TurnBudgetTimeout())
 	// 相似案例记忆（阶段 1）：反馈沉淀 + 对话/分析前检索注入。
 	// 检索失败只降级（memory_status=error），不阻断回答主链路。

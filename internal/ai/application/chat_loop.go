@@ -648,7 +648,7 @@ func (s *ChatService) refreshResourcesObservation(ctx context.Context, userID st
 	}
 	resources := make([]ResourceSummary, 0, len(result.Resources))
 	for _, item := range result.Resources {
-		resources = append(resources, enrichResourceSummary(item))
+		resources = append(resources, EnrichResourceSummary(item))
 	}
 	obs.Summary = fmt.Sprintf("云同步资源 %d 个（账号 %s）", len(resources), query.AccountID)
 	obs.Data = map[string]any{
@@ -659,8 +659,9 @@ func (s *ChatService) refreshResourcesObservation(ctx context.Context, userID st
 	return true
 }
 
-// enrichResourceSummary 用服务端推导结果补齐 namespace/主维度，并清空仅供推导的标签。
-func enrichResourceSummary(item ResourceSummary) ResourceSummary {
+// EnrichResourceSummary 用服务端推导结果补齐 namespace/主维度，并清空仅供推导的标签。
+// 规则体检在资源发现兜底时复用同一推导口径，保证维度名与 metrics.query 一致。
+func EnrichResourceSummary(item ResourceSummary) ResourceSummary {
 	selector := deriveResourceCloudSelector(&AssetContext{
 		CloudResourceType: item.CloudResourceType,
 		CloudResourceID:   item.CloudResourceID,

@@ -33,7 +33,7 @@ func ruleHealthRulesQuerier() *fakeAlertRulesQuerier {
 func newRuleHealthCollectorForTest(rules *fakeAlertRulesQuerier, metrics *fakeMetricsQuerier, access *fakeAccountAccess) *RuleHealthCollector {
 	collector := NewRuleHealthCollector(rules, metrics, &fakeAccountResolver{snapshot: &obsdomain.AccountSnapshot{
 		AccountID: "acc-1", AuthType: "ak_sk", OwnerTeam: "sre", Regions: []string{"cn-north-4"},
-	}}, access, time.Second)
+	}}, access, nil, time.Second)
 	collector.totalTimeout = 5 * time.Second
 	return collector
 }
@@ -128,7 +128,7 @@ func TestRuleHealthCollectorAgencyUnsupported(t *testing.T) {
 	rules := ruleHealthRulesQuerier()
 	collector := NewRuleHealthCollector(rules, &fakeMetricsQuerier{}, &fakeAccountResolver{snapshot: &obsdomain.AccountSnapshot{
 		AccountID: "acc-1", AuthType: "agency",
-	}}, &fakeAccountAccess{}, time.Second)
+	}}, &fakeAccountAccess{}, nil, time.Second)
 
 	out, err := collector.Check(context.Background(), "u-1", aiapp.RuleHealthQuery{
 		AccountID: "acc-1", Namespace: "SYS.RDS",
@@ -177,7 +177,7 @@ func TestRuleHealthCollectorSamplesWorstInstance(t *testing.T) {
 	}}
 	collector := NewRuleHealthCollector(rules, metrics, &fakeAccountResolver{snapshot: &obsdomain.AccountSnapshot{
 		AccountID: "acc-1", AuthType: "ak_sk",
-	}}, &fakeAccountAccess{}, time.Second)
+	}}, &fakeAccountAccess{}, nil, time.Second)
 
 	out, err := collector.Check(context.Background(), "u-1", aiapp.RuleHealthQuery{
 		AccountID: "acc-1", Region: "cn-north-4", Namespace: "SYS.RDS", Limit: 10,
@@ -207,5 +207,75 @@ func TestRuleHealthCollectorSamplesWorstInstance(t *testing.T) {
 		if metrics.queries[i].Dimensions["rds_instance_id"] != want {
 			t.Fatalf("query[%d] dims = %+v", i, metrics.queries[i].Dimensions)
 		}
+	}
+}
+
+type fakeResourceDiscovery struct {
+	result  *aiapp.ResourceListResult
+	err     error
+	queries []aiapp.ResourceQuery
+}
+
+func (f *fakeResourceDiscovery) List(_ context.Context, _ string, q aiapp.ResourceQuery) (*aiapp.ResourceListResult, error) {
+	f.queries = append(f.queries, q)
+	return f.result, f.err
+}
+
+func TestRuleHealthCollectorFallsBackToResourceDiscovery(t *testing.T) {
+	threshold := 80.0
+	rules := &fakeAlertRulesQuerier{result: &obsapp.AlertRuleQueryResult{
+		Rules: []obsdomain.AlertRule{{
+			RuleID: "r-product", Name: "Product level CPU", Namespace: "SYS.RDS",
+			Metric: "rds001_cpu_util", Operator: ">", Threshold: &threshold, Unit: "%",
+		}},
+	}}
+	metrics := &fakeMultiMetricsQuerier{results: map[string]*obsapp.MetricQueryResult{
+		"i-1": {EvidenceID: "ev-1", Series: []obsdomain.MetricSeries{{Points: []obsdomain.MetricPoint{
+			{TS: 100, Value: 85}, {TS: 200, Value: 70},
+		}}}},
+		"i-2": {EvidenceID: "ev-2", Series: []obsdomain.MetricSeries{{Points: []obsdomain.MetricPoint{
+			{TS: 100, Value: 85}, {TS: 200, Value: 95},
+		}}}},
+		"i-3": {EvidenceID: "ev-3", Series: []obsdomain.MetricSeries{{Points: []obsdomain.MetricPoint{
+			{TS: 100, Value: 65}, {TS: 200, Value: 70},
+		}}}},
+	}}
+	discovery := &fakeResourceDiscovery{result: &aiapp.ResourceListResult{
+		Status: aiapp.EvidenceStatusOK,
+		Resources: []aiapp.ResourceSummary{
+			{ResourceID: "a-1", CloudResourceType: "rds", CloudResourceID: "i-1",
+				Namespace: "SYS.RDS", DimensionName: "rds_instance_id", DimensionValue: "i-1"},
+			{ResourceID: "a-2", CloudResourceType: "rds", CloudResourceID: "i-2",
+				Namespace: "SYS.RDS", DimensionName: "rds_instance_id", DimensionValue: "i-2"},
+			{ResourceID: "a-3", CloudResourceType: "rds", CloudResourceID: "i-3",
+				Namespace: "SYS.RDS", DimensionName: "rds_instance_id", DimensionValue: "i-3"},
+			// 其他 namespace 与缺失维度的行必须被过滤。
+			{ResourceID: "a-9", CloudResourceType: "ecs", CloudResourceID: "e-9",
+				Namespace: "SYS.ECS", DimensionName: "instance_id", DimensionValue: "e-9"},
+			{ResourceID: "a-x", CloudResourceType: "rds", CloudResourceID: "i-x"},
+		},
+	}}
+	collector := NewRuleHealthCollector(rules, metrics, &fakeAccountResolver{snapshot: &obsdomain.AccountSnapshot{
+		AccountID: "acc-1", AuthType: "ak_sk",
+	}}, &fakeAccountAccess{}, discovery, time.Second)
+
+	out, err := collector.Check(context.Background(), "u-1", aiapp.RuleHealthQuery{
+		AccountID: "acc-1", Region: "cn-north-4", Namespace: "SYS.RDS", Limit: 10,
+		From: 1700000000, To: 1700000000 + 30*24*3600, Period: 3600, Aggregator: "max",
+	})
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if len(discovery.queries) != 1 || discovery.queries[0].ResourceType != "rds" ||
+		discovery.queries[0].Limit != ruleHealthDiscoveryLimit {
+		t.Fatalf("discovery queries = %+v", discovery.queries)
+	}
+	got := out.Rules[0]
+	if got.Status != aiapp.EvidenceStatusOK || got.ScopeSource != "resource_discovery" ||
+		!got.Sampled || got.CheckedResources != 3 {
+		t.Fatalf("fallback rule result = %+v", got)
+	}
+	if got.Dimensions["rds_instance_id"] != "i-2" || got.PeakAt == nil || *got.PeakAt != 200 {
+		t.Fatalf("worst fallback sample = %+v", got)
 	}
 }

@@ -48,6 +48,9 @@ type RuleHealthRuleResult struct {
 	Dimensions         map[string]string `json:"dimensions,omitempty"`
 	// Sampled 表示规则关联多个资源/资源分组，本次只对其中部分实例取数。
 	Sampled bool `json:"sampled,omitempty"`
+	// ScopeSource 表示本次取数维度的来源：rule（规则直接绑定）/ resource_group（分组展开）/
+	// resource_discovery（规则无绑定，按 namespace 发现实例兜底）。
+	ScopeSource string `json:"scope_source,omitempty"`
 	// CheckedResources 是本次实际取到曲线的实例数（最多 3 个）。
 	CheckedResources int      `json:"checked_resources,omitempty"`
 	Status           string   `json:"status"`

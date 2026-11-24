@@ -63,7 +63,7 @@ HTTP 请求进入后的典型路径：
 | --- | --- | --- |
 | `cmd/api` | 主 HTTP 进程，装配全部业务上下文 | Asset Sync 在 API 进程内以后台 goroutine 执行，批次状态持久化 |
 | CES 告警拉取 worker | 主 API 内可选后台 worker | `alert_sync.worker_enabled=false` 为默认；多实例只应在一个实例启用 |
-| `cmd/ai-orchestrator` | 可选 type=c 内部 AI 编排参考服务 | 只处理 `alarm.analyze`，不落库、不执行动作；AI 助手主对话使用 type=b |
+| `cmd/ai-orchestrator` | 可选 type=c 内部 AI 编排参考服务 | 只处理 `alarm.analyze`，不落库、不执行动作；模型失败返回 200 保守降级且响应无 `degraded` 标记；AI 助手主对话使用 type=b |
 | Execution Agent | 外部执行端，通过 API 注册、心跳、领取租约和回传 | 仓库提供服务端控制面与 fake E2E，不提供独立 Agent 可执行程序 |
 
 ## 输入与输出

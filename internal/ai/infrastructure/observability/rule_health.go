@@ -13,6 +13,7 @@ import (
 	obsapp "github.com/734965549/aiops/internal/observability/application"
 	obsdomain "github.com/734965549/aiops/internal/observability/domain"
 	apperr "github.com/734965549/aiops/pkg/errors"
+	"github.com/734965549/aiops/pkg/logger"
 )
 
 const (
@@ -23,17 +24,22 @@ const (
 	// ruleHealthMaxMetricQueries 限制单次体检的总指标查询数：
 	// 20 条规则 × 3 实例会超出 30s 总超时预算，超出后剩余规则按预算耗尽标记 skipped。
 	ruleHealthMaxMetricQueries = 24
+	// ruleHealthDiscoveryLimit 是资源发现兜底的单次拉取条数，足够覆盖 3 个样本并容忍无效行。
+	ruleHealthDiscoveryLimit = 12
 )
 
 // RuleHealthCollector 实现 aiapp.RuleHealthPort：
-// 先按 namespace 拉取规则，再对每条规则用其第一个关联资源维度取历史曲线并计算统计量。
+// 先按 namespace 拉取规则，再对每条规则按关联实例抽样取历史曲线并计算统计量；
+// 规则没有任何资源绑定时，按 namespace 对应的资源类型发现实例做兜底抽样。
 type RuleHealthCollector struct {
 	rules         AlertRulesQuerier
 	metrics       MetricsQuerier
 	accounts      AccountResolver
 	accountAccess aiapp.AccountAccessAuthorizer
-	timeout       time.Duration
-	totalTimeout  time.Duration
+	// resources 为可选的资源发现能力：云产品级规则没有实例维度时用它兜底。
+	resources    aiapp.ResourceDiscoveryPort
+	timeout      time.Duration
+	totalTimeout time.Duration
 }
 
 func NewRuleHealthCollector(
@@ -41,6 +47,7 @@ func NewRuleHealthCollector(
 	metrics MetricsQuerier,
 	accounts AccountResolver,
 	accountAccess aiapp.AccountAccessAuthorizer,
+	resources aiapp.ResourceDiscoveryPort,
 	timeout time.Duration,
 ) *RuleHealthCollector {
 	if timeout <= 0 {
@@ -48,7 +55,7 @@ func NewRuleHealthCollector(
 	}
 	return &RuleHealthCollector{
 		rules: rules, metrics: metrics, accounts: accounts, accountAccess: accountAccess,
-		timeout: timeout, totalTimeout: ruleHealthTotalTimeout,
+		resources: resources, timeout: timeout, totalTimeout: ruleHealthTotalTimeout,
 	}
 }
 
@@ -114,8 +121,9 @@ func (c *RuleHealthCollector) Check(ctx context.Context, userID string, q aiapp.
 		rules = rules[:ruleHealthRulesCap]
 	}
 	queries := 0
+	fallbackScopes := c.collectFallbackScopes(checkCtx, userID, q, rules)
 	for _, rule := range rules {
-		item := c.checkRule(checkCtx, userID, q, rule, &queries)
+		item := c.checkRule(checkCtx, userID, q, rule, fallbackScopes[strings.TrimSpace(rule.Namespace)], &queries)
 		if item.Status == aiapp.EvidenceStatusOK {
 			out.CheckedCount++
 		}
@@ -131,9 +139,86 @@ func (c *RuleHealthCollector) effectiveTotalTimeout() time.Duration {
 	return ruleHealthTotalTimeout
 }
 
+// collectFallbackScopes 为没有任何资源维度的规则按 namespace 发现实例样本（每个 namespace 只查一次）。
+// 云产品级规则在 CES 规则详情里没有实例维度，只能从已同步资源推导查询维度。
+func (c *RuleHealthCollector) collectFallbackScopes(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rules []obsdomain.AlertRule) map[string][]map[string]string {
+	out := make(map[string][]map[string]string)
+	if c.resources == nil {
+		return out
+	}
+	attempted := make(map[string]struct{}, len(rules))
+	for _, rule := range rules {
+		if len(rule.Resources) > 0 {
+			continue
+		}
+		namespace := strings.TrimSpace(rule.Namespace)
+		if namespace == "" {
+			continue
+		}
+		if _, ok := attempted[namespace]; ok {
+			continue
+		}
+		attempted[namespace] = struct{}{}
+		out[namespace] = c.discoverScopeSamples(ctx, userID, q, namespace)
+	}
+	return out
+}
+
+// discoverScopeSamples 按 namespace 对应资源类型发现最多 3 个实例维度样本。
+func (c *RuleHealthCollector) discoverScopeSamples(ctx context.Context, userID string, q aiapp.RuleHealthQuery, namespace string) []map[string]string {
+	resourceType := resourceTypeFromCESNamespace(namespace)
+	if resourceType == "" {
+		return nil
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	result, err := c.resources.List(queryCtx, userID, aiapp.ResourceQuery{
+		AccountID: q.AccountID, Region: q.Region, ResourceType: resourceType, Limit: ruleHealthDiscoveryLimit,
+	})
+	if err != nil || result == nil || result.Status != aiapp.EvidenceStatusOK {
+		logger.From(ctx).Warn("ai rule health resource discovery fallback failed",
+			logger.String("namespace", namespace),
+			logger.String("resource_type", resourceType),
+			logger.Error(err))
+		return nil
+	}
+	samples := make([]map[string]string, 0, ruleHealthMaxResourceSamples)
+	seen := make(map[string]struct{}, ruleHealthMaxResourceSamples)
+	for _, item := range result.Resources {
+		enriched := aiapp.EnrichResourceSummary(item)
+		if enriched.Namespace != "" && !strings.EqualFold(enriched.Namespace, namespace) {
+			continue
+		}
+		if enriched.DimensionName == "" || enriched.DimensionValue == "" {
+			continue
+		}
+		key := enriched.DimensionName + "=" + enriched.DimensionValue
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		samples = append(samples, map[string]string{enriched.DimensionName: enriched.DimensionValue})
+		if len(samples) >= ruleHealthMaxResourceSamples {
+			break
+		}
+	}
+	return samples
+}
+
+// resourceTypeFromCESNamespace 由 CES namespace 推导云资源类型（SYS.RDS -> rds）。
+func resourceTypeFromCESNamespace(namespace string) string {
+	namespace = strings.TrimSpace(namespace)
+	if namespace == "" {
+		return ""
+	}
+	segments := strings.Split(namespace, ".")
+	return strings.ToLower(strings.TrimSpace(segments[len(segments)-1]))
+}
+
 // checkRule 对单条规则按关联实例抽样取数（最多 3 个），统计字段取越限最严重的样本，
-// 避免多实例规则只验证第一个实例。budget 为单次体检共享的查询预算计数。
-func (c *RuleHealthCollector) checkRule(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, queries *int) aiapp.RuleHealthRuleResult {
+// 避免多实例规则只验证第一个实例。fallback 是规则没有资源绑定时由资源发现得到的实例样本。
+// budget 为单次体检共享的查询预算计数。
+func (c *RuleHealthCollector) checkRule(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, fallback []map[string]string, queries *int) aiapp.RuleHealthRuleResult {
 	item := aiapp.RuleHealthRuleResult{
 		RuleID: rule.RuleID, Name: rule.Name, Metric: rule.Metric,
 		Operator: rule.Operator, Threshold: rule.Threshold, RuleUnit: rule.Unit,
@@ -146,12 +231,20 @@ func (c *RuleHealthCollector) checkRule(ctx context.Context, userID string, q ai
 		item.Reason = "no_metric"
 		return item
 	}
-	if len(rule.Resources) == 0 {
+	samples := rule.Resources
+	source := "rule"
+	if len(rule.ResourceGroupIDs) > 0 {
+		source = "resource_group"
+	}
+	if len(samples) == 0 {
+		samples = fallback
+		source = "resource_discovery"
+	}
+	if len(samples) == 0 {
 		item.Status = aiapp.EvidenceStatusSkipped
 		item.Reason = "no_resource_scope"
 		return item
 	}
-	samples := rule.Resources
 	if len(samples) > ruleHealthMaxResourceSamples {
 		samples = samples[:ruleHealthMaxResourceSamples]
 	}
@@ -197,8 +290,9 @@ func (c *RuleHealthCollector) checkRule(ctx context.Context, userID string, q ai
 		merged.Operator, merged.Threshold, merged.RuleUnit = item.Operator, item.Threshold, item.RuleUnit
 		merged.WindowSeconds, merged.ResourceCount = item.WindowSeconds, item.ResourceCount
 		merged.ResourceGroupCount, merged.CheckedResources = item.ResourceGroupCount, checked
-		// 分组型规则的 ResourceCount 是分组数，不能用来判断是否抽样；分组型一律标记 Sampled。
-		merged.Sampled = item.ResourceGroupCount > 0 || item.ResourceCount > checked || incomplete
+		merged.ScopeSource = source
+		// 分组型规则的 ResourceCount 是分组数，不能用来判断是否抽样；分组型与实例发现兜底一律标记 Sampled。
+		merged.Sampled = source == "resource_discovery" || item.ResourceGroupCount > 0 || item.ResourceCount > checked || incomplete
 		return merged
 	}
 	item.CheckedResources = 0

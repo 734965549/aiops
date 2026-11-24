@@ -261,6 +261,7 @@
 页面：
 
 - AI 运维助手工作台 `views/ai-assistant/index.vue`（三栏：会话列表 / 对话 / 上下文与工具），对话逻辑在 `views/ai-assistant/composables/useChat.ts`，与全局浮层 `layouts/components/AIAssistantOverlay.vue` 共用。独立工作台使用 streamChatMessage；同步 sendChatMessage 仅保留为 API 能力。
+- 全局浮层与排队（契约 §10.8/§10.9）：控制器由 `BasicLayout` provide，跨页路由不丢状态，但不写 localStorage，刷新即丢失排队条目与乐观消息。顶栏/`Alt + A` 默认入口自动选中最近会话；告警详情「问 AI 助手」先写入告警上下文并打开会话选择器，新建会话携带 `alert_id`。同一会话生成中继续发送进入本地队列（context/provider/幂等键按入队快照冻结），回答结束自动逐条发送；「停止」清空队列并中止当前流；队列管理只作用于当前激活会话，后台队列需切回才能管理。
 - 当前会话交互差距：归档提示前输入/附图已被清空；生成中模型选择未禁用；刷新按钮只取列表，无通用当前详情刷新；重试复用旧 key 会重放旧回答且本地消息可能重复；历史重试内容被清空。模型切换时前端会同时发送顶层 provider_id 和 context.provider_id，自定义客户端只传顶层字段时，已有会话模型不会被持久改写。
 - AI 配置（Provider 管理 + 工具调用调试 + 知识沉淀 + 记忆管理）在 `views/system/ai-config/index.vue`，路由 `/system/ai-config`；`views/ai-assistant` 不再承载 Provider 管理。ProviderManager 无健康检查/测试连接，普通编辑不携带 headers 并会清空旧值；ToolConsole 不提供 owner/dept/team/region/tags 输入，两者均无专项 Vitest。
 - AI 工具权限字典与角色绑定由 `identity-admin.ts` 和 `views/identity/access-control/index.vue` 维护；角色绑定是全量替换。对话右侧固定工具目录不读取当前角色实际授权，不能据页面显示推断工具必定 allowed。
@@ -275,7 +276,7 @@
 - 「生成执行计划」调用既有 `createExecutionTask`（`source_type=ai_conversation`，`source_id=session_id`），任务进入 Execution `pending_confirm`；前端不得提供任何直接执行入口。响应 tool_calls 中的 execution.tasks.propose 只是 finalize 阶段的权限校验和审计记录，不表示模型已创建任务，也不是 Agent Loop 白名单工具。
 - 工具调用结果必须检查 `allowed`；被拒绝是业务结果，需展示 `reason`（`toolReason.ts` 负责原因码的中文映射）。
 - 对话内置只读工具共 8 个：`alarm.analyze`、自由参数 `metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`accounts.list`、`resource.analyze`、`resources.list`。它们由后端本地 Port 执行，不经 AI Provider 转发；`status=invalid_argument / skipped / unsupported / permission_denied / denied` 都需展示原因，不能当作网络错误。实时 ChatPanel/ContextPanel 展示较完整，AnswerCard 当前只对 allowed=false 的调用把 reason 放进提示，allowed=true 的非 ok 原因仍有展示缺口。
-- 规则体检证据有覆盖边界：资源分组型规则会先展开实例维度，并最多对 3 个实例分别取数、取越限最严重样本（`checked_resources`/`sampled` 标明覆盖）；曲线定稿最多 288 点，峰值时刻与越限时长在降采样前计算保留，长窗口小时级聚合仍不能还原原始秒级误报。页面展示峰值不代表原始粒度证据完整，不能以“展示正常”排除取数问题。
+- 规则体检证据有覆盖边界：资源分组型规则会先展开实例维度；无资源绑定的云产品级规则按 namespace 发现实例兜底（`scope_source=resource_discovery`），并最多对 3 个实例分别取数、取越限最严重样本（`checked_resources`/`sampled` 标明覆盖）；曲线定稿最多 288 点，峰值时刻与越限时长在降采样前计算保留，长窗口小时级聚合仍不能还原原始秒级误报。页面展示峰值不代表原始粒度证据完整，不能以“展示正常”排除取数问题。
 - 引用类型：`alert`、`observability_evidence` 带 `url` 可跳转；`memory_case`（相似案例记忆，`ops/ai-contract.md` §10.14）与 `knowledge_item`（知识沉淀，§10.15）无 `url`，只展示标签与条数提示。
 - 知识沉淀管理接口（§10.15）要求 `app:ai:knowledge:manage`（当前仅 admin），入口在「系统设置 → AI 配置 → 知识沉淀」（`KnowledgeManager.vue`）；未授权时全局拦截器提示。页面未展示审核人/审核时间/创建者/时间，scope_ref 非空与 128 字符依赖后端校验，激活/停用无二次确认，聚合固定默认 `min_cases=3` 且未暴露入参。
 - 记忆管理接口（§10.19）要求 `app:ai:memory:manage`（当前仅 admin），入口在「系统设置 → AI 配置 → 记忆管理」（`MemoryManager.vue`）；停用/启用只影响后续检索并写 `memory_review` 审计，回答注入仍按归属用户隔离。页面只传 status/keyword/user_id，limit 固定 100，未使用 application_id/resource_id/offset 或分页，详情未展示 session_id。
@@ -283,7 +284,7 @@
 - 消息幂等：每次提问生成 `client_message_id`，传输重试复用同一值；服务端不比较内容 hash，已生成回答（含 degraded/incomplete）一律重放，回答缺失时返回 409。新的提问必须换新 key；当前“重新提问”按钮复用旧 key，不是重新生成。
 - 归档/恢复/删除入口在会话列表（`SessionList.vue`），三者均需二次确认；删除当前会话后自动切到下一个会话。详情只含最近 200 条，模型 Prompt 历史另取最近 12 条；用户与助手消息分属两个事务。
 - 流式对话（§10.17）：`streamChatMessage` 走 `fetch` + `web/src/api/sse.ts`，401 刷新一次，error 事件转 `ApiHttpError`，无 answer 结束转 ABORTED。stage 驱动阶段，tool 展示观测，thinking delta 展示过程文本，answer delta 只计数；`: ping` 注释与未知事件忽略。停止后回读会话；取消检查点保留 user/不写 assistant并写 chat_canceled，最终 answer 已落库后的断开不回滚。当前无 answer 的传输中断可能仍显示 failed，需与主动停止分开验收。
-- 会话分享（§10.18）：仅**对内只读**，访问者必须登录且具备 `app:ai:chat`；token 只在创建响应返回一次，前端不持久化。共享页路由 `/ai-assistant/shared/:token`（`SharedSession.vue`）只读渲染，禁用反馈与动作；过期/撤销/源会话删除统一 404。入口在会话列表「分享」→ `ShareDialog.vue`。
+- 会话分享（§10.18）：仅**对内只读**，访问者必须登录且具备 `app:ai:chat`；token 只在创建响应返回一次，前端不持久化。共享页路由 `/ai-assistant/shared/:token`（`SharedSession.vue`）只读渲染，禁用反馈与动作；过期/撤销/源会话删除统一 404。入口在会话列表「分享」→ `ShareDialog.vue`。共享页当前只渲染文本气泡，不展示用户附图（接口已返回 `images`），见 §10.20 已知差距。
 - Provider 列表不返回 `api_key` 或 `****` 掩码字段，只用 `has_api_key` 和页面“已配置/未配置”表达；自定义 headers 会原样返回，不应存放 Token/Authorization。页面上下文只保存业务 ID，不保存凭据或告警正文。
 - 直接 `/tools/invoke` 入口对非 all 数据范围用户会因缺少路由对象上下文返回 403；进入 Gateway 后的业务拒绝才是 200 + allowed=false。其审计不含 allowed/reason且拒绝时仍可能 result=success；Provider CRUD 没有操作审计，不能用审计中心证明这些配置变更已完整留痕。
 

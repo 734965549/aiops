@@ -361,7 +361,7 @@ provider 应同时消费 `payload.alert` 与 `payload.evidence`，在无证据�
 
 类型 `b` 是默认分析路径：平台直接调用模型 API，无需额外编排服务。prompt 由服务端固定构建；`POST /api/ai/analyze-alert` 返回 `summary` / `risk_level` / `recommendations` / `references`，模型异常时降级为保守结果。类型 b 可验证数据库快照与实际模型消息内容一致；类型 a/c 只能保证发往外部 provider 的请求 payload 与定稿快照一致，不宣称可验证 provider 内部的二次编排。
 
-类型 `c` 的内部 AI 编排服务仅作为兼容参考实现：平台按现有 `POST /api/ai/tools/invoke` 调用，`tool_code=alarm.analyze`，`payload` 包含 `alert` 与 `evidence`。参考实现位于 `cmd/ai-orchestrator`，监听 `POST /api/tool/invoke`（兼容 `/v1/tools/invoke`），使用 `X-API-Key` 鉴权（平台发送 `Bearer <api_key>`，服务同时兼容裸 key）；模型侧通过 `AIOPS_AI_ORCH_MODEL_BASE_URL`、`AIOPS_AI_ORCH_MODEL_API_KEY`、`AIOPS_AI_ORCH_MODEL_NAME` 配置。平台 provider 注册示例：
+类型 `c` 的内部 AI 编排服务仅作为兼容参考实现：平台按现有 `POST /api/ai/tools/invoke` 调用，`tool_code=alarm.analyze`，`payload` 包含 `alert` 与 `evidence`（长事务场景另含 `postgres_activity` 与 `similar_cases`，参考实现只消费 `alert`/`evidence`）。参考实现位于 `cmd/ai-orchestrator`，监听 `POST /api/tool/invoke`（兼容 `/v1/tools/invoke`，另有仅进程存活的 `GET /healthz`），使用 `X-API-Key` 鉴权（平台发送 `Bearer <api_key>`，服务剥离前缀后常数时间比较，兼容裸 key）；模型侧通过 `AIOPS_AI_ORCH_MODEL_BASE_URL`、`AIOPS_AI_ORCH_MODEL_API_KEY`、`AIOPS_AI_ORCH_MODEL_NAME` 配置，另有 `AIOPS_AI_ORCH_ADDR`（默认 `:8090`）、`AIOPS_AI_ORCH_API_KEY`（必填）、`AIOPS_AI_ORCH_MODEL_PATH`（默认 `/v1/chat/completions`）与 `AIOPS_AI_ORCH_TIMEOUT_S`（默认 30）。请求体上限 2MiB，模型响应上限 4MiB，429/5xx/网络错误重试 2 次；平台 provider 注册示例：
 
 ```json
 {
@@ -392,7 +392,7 @@ provider 应同时消费 `payload.alert` 与 `payload.evidence`，在无证据�
 }
 ```
 
-服务只做分析与建议，不得返回可直接执行的命令；处置必须由人经 Runbook / Execution 链路确认。服务不持久化告警数据与模型密钥，日志仅记录耗时、token 计数和降级状态。
+服务只做分析与建议，不得返回可直接执行的命令；处置必须由人经 Runbook / Execution 链路确认。服务不持久化告警数据与模型密钥，日志仅记录耗时、token 计数和降级状态。与类型 b 的降级语义差异：编排服务模型/解析失败时返回 HTTP 200 的普通分析对象（固定保守 summary、`risk_level=info`、保留 evidence 引用与不确定性说明），**响应体没有 `degraded=true` 字段**，平台不会把该轮分析记为 `provider_degraded` 或审计 `partial`；长事务结构化 `diagnosis` 始终由平台侧生成，不依赖编排服务返回。仓库不含编排服务的 compose/K8s 定义与专项 E2E，Makefile `build` 只构建 `cmd/api`，需要时用 `go build ./cmd/ai-orchestrator` 手工构建并内网部署。
 
 ## 10. AI 运维助手会话与对话
 
@@ -670,6 +670,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 - 上下文只存业务 ID 与标题，禁止写入凭据、Token、告警正文、任务参数、标签明文或自由文本。
 - 退出详情或切换页面时清空资源级字段；`execution_id` 与 `resource_id` 一样被视为资源级上下文（有值时不会被路由切换覆盖）。
+- 全局浮层与独立工作台共用同一前端控制器（`useChat`，BasicLayout 提供）：顶栏按钮或 `Alt + A` 为默认入口；告警详情「问 AI 助手」先写入告警上下文再以会话选择器打开浮层，新建会话携带 `alert_id` 等当前上下文。上下文随每条消息发送，排队条目按入队时刻快照冻结（§10.9）。
 
 ### 10.9 前端状态映射与当前差距
 
@@ -685,6 +686,14 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | AI 建议需人工确认 / 不可执行 | 分别由 answer.require_confirm 和 execution.propose.allowed=false 驱动 |
 
 当前“重新提问”与传输重试复用同一个 client_message_id：如果首次回答已落库，点击后只会重放旧回答，不会重新调用模型；本地乐观消息也未按 message_id 去重。历史详情加载又会清空重试内容，因此历史 degraded/incomplete 回答的重试按钮可能不可用。验收时应区分“幂等重放”与“使用新 key 真正重新提问”，不能把按钮存在解释为已满足重新生成。
+
+前端排队与浮层行为（纯前端，后端无队列/会话锁，同会话并发仍由幂等语义兜底）：
+
+- 同一会话生成中继续发送会进入本地队列；条目的 content/images/context/provider_id/client_message_id 按入队时刻快照冻结，当前回答结束后自动逐条发送。生成中的「停止」会同时清空队列并中止当前流。
+- 队列管理（置顶/删除/清空）只作用于当前激活会话；后台会话的队列需切回才能管理，会话列表以「生成中」标记后台在途会话。
+- 不同会话并发生成互不影响；本地已加载/生成中/有队列的会话切回时直接接管本地状态，不回源覆盖乐观消息。
+- 控制器在布局层创建：路由切换不丢状态（跨页不中断），但全部状态不写 localStorage，刷新页面即丢失排队条目与乐观消息；正在生成的回合由服务端按取消检查点或正常完成落库。
+- 已归档会话的排队条目发送时被服务端 409 拒绝，队列逐条尝试、逐条失败，不整体终止。
 
 ### 10.10 存储与迁移
 
@@ -789,9 +798,9 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | `period` | int 秒 | 否 | 默认 **3600**；超过 7 天窗口不得小于 3600；点数（`window/period+1`）≤1440 |
 | `aggregator` | string | 否 | 默认 **max**；支持 `avg/average/max/min/sum/variance` |
 
-- 执行口径：按 `namespace/keyword/limit` 拉取规则；资源分组型规则先经 CES `ListResourceGroupsServicesResources` 展开实例维度（单次规则列表最多展开 10 条、每条最多 3 个实例样本）；每条规则对最多 3 个实例样本分别取序列，统计取越限最严重（breach_ratio > breach_points > peak）的样本；`sampled=true` 表示只覆盖部分实例，`checked_resources` 与实际实例数，`resource_group_count>0` 表示规则按资源分组关联。
+- 执行口径：按 `namespace/keyword/limit` 拉取规则；资源分组型规则先经 CES `ListResourceGroupsServicesResources` 展开实例维度（单次规则列表最多展开 10 条、每条最多 3 个实例样本）；规则没有任何资源维度时（云产品级/展开失败），按 `namespace` 对应资源类型从本地云同步资源发现最多 3 个实例兜底（`scope_source=resource_discovery`）；每条规则对最多 3 个实例样本分别取序列，统计取越限最严重（breach_ratio > breach_points > peak）的样本；`sampled=true` 表示只覆盖部分实例，`checked_resources` 为实际实例数，`scope_source` 标明来源（rule / resource_group / resource_discovery），`resource_group_count>0` 表示规则按资源分组关联。
 - **资源分组展开**：CES 资源分组/云产品级规则只有 resource_group_id、没有 dimensions 时，provider 会在 `alert.rules.list` 阶段按分组展开实例维度并回填 `resources`；展开失败只降级该规则（Warn 日志），仍为空时按 `no_resource_scope` 呈现。不能把 `no_resource_scope` 简化为“云端没有数据”。
-- 逐规则状态：无指标名（事件规则）→ `skipped/no_metric`；规则未返回关联资源且分组展开失败 → `skipped/no_resource_scope`；单条取数失败 → `error` + 稳定 reason；总预算（默认 30s）耗尽 → 剩余规则 `skipped/rule health query timeout`；单次体检指标查询总数超过 24 时，剩余样本 → `skipped/rule health query budget exhausted`。单条失败不阻断其它规则。
+- 逐规则状态：无指标名（事件规则）→ `skipped/no_metric`；规则无资源维度且实例发现兜底也未取到样本 → `skipped/no_resource_scope`；单条取数失败 → `error` + 稳定 reason；总预算（默认 30s）耗尽 → 剩余规则 `skipped/rule health query timeout`；单次体检指标查询总数超过 24 时，剩余样本 → `skipped/rule health query budget exhausted`。单条失败不阻断其它规则。
 - 统计字段：`point_count`、`first`、`min`、`avg`、`p95`、`peak`、`peak_at`、`last`、`breach_points`、`breach_ratio`、`breach_episodes`、`breach_duration_seconds`、`longest_breach_seconds`（后三项按规则 `operator/threshold` 与请求 `period` 推算）。`unit` 优先取 CES 数据点单位，缺失时回退规则策略单位。
 - **曲线与预算**：长窗口 period 可能是小时级 max 聚合，不能还原规则原始秒级窗口；进入 Prompt 的每条曲线定稿为最多 **288 点**，峰值时刻（`peak_at`）与越限持续时长在降采样前基于全量序列计算，因此裁剪不会丢失时刻与持续性；跨轮重复申请仍会被去重。大规则集在总查询预算内可能只覆盖部分实例，不能仅凭页面有峰值就宣称证据充分；需要短窗口、指定实例复查时由模型继续申请。
 - 证据：每条成功规则携带 `evidence_id`（对应一次 `metrics` 证据快照）；最终回答 `references` 最多追加 10 条规则体检证据；`tool_invoke` 审计的 `evidence_id` 取首条成功规则证据。观测 `data` 另含 `checked_resource_count` 与 `granularity_note`：破限比例/越限时长是聚合口径，不能直接推断原始采样窗口（如 1s 规则）的误报频率。
@@ -1129,7 +1138,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - token：32 字节随机（base64url），服务端只存 SHA-256；明文只在创建响应返回一次，之后无法再取回。
 - 有效期：允许 1–720 小时；缺省 168（7 天）；过期后访问按不可用处理。
 - 单会话最多 **10** 条同时有效（未撤销、未过期）的链接，超出返回 409。
-- owner 可随时撤销；撤销幂等；会话删除后其分享链接一并失效。
+- owner 可随时撤销；撤销幂等；会话删除后其分享链接一并失效（0053 无外键，分享记录不级联删除，失效由访问时会话不存在统一 404 保证）。
 - 分享视图**只读**：不提供发消息、反馈、归档/删除、生成执行计划；共享页会禁用反馈与动作按钮。
 - 审计：`chat_share_create` / `chat_share_revoke` / `chat_share_view`，payload 只含 `session_id` / `share_id` / `result`，**不含 token、消息正文或回答内容**。
 - 日志：访问日志与内部错误日志把 `/api/ai/chat/shares/<token>` 脱敏为 `/api/ai/chat/shares/<redacted>`（`pkg/transport/http.RedactSensitivePath`），token 不进入任何日志。
@@ -1177,7 +1186,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - Path: `/api/ai/chat/sessions/:session_id/shares/:share_id`
 - 鉴权: 是（`app:ai:chat`，owner）
 
-响应 `data`：更新后的分享视图（`status=revoked`）。已撤销时幂等返回当前视图；分享不属于该会话或不存在 → 404 `NOT_FOUND`。
+响应 `data`：更新后的分享视图（`status=revoked`）。已撤销时幂等返回当前视图且不再更新数据，但每次调用仍会写一条 `chat_share_revoke` 审计；分享不属于该会话或不存在 → 404 `NOT_FOUND`。
 
 #### 10.18.5 访问分享（只读）
 
@@ -1185,9 +1194,9 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - Path: `/api/ai/chat/shares/:token`
 - 鉴权: 是（`app:ai:chat`，任意具备该权限的登录用户）
 
-响应 `data`：与 §10.5 相同的 `{ session, messages[] }` 结构；消息中的结构化 `answer` 正常解析。
+响应 `data`：与 §10.5 相同的 `{ session, messages[] }` 结构（同样只含**最近 200 条**消息窗口）；消息中的结构化 `answer` 正常解析，已归档会话的分享仍可访问。
 
-- 过期、已撤销、token 不存在、会话已删除：**统一返回 404 `NOT_FOUND`**，避免探测链接是否存在过。
+- 过期、已撤销、token 不存在、会话已删除：**统一返回 404 `NOT_FOUND`**，避免探测链接是否存在过；分享记录不随会话删除级联清理，`ai_session_share` 中可能残留记录。
 - 每次成功访问写 `chat_share_view` 审计（按访问者 `user_id` 记录）。
 
 #### 10.18.6 前端接入
@@ -1274,6 +1283,7 @@ AI 助手支持用户随消息携带图片（截图提问）。仅类型 b 且�
 - 输入区支持点击上传与直接粘贴截图；前端压缩（>300KB 缩放至最长边 1280、JPEG 0.85）并预览/删除，最多 3 张。
 - 用户消息气泡展示附图缩略图（可点击预览）；独立工作台与全局浮层共用同一图片通道。
 - 重试复用同一幂等键与附图；停止生成、归档、数据范围等语义不变。
+- 已知差距：共享页 `SharedSession.vue` 当前只渲染文本气泡，未渲染用户附图（API 已返回 `images`，见 10.20.3）；该渲染缺口由前端单独排期。
 
 #### 10.20.5 验证
 
@@ -1292,14 +1302,14 @@ AI 助手支持用户随消息携带图片（截图提问）。仅类型 b 且�
 
 仅支持 `SYS.RDS + oldest_transaction_duration` 的自动诊断和显式补采；DAS MySQL 会话接口、kill 会话、SQL 限流等变更能力一律不开放。查询使用告警/资源解析出的 `account_id`、`region`、`project_id`、RDS `instance_id` 和时间窗口，窗口最长 7 天，模型不能指定连接地址或任意实例。`limit` 默认/最大 300 条每类记录，分页总数和截断状态保留；上游省略 `total_count` 时以 `-1` 表示 unknown，达到该预算仍按 `truncated=true` 处理。总预算由 `ai.postgres_evidence_timeout_ms` 控制（默认 15000ms），超时和 SDK 空响应按采集异常处理，不能解释成正常空窗口。
 
-- 工具权限：`postgres.activity.query`（read_only，migration `0061` 绑定 admin）；调用前继续校验当前用户的 Integration 账号数据范围。
-- 凭据：沿用 Integration 凭据引用和 Vault；AK/SK 不进入 Prompt、证据、日志或审计。
+- 工具权限：`postgres.activity.query`（read_only，migration `0061` 绑定 admin）；调用前继续校验当前用户的 Integration 账号数据范围。Chat 侧模型补采的 params 支持 `from`/`to`（必须成对提供，缺省取告警证据窗口）与 `limit`（0–300，缺省 300）。
+- 凭据：沿用 Integration 凭据引用和 Vault；AK/SK 不进入 Prompt、证据、日志或审计。账号非 `ak_sk` 返回 `unsupported`；project_id 无法解析返回 `error`。
 - 脱敏：用户名只保留 `user_hash`；客户端地址保留 IPv4 `/24` 或 IPv6 `/64` 网段，非 IP 客户端标识哈希化。`sql_statement` 原文不保存、不进入 Prompt；保留 `query_id`、规范化空白后的 `sql_hash`，以及从原文生成的 `sql_operation` 和最长 300 字的 `sql_summary`。摘要保留操作、表名和字段等结构信息，字符串/数字字面量统一替换为 `?`，行注释、嵌套块注释、dollar-quoted 内容全部移除；未闭合字符串或标识符从起点截断，避免异常 SQL 泄露。
-- 快照：`obs_evidence_ref.evidence_type=postgres_activity`、`schema_version=ai.postgres_activity.v1`，包含 `sessions/wait_events/top_sql`、上游 `total_count`、`original_count/retained_count`、`missing_evidence` 和 `collection_errors`。先落库再进入模型；写库失败时诊断降级，不把未持久化现场当事实。
+- 快照：`obs_evidence_ref.evidence_type=postgres_activity`、`schema_version=ai.postgres_activity.v1`，包含 `sessions/wait_events/top_sql`、上游 `total_count`、`original_count/retained_count`、`missing_evidence` 和 `collection_errors`。**先落库再进入模型**；payload 超限时先丢 Top SQL、再丢等待事件、逐条丢会话，仍超限按编码失败处理；快照存储未装配或写库失败时，原本 `ok` 的结果 fail-closed 转为 `error`（`postgres_snapshot_store_disabled`/`postgres_snapshot_persist_failed`）并清空 evidence_id，不把未持久化现场当事实。会话排序：锁等待优先 → 事务时长倒序 → 采样时间倒序 → session_id 升序。
 - 部分失败：历史会话是主证据；等待事件或 Top SQL 失败时保留已有会话事实，并在 `missing_evidence/collection_errors` 标明，不能改写成“没有等待/没有 SQL”。
 - 时间语义：查询的是华为已采样的历史窗口，不等同于平台在告警时主动抓取的快照。当前版本尚未实现告警触发后的平台主动采集。
 
-`POST /api/ai/analyze-alert` 的 provider payload 新增 `postgres_activity`；Chat observations 使用 `tool_code=postgres.activity.query`。两条路径都在 `data.diagnosis` 返回平台确定性生成的结构：
+`POST /api/ai/analyze-alert` 的 provider payload 新增 `postgres_activity`；Chat observations 使用 `tool_code=postgres.activity.query`。两条路径都在 `data.diagnosis` 返回平台确定性生成的结构；触发条件是长事务告警，或本轮指标证据已取到 `oldest_transaction_duration` 数据：
 
 ```json
 {
@@ -1322,6 +1332,6 @@ AI 助手支持用户随消息携带图片（截图提问）。仅类型 b 且�
 | `active_long_query` | 有 `active` 且事务时长 >0 | `status=suspected`；只能说存在活跃长 SQL，不能臆造慢因 |
 | `lock_wait` | `wait_event_type=Lock` 或有阻塞进程 | `status=suspected`；只能说存在锁等待/直接阻塞者，不能直接给出完整根因链 |
 
-`confirmed` 仅表示 RDS 历史会话直接支持的诊断分类，不表示已经人工确认应用代码级最终根因；空闲长事务仍须明确“应用原因未定”。`Client/ClientRead` 只表示数据库等待客户端下一命令，不得解释为锁等待。事实除会话外，最多补充 3 条与这些会话 Query ID 匹配的 Top SQL 脱敏摘要；不匹配的 Top SQL 不进入诊断事实。摘要、建议、事实、假设和缺失项由服务端生成，模型不能把这些字段改写为无依据结论。
+`confirmed` 仅表示 RDS 历史会话直接支持的诊断分类，不表示已经人工确认应用代码级最终根因；空闲长事务仍须明确“应用原因未定”。`Client/ClientRead` 只表示数据库等待客户端下一命令，不得解释为锁等待。事实由三部分组成：指标事实（first/peak/last/破限点/保留点）、**最多 6 条**会话事实与**最多 3 条**与这些会话 Query ID 匹配的 Top SQL 脱敏摘要；不匹配的 Top SQL 不进入诊断事实。分类按 `lock_wait` → `idle_in_transaction` → `active_long_query` → `undetermined` 优先级判定，命中即停止。`diagnosis` 中的 summary/evidence/recommendations/uncertainties 由服务端按分类覆盖生成；模型输出里的 `diagnosis` 字段在解析时被忽略重建，重放时保留首次结构。摘要、建议、事实、假设和缺失项由服务端生成，模型不能把这些字段改写为无依据结论。
 
 真实账号验收：`scripts/e2e-postgres-history.ps1 -AlertId <long-transaction-alert-id>`，使用告警现有云账号和 mock 模型，验证 `postgres.activity.query` 返回状态、证据 ID、根因状态和事实；权限不足必须显式失败，不伪造成功。

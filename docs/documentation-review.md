@@ -172,7 +172,7 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 | Execution | 核心状态机、模拟执行、Agent 服务端控制面 | 独立 Agent/管理 UI、自动选择、mTLS、Runbook→Agent 未落地；Agent Alert 时间线未闭环；前端无拒绝和日志流 |
 | Dashboard | 聚合摘要 API 与页面 | 无专用 Dashboard E2E/前端 Vitest；降级 0 与真实 0 不可区分；无数据范围过滤 |
 | Audit | 操作审计写入与精确分页检索，前端详情、当前页聚合和 CSV | CSV 实际最多 100 条；资源类型快捷选项未对齐；标准 recorder 无 IP/UA；写入多为 best-effort；认证审计独立；无专用 E2E/前端 Vitest，无存储级防篡改/保留机制 |
-| AI | Provider、直接工具转发、8 个对话只读工具、会话、幂等、SSE、工具循环、记忆/知识、分享、多模态、执行提议、证据诊断 | Provider 无健康/测试连接且 CRUD 无操作审计；页面编辑清 headers；直接调用审计拒绝语义不完整；会话详情最近 200 条，重试只重放，归档输入/模型禁用/详情刷新有缺口；记忆/知识管理筛选展示有限且 E2E 覆盖不全；前端消息队列不持久化；分享页图片和告警 AI 弹窗诊断存在前端缺口；type=c 仅为参考服务 |
+| AI | Provider、直接工具转发、8 个对话只读工具、会话、幂等、SSE、工具循环、记忆/知识、分享、多模态、执行提议、证据诊断 | Provider 无健康/测试连接且 CRUD 无操作审计；页面编辑清 headers；直接调用审计拒绝语义不完整；会话详情最近 200 条，重试只重放，归档输入/模型禁用/详情刷新有缺口；记忆/知识管理筛选展示有限且 E2E 覆盖不全；前端消息队列不持久化；分享 token/审计/404 语义已按代码核对，分享页不渲染附图，图片链路无 AI E2E；告警 AI 弹窗诊断存在前端缺口；type=c 仅为参考服务 |
 | Integration | 账号、AES-GCM 凭据、默认能力声明、字段级检查、软删除清密文 | checker 不访问外部服务，capabilities 非实测；agency 前端缺字段，failed 仍显示成功 Toast；无完整密钥轮换/外部 Vault；E2E 仅 none 主路径 |
 | Observability | 四类统一查询、华为部分真实 Adapter、普通证据与 AI 定稿快照 | 真实 logs/traces/topology 不支持；SigNoz/Prometheus 为 fake；公共指标无 project_id；快照无公共详情 API/UI；查询与快照 E2E 均为 fake/mock |
 | Inspection | 策略、同步规则运行、Finding、Recommendation、后端转执行 | 非 AI Agent；定时 worker/取消/通知未落地；真实 scope 采集受限；转执行无前端、自动介体、跨模块事务或完成回写；E2E 仅 fake 主路径 |
@@ -181,7 +181,7 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 
 ### 5.1 契约和目录 README
 
-- `ops/ai-contract.md`：Provider/工具网关、会话/Agent Loop、记忆/知识已按代码修正；后续分享/多模态轮次继续核对 token/审计、图片规则和分享渲染边界。
+- `ops/ai-contract.md`：AI 契约各轮次（Provider/工具网关、会话/Agent Loop、记忆/知识、分享/多模态、浮层/消息排队、RDS 诊断、ai-orchestrator）已按代码修正完毕；后续如改动 AI 行为需按相同口径回补。
 - `cmd/api/README.md`：装配说明仍偏 Identity/AI，需对齐当前 11 个业务上下文及后台任务。
 - `web/src/views/README.md`、`web/src/stores/README.md`、`web/src/router/README.md`：仍停留在早期概念说明，需补实际页面、aiContext、共享会话和权限边界。
 - `web/src/api/README.md`：拓扑函数归属和跨应用关系已修正；Inspection `getPolicy` 已核对为后端与封装均存在、页面未使用，其余模块继续按轮次复核。
@@ -197,7 +197,7 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 
 ### 5.3 不能只靠文档关闭的实现差距
 
-- 分享会话页未复用普通用户消息的图片渲染，与多模态分享验收项不完全一致。
+- 分享会话页未复用普通用户消息的图片渲染：接口已返回 `images`，仅 `SharedSession.vue` 缺渲染，与多模态分享验收项（9.16.6）不完全一致。图片链路无任何 AI E2E，ShareDialog/SharedSession/useChat 图片路径无专项前端测试。
 - 后端告警分析已有 `diagnosis`，但告警 AI 弹窗类型和展示尚未完整接入；AI 助手回答卡片已有诊断展示。
 - Execution Agent 独立进程、管理 UI、自动介体选择、mTLS 和 Runbook→Agent 未实现；Agent 创建/lease/result 不写 Alert 时间线。Inspection 建议转执行入口、动态菜单仍未实现。
 - 前端 `stores/auth.ts` 将 access/refresh token 写入 localStorage，与项目“不将 Token 写入前端持久化状态”的安全约束冲突，需独立安全整改。
@@ -222,7 +222,7 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 1. 全局基线：根 README、文档复核记录、internal/ops 索引。
 2. P0 主链路：Identity（已完成）→ Alert（已完成，CES 审计事务旧描述已修正）→ Asset/CMDB/拓扑（文档已完成，实现差距已登记）→ Runbook（文档已完成，Command Spec 边界已登记）→ Execution/Execution Agent（文档已完成，控制面边界已登记）→ Dashboard（文档已完成，降级边界已登记）→ Audit（文档已完成，聚合/导出与写入边界已登记）。
 3. 云与观测：Integration（文档已完成，字段检查/凭据/前端边界已登记）→ Observability/证据快照（文档已完成，真实/fake 与定稿边界已登记）→ Inspection（文档已完成，同步规则/转执行边界已登记）；CES 告警拉取归入 Alert，CES 资源同步归入 Asset。
-4. AI：Provider/工具网关（文档已完成）→ 会话/Agent Loop（文档已完成）→ 记忆/知识（文档已完成，反馈/聚合/管理 UI/E2E 覆盖差距已登记）→ 分享/多模态 → 浮层/消息排队 → RDS 诊断 → ai-orchestrator。
+4. AI：Provider/工具网关（文档已完成）→ 会话/Agent Loop（文档已完成）→ 记忆/知识（文档已完成，反馈/聚合/管理 UI/E2E 覆盖差距已登记）→ 分享/多模态（文档已完成，共享页附图渲染与图片 E2E 缺口已登记）→ 浮层/消息排队（文档已完成，队列快照/不持久化/停止清队与测试差距已登记）→ RDS 诊断（文档已完成，告警弹窗无诊断展示、平台主动采集未实现与真实账号 E2E 边界已登记）→ ai-orchestrator（文档已完成，降级无 degraded 标记、不消费 postgres_activity、无部署模板与 E2E 已登记）。AI 模块队列全部完成。
 5. 前端公共能力：API/request/SSE → Router/导航 → Stores/布局与跨页状态。
 6. 工程与交付：cmd/bootstrap/server/version/pkg → migrations → Compose/Kubernetes → scripts/E2E → demo/验收/发布清单。
 
@@ -331,4 +331,43 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 - 实现行为比对：记忆唯一 chat valid 来源、幂等索引、invalid 降分、match_rank、keywords/signature、知识注入上限、hit/useful、invalid 评估、auto_disable、聚合 created/updated/skipped_active/insufficient_cases 均按代码核对。
 - 前端与验证比对：MemoryManager/KnowledgeManager 筛选、分页、字段展示、确认和聚合入参差距已登记；两份 E2E 的迁移前置、SKIP、写数据、清理和未覆盖项不再写成完整通过。
 - 自动校验通过：相关 Markdown 的尾随空格、代码围栏和本地链接，8 个 memory/knowledge 路由、2 个权限码及 9.9.1–9.9.10、9.10.1–9.10.13 验收编号一致；`git diff --check` 无空白错误。
+- 本轮未执行 Go 测试、前端 Vitest 或 AI E2E，不记为运行通过，未修改任何业务代码。
+
+## 21. AI 分享与多模态检查记录
+
+- 分享/多模态轮次扩充 `internal/ai/README.md`（新增 §10 与迁移表 0053 行），更新 AI 契约 §10.18/§10.20、前端 API、验收 9.13/9.16、演示 8G 及本记录。
+- 路由/权限比对：4 个分享路由均复用 `app:ai:chat`；owner 校验在 application 层 `loadOwnedSession`，访问分享不校验归属；`SetShares` 未注入时 503，标准装配已注入。无新增迁移权限种子。
+- 实现行为比对：token 32 字节 base64url/SHA-256 落库、TTL 1–720h 默认 168、单会话 10 条 active 上限、撤销幂等但每次仍写 `chat_share_revoke` 审计、四类不可用统一 404、会话删除不级联分享记录（无外键）、分享视图最近 200 条且归档可看、路径日志脱敏均按代码核对。
+- 多模态比对：normalizeChatImages 规则（3 张/png/jpeg/webp/2MB）、视觉门控在幂等与归档之后落库之前、请求>会话>默认模型回退、OpenAI text+image_url 报文、历史只保留文本、Loop 各轮与强制收敛轮均携带、images_json 与 image_count 审计均按代码核对。
+- 前端与验证比对：确认 SharedSession.vue 不渲染附图（验收 9.16.6 原描述不成立，已修正）；图片链路无 AI E2E、ShareDialog/SharedSession/useChat 图片路径无专项 Vitest 已登记；分享 E2E 覆盖创建/访问/撤销/审计，列表/过期/owner/上限由单测覆盖。
+- 自动校验通过：本轮修改 Markdown 的尾随空格、代码围栏和本地链接检查通过，4 个分享路由、9.13.1–9.13.9、9.16.1–9.16.7 验收编号一致；`git diff --check` 无空白错误。
+- 本轮未执行 Go 测试、前端 Vitest 或 AI E2E，不记为运行通过，未修改任何业务代码。
+
+## 22. AI 浮层与消息排队检查记录
+
+- 浮层/排队轮次扩充 `internal/ai/README.md`（新增 §11），更新 AI 契约 §10.8/§10.9、前端 API、验收 9.8.32/9.8.33、演示 8H 及本记录。
+- 实现行为比对：控制器在 BasicLayout provide、浮层与工作台 inject 同一实例、路由切换不销毁但刷新即丢失（不写 localStorage）；排队条目 content/images/context/provider_id/client_message_id 按入队快照冻结；完成 finally 自动 sendNextQueued；stop 清空当前会话队列并中止流；删除会话先清流与队列；归档会话排队逐条尝试逐条失败不整体终止；selectSession 对已加载/生成中/有队列会话直接接管本地状态均按代码核对。
+- 入口与上下文比对：顶栏按钮与 `Alt + A`（keydown 挂载/卸载已确认）默认入口、告警详情 askAI 先 syncAlertAIContext 再 openOverlay({selectSession:true})、新建会话携带 alert_id、执行提议与引用导航先关浮层再跳转均按代码核对；上下文字段与写入方以契约 §10.8 为准。
+- 前端与验证比对：useChat.spec 仅 1 个并发/排队用例、AIAssistantOverlay.spec 4 个选择器用例、aiContext.spec 6 个上下文用例、QueuedMessageList.spec 仅事件透传；停止清队/队列管理接线/归档排队失败/删除清理/快捷键/窄屏宽度无专项测试已登记。排队为纯前端行为，后端无队列或会话锁。
+- 自动校验通过：本轮修改 Markdown 的尾随空格、代码围栏和本地链接检查通过，9.8.1–9.8.33、9.12.1–9.12.25 验收编号一致；`git diff --check` 无空白错误。
+- 本轮未执行 Go 测试、前端 Vitest 或 AI E2E，不记为运行通过，未修改任何业务代码。
+
+## 23. AI RDS 诊断检查记录
+
+- RDS 诊断轮次扩充 `internal/ai/README.md`（新增 §12），更新 AI 契约 §10.21、验收 9.17.9、演示 8I 及本记录。
+- 双入口与触发比对：Chat gather 自动取数、Loop 显式补采（from/to 成对、limit 0–300）与 analyze-alert 三条路径均先校验 `postgres.activity.query` 工具权限与账号数据范围；触发条件为长事务告警或指标证据已含 `oldest_transaction_duration` 数据，均按代码核对。
+- 采集与脱敏比对：`invalid_rds_instance_id` 白名单、7 天窗口、15s 总预算（`ai.postgres_evidence_timeout_ms` 默认 15000）、每页 100/单类 300 分页、total_count=-1 视为 unknown 仍按 truncated、会话主证据失败整体失败而等待事件/Top SQL 失败进 missing_evidence、user_hash/网段/sql_hash/300 runes sql_summary（字面量与注释移除、未闭合截断）均按代码核对。
+- 定稿与诊断比对：先落库再进模型、超限截断次序（Top SQL→等待事件→逐条会话）、快照缺失/写库失败 fail-closed 转 error 并清 evidence_id、四类根因分类优先级、最多 6 条会话事实与 3 条匹配 Top SQL、模型输出 diagnosis 被忽略重建、重放保留、JSON 空数组均按代码核对。
+- 前端与验证比对：AnswerCard 诊断区块与 AnswerCard.spec 覆盖已确认；告警 AI 弹窗不展示 diagnosis（alert/internal、前端 API README 原有登记与本轮一致）；E2E 只清 mock、会话与证据保留、IAM 缺口组合需人工已写入验收前置。
+- 自动校验通过：本轮修改 Markdown 的尾随空格、代码围栏和本地链接检查通过，9.17.1–9.17.9 验收编号一致；`git diff --check` 无空白错误。
+- 本轮未执行 Go 测试、前端 Vitest 或 AI E2E，不记为运行通过，未修改任何业务代码。
+
+## 24. ai-orchestrator 检查记录
+
+- ai-orchestrator 轮次扩充 `internal/ai/README.md`（新增 §13），更新 AI 契约 §9.4、internal/README 运行时行、验收 9.7.17 及本记录。
+- 平台侧比对：类型 c 注册为 `InternalServiceExecutor`（`/api/tool/invoke` + `X-API-Key: Bearer`，1MiB 响应上限、非 2xx UNAVAILABLE、出站校验在平台侧）；`AnalysisProviderID` 优先 b→c→其他，对话只用 b；直接调用与告警分析两条链可达均按代码核对。
+- 服务侧比对：6 个环境变量（3 个模型项必填 + ADDR/API_KEY/MODEL_PATH/TIMEOUT_S）、双路径监听与 `/healthz`、X-API-Key 剥离 Bearer 后常数时间比较、仅 `alarm.analyze`、2MiB 请求/4MiB 模型响应上限、429/5xx 重试 2 次、references 合并去重、失败返回 200 保守降级均按代码核对。
+- 关键边界登记：降级响应**无 `degraded` 字段**，平台不记 `provider_degraded`/审计 partial，与类型 b 语义不同；服务不消费 `postgres_activity`/`similar_cases`，长事务 `diagnosis` 始终由平台侧生成并覆盖 summary/recommendations；无 compose/K8s 定义、无专项 E2E，Makefile build 只构建 `cmd/api`。
+- 验证比对：`analysis_test.go` 7 个用例、toolgateway 类型 c 仅 stub 覆盖；验收 9.7.17 登记为手工构建人工验收项。
+- 自动校验通过：本轮修改 Markdown 的尾随空格、代码围栏和本地链接检查通过，9.7.1–9.7.17 验收编号一致；`git diff --check` 无空白错误。
 - 本轮未执行 Go 测试、前端 Vitest 或 AI E2E，不记为运行通过，未修改任何业务代码。

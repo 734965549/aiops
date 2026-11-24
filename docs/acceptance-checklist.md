@@ -667,8 +667,9 @@ RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测�
 | 9.7.14 | 审计语义 | 完成 Provider CRUD、直接 allowed=false 调用、对话工具拒绝，再查日志和 `/api/audits` | Provider CRUD 只有应用日志；直接 tool_invoke 不含 allowed/mode/reason且拒绝仍 result=success；对话 tool_invoke 才有完整状态。写入均按 best-effort 边界验收 |
 | 9.7.15 | 类型 b 降级与真实模型 | 用 mock 构造 429/5xx/非法 JSON/空响应和正常结构化回答；另用真实模型做凭据/配额/模型能力验收 | 非流式按代码最多 3 次尝试并可返回 data.degraded=true；allowed=true 不代表真实分析成功。mock 通过不替代真实模型、视觉或配额验证 |
 | 9.7.16 | 前端与自动化边界 | 检查 ProviderManager、ToolConsole、Identity 工具授权和现有 AI 脚本 | Provider 无筛选/健康/测试连接，ToolConsole 无对象字段且确认提示不是动态规则；固定工具目录非角色实授。三者无专项 Vitest，无直接 invoke/完整 Provider CRUD/角色工具绑定专项 E2E |
+| 9.7.17 | 类型 c 编排参考服务（可选） | 手工构建运行 `cmd/ai-orchestrator`（env 见契约 §9.4），注册类型 c provider 后分别做直接调用与告警分析；再停掉其模型依赖 | `X-API-Key` 鉴权失败 401；非 `alarm.analyze` 400；模型失败仍返回 200 保守结果（无 `degraded` 字段，平台审计不记 partial）；长事务 `diagnosis` 仍由平台侧生成；对话不受影响（无类型 b 时 degraded/model_unavailable）。无专项 E2E，需人工验收 |
 
-> 前置：按所验工具执行到对应迁移；0048 只建 Provider 表，不种子 Provider 记录，YAML `ai.providers` 仅在空表时写入。`e2e-ai-mock-provider.ps1` 是共享 fixture，只注册/删除保留 ID 的类型 b mock；其他 `e2e-ai-*.ps1` 主要使用 mock/fake，且部分脚本缺 active 告警会 SKIP 后正常退出。上述覆盖来自静态核对，执行结果须另记。
+> 前置：按所验工具执行到对应迁移；0048 只建 Provider 表，不种子 Provider 记录，YAML `ai.providers` 仅在空表时写入。`e2e-ai-mock-provider.ps1` 是共享 fixture，只注册/删除保留 ID 的类型 b mock；其他 `e2e-ai-*.ps1` 主要使用 mock/fake，且部分脚本缺 active 告警会 SKIP 后正常退出。类型 c 编排服务无 compose/K8s 定义与 E2E，9.7.17 需手工构建运行。上述覆盖来自静态核对，执行结果须另记。
 
 ### 9.8 AI 运维助手（migration 0049）
 
@@ -705,8 +706,10 @@ RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测�
 | 9.8.29 | 前端重试与刷新 | 对已落库 degraded/incomplete 回答点击重新提问；刷新页面后再次尝试；检查列表刷新按钮 | 旧 key 只重放且本地可能重复消息；历史重试内容被清空，按钮可能不可用；刷新按钮只取列表，无通用当前详情刷新，需导航或重新加载页面 |
 | 9.8.30 | 执行提议权限记录 | 检查一次正常回答的 tool_calls、actions、审计和 Execution 列表 | execution.tasks.propose 可作为权限校验出现在 tool_calls/tool_invoke，但不创建任务；只有点击 action 并调 `/api/executions/tasks` 后才产生 pending_confirm 任务 |
 | 9.8.31 | 会话脚本边界 | 核对 `e2e-ai-assistant.ps1` 的输入、输出和清理 | 同步 API + mock 主路径可覆盖结构、执行、顺序幂等、反馈、归档/恢复、删除和部分审计；degraded 仍可结构通过，主会话/消息/任务/审计保留，不是 UI 或真实模型验收 |
+| 9.8.32 | 浮层入口与上下文联动 | 顶栏「AI 助手」/`Alt + A` 默认打开；告警详情点「问 AI 助手」；在选择器中新建会话并发送 | 默认入口无选择器并自动选中最近会话；告警入口先显示会话选择器，新建会话的 `context` 含 `alert_id`；浮层顶部展示当前页面上下文摘要；跨页路由切换后返回，消息与生成状态保留 |
+| 9.8.33 | 排队生命周期 | 会话生成中连续发送第二条并观察队列；分别尝试置顶/删除/清空；点击「停止并清空队列」；刷新页面 | 第二条进入排队列表且首条完成后自动发送；置顶/删除/清空即时生效且只影响当前会话；停止后队列清空且不自动发送；刷新后排队条目与乐观消息丢失，服务端回合按取消/完成落库 |
 
-> 前置：已执行迁移 `0049`、`0050`（0050 为消息幂等键）；9.8.3 的模型回答需要已启用类型 `b` provider。E2E 脚本：`scripts/e2e-ai-assistant.ps1` 对 9.8.2/9.8.3/9.8.7/9.8.8/9.8.9/9.8.10/9.8.15/9.8.16/9.8.17 只有**部分自动断言**：未完整覆盖 chat_session、审计脱敏、replayed=true、不再调用模型、invalid/用户消息反馈、并发幂等、跨用户、模型切换或浏览器 UI；归档 probe 实为 active 会话。
+> 前置：已执行迁移 `0049`、`0050`（0050 为消息幂等键）；9.8.3 的模型回答需要已启用类型 `b` provider。E2E 脚本：`scripts/e2e-ai-assistant.ps1` 对 9.8.2/9.8.3/9.8.7/9.8.8/9.8.9/9.8.10/9.8.15/9.8.16/9.8.17 只有**部分自动断言**：未完整覆盖 chat_session、审计脱敏、replayed=true、不再调用模型、invalid/用户消息反馈、并发幂等、跨用户、模型切换或浏览器 UI；归档 probe 实为 active 会话。9.8.32/9.8.33 为纯前端行为：浮层选择器/上下文联动由 `AIAssistantOverlay.spec.ts` 与 `aiContext.spec.ts` 覆盖，跨会话并发与同会话排队由 `useChat.spec.ts` 覆盖，停止清队/队列管理/归档排队失败/快捷键无专项测试，UI 需人工验收。
 >
 > 数据范围（9.8.13/9.8.14）：告警快照读取按对象数据范围过滤，分析路径与对话路径共用同一入口，映射与拒绝语义见 `ops/ai-contract.md` §10.6.4、§10.11。注意告警列表/详情接口的自身数据范围口径不在 AI 模块范围内。
 
@@ -716,8 +719,6 @@ RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测�
 |---|--------|------|------|
 | 9.9.1 | 有效反馈沉淀 | 对一条 `status=ok` 的回答提交 `valid` 反馈 | `ai_memory_case` 新增一条：`source_type=chat_message`、`source_message_id` 为该回答、`quality_score=1`、`status=active`；重复提交不新增第二条。memory E2E 只间接验证引用，不直接查管理列表或分数，需按本项单独记录 |
 | 9.9.2 | 降级回答不入记忆 | 在无可用 provider（`degraded=true`）时提交 `valid` | 不生成案例；反馈接口仍返回 200。memory E2E 在该场景 SKIP，不能自动覆盖 |
-| 9.9.5 | 跨用户隔离 | 用另一账号对同一应用/资源提问 | 不返回 A 用户的案例（`memory_status=empty`），日志不含案例摘要 |
-| 9.9.6 | 降级不阻断 | 停库或让检索失败后提问（可用错表/断连接复现） | 回答正常返回；审计 `memory_status=error`、`memory_used=0` |
 | 9.9.3 | 检索注入与引用 | 用同一告警再次提问（或重复调用 `POST /api/ai/analyze-alert`） | 对话 `references` 含 `type=memory_case`、`id=case_id`；provider payload 含 `memory_cases`（分析接口为 `similar_cases`） |
 | 9.9.4 | 无效反馈降分与淘汰 | 对同一回答连续提交两次 `invalid` | 第一次 `quality_score=1 → -1` 仍 `active`；第二次 `≤ -2` 转 `retired`；后续检索不再命中 |
 | 9.9.5 | 跨用户隔离 | 用另一账号对同一应用/资源提问 | 不返回 A 用户的案例（`memory_status=empty`），日志不含案例摘要 |
@@ -762,7 +763,7 @@ RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测�
 | 9.11.7 | token、时间与申请数预算 | 分别构造累计 usage 达到 60000、turn_budget_s=2、单轮超过 3 个不同参数申请 | token 达预算先强制收敛，时间耗尽直接 turn_budget_exceeded；单轮只受理前 3 个不同 tool_code+params，超出不执行 |
 | 9.11.8 | 前端多轮展示 | 同工具不同参数、多轮调用后检查 AnswerCard/ContextPanel | tool_calls 保留记录，但 AnswerCard key 仅 tool_code，右侧只保留每个工具最后状态且目录固定，不是完整 Loop 时间线；execution.tasks.propose 不是 Loop 白名单 |
 | 9.11.9 | Loop 脚本边界 | 核对 `e2e-ai-agent-loop.ps1` 的 SKIP、数据与断言 | 覆盖只读 Loop、执行拒绝、发现和 3 轮耗尽的部分断言；无 active 告警会 SKIP 后 exit 0。会话保留，未覆盖全部预算/去重/强制收敛/无执行任务断言，不是 UI 验收 |
-| 9.11.10 | 证据覆盖缺口 | 分别使用资源分组型规则、超过 288 点曲线、长窗口和大规则集，检查模型实际 observations | 资源分组型规则应先展开实例维度（每条最多 3 个样本）再体检，展开失败才 no_resource_scope；每条规则最多 3 实例抽样并取越限最严重样本（`checked_resources`/`sampled` 标明覆盖）。288 点定稿保留 `peak_at` 与破限片段/时长；长窗口聚合仍不能还原原始秒级误报，需短窗口复查 |
+| 9.11.10 | 证据覆盖缺口 | 分别使用资源分组型规则、云产品级规则（无资源绑定）、超过 288 点曲线、长窗口和大规则集，检查模型实际 observations | 资源分组型规则先展开实例；无绑定的云产品级规则按 namespace 发现实例兜底（`scope_source=resource_discovery`），只有实例发现也取不到才 no_resource_scope；每条规则最多 3 实例抽样并取越限最严重样本（`checked_resources`/`sampled` 标明覆盖）。288 点定稿保留 `peak_at` 与破限片段/时长；长窗口聚合仍不能还原原始秒级误报，需短窗口复查 |
 
 > 前置：契约见 `ops/ai-contract.md` §10.16；无需新迁移。循环内不产生执行动作，`actions` 仍由服务端生成。`e2e-ai-agent-loop.ps1` 只自动覆盖 9.11.1/9.11.2/9.11.3/9.11.5 的部分场景，需要 active 告警；9.11.4/9.11.6 及预算/强制收敛其他分支由既有单测与人工验收分别记录。
 
@@ -812,7 +813,7 @@ RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测�
 | 9.13.8 | 审计与日志脱敏 | `GET /api/audits?resource_type=ai&resource_id={session_id}`；再查看后端访问日志中的分享访问记录 | 可查 `chat_share_create` / `chat_share_revoke` / `chat_share_view`；审计 payload 无 token、无消息正文；访问日志路径显示为 `/api/ai/chat/shares/<redacted>` |
 | 9.13.9 | 未装配降级 | 未注入分享仓储的环境调用分享接口 | 返回 503 `UNAVAILABLE`；普通对话、流式与归档不受影响 |
 
-> 前置：已执行迁移 `0053`；分享为**对内只读**，不提供匿名/对外链接。契约见 `ops/ai-contract.md` §10.18；应用层用例见 `internal/ai/application/chat_share_test.go`；E2E 脚本 `scripts/e2e-ai-assistant.ps1` 自动覆盖 9.13.1/9.13.2/9.13.3/9.13.8（跨账号访问、过期与上限仍需人工验证）。
+> 前置：已执行迁移 `0053`；分享为**对内只读**，不提供匿名/对外链接。契约见 `ops/ai-contract.md` §10.18；应用层用例见 `internal/ai/application/chat_share_test.go`。E2E 脚本 `scripts/e2e-ai-assistant.ps1` 自动覆盖 9.13.1/9.13.3/9.13.8 与 9.13.2 的“链接可访问”部分（同账号访问）；9.13.2 的跨账号语义、9.13.4 过期、9.13.5 owner 边界、9.13.6 上限与参数由单测覆盖（过期需改库后人工复查 UI），9.13.9 未装配降级由单测覆盖、标准装配下不可复现。
 ### 9.14 规则体检只读工具（migration 0055/0062，契约 §10.12.1）
 
 | # | 检查项 | 操作 | 预期 |
@@ -852,10 +853,10 @@ RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测�
 | 9.16.3 | 非视觉模型拦截 | 切换到未开启视觉的模型后带图发送 | 400 `INVALID_ARGUMENT`；用户消息未落库、未调用模型；前端提示开启视觉或更换模型 |
 | 9.16.4 | 纯图片消息 | 不填文字只发图片 | 服务端补默认提问「请分析这张图片。」；回答正常返回 |
 | 9.16.5 | 参数边界 | 分别构造 4 张图片、GIF、远程 URL、非法 base64、单张 >2MB 的请求 | 均 400 `INVALID_ARGUMENT`；空文本且无图仍在 SSE 之前返回 400 |
-| 9.16.6 | 历史与分享回显 | 刷新会话详情；创建只读分享并打开链接 | 用户消息 `images` 正常回显缩略图；分享页只读展示图片，无输入入口 |
+| 9.16.6 | 历史与分享回显 | 刷新会话详情；创建只读分享并打开链接 | 会话详情用户消息 `images` 正常回显缩略图；分享接口同样返回 `images`，但共享页当前只渲染文本、**不展示附图**（已登记前端缺口）；分享页无输入入口 |
 | 9.16.7 | 审计与脱敏 | 查 `GET /api/audits?resource_type=ai&resource_id={session_id}` 与后端日志 | `chat_message` 含 `image_count`；审计 payload、日志与 Prompt 文本字段不含图片 base64 |
 
-> 前置：已执行迁移 `0059`；图片理解效果需真实视觉模型验证，报文与拒绝语义由 `internal/ai/application/chat_images_test.go`、`internal/ai/toolgateway/chat_vision_test.go` 自动覆盖；前端工具函数由 `web/src/views/ai-assistant/composables/imageInput.spec.ts` 覆盖。
+> 前置：已执行迁移 `0059`；图片理解效果需真实视觉模型验证，报文与拒绝语义由 `internal/ai/application/chat_images_test.go`、`internal/ai/toolgateway/chat_vision_test.go` 自动覆盖；前端工具函数由 `web/src/views/ai-assistant/composables/imageInput.spec.ts` 覆盖。图片链路当前没有 AI E2E，9.16 各项需真实视觉模型人工验收；ShareDialog/SharedSession/useChat 图片链路无专项前端测试，共享页附图渲染缺口见 9.16.6。
 
 ### 9.17 RDS for PostgreSQL 历史会话（migration 0061，契约 §10.21）
 
@@ -869,8 +870,9 @@ RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测�
 | 9.17.6 | 无现场/失败降级 | 采集失败或窗口内无可分类会话 | `root_cause.status=undetermined`，页面显示缺失证据和三类待验证假设；不得输出“未提交/持续阻塞”等确定根因 |
 | 9.17.7 | 脱敏与截断 | 检查真实或 mock 会话、Top SQL、证据 payload 和 Prompt | 无原始 SQL、字符串/数字字面量、注释、用户名或完整客户端标识；只含 user_hash、客户端网段/摘要、query_id/sql_hash、sql_operation 和最长 300 字的脱敏 sql_summary；上游 total_count、original/retained 和 truncated 可见 |
 | 9.17.8 | 双入口一致性 | 分别调用 Chat 与 `POST /api/ai/analyze-alert` | Chat observations 含 `postgres.activity.query`，分析 payload 含 `postgres_activity`；两端 `diagnosis` 语义一致 |
+| 9.17.9 | 快照 fail-closed 与截断 | 停用快照存储或制造写库失败；构造超限 payload | 原 `ok` 结果转为 `error`（`postgres_snapshot_store_disabled`/`postgres_snapshot_persist_failed`）并清空 evidence_id，不进入模型；超限按先丢 Top SQL、再丢等待事件、逐条丢会话截断，计数与 `truncated` 保留 |
 
-> 前置：已执行迁移 `0061`，账号具有 `rds:instance:getHistorySession/getWaitEvent/getTopSql`；历史窗口最长 7 天。当前仅支持查询时读取华为历史采样，尚未实现平台在告警触发后的主动快照。单测覆盖分页、脱敏、部分失败、四类判定和 fail-closed；真实账号权限与实例功能由 9.17.1 验证。
+> 前置：已执行迁移 `0061`，账号具有 `rds:instance:getHistorySession/getWaitEvent/getTopSql`；历史窗口最长 7 天。当前仅支持查询时读取华为历史采样，尚未实现平台在告警触发后的主动快照。单测覆盖分页、脱敏、部分失败、四类判定和 fail-closed；真实账号权限与实例功能由 9.17.1 验证。E2E finally 只清理 mock provider，会话与证据保留；9.17.2 的 IAM 权限缺口组合需人工验证。告警页 AI 分析弹窗不展示 `diagnosis`，结构化诊断展示以 AI 助手回答卡为准。
 
 ## 附录 A：仅 UI 手工步骤（精简表）
 

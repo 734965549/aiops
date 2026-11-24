@@ -174,6 +174,7 @@ C. AI 会话 / Agent Loop
 | `0010/0015/0016/0017` | 告警分析权限、工具权限管理、admin 权限修复 |
 | `0020/0022` | Inspection/Execution 工具权限种子；不代表平台内置执行器 |
 | `0048` | `ai_provider` 基表，无 Provider 记录种子 |
+| `0053` | `ai_session_share` 会话只读分享；只存 token SHA-256，无外键 |
 | `0055/0056` | 规则查询、账号/资源发现工具权限 |
 | `0057` | Provider `reasoning_effort` |
 | `0059` | Provider `vision_enabled` 与会话图片字段 |
@@ -257,7 +258,7 @@ C. AI 会话 / Agent Loop
 - 强制收敛成功可返回 ok 或 insufficient_context，审计 `forced_convergence=true`；只有仍失败/输出非法才 degraded/agent_loop_exhausted。时间预算耗尽不走该强制轮。
 - `loop_rounds` 是实际追加取数轮数，不包含强制收敛；所有工具观测进入 tool_calls 和详细 tool_invoke 审计。
 
-**证据覆盖限制**：规则体检会先展开资源分组型规则的实例维度（单次规则列表最多展开 10 条、每条最多 3 个实例样本），并对最多 3 个实例分别取数、取越限最严重的样本；展开失败或仍无实例维度才是 `no_resource_scope`。进入 Prompt 的曲线最多 288 点，峰值时刻（`peak_at`）、破限片段与越限时长在降采样前按全量序列计算并保留；长窗口小时级聚合仍不能还原规则原始秒级窗口，Loop 预算/去重也会缩小实际覆盖。排查时应先核对资源映射、`checked_resources`/`sampled`、截断标记、聚合 period 与实际执行轮数，再决定是否缩窗复查。
+**证据覆盖限制**：规则体检会先展开资源分组型规则的实例维度（单次规则列表最多展开 10 条、每条最多 3 个实例样本）；规则没有任何资源维度时（云产品级），按 namespace 对应的资源类型从本地云同步资源发现最多 3 个实例兜底（`scope_source=resource_discovery`），并对最多 3 个实例分别取数、取越限最严重的样本；只有连实例发现也取不到时才 `no_resource_scope`。进入 Prompt 的曲线最多 288 点，峰值时刻（`peak_at`）、破限片段与越限时长在降采样前按全量序列计算并保留；长窗口小时级聚合仍不能还原规则原始秒级窗口，Loop 预算/去重也会缩小实际覆盖。排查时应先核对 `scope_source`、`checked_resources`/`sampled`、截断标记、聚合 period 与实际执行轮数，再决定是否缩窗复查。
 
 ### 8.5 SSE、取消与模型重试
 
@@ -301,12 +302,12 @@ C. AI 会话 / Agent Loop
 
 ### 9.1 记忆案例的生命周期
 
-当前只有 AI 助手回答的 `valid` 反馈会沉淀案例；`invalid` 只对已有案例降分。其他 source_type 常量存在，但没有实际写入方：
+当前只有 AI 助手回答的 `valid` 反馈会沉淀案例；`invalid` 只对已有案例降分。`source_type` 枚举包括 `chat_message`、`alert_analysis` 和 `knowledge_item`，但后两者没有实际写入方：
 
 ```text
 SubmitFeedback(valid)
   -> 解析 assistant 回答 JSON
-  -> Degraded=true 或 summary 为空不沉淀（incomplete/降级回答不会入记忆）
+  -> degraded=false 且 summary 非空才沉淀（incomplete/降级回答不会入记忆）
   -> 按 AlertReader 读取会话告警生成指纹；失败仅省略 signature
   -> 记录 chat_message、source_message_id、application/resource、keywords、summary/recommendations/risk_level
   -> ai_memory_case 按 (user_id, source_message_id) 部分唯一索引幂等；重复反馈返回 created=false
@@ -318,7 +319,7 @@ SubmitFeedback(invalid)
 
 `quality_score=1` 表示第一次 valid；`invalid` 不要求案例仍在 active，`ApplyFeedback` 对 retired 继续降分但不会再改回 active。手动启用只是恢复检索，质量分保持原值。
 
-检索只查当前用户、`status=active` 的案例，最多 3 条。优先级为 alert_signature 精确命中 3、application_id 或 resource_id 命中 2、keywords 全文命中 1；同分按 quality_score、updated_at。signature 的维度只取 `instance_id/cloud_resource_id/pod/node`，keywords 由摘要、建议、告警名、资源类型和用户问题按分隔符切词生成，PostgreSQL 端用 `simple` 分词。回答 `references` 的 memory_case label 是“历史案例：<摘要>”，摘要最多 80 runes，无 URL。
+检索只查当前用户、`status=active` 的案例，最多 3 条。SQL `match_rank` 与领域优先级一致：`alert_signature` 精确命中 3、`application_id` 或 `resource_id` 命中 2、keywords 全文命中 1；同分按 `quality_score`、`updated_at`。signature 的维度只取 `instance_id/cloud_resource_id/pod/node`，keywords 由摘要、建议、告警名、资源类型和用户问题按分隔符切词生成，PostgreSQL 端用 `simple` 分词。回答 `references` 的 memory_case label 是“历史案例：<摘要>”，摘要最多 80 runes，无 URL。
 
 自动 valid/invalid 引起的沉淀或降分不写独立操作审计；其事实反映在 `chat_feedback` 与 `chat_message.memory_used/memory_status`。管理端手动启停才写 `memory_review`；目标状态相同时幂等返回当前案例且不写审计。0051 无外键，案例删除不随会话删除级联。
 
@@ -335,9 +336,11 @@ SubmitFeedback(invalid)
 | `GET /api/ai/knowledge/items` | status/scope 精确过滤；limit 1–100 默认 20，offset 分页 |
 | `POST /api/ai/knowledge/items` | manual 来源固定 draft |
 | `PUT /api/ai/knowledge/items/:item_id` | 全量替换 scope/scope_ref/title/content；active 回 draft 并清空 reviewer，但保留 hit/useful 计数与 origin |
-| `POST .../review` | activate/diable 前只校验存在；activate/disable 分别写 reviewed_by/reviewed_at |
-| `DELETE .../:item_id` | 硬删除；重复删除 404；审计 `knowledge_review(action=delete)` |
+| `POST /api/ai/knowledge/items/:item_id/review` | activate/disable 前只校验存在；activate/disable 分别写 reviewed_by/reviewed_at |
+| `DELETE /api/ai/knowledge/items/:item_id` | 硬删除；重复删除 404；审计 `knowledge_review(action=delete)` |
 | `POST /api/ai/knowledge/aggregate` | 反馈聚合，见 §9.3 |
+
+| `POST /api/ai/memory/cases/:case_id/status` | active/retired 间流转；同状态幂等返回当前案例且不写审计 |
 
 自动停用属于机器状态变更，仍归在 `knowledge_review`，审计 actor 为空。没有单独的条目历史或版本接口。
 
@@ -358,9 +361,236 @@ POST /api/ai/knowledge/aggregate
 
 - 记忆管理路由要求 `app:ai:memory:manage`（0054），知识管理要求 `app:ai:knowledge:manage`（0052），未注入授权适配器时对应路由不注册。管理端是静态 RBAC；列表能按 `user_id` 查询其他用户案例，但没有对象级数据范围过滤。
 - `GET /api/ai/memory/cases` 支持 status/user_id/application_id/resource_id/keyword/limit/offset；keyword 对 summary/keywords/application_id/resource_id ILIKE。`session_id` 有值才返回。
-- MemoryManager 页面目前只传 status/keyword/user_id，limit 固定 100，未使用 application_id/resource_id/offset，也没有分页控件；详情未展示 session_id。KnowledgeManager 未展示审核人/审核时间/创建者，聚合 UI 固定默认 min_cases=3，激活/停用没有二次确认（仅删除有）。两者均无前端 Vitest。
+- MemoryManager 页面目前只传 status/keyword/user_id，`limit=100`，未使用 application_id/resource_id/offset，也没有分页控件；详情未展示 session_id。KnowledgeManager 未展示审核人/审核时间/创建者，聚合 UI 固定默认 min_cases=3，激活/停用没有二次确认（仅删除有）。两者均无前端 Vitest。
 - 后端已有 domain、service、management、aggregate、chat 注入、analyze similar_cases 和 Handler 测试；仓储测试主要是 JSON 序列化口径，不是 PostgreSQL 检索/索引集成测试。
 - `e2e-ai-memory.ps1` 不使用管理列表、不校验 quality_score/幂等；首条回答 degraded 会 SKIP 后 exit 0，业务会话/消息/审计保留，案例最终为 retired。它没有直接覆盖 9.9.1 的管理口径、跨用户、error 或 memory_review。
 - `e2e-ai-knowledge.ps1` 需要 0052+0054 和 dev/mock，finally 只删除残留条目、retire 残留案例、清理 mock，会话不删。它部分覆盖 draft/激活/注入/停用/valid/聚合/记忆列表/retire，不覆盖 403、编辑回草稿、自动停用、聚合幂等/skipped_active/insufficient_cases 的全部断言或 UI。
 
 本轮仅静态核对，未执行 Go 测试、前端 Vitest 或这两个 E2E，不形成运行通过结论。
+
+## 10. 会话只读分享与图片输入
+
+### 10.1 分享路由与装配
+
+| 方法与路径 | 权限 | 当前语义 |
+| --- | --- | --- |
+| `POST /api/ai/chat/sessions/:session_id/shares` | `app:ai:chat` | owner 创建只读分享，返回一次性明文 token |
+| `GET /api/ai/chat/sessions/:session_id/shares` | `app:ai:chat` | owner 查询会话全部分享记录（含撤销/过期） |
+| `DELETE /api/ai/chat/sessions/:session_id/shares/:share_id` | `app:ai:chat` | owner 撤销分享，幂等 |
+| `GET /api/ai/chat/shares/:token` | `app:ai:chat` | 任意具备权限的登录用户只读访问共享会话 |
+
+分享是 ChatService 的可选能力：`SetShares` 未注入仓储时四个接口返回 503 `UNAVAILABLE`，其余对话能力不受影响；`cmd/api/main.go` 当前已注入 `ai_session_share` 仓储，因此标准装配下能力可用。创建/列表/撤销先经 `loadOwnedSession` 校验归属，非 owner 返回 403；访问分享不校验会话归属。分享路由挂在 `chatHandler != nil` 分支下，与其它会话路由一致。
+
+### 10.2 分享生命周期与安全语义
+
+```text
+CreateShare
+  -> 校验归属 -> TTL 归一化（0=默认 168h，合法区间 1–720h）
+  -> 统计同会话 active 且未过期的链接数，>=10 返回 409
+  -> 生成 32 字节随机 token（base64url，43 字符），落库只存 SHA-256 十六进制
+  -> 审计 chat_share_create（payload 含 session_id/share_id/expires_at/result）
+  -> 明文 token 与 share_url=/ai-assistant/shared/<token> 只在本次响应返回
+
+ViewSharedSession
+  -> 按 token 哈希查记录 -> Usable 校验（撤销/过期不可用）
+  -> 加载会话与最近 200 条消息（同 §8.1 详情窗口）
+  -> 审计 chat_share_view 按访问者 user_id 记录
+```
+
+- 过期、已撤销、token 不存在、会话已删除统一返回 404，不能区分“曾经存在过”；撤销时跨会话的 `share_id` 也按 404 处理，避免探测。
+- 删除会话**不会级联删除**分享记录（0053 无外键，仓储也没有删除方法）；链接失效由访问时“会话不存在 → 404”保证，`ai_session_share` 中的残留记录会一直存在。
+- 撤销幂等：已撤销再撤销返回当前视图且不更新数据，但**每次调用仍会写一条 `chat_share_revoke` 审计**，与记忆状态幂等不写审计的口径不同。
+- 分享列表按 `created_at` 倒序返回全部记录，不返回 token 或哈希；已归档会话的分享仍可访问（归档只限制新提问）。
+- 审计 payload 不含 token、消息正文或回答内容；访问日志与请求日志中间件通过 `pkg/transport/http.RedactSensitivePath` 把 `/api/ai/chat/shares/<token>` 脱敏为 `/api/ai/chat/shares/<redacted>`。
+- 分享不改变数据范围判断：能打开链接的充要条件是已登录且具备 `app:ai:chat`，不做对象级数据范围过滤。
+
+### 10.3 图片输入（migration 0059）
+
+`normalizeChatImages` 校验：最多 3 张；仅接受 `data:image/(png|jpeg|webp);base64,` 前缀；base64 解码后单张 ≤2MB 且非空。远程 URL、其它 MIME、非法 base64、空 payload 都是 400 `INVALID_ARGUMENT`。文本为空但带图时服务端补默认提问“请分析这张图片。”；文本与图片均为空在写 SSE/落库之前返回 400。
+
+视觉门控发生在**幂等重放与归档校验之后、用户消息落库之前**：本轮实际模型未开启 `vision_enabled` 时返回 400，不落用户消息、不调用模型。本轮模型按 请求 `provider_id` > 会话 `context.provider_id` > 默认模型 解析，请求/会话指定的 provider 不在目录中时按默认模型的视觉开关判断，运行时无模型目录时直接 400。归档会话带图发送先命中归档 409，不会走到视觉校验。
+
+```text
+sendMessage
+  -> normalizeChatImages（400 不落库）
+  -> 幂等重放 / 归档校验
+  -> chatVisionSupported(requestedProviderID)（400 不落库）
+  -> AppendMessage(user, images 落 images_json)
+  -> generateAnswer：首轮 + Loop 各轮 + 强制收敛轮均携带 images
+```
+
+- 类型 b 执行器把带图 user 消息构造为 OpenAI 兼容 content 数组（`text` + `image_url`）；无图消息仍是纯字符串，报文不变。registry 未实现视觉通道时 `completeModel` 明确报错，正常流程已被前置校验拦截。
+- 送入模型的会话历史（最近 12 条）只保留 Role/Content 文本，不回放历史图片；图片只在当前回合的模型调用中携带。
+- `ai_session_message.images_json`（JSONB，可空）只写 user 消息；assistant 消息不写。会话详情与分享访问的消息视图返回 `images`（omitempty，仅 user 消息非空时）。
+- `chat_message` 审计 payload 增加 `image_count`；图片 base64 不进入日志、审计 payload 或 Prompt 文本字段；记忆/知识沉淀不读取图片内容。
+
+### 10.4 前端实现与差距
+
+- `ProviderManager.vue` 以「视觉能力」开关维护 `vision_enabled`；`GET /api/ai/chat/models` 返回 `vision_enabled`，聊天页据此启用/禁用图片按钮。
+- `ChatImagePicker.vue` 支持点击上传与粘贴（ChatPanel 的 paste 事件转 `addImageFiles`）；≤300KB 原样读取，>300KB 经 canvas 缩放最长边 1280 后按 JPEG 0.85 重编码，压缩后仍超 2MB 拒绝；预览条可删除，非视觉模型下按钮禁用且粘贴给出提示。
+- `ChatUserMessage.vue` 用 `ChatMessageImages.vue`（a-image，可点击预览）渲染用户附图缩略图；独立工作台与全局浮层共用同一图片通道。重试复用同一 `client_message_id` 并重新携带附图，服务端按幂等重放，不重复调用模型。
+- `ShareDialog.vue` 提供 1/7/30 天有效期选项，生成后弹窗内展示完整链接并复制，历史分享可撤销；token 不持久化。
+- **当前差距**：`SharedSession.vue` 的用户气泡只渲染文本，未复用 `ChatMessageImages`，因此分享页不展示附图——API 已返回 `images` 字段，仅前端渲染缺失，验收 9.16.6 的“分享页只读展示图片”当前不成立。ShareDialog/SharedSession/useChat 图片链路也没有专项 Vitest（`imageInput.spec.ts` 只覆盖工具函数本身）。
+
+### 10.5 验证覆盖
+
+- `chat_share_test.go`：token 哈希与默认 TTL、TTL/owner 校验、active 上限、只读 active 链接、过期与已删会话隐藏、owner 与跨会话撤销、未装配 503。
+- `chat_images_test.go`：normalize 规则（数量/MIME/远程 URL/非法 base64/空 payload/超限）、视觉通道调用与落库、纯图片默认提问、非视觉模型 400 不落库、无目录 400；`chat_vision_test.go`：同步/流式多模态报文与无图纯文本报文。
+- `e2e-ai-assistant.ps1` 的 share 步骤覆盖创建 24h 分享、访问链接、撤销后 404 与 `chat_share_create/revoke/view` 审计；不覆盖分享列表接口、过期链接、owner 边界、active 上限（由单测覆盖）与跨账号语义（需人工）。**图片链路没有任何 AI E2E**，报文与拒绝语义依赖单测，视觉效果需真实模型人工验证。
+
+## 11. 全局浮层与消息排队
+
+对话状态与排队全部在前端 `useChat` 组合式函数内维护，后端没有排队或会话锁概念；同一会话的并发消息仍按 §8.3 幂等语义处理（不同 key 各自成轮，无串行保证）。
+
+### 11.1 挂载与生命周期
+
+```text
+BasicLayout（登录后的统一布局）
+  -> provide(ChatControllerKey, useChat())  // 全应用唯一控制器实例
+  -> AIAssistantOverlay 通过 useSharedChat() inject 同一控制器
+  -> 独立工作台 /ai-assistant 同样 inject，浮层与工作台共享会话、消息与队列
+```
+
+- 控制器挂在布局层，路由切换不销毁：跨页导航时后台生成与本地消息保留；登出或布局卸载时 `onUnmounted` 中止全部流并清空队列。
+- 所有状态只在内存中，不写 localStorage；刷新页面即丢失排队条目与乐观消息，正在生成的回合由服务端按取消检查点或正常完成落库。
+- 浮层是右侧抽屉（480px，窄于 560px 时全宽），`unmount-on-close` 只卸载面板 DOM，控制器状态不随之丢失。
+
+### 11.2 浮层入口与页面上下文
+
+- 入口：顶栏「AI 助手」按钮、快捷键 `Alt + A`（toggle，带确认弹窗等场景也可用）、告警详情的「问 AI 助手」。前两者为默认入口；告警页 `askAI` 先 `syncAlertAIContext` 写入告警上下文，再以 `openOverlay({ selectSession: true })` 打开**会话选择器**。
+- 默认入口打开时若尚无激活会话，自动加载会话列表并选中最近会话；选择器入口只列会话不自动打开，可继续历史会话或新建会话（新建会话携带当前页面上下文，如 `alert_id`）。
+- 抽屉顶部展示 `aiContext.summary`；页面上下文写入方与字段见契约 §10.8（告警详情、资产、执行、观测查询写资源级字段，路由切换只保留同页资源，其余清理）。`stores/aiContext.spec.ts` 覆盖凭证类自由文本丢弃、`execution_id` 视为资源级、同页保留与显式选择器入口等 6 项。
+- 「完整工作台」、回答引用导航（`onNavigate`）和「生成执行计划」成功后都会先关闭浮层再跳转；执行提议跳转 `/executions?task_id=` 并进入 pending_confirm。
+
+### 11.3 同会话排队
+
+```text
+send(content)
+  -> 归档会话直接拦截提示，不进队列
+  -> 目标会话 state.sending=true 时：构造 QueuedChatMessage 入队后返回
+       （content/images/context/provider_id/client_message_id 均按入队时刻快照冻结）
+  -> 否则 sendNow 直接发送
+
+sendNow 完成/失败 finally
+  -> sendNextQueued：取出队首自动发送，直到队列清空
+```
+
+- 队列条目独立生成 `client_message_id`；排队期间切换页面、模型或上下文不影响已入队条目的快照。
+- 生成中点击停止：按钮文案变为「停止并清空队列」，`stop()` 清空当前会话队列并中止当前流；服务端按取消检查点保留 user、不写 assistant。
+- 队列管理（置顶/删除/清空）只作用于**当前激活会话**的队列；后台会话的队列需要切回该会话才能管理，会话列表以「生成中」标记后台在途会话。
+- 删除会话会先中止该会话流并清空其队列，再调用删除接口。
+- 已归档会话的排队条目发送时被服务端 409 拒绝，队列不会因此整体终止：剩余条目会逐条尝试、逐条失败，最后一条错误留在面板。
+- 重试按钮复用旧幂等键与附图（§8.6 缺口不变）；若当前会话生成中，重试同样进入队列而非并发请求。
+
+### 11.4 跨会话并发
+
+每个会话有独立 `SessionChatState` 与 `AbortController`，不同会话可同时生成，互不串消息；`selectSession` 命中本地已加载、生成中或有队列的状态时直接接管本地状态，不回源覆盖乐观消息。同步阻塞只存在于同一会话内。
+
+### 11.5 验证覆盖与差距
+
+- `useChat.spec.ts`：1 个用例覆盖跨会话并发、同会话第二条入队、首条完成后自动发送与列表 `sendingSessionIds` 标记。
+- `AIAssistantOverlay.spec.ts`：4 个用例覆盖选择器不自动打开、选择历史会话、带告警上下文新建会话与默认入口自动选中。
+- `QueuedMessageList.spec.ts`：1 个用例覆盖置顶/删除/清空事件透传；`chatSessionState.ts` 类型无独立测试。
+- 当前差距：停止并清空队列、队列管理与流的交互、归档会话排队逐条失败、删除会话清理、`Alt + A` 快捷键与窄屏宽度均无专项测试；排队条目与乐观消息不持久化，刷新后丢失，不能把浮层当作可恢复的工作区。
+
+## 12. RDS 长事务历史会话诊断
+
+### 12.1 触发与两条取数入口
+
+诊断只在 `SYS.RDS + oldest_transaction_duration` 长事务场景生成：告警 labels/annotations 命中该命名空间与指标，或本轮指标证据已取到该指标数据。文本对话与其它告警类型不会出现 `diagnosis`。
+
+```text
+Chat gather    collectPostgresObservation：长事务告警才自动取数（先 checkTool 校验 AI 工具权限）
+Chat Loop      refreshPostgresObservation：模型显式申请 postgres.activity.query；
+               params 支持 from/to（必须成对，缺省取告警证据窗口）与 limit（0–300）
+Analyze        collectPostgresEvidence：告警分析入口，同样先校验工具权限
+               -> derivePostgresEvidenceQuery：account/region/project/instance/窗口按告警或资源上下文推导
+               -> PostgresCollector.Collect（ak_sk 账号 + 数据范围校验 + 15s 预算）
+               -> finalizePostgresEvidence：先落库定稿快照，再进入诊断与模型
+               -> buildPostgresDiagnosis
+```
+
+查询参数不允许自由指定连接地址或实例：`instance_id` 从告警 labels（`rds_instance_id`/`rds_cluster_id`/`cloud_resource_id`）、指标维度或资源 `cloud_resource_id` 推导；缺失时按 `no_rds_instance` 跳过。
+
+### 12.2 采集与脱敏边界
+
+- Collector 校验 `no_account/no_region/invalid_rds_instance_id`（仅允许 `[A-Za-z0-9-]{1,128}`）、时间范围非法或超 7 天时按 `skipped` 返回；账号非 `ak_sk` 按 `unsupported`；数据范围不足按 `permission_denied`；账号/凭据/project_id 解析失败按 `error`。
+- 三组接口（历史会话、等待事件、Top SQL）共享 `ai.postgres_evidence_timeout_ms` 总预算（默认 15000ms）；每页 100、单类最多 300 行，分页保留上游 `total_count`（省略时 -1，达到预算行数仍按 `truncated=true`）。历史会话是主证据：主接口失败整体 error/permission_denied；等待事件或 Top SQL 失败保留会话事实，进 `missing_evidence/collection_errors`，不改写成“没有等待/没有 SQL”。
+- 脱敏在映射层完成：用户名转 `user_hash`（SHA-256 前 16 位）；客户端地址 IPv4 保留 `/24`、IPv6 保留 `/64` 网段，非 IP 标识哈希化；`sql_statement` 原文不保存，只留规范化空白后的 `sql_hash`、深度 0 关键字解析的 `sql_operation` 和最长 300 runes 的 `sql_summary`。摘要把字符串/数字字面量统一替换为 `?`，移除行注释、嵌套块注释与 dollar-quoted 内容；未闭合字符串从起点截断，异常 SQL 不会泄露原文。
+- 定稿快照先落库再进入模型：payload 超限时先丢 Top SQL、再丢等待事件、逐条丢会话，仍超限按编码失败处理；快照存储未装配或写库失败时，原本 `ok` 的结果**fail-closed** 转为 `error`（`postgres_snapshot_store_disabled`/`postgres_snapshot_persist_failed`）并清空 evidence_id，不把未持久化现场当事实。非 OK 结果清空记录、`retained_count=0` 并追加 `postgres_activity` 缺失。
+- 会话排序：锁等待优先，其次事务时长倒序、采样时间倒序、session id 升序；`evidence_type=postgres_activity`、`schema_version=ai.postgres_activity.v1`。
+
+### 12.3 诊断结构与根因边界
+
+```text
+buildPostgresDiagnosis
+  -> facts = 指标事实（first/peak/last/破限点/保留点）
+           + 最多 6 条会话事实（状态、事务时长、采样、应用、Query ID、等待事件、SQL 操作/摘要、阻塞进程）
+           + 最多 3 条与会话 Query ID 匹配的 Top SQL 脱敏事实（不匹配不进入）
+  -> root_cause 分类：lock_wait > idle_in_transaction > active_long_query > undetermined
+  -> undetermined 时生成空闲事务/活跃长 SQL/锁等待三类待验证假设
+  -> summary/evidence/recommendations/uncertainties 由服务端按分类覆盖生成
+```
+
+| code | 判定 | status | 输出约束 |
+| --- | --- | --- | --- |
+| `lock_wait` | `wait_event_type=Lock` 或有效阻塞进程（`0`/`-1`/空不算） | suspected | 有无直接阻塞者分别陈述；“阻塞链根因仍需人工复核”；建议不直接 kill |
+| `idle_in_transaction` | 会话 `idle in transaction` 且事务时长 >0 | confirmed | 只确认分类；应用为何未结束事务仍未定，追加 `application_logs` 缺失 |
+| `active_long_query` | 会话 `active` 且事务时长 >0 | suspected | 慢因需结合 Query ID/执行计划/等待事件，不臆造 |
+| `undetermined` | 无现场、采集失败或窗口内无可分类会话 | undetermined | 列出缺失证据与三类假设；不能反推“当时不存在长事务” |
+
+`Client/ClientRead` 等待在事实中固定附注“数据库等待客户端下一命令，不是锁等待”。模型输出中的 diagnosis 字段会被忽略（解析时重置为 nil 后由服务端重建）；回答重放保留原 diagnosis；诊断 JSON 序列化保证 facts/hypotheses/missing_evidence/evidence_ids 为空数组而非 null。
+
+### 12.4 前端展示与差距
+
+- AnswerCard 渲染诊断结论（状态 Tag + statement + 证据 ID）、已确认事实（statement + evidence_id/pointer）、待验证假设（statement + 缺少证据），并把 `missing_evidence` 去重并入不确定性提示；复制全文 Markdown 包含诊断结构。`AnswerCard.spec.ts` 覆盖 diagnosis 各区块渲染。
+- 告警页 AI 分析弹窗只展示风险、摘要、建议和引用，**未展示 `diagnosis`**；完整诊断卡片只在 AI 助手回答中，不能把弹窗当作已覆盖 RDS 结构化诊断验收（`internal/alert/README.md` 已登记）。
+- 未实现告警触发后的平台主动采集：诊断读取的是华为已采样的历史窗口，不是平台在告警时刻抓取的快照。
+
+### 12.5 验证覆盖
+
+- application：`postgres_chat_test.go`（双入口 diagnosis、工具拒绝不取数、失败产生缺失证据）与 `postgres_evidence_finalizer_test.go`（排序落库、fail-closed、截断计数、四类判定、idle confirmed 边界、无阻塞者不声称、重放保留、模型 diagnosis 忽略、JSON 空数组）。
+- infrastructure：`postgres_collector_test.go`（分页+脱敏、部分证据保留、会话权限拒绝、非法窗口、total unknown、ctx 取消、SQL 摘要脱敏与 300 runes）；`rds_history_client_test.go`（total unknown、过期 ctx）。
+- E2E：`scripts/e2e-postgres-history.ps1 -AlertId <长事务告警>` 需真实云账号与支持历史会话的实例，使用 mock 模型；验证工具 ok、diagnosis 结构与 idle confirmed 边界；权限不足显式失败不伪造成功。finally 只清理 mock provider，**会话与证据保留**；9.17.2 的 IAM 权限缺口组合需人工验证。
+
+## 13. ai-orchestrator 与类型 c 参考协议
+
+`cmd/ai-orchestrator` 是类型 c 的内部编排参考实现，**不是必需组件**：主对话只用类型 b，告警分析按 `AnalysisProviderID` 优先 b → c → 其他启用项选择，只有环境里没有任何类型 b 时类型 c 才会接管分析（对话仍返回 degraded/model_unavailable）。
+
+### 13.1 平台侧调用（toolgateway）
+
+- 类型 c 注册为 `InternalServiceExecutor`：`POST <base_url>/api/tool/invoke`，鉴权头 `X-API-Key: Bearer <api_key>`；base_url/api_key 必填，响应体上限 1MiB，非 2xx 统一 `UNAVAILABLE`。
+- 出站目标经平台侧 `ValidateOutboundURL` / `ai.outbound_allowed_hosts` 校验；SSRF 防护在平台侧，编排服务自身不内置。
+- 两条调用链可达：直接 `POST /api/ai/tools/invoke`（转发任意 tool_code）与告警分析（固定 `alarm.analyze`，payload 含 `alert`/`evidence`，长事务场景另含 `postgres_activity`、`similar_cases`）。对话内置工具不经 Provider 转发。
+
+### 13.2 服务侧行为（cmd/ai-orchestrator）
+
+```text
+配置（全部环境变量，缺一启动失败）：
+  AIOPS_AI_ORCH_ADDR（默认 :8090）、AIOPS_AI_ORCH_API_KEY（必填）
+  AIOPS_AI_ORCH_MODEL_BASE_URL / MODEL_API_KEY / MODEL_NAME（必填）
+  AIOPS_AI_ORCH_MODEL_PATH（默认 /v1/chat/completions）、AIOPS_AI_ORCH_TIMEOUT_S（默认 30）
+
+POST /api/tool/invoke（兼容 /v1/tools/invoke）
+  -> X-API-Key 校验（剥离 Bearer 前缀后常数时间比较；兼容裸 key）
+  -> 仅接受 tool_code=alarm.analyze；请求体上限 2MiB
+  -> 固定 system prompt + {alert, evidence, task} user prompt
+     （temperature 0.2、response_format=json_object；模型响应上限 4MiB）
+  -> 429/5xx/网络错误按预算重试 2 次；解析失败要求 summary 非空
+  -> references 与 payload.evidence 中的 evidence_id 合并去重
+  -> 任何模型/解析失败：HTTP 200 返回保守降级结果
+GET /healthz：仅进程存活
+```
+
+关键边界：
+
+- 服务**不落库、不执行动作**；日志只记 `tool_code`/`duration_ms`/`tokens`/`degraded`，不落告警内容、payload 或模型密钥。
+- 只读 `payload.alert` 与 `payload.evidence` 构建 Prompt，**不消费 `postgres_activity` 与 `similar_cases`**；长事务结构化 `diagnosis` 由平台侧 `buildPostgresDiagnosis` 生成（与 provider 类型无关），并在长事务场景覆盖 summary/recommendations。
+- 模型失败时的降级输出是普通分析对象（固定 summary、`risk_level=info`、保留 evidence 引用、uncertainty 注明不可用），**响应体没有 `degraded=true` 字段**——平台不会把该轮分析记为 `provider_degraded` 或审计 `partial`，与类型 b 的降级语义不同，只能靠回答文案与编排服务日志区分。
+- HTTP server 超时：ReadHeader 5s / Read 30s / Write 90s，优雅关机 10s；日志固定 json/stdout、服务名 `aiops-ai-orchestrator`。
+
+### 13.3 部署与验证边界
+
+- 仓库不含编排服务的 compose/K8s 服务定义，Makefile `build` 只构建 `cmd/api`；需要时用 `go build ./cmd/ai-orchestrator` 手工构建并内网部署。
+- 前端 ProviderManager 类型下拉提供「C - 内部服务」；`model` 字段仅类型 b 显示（类型 a/c 的 model 不会被服务端强制清空，但对执行器无意义）。
+- 验证：`cmd/ai-orchestrator/analysis_test.go` 7 个用例（成功、坏 key、Bearer 兼容、未知 tool_code、模型失败回退、summary 必填、引用去重）；toolgateway 类型 c 仅以 stub/协议字段覆盖。**无编排服务专项 E2E**，契约 §9.4 的部署建议需人工验收。
