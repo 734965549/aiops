@@ -30,6 +30,7 @@ type RuleHealthQuery struct {
 }
 
 // RuleHealthRuleResult 是单条规则的曲线统计；status 非 ok 时统计字段为空。
+// 规则关联多个实例时最多抽样三个实例，统计字段取自越限最严重的样本。
 type RuleHealthRuleResult struct {
 	RuleID      string   `json:"rule_id"`
 	Name        string   `json:"name"`
@@ -38,25 +39,36 @@ type RuleHealthRuleResult struct {
 	Operator    string   `json:"operator,omitempty"`
 	Threshold   *float64 `json:"threshold,omitempty"`
 	// Unit 是本次曲线数据的单位；RuleUnit 是规则阈值配置的单位，二者不一致时需人工核对量纲。
-	Unit          string            `json:"unit,omitempty"`
-	RuleUnit      string            `json:"rule_unit,omitempty"`
-	WindowSeconds int               `json:"window_seconds,omitempty"`
-	ResourceCount int               `json:"resource_count,omitempty"`
-	Dimensions    map[string]string `json:"dimensions,omitempty"`
-	// Sampled 表示规则关联多个资源、本次只取了其中一个资源作为样本。
-	Sampled      bool     `json:"sampled,omitempty"`
-	Status       string   `json:"status"`
-	Reason       string   `json:"reason,omitempty"`
-	EvidenceID   string   `json:"evidence_id,omitempty"`
-	PointCount   int      `json:"point_count"`
-	First        *float64 `json:"first,omitempty"`
-	Min          *float64 `json:"min,omitempty"`
-	Avg          *float64 `json:"avg,omitempty"`
-	P95          *float64 `json:"p95,omitempty"`
-	Peak         *float64 `json:"peak,omitempty"`
+	Unit          string `json:"unit,omitempty"`
+	RuleUnit      string `json:"rule_unit,omitempty"`
+	WindowSeconds int    `json:"window_seconds,omitempty"`
+	ResourceCount int    `json:"resource_count,omitempty"`
+	// ResourceGroupCount 大于 0 表示规则按资源分组关联，ResourceCount 是分组数而非实例数。
+	ResourceGroupCount int               `json:"resource_group_count,omitempty"`
+	Dimensions         map[string]string `json:"dimensions,omitempty"`
+	// Sampled 表示规则关联多个资源/资源分组，本次只对其中部分实例取数。
+	Sampled bool `json:"sampled,omitempty"`
+	// CheckedResources 是本次实际取到曲线的实例数（最多 3 个）。
+	CheckedResources int      `json:"checked_resources,omitempty"`
+	Status           string   `json:"status"`
+	Reason           string   `json:"reason,omitempty"`
+	EvidenceID       string   `json:"evidence_id,omitempty"`
+	PointCount       int      `json:"point_count"`
+	First            *float64 `json:"first,omitempty"`
+	Min              *float64 `json:"min,omitempty"`
+	Avg              *float64 `json:"avg,omitempty"`
+	P95              *float64 `json:"p95,omitempty"`
+	Peak             *float64 `json:"peak,omitempty"`
+	// PeakAt 是峰值时刻（Unix 秒），基于全量序列计算。
+	PeakAt       *int64   `json:"peak_at,omitempty"`
 	Last         *float64 `json:"last,omitempty"`
 	BreachPoints int      `json:"breach_points,omitempty"`
 	BreachRatio  *float64 `json:"breach_ratio,omitempty"`
+	// BreachEpisodes / BreachDurationSeconds / LongestBreachSeconds 是 period 聚合口径下的
+	// 连续越限片段数、累计越限时长与最长片段时长（breach_points × period 推算）。
+	BreachEpisodes        int   `json:"breach_episodes,omitempty"`
+	BreachDurationSeconds int64 `json:"breach_duration_seconds,omitempty"`
+	LongestBreachSeconds  int64 `json:"longest_breach_seconds,omitempty"`
 }
 
 // RuleHealthResult 是批量规则体检结果。

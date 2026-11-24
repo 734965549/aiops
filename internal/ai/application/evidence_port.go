@@ -33,18 +33,25 @@ type MetricEvidenceQuery struct {
 
 // MetricEvidence 单条指标序列的证据摘要。
 type MetricEvidence struct {
-	Namespace    string            `json:"namespace"`
-	Metric       string            `json:"metric"`
-	Unit         string            `json:"unit"`
-	Threshold    *float64          `json:"threshold,omitempty"`
-	Operator     string            `json:"operator,omitempty"`
-	First        *float64          `json:"first,omitempty"`
-	Peak         *float64          `json:"peak,omitempty"`
-	Last         *float64          `json:"last,omitempty"`
-	BreachPoints int               `json:"breach_points,omitempty"`
-	Points       [][2]float64      `json:"points,omitempty"` // [ts 秒, 值]
-	Labels       map[string]string `json:"labels,omitempty"`
-	EvidenceID   string            `json:"evidence_id,omitempty"`
+	Namespace string   `json:"namespace"`
+	Metric    string   `json:"metric"`
+	Unit      string   `json:"unit"`
+	Threshold *float64 `json:"threshold,omitempty"`
+	Operator  string   `json:"operator,omitempty"`
+	First     *float64 `json:"first,omitempty"`
+	Peak      *float64 `json:"peak,omitempty"`
+	// PeakAt 是峰值时刻（Unix 秒），基于全量序列计算，降采样后仍保留。
+	PeakAt       *int64   `json:"peak_at,omitempty"`
+	Last         *float64 `json:"last,omitempty"`
+	BreachPoints int      `json:"breach_points,omitempty"`
+	// BreachDurationSeconds / LongestBreachSeconds 是按查询 period 聚合口径推算的累计/最长越限时长，
+	// BreachEpisodes 是连续越限片段数；三者只反映 period 粒度下的持续性与频次，不等同原始采样窗口。
+	BreachDurationSeconds int64             `json:"breach_duration_seconds,omitempty"`
+	LongestBreachSeconds  int64             `json:"longest_breach_seconds,omitempty"`
+	BreachEpisodes        int               `json:"breach_episodes,omitempty"`
+	Points                [][2]float64      `json:"points,omitempty"` // [ts 秒, 值]
+	Labels                map[string]string `json:"labels,omitempty"`
+	EvidenceID            string            `json:"evidence_id,omitempty"`
 }
 
 // MetricEvidenceSampling 描述定稿前的降采样口径。

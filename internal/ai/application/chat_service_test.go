@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -1331,13 +1332,7 @@ func TestSendMessageAgentLoopExhaustsRounds(t *testing.T) {
 	svc, repo, _, chat, audit, _ := newChatTestService(t)
 	// 模型每轮申请不同时间窗口的指标证据：轮数用尽后强制收敛一轮，
 	// 强制轮仍申请工具（无 answer）才降级，不能悬挂。
-	chat.script = []string{
-		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700000000,"to":1700003600}}]}`,
-		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700003600,"to":1700007200}}]}`,
-		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700007200,"to":1700010800}}]}`,
-		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700010800,"to":1700014400}}]}`,
-		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700014400,"to":1700018000}}]}`,
-	}
+	chat.script = loopingMetricScript(chatMaxLoopRounds + 2)
 	seedChatSession(t, repo, "u-1", domain.SessionContext{AlertID: "a1", Page: "alerts"})
 
 	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
@@ -1391,7 +1386,7 @@ func TestSendMessageAgentLoopDuplicateDoesNotConsumeRounds(t *testing.T) {
 	if chat.calls != 6 {
 		t.Fatalf("expected 6 model calls, got %d", chat.calls)
 	}
-	if auditChatLoopRounds(audit) != chatMaxLoopRounds {
+	if auditChatLoopRounds(audit) != 3 {
 		t.Fatalf("loop_rounds = %d", auditChatLoopRounds(audit))
 	}
 	if !hasToolCallReason(result.ToolCalls, chatObservationReasonDuplicateRequest) {
@@ -1446,12 +1441,7 @@ func TestSendMessageAgentLoopStopsAfterOneRetryWithoutProgress(t *testing.T) {
 func TestSendMessageAgentLoopForcedConvergenceAnswers(t *testing.T) {
 	svc, repo, _, chat, audit, _ := newChatTestService(t)
 	// 轮数用尽后强制收敛轮必须基于已有观测产出回答，而不是丢弃证据降级。
-	chat.script = []string{
-		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700000000,"to":1700003600}}]}`,
-		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700003600,"to":1700007200}}]}`,
-		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700007200,"to":1700010800}}]}`,
-		`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":1700010800,"to":1700014400}}]}`,
-	}
+	chat.script = loopingMetricScript(chatMaxLoopRounds + 1)
 	seedChatSession(t, repo, "u-1", domain.SessionContext{AlertID: "a1", Page: "alerts"})
 
 	result, err := svc.SendMessage(context.Background(), SendChatMessageInput{
@@ -2756,4 +2746,16 @@ func TestSendMessageSkipsAccountsWhenPortMissing(t *testing.T) {
 			t.Fatalf("unexpected discovery tool call without ports: %+v", call)
 		}
 	}
+}
+
+// loopingMetricScript 生成连续申请不同时间窗口指标证据的模型脚本，
+// 用于验证 Agent Loop 轮数预算与强制收敛，不依赖具体轮数配置。
+func loopingMetricScript(n int) []string {
+	script := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		from := int64(1700000000 + i*3600)
+		script = append(script, fmt.Sprintf(
+			`{"tool_requests":[{"tool_code":"metrics.query","params":{"from":%d,"to":%d}}]}`, from, from+3600))
+	}
+	return script
 }

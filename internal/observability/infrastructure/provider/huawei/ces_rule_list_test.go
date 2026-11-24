@@ -258,3 +258,94 @@ func valueOfInt32(v *int32) int {
 	}
 	return int(*v)
 }
+
+func TestMapListAlarmRuleKeepsResourceGroupIDs(t *testing.T) {
+	groupID := "rg-0123456789abcdef01234"
+	resources := []cesv2model.ResourcesInListResp{{ResourceGroupId: &groupID}}
+	rule := mapListAlarmRule(cesv2model.ListAlarmRespBodyAlarms{
+		AlarmId: strPtr("al-group"), Namespace: strPtr("SYS.RDS"), Resources: &resources,
+	})
+	if len(rule.ResourceGroupIDs) != 1 || rule.ResourceGroupIDs[0] != groupID {
+		t.Fatalf("resource group ids = %+v", rule.ResourceGroupIDs)
+	}
+	if rule.ResourceCount != 1 || len(rule.Resources) != 0 {
+		t.Fatalf("group rule must not invent dimensions: %+v", rule)
+	}
+}
+
+type fakeRuleResourceResolver struct {
+	samples map[string][]map[string]string
+	err     error
+	calls   []string
+	limits  []int
+}
+
+func (f *fakeRuleResourceResolver) ExpandGroupDimensions(_ context.Context, _ AKSKCredential, _, _, groupID, service string, limit int) ([]map[string]string, error) {
+	f.calls = append(f.calls, groupID+"|"+service)
+	f.limits = append(f.limits, limit)
+	if f.err != nil {
+		return nil, f.err
+	}
+	samples := f.samples[groupID]
+	if len(samples) > limit {
+		samples = samples[:limit]
+	}
+	return samples, nil
+}
+
+func TestAdapterListAlertRulesExpandsResourceGroupRules(t *testing.T) {
+	credentials, repo, vault := newTestCredentialProvider(t)
+	seedAKSKCredential(t, credentials, repo, vault, "acc-1")
+	listClient := &fakeAlarmRuleListClient{rules: []domain.AlertRule{
+		{
+			RuleID: "r-group", Name: "Group rule", Namespace: "SYS.RDS", Metric: "rds001_cpu_util",
+			ResourceCount: 1, ResourceGroupIDs: []string{"rg-1"},
+		},
+		{
+			RuleID: "r-dim", Name: "Instance rule", Namespace: "SYS.RDS", Metric: "rds002_mem_util",
+			ResourceCount: 1, Resources: []map[string]string{{"rds_instance_id": "i-9"}},
+		},
+	}}
+	resolver := &fakeRuleResourceResolver{samples: map[string][]map[string]string{
+		"rg-1": {
+			{"rds_instance_id": "i-1"},
+			{"rds_instance_id": "i-2"},
+			{"rds_instance_id": "i-3"},
+			{"rds_instance_id": "i-4"},
+		},
+	}}
+	adapter := NewAdapter(credentials, nil, nil).
+		WithAlarmRuleList(listClient).
+		WithRuleResourceResolver(resolver)
+
+	rules, err := adapter.ListAlertRules(context.Background(), domain.ProviderContext{
+		Account: domain.AccountSnapshot{
+			AccountID: "acc-1", AuthType: string(integdomain.AuthAKSK),
+			ProjectID: "p-1", Regions: []string{"cn-north-4"}, CredentialRefID: "cref-1",
+		},
+	}, domain.AlertRuleQuery{Namespace: "SYS.RDS", Limit: 10})
+	if err != nil {
+		t.Fatalf("list alert rules: %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("rules = %+v", rules)
+	}
+	if len(resolver.calls) != 1 || resolver.calls[0] != "rg-1|SYS.RDS" {
+		t.Fatalf("resolver calls = %+v", resolver.calls)
+	}
+	if resolver.limits[0] != ruleResourceSampleMax {
+		t.Fatalf("expand limit = %d, want %d", resolver.limits[0], ruleResourceSampleMax)
+	}
+	groupRule := rules[0]
+	if len(groupRule.Resources) != ruleResourceSampleMax {
+		t.Fatalf("group rule samples = %+v", groupRule.Resources)
+	}
+	for i, want := range []string{"i-1", "i-2", "i-3"} {
+		if groupRule.Resources[i]["rds_instance_id"] != want {
+			t.Fatalf("sample[%d] = %+v", i, groupRule.Resources[i])
+		}
+	}
+	if dimRule := rules[1]; len(dimRule.Resources) != 1 || dimRule.Resources[0]["rds_instance_id"] != "i-9" {
+		t.Fatalf("dimension rule must not be re-expanded: %+v", dimRule)
+	}
+}

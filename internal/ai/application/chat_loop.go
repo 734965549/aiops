@@ -17,12 +17,13 @@ import (
 // 受限 Agent Loop（阶段 3）的预算与白名单。
 const (
 	// chatMaxLoopRounds 模型可追加取数的最大轮数（不含首轮）。
-	chatMaxLoopRounds = 3
+	// 多规则体检需要按批次补查实例曲线，3 轮会挤掉有效取数，调整为 4 轮。
+	chatMaxLoopRounds = 4
 	// chatLoopTokenBudget 单次对话累计 token 上限，超限即终止循环。
-	// 思考型模型即使 low 强度单轮也数千 token，20000 会在取数中途截断。
-	chatLoopTokenBudget = 60000
+	// 思考型模型即使 low 强度单轮也数千 token，取数轮次增加后需要同步放宽总预算。
+	chatLoopTokenBudget = 80000
 	// chatLoopMaxRequestsPerRound 单轮最多受理的工具申请数。
-	chatLoopMaxRequestsPerRound = 3
+	chatLoopMaxRequestsPerRound = 4
 	// chatDegradedLoopExhausted 轮数/预算耗尽仍未产出 answer 时的降级原因。
 	chatDegradedLoopExhausted = "agent_loop_exhausted"
 	// chatObservationReasonDuplicateRequest 是跨轮重复申请已执行查询时的稳定原因码。
@@ -384,7 +385,7 @@ func chatToolRequestKey(req chatToolRequest) string {
 // runLoopToolRequests 逐个执行模型申请的只读工具，返回（真正执行数, 重复申请数）。
 //
 // 每轮每个工具独立过 RBAC + 工具权限；拒绝原因反馈给模型（denied 观测），不中断循环。
-// 轮内按 tool_code+params 去重（相同组合只执行一次），不同参数各自执行，单轮最多受理 3 个。
+// 轮内按 tool_code+params 去重（相同组合只执行一次），不同参数各自执行，单轮最多受理 4 个。
 // 已成功执行过的 tool_code+params 组合再次申请时只回 denied，不重复取数。
 func (s *ChatService) runLoopToolRequests(ctx context.Context, userID string, session *domain.Session, data *chatContextData, executedRequests map[string]struct{}, requests []chatToolRequest) (int, int) {
 	executed := 0

@@ -53,7 +53,7 @@ const chatSystemPrompt = `你是企业运维平台的 AI 运维助手。你只�
 若用户要求体检多条告警规则（例如判断阈值是否合理），优先申请 alert.rules.health 一次获取批量曲线；仅当需要指定实例、规则无资源维度或需要原始粒度复查时，再逐条申请 metrics.query。阈值量纲以 alert.rules.list 的 unit 与 alert.rules.health 的 unit 为准，不得臆造。
 规则数量多、时间窗口长（如近一个月）或涉及多个实例时，按命名空间/项目/关键词分批体检（每批 5-10 条规则），先给最需要调整的规则；避免单次上下文过长导致生成中断或输出超限。
 需要实例维度但上下文缺少 instance_id 时，先申请 resources.list（如 resource_type=rds）获取资源列表，再对目标实例申请 metrics.query。
-收敛要求：最多 3 轮追加取数，单轮最多申请 3 个工具（可并列申请多个不同指标/窗口的 metrics.query），请一次规划好所需数据；当现有 observations 已足以回答时必须立即输出最终 answer JSON，不得继续申请工具；同一工具与同一参数（同一 namespace / metric / 时间窗口等）在一次对话中只会执行一次，重复申请会收到 denied「已查询过相同数据」，不会获得新证据。不得申请执行类工具。
+收敛要求：最多 4 轮追加取数，单轮最多申请 4 个工具（可并列申请多个不同指标/窗口的 metrics.query），请一次规划好所需数据；当现有 observations 已足以回答时必须立即输出最终 answer JSON，不得继续申请工具；同一工具与同一参数（同一 namespace / metric / 时间窗口等）在一次对话中只会执行一次，重复申请会收到 denied「已查询过相同数据」，不会获得新证据。不得申请执行类工具。
 回答务必精炼，避免超出输出长度限制：summary 不超过 200 字；recommendations 只逐条列出最需要调整的前 6 条规则，其余规则用一句话概括；evidence / impact / uncertainties 各不超过 6 条。`
 
 // ChatObservation 是一次只读工具取数的结果，作为模型输入与工具审计依据。

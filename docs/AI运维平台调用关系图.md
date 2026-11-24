@@ -60,36 +60,98 @@ sequenceDiagram
     EX->>AU: 执行结果审计
 ```
 
-## 3. AI 工具调用与执行边界
+## 3. AI Provider、工具调用与执行边界
+
+### 3.1 直接工具调试：授权后转发给指定 Provider
 
 ```mermaid
 sequenceDiagram
-    participant UI as AI 助手页面
+    participant UI as 工具调用调试页
     participant AIH as AI HTTP Handler
     participant GW as Tool Gateway
     participant Authz as AuthorizationService
-    participant Provider as AI Provider Executor
-    participant EX as Execution Service
+    participant Provider as 类型 a/b/c Provider Executor
     participant AU as Audit Service
 
     UI->>AIH: POST /api/ai/tools/invoke
-    AIH->>GW: Invoke(tool_code, resource, action, confirmed)
-    GW->>Authz: 校验 RBAC / 数据范围 / AI 工具权限
+    Note over AIH: 入口先校验 app:ai.tools:invoke 与路由数据范围
+    AIH->>GW: Invoke(provider_id, tool_code, resource, action, confirmed)
+    GW->>Authz: 可选操作权限 + 对象范围 + AI 工具权限 + confirmed
     alt allowed=false
         GW-->>AIH: allowed=false, reason
-        AIH-->>UI: 展示业务拒绝原因
-    else 只读工具
-        GW->>Provider: 调用受控 provider executor
-        Provider-->>GW: 脱敏工具结果
-        GW->>AU: 写 AI 工具调用审计
-        GW-->>AIH: allowed=true, result
-    else 需要执行
-        GW->>EX: 只创建 Execution Task
-        EX-->>GW: task_id, pending_confirm
-        GW->>AU: 写任务提议审计
-        GW-->>AIH: 返回待确认任务
+        AIH->>AU: best-effort tool_invoke（当前仍记 result=success）
+        AIH-->>UI: HTTP 200 + OK，展示业务拒绝原因
+    else allowed=true
+        GW->>Provider: 调用请求指定的 Provider，不自动切换
+        Provider-->>GW: Executor data；类型 b 也可能 degraded=true
+        GW-->>AIH: allowed=true, provider, data
+        AIH->>AU: best-effort tool_invoke
+        AIH-->>UI: 返回结果
     end
 ```
+
+Gateway 自身不创建 Execution Task。`execution.tasks.propose` 没有平台内置工具实现，直接调用只能转发给外部 Provider；这不能替代 Execution 状态机。
+
+### 3.2 对话内置只读工具：本地执行，模型单独调用
+
+```mermaid
+sequenceDiagram
+    participant Chat as ChatService / Agent Loop
+    participant GW as Tool Gateway
+    participant Authz as AuthorizationService
+    participant Port as Alert/Observability/Integration/Asset Port
+    participant Model as 类型 b ChatClient
+    participant AU as Audit Service
+
+    Chat->>GW: Validate(app:ai:chat + tool_code, SkipDataScope=true)
+    GW->>Authz: RBAC + AI 工具权限
+    GW-->>Chat: allowed / mode / reason
+    alt 工具权限通过
+        Chat->>Port: 执行 8 个内置只读工具之一
+        Note over Port: 在对象或账号 Port 二次校验数据范围
+        Port-->>Chat: 只读观测 / 证据 / 稳定失败状态
+    end
+    Chat->>AU: 写详细 tool_invoke
+    Chat->>Model: 携带观测做对话补全
+    Model-->>Chat: answer 或 tool_requests
+    Chat->>AU: 写 chat_message
+```
+
+告警分析是另一条路径：AnalyzeService 读取告警和证据后，通过 `Gateway.Invoke` 把 `alarm.analyze` 交给动态选择的 Provider。对话中的同名工具只是在本地读取告警快照，不能混为同一外部调用。
+
+AI 回答中的“生成执行计划”由前端调用既有 Execution Task 创建接口；任务仍须经过 Execution 权限、风险、确认和审计，不能由上述工具图推断 Gateway 会直接执行。
+
+### 3.3 会话消息、幂等与 Loop 收敛
+
+```mermaid
+sequenceDiagram
+    participant UI as AI 助手工作台
+    participant Chat as ChatService
+    participant Repo as SessionRepository
+    participant Loop as Agent Loop
+    participant Final as finalizeAnswer
+    participant AU as Audit Service
+
+    UI->>Chat: 同步或 SSE 发送 content + client_message_id
+    Chat->>Repo: 校验会话归属并查幂等键
+    alt 已有 assistant
+        Repo-->>Chat: 首次回答
+        Chat-->>UI: 原样重放，不重新取数/调模型
+    else 只有 user，没有 assistant
+        Chat-->>UI: 409 / SSE error(FAILED_PRECONDITION)
+    else 新提问
+        Chat->>Repo: 事务一：user + title/context/updated_at
+        Chat->>Loop: gather + 类型 b 模型 + 最多 4 轮只读工具
+        Loop-->>Chat: answer，或预算/无进展后强制收敛
+        Chat->>Final: 过滤证据、生成 actions、校验执行提议权限
+        Final-->>Chat: execution.propose action + 权限 tool_call（不建任务）
+        Chat->>Repo: 事务二：assistant + updated_at
+        Chat->>AU: chat_message / tool_invoke（best-effort）
+        Chat-->>UI: answer（落库后的最终推送失败不回滚）
+    end
+```
+
+用户和助手消息不是同一事务；取消检查点之前已保存的用户消息会保留。Loop 的强制收敛成功可以正常回答，只有仍失败才进入 agent_loop_exhausted。
 
 ## 4. 只读观测与巡检链路
 

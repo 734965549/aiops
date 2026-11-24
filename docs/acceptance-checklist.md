@@ -486,7 +486,7 @@ go run ./cmd/migrate
 # 7.2 AI 知识管理（migration 0052 / 0054；脚本自带本地 mock 模型，需 dev 环境）
 .\scripts\e2e-ai-knowledge.ps1
 
-# 7.3 AI 流式对话与取消（migration 0049；脚本自带本地 mock 模型，需 dev 环境）
+# 7.3 AI 流式对话与取消（migration 0049 / 0050；脚本自带本地 mock 模型，需 dev 环境）
 .\scripts\e2e-ai-stream.ps1
 
 # 7.4 AI Agent Loop（migration 0049 / 0056；需要一条 active 告警，脚本自带本地 mock 模型；
@@ -536,29 +536,58 @@ go run ./cmd/migrate
 
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
-| 9.1.1 | 创建只读账号 | `POST /api/integrations/accounts` | 返回 `account_id`，`has_credential=true`，不返回明文密钥 |
-| 9.1.2 | 连通性检查 | `POST /api/integrations/accounts/{account_id}/check` | 返回 `status=ok` 或脱敏失败原因 |
-| 9.1.3 | 权限负向 | 无 `app:integrations:create` 创建账号 | `403 PERMISSION_DENIED` |
-| 9.1.4 | 审计 | 创建/更新/检查账号 | `GET /api/audits` 可查对应动作 |
+| 9.1.1 | Provider/auth 与创建 | 分别创建华为 AK/SK、agency、SigNoz api_token、Prometheus 非 none，并试不兼容组合 | 合法组合返回 `acc-...` 和 `has_credential=true`，不返回 credential/密文/指纹/ref；缺字段或不兼容组合为 400，custom provider 被拒绝 |
+| 9.1.2 | 字段级检查 | 对各 Provider 调 `POST .../:account_id/check`，再构造缺 region/token/base_url 场景 | 当前不访问外部服务；ok 只表示字段通过。checker 失败结果落库后 HTTP 仍可为 200 + OK，必须看 `data.status=failed` 和脱敏 message；disabled 为 412 |
+| 9.1.3 | 权限与数据范围 | 分别缺少 read/create/update/delete/check 调对应接口，并用非 all 数据范围账号列表 | 对应 401/403 语义正确；五个权限独立。当前只有静态 RBAC，不按 owner_team/region 自动过滤 |
+| 9.1.4 | 审计 | 创建/更新/删除/检查后查 `resource_type=integration_account` | 可查同名 action，Payload 无凭据；审计在业务事务后 best-effort，模拟写失败不回滚业务，业务成功不等于审计必达 |
+| 9.1.5 | 更新与凭据保留 | 省略 credential、传空对象、替换凭据，并切换到 none | 前两者保留，非空替换；无清空语义，切 none 不删除旧密文。provider 更新会校验凭据并刷新默认 capabilities，页面则禁用 provider 编辑 |
+| 9.1.6 | 禁用、删除与事务 | 先 enabled=false 调检查，再 DELETE 并查详情、列表、密文和历史 | 禁用保留凭据且检查 412；删除将账号软删除并 enabled=false、密文硬删除，详情 404、列表排除；capabilities/检查历史保留，无恢复接口 |
+| 9.1.7 | 列表与详情 | 使用 provider、enabled、keyword 和分页查询 | keyword 对 name/account_id/owner_team ILIKE；每页最多 100，created_at DESC；返回当前 capabilities 和最近 last_check_status，无检查历史 API |
+| 9.1.8 | capabilities 口径 | 新建及分别执行 ok/failed 检查后核对 capabilities | 三类 Provider 默认值符合契约；空结果会补默认声明，failed 也可能保留默认声明，不能记为在线能力实测通过 |
+| 9.1.9 | extra_config 与历史默认 | 新建省略/传 `{}`、编辑保留或清空、输入敏感键/非法 region_projects；核对 0024/0029 | 新华为默认 ces，其他为 `{}`；更新省略保留、`{}` 恢复默认；敏感键和非法映射拒绝。历史空配置华为由 0029 回填 native，不与新账号混淆 |
+| 9.1.10 | 前端边界 | 检查筛选、编辑凭据、agency、检查失败提示和同步按钮 | 页面无关键字/agency 凭据字段/检查历史/凭据清空；provider 编辑禁用。status=failed 仍显示成功 Toast，必须以 status 为准；同步按钮由 Asset 后端再校验 |
+| 9.1.11 | 密钥与外部引用 | 使用正确/错误版本解密，检查 external_ref 和轮换路径 | AES-GCM 往返正确，版本不匹配拒绝；当前只有当前密钥，无多版本解密、外部 Secret Manager 或在线重加密流程，不能只改 key/version 认定轮换完成 |
+| 9.1.12 | 前端专项 | 运行华为配置纯函数及页面交互验收 | region/region_projects 解析、转义、未知 key 保留正确；现有 Vitest 不覆盖完整页面、agency、检查失败 Toast 或凭据生命周期 |
 
-### 9.2 Observability 查询
+`e2e-integration.ps1` 只使用 `huawei_cloud + auth_type=none` 覆盖创建、列表/详情、检查 ok、更新、viewer 创建 403 和删除。它不覆盖真实凭据或网络、AK/SK/agency/api_token、检查 failed、keyword、审计断言、软删除密文核查或完整 UI；脚本 PASS 不能替代 9.1.1–9.1.12 的专项验收。
+
+### 9.2 Observability 查询与证据账本
 
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
-| 9.2.1 | 指标查询 | `POST /api/observability/metrics/query` | 返回 `series[]` 和 `evidence_id` |
-| 9.2.2 | 日志搜索 | `POST /api/observability/logs/search` | 返回脱敏摘要，不泄露敏感字段 |
-| 9.2.3 | 链路查询 | `POST /api/observability/traces/query` | 返回 Trace 摘要、慢调用和错误调用 |
-| 9.2.4 | 限流/降级 | fake provider 超时或限流 | 返回 `UNAVAILABLE` 或 `RESOURCE_EXHAUSTED`，写审计 |
+| 9.2.1 | 权限与账号解析 | 无 Token/无权限调用四类接口；使用 deleted/disabled 账号、provider 不匹配和非 all 数据范围账号 | 未认证 401、无权限 403；删除 404、禁用 412、provider mismatch 400。公共接口只有静态 RBAC，不按 owner_team/region 自动隔离 |
+| 9.2.2 | 指标通用约束 | 调整 from/to/period，尝试超 7 天、超 1440 点，并在公共请求传 project_id | 公共窗口最长 7 天，period 默认 60、平台最小 10，超限 400；当前 Handler 不接收 project_id，多项目只能由账号或 region_projects 解析，不能按旧示例宣称逐请求覆盖 |
+| 9.2.3 | 真实 CES 指标约束 | 使用 AK/SK 账号分别测试未知 region、缺 namespace/dimensions、超过 4 维、period=10 及合法 CES 枚举 | 非法输入返回 400 且不发云端请求；真实 period 仅 CES 枚举，filter 仅 average/avg/max/min/sum/variance/var。unit 优先 Provider 返回，未登记推断为空，不臆造 |
+| 9.2.4 | Provider 支持矩阵 | 分别用华为 none/AK/SK/agency、SigNoz、Prometheus 调 metrics/logs/traces/topology | 华为 none 全 fake；AK/SK 指标真实、其余三类 unsupported；agency 不降级 fake；SigNoz/Prometheus 当前均为 fake，不能将样本当真实外部数据 |
+| 9.2.5 | 日志与证据脱敏 | fake 查询带 keyword，分别传默认/limit=500/501 | 默认 100、最大 500，超限 400；响应为摘要，evidence.summary 只含 has_keyword/keyword_len/keyword_hash，无 keyword 原文；真实华为日志未实现 |
+| 9.2.6 | 链路查询 | 传 service/operation/trace_id/error_only/min_latency，limit 分别取默认/1000/1001 | 默认 50、最大 1000，超限 400；fake error_only 只生成模拟错误 Span，不记为真实 APM 验证 |
+| 9.2.7 | 运行时拓扑 | 省略 account_id 后查询，再传完整参数并对比 CMDB 拓扑 | account_id/from/to 必填；返回 nodes/edges/error_rate/P95/evidence_id，无 P99；与 `/assets/topology` 的注册表关系图不混用 |
+| 9.2.8 | 普通证据落库 | 分别查询 Metrics 和 Logs，检查 obs_evidence_ref，并模拟证据 Create 与审计失败 | 普通 Metrics 有 query_params/window/collected_at 但 payload=NULL，Logs 以 summary 为主；生产证据保存失败终止查询，审计失败 best-effort，不混淆两种失败策略 |
+| 9.2.9 | AI 快照 fail-closed | 对 SnapshotRequired 指标检查 collecting → SaveSnapshot → 模型输入，并模拟存储失败 | 只有定稿保存成功才转 ok 并作为支持性证据；OK 快照失败会清 metrics/evidence_id，非 OK 可留失败追踪但不能作为支持引用。普通 evidence_id 不代表存在 payload |
+| 9.2.10 | 审计动作 | 完成四类公共查询及内部 resources/alerts 调用后查操作审计 | `observability_query` 包含 metrics_query/logs_search/traces_query/topology_get/resources_list/alerts_list，resource_id 为 evidence_id，Payload 无凭据和原始云端响应 |
+| 9.2.11 | 前端边界 | 检查账号加载、指标多序列、日志/链路 limit、拓扑和证据 ID | 只取前 100 个 enabled 账号，指标只显示首条序列，Logs=100/Traces=50；无证据详情抽屉。现有 Vitest 只覆盖指标参数和 AI 上下文 |
+| 9.2.12 | 无公共内部能力路由 | 请求 resources、alert rules、RDS 历史和 evidence 详情的推测路径 | 这些属于内部 Port/AI/Asset 能力，不存在对应公共 Observability 路由；不能用 QueryService 方法存在推断 HTTP 已完成 |
 
-### 9.3 Inspection 巡检
+`e2e-observability.ps1` 只覆盖 `huawei_cloud + none` 的四类 fake 查询与 evidence_id，不覆盖真实 CES、权限负向、审计、证据落库失败或详情。`e2e-ai-evidence.ps1` 使用 fake 指标 + 本地 mock 模型 + Docker PostgreSQL，验证模型输入与定稿 payload 的规范化 SHA-256 一致，也不是实际 CES 验收。真实指标需使用独立只读账号单独验收，当前没有专用真实指标 E2E 脚本。
+
+### 9.3 Inspection 巡检中心
 
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
-| 9.3.1 | 创建策略 | `POST /api/inspections/policies` | 返回 `policy_id`，状态 enabled |
-| 9.3.2 | 手动触发 | `POST /api/inspections/policies/{policy_id}/runs` | 返回 `run_id`，状态进入 `pending/running` |
-| 9.3.3 | 运行完成 | `GET /api/inspections/runs/{run_id}` | 状态为 `success` 或 `partial`，有时间线 |
-| 9.3.4 | 发现与建议 | `GET /api/inspections/findings?run_id=...` | 每条发现含风险、证据、建议、置信度 |
-| 9.3.5 | 建议转执行 | `POST /api/inspections/recommendations/{id}/execution` | 创建 Execution Task，不直接执行 |
+| 9.3.1 | 策略校验与元数据 | 创建缺少 account_id/checks、未知 check、未知 application_id 和合法策略 | 非法输入 400；合法策略 enabled 默认 true、agent_profile=sre_default。schedule/agent_profile/notification_policy_id 仅保存，不宣称定时、AI 或通知已生效 |
+| 9.3.2 | 策略 CRUD 与权限 | 验证列表/详情/部分更新/启停/删除，以及 read/write 越权 | getPolicy 后端存在；checks 省略保留、空数组拒绝，disabled 触发 412。删除软删除并清 application_ids，历史运行保留；静态 RBAC 无 scope 数据范围过滤 |
+| 9.3.3 | 同步运行终态 | 手动触发并立即检查响应与 Run 详情 | 同一请求完成采集分析，通常返回 success/partial/failed 而非 pending；全部证据失败也可 HTTP 200 + status=failed，必须检查 run.status |
+| 9.3.4 | partial/failed 与事务 | 分别让部分和全部 checks 失败，另模拟分析/结果保存失败 | 部分成功为 partial 并保留证据；全部失败为 failed。Findings/Recs/终态 Run 同事务，启动和审计不在该事务；失败时尽量写 failed 并返回相应结果/错误 |
+| 9.3.5 | scope 与真实云限制 | 检查采集 region/namespace/dimensions，使用真实 AK/SK 和 fake 分别运行 | 当前固定最近 1h、cn-north-4、SYS.ECS、无 dimensions，真实华为指标失败，logs/traces 也不支持；fake 主路径不代表真实云巡检完成 |
+| 9.3.6 | 规则与 Finding | 构造各阈值上下边界和未命中数据 | CPU 80/60、内存 75、磁盘 70、错误 Span、延迟样本、error>=2 规则符合实现；confidence/uncertainty 为规则常量，未命中不建 Finding，affected_resources 仍为固定 payment-service |
+| 9.3.7 | Finding/Recommendation 状态 | 按 run_id/policy_id/risk_level 查询并检查建议状态 | 返回 evidence_refs 和嵌套建议；初始 open，创建任务后 execution_created。accepted/dismissed 无 API，Execution 完成不回写 |
+| 9.3.8 | 转执行准入 | 对不可执行/已创建建议及不同 mode/medium/Spec 参数调转执行 | 不可执行 412、重复 409；只允许 agent，medium_id 必填，无自动介体；confirm_intent 只能 create_task_only，Spec/arguments 由 Execution 校验，中高风险 pending_confirm |
+| 9.3.9 | 默认 Spec 与事务边界 | 省略 command_spec_id/arguments，另模拟任务创建后 Recommendation 更新失败 | 标题选择默认只读 Spec，未命中兜底磁盘，磁盘空参 mount_point=/，需人工复核；Recommendation 不存 task_id，创建与状态更新非事务，重试前核对 Execution/审计避免重复 |
+| 9.3.10 | 审计与 AI 工具边界 | 查策略/运行/建议审计及 AI 工具注册 | 实际为 policy create/update/delete/enable/disable、run create/start/finish、recommendation create/create_execution，best-effort；cancel/notify 未实现。0020 种子不代表已有平台内置工具；通用 Provider 转发不等于调用 Inspection 用例 |
+| 9.3.11 | 前端边界 | 检查策略、运行和发现三个 Tab 以及失败运行提示 | 有新建/删除/立即巡检、运行列表和发现筛选；无编辑/启停/时间线/取消/通知/转执行，无前端 Vitest。failed 也显示成功 Toast，需以 status 为准 |
+| 9.3.12 | E2E 覆盖边界 | 运行并核对 `e2e-inspection.ps1` 与 `e2e-execution-agent.ps1` | 前者仅 fake 下创建应用/账号/策略、同步运行、Run 详情、Findings 和清理；后者直接创建 manual Agent 任务，不经过 Recommendation。两者不覆盖真实云、转执行、审计或完整 UI |
+
+RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测试也不覆盖全部阈值、partial/failed 和转执行异常；上述项目需按实际结果单独记录，不能因 fake E2E PASS 自动记为通过。
 
 ### 9.4 推荐自动化脚本
 
@@ -610,23 +639,36 @@ go run ./cmd/migrate
 | 9.6.2 | 无指标自然跳过 | 事件类告警或无维度/指标告警勾选包含指标 | `evidence.status=skipped`，`reason` 为 `no_metric`/`no_dimensions` 等，分析仍返回 |
 | 9.6.3 | 数据权限降级 | 无绑定账号数据范围的用户发起分析 | `evidence.status=permission_denied`，分析不中断，审计记录该状态 |
 | 9.6.4 | 上游/配置降级 | 停用 provider 或使用 agency 账号 | 分析仍返回本地摘要；`evidence.status=error/unsupported`，无凭据或底层原始错误泄露 |
-| 9.6.5 | 快照与模型一致（migration 0060） | 运行 `.\scripts\e2e-ai-evidence.ps1` | 数据库 `payload/query_params` 含实际数据点与查询窗口；模型观测和 payload 的规范化 SHA-256 相同，且等于 `payload_hash` |
-| 9.6.6 | 降采样与截断计数 | 构造单序列 >96 点的对话指标查询；运行 `go test ./internal/ai/application -run TestFinalizeMetricEvidencePersistsExactModelSnapshot` | 模型与数据库共享同一份定稿序列；`original_count=原始点数`、`retained_count<=96`、`truncated=true`、`sampling.strategy=stride_first_last`，首末点保留 |
+| 9.6.5 | 快照与模型一致（migration 0060） | 运行 `.\scripts\e2e-ai-evidence.ps1`（fake 指标 + 本地 mock 模型 + Docker PostgreSQL） | 数据库 `payload/query_params` 含定稿数据点与查询窗口；模型观测和 payload 的规范化 SHA-256 相同，且等于 `payload_hash`；不代表真实 CES 通过 |
+| 9.6.6 | 降采样与截断计数 | 构造单序列 >288 点的对话指标查询；运行 `go test ./internal/ai/application -run TestFinalizeMetricEvidence` | 模型与数据库共享同一份定稿序列；`original_count=原始点数`、`retained_count<=288`、`truncated=true`、`sampling.strategy=stride_first_last`，首末点保留；峰值时刻与破限片段/时长在降采样前按全量序列计算，裁剪后仍保留 |
 | 9.6.7 | 快照写失败 fail-closed | 运行 `go test ./internal/ai/application -run 'TestFinalizeMetricEvidenceFailsClosedWhenPersistFails|TestFinalizeMetricEvidenceRequiresSnapshotStore'` | 返回 `error` 与稳定 reason，指标及支持性引用被移除，不把未持久化数据交给模型作事实 |
 | 9.6.8 | 失败证据不作为支持引用 | 触发账号数据范围拒绝并检查工具观测、审计与最终 references | 失败快照可有 `evidence_id` 供追踪，但最终支持性 `observability_evidence` 引用不包含该 ID，指标为空 |
+| 9.6.9 | 普通证据与详情边界 | 对比普通 Observability Metrics、AI 定稿记录和现有前端/API | 普通 Metrics 可有 query_params/window 但无 payload；AI 定稿才有模型输入 hash。当前无公共证据详情 API/抽屉，不得用 evidence_id 存在推断可在线回放 |
 
-> 9.6.1 需已配置并启用 AI provider；无 provider 时 `include_metrics` 不会发起取数，仅返回本地摘要。9.6.5 需要 migration `0060`、本地 mock 模型和 Docker PostgreSQL；证据详情 API / 前端抽屉属于 P0-2，不在本切片验收范围。
+> 9.6.1 需已配置并启用 AI provider 和真实只读账号，当前没有专用真实 CES 指标 E2E；无 provider 时 `include_metrics` 不会发起取数，仅返回本地摘要。9.6.5 需要 migration `0060`、本地 mock 模型和 Docker PostgreSQL，使用 fake 指标；证据详情 API / 前端抽屉不在当前实现范围。
 
-### 9.7 AI Provider 页面配置（migration 0048）
+### 9.7 AI Provider 与工具网关（migration 0001/0002/0048/0055–0062）
 
 | # | 检查项 | 操作 | 预期 |
 | ---|--------|------|------|
-| 9.7.1 | 配置持久化 | 在「系统设置 → AI 配置 → Provider 管理」新增类型 `b` provider（Ark 地址 + API Key + `model`/`ep-xxx`），保存后重启 API | 列表仍显示该 provider，密钥显示「已配置」；`ai_provider` 表中 `api_key_encrypted` 为密文，无明文 |
-| 9.7.2 | 更新省略 api_key | 编辑该 provider，只改名称/模型、不填 `api_key`，保存后再次分析 | 保存成功且 `has_api_key=true`；分析仍可调用模型（原密钥未丢失） |
-| 9.7.3 | 启停即时生效 | 禁用该 provider 后再次调用 `POST /api/ai/analyze-alert`，再启用 | 禁用时回落到本地摘要或下一可用 provider；启用后恢复模型分析，全程无需重启 API |
-| 9.7.4 | 换模型即时生效 | 修改 `model`/`ep-xxx` 后保存，再次分析 | 下一次分析使用新模型（日志 `model` 字段可见），无需重启 API |
+| 9.7.1 | 权限与持久化 | 分别以无权限和有权限角色调用 Provider 列表/upsert/delete；新增类型 b 后重启 API | 未认证 401、无权限 403；有权限时写入 `ai_provider`，重启后仍从数据库加载，密钥只显示 has_api_key/“已配置” |
+| 9.7.2 | 密钥与全量 upsert | 新增时省略 key；更新时分别省略、空串和全空白 key，再修改名称/模型 | 新增 400；更新保留原密文和 has_api_key=true，不返回 api_key 或独立掩码字段；没有通过空白 key 清空密钥的语义 |
+| 9.7.3 | 其他字段覆盖 | 通过 API 配置 headers/enabled/model 后省略这些字段更新；再在页面普通编辑一次 | headers 省略写为空对象，enabled 省略为 false；页面当前不携带 headers，会清空旧自定义头。0048 DB 默认 30000ms 与应用/GORM 300000ms 不可混写 |
+| 9.7.4 | 类型与参数校验 | 分别保存类型 a/b/c、缺 model 的 b、非法 reasoning_effort、未知类型 | a/c 需要 base_url/key，b 还需要 model；reasoning 仅 low/high/max。未知类型当前可能落库但调用 503，不能当作已支持协议 |
+| 9.7.5 | 运行时与健康边界 | 构造解密失败/不可达但 DNS 合法的 Provider，查看列表并调用；检查页面按钮 | 启动只跳过坏记录，数据库列表仍可 enabled=true；保存不做模型请求。无健康状态、最近错误或测试连接 API/UI，enabled 不等于可用 |
+| 9.7.6 | 当前实例与多实例 | 保存、禁用、启用、删除并立即分析；如有多副本，再检查另一实例 | 当前实例无需重启；数据库与内存非统一事务，无跨实例配置广播，不能宣称所有副本即时刷新。删除不存在 ID 当前也可 deleted=true |
+| 9.7.7 | 出站安全 | 分别配置非 HTTP(S)、metadata、私网、loopback、白名单外主机、重定向和合法地址 | 非法目标在保存或调用时被拒绝，重定向不跟随；dev/显式开关才允许 loopback。校验通过不证明上游凭据或模型有效 |
+| 9.7.8 | Provider 选择 | 配置多个启用的 b/c/a，直接调用、告警分析和对话分别观察 provider_id | 直接调用只用请求 provider_id；分析按 b→c→其他、同类型按 ID；对话只用 b 且默认 ID 最小。没有持久化默认 Provider 字段 |
+| 9.7.9 | 直接调用业务拒绝 | 用 mock Provider 调 `/api/ai/tools/invoke`，分别撤销工具权限、传 deny、错误数据范围，再恢复 | 进入 Gateway 后的拒绝为 HTTP 200 + OK + allowed=false/reason，Provider 不被调用；前端 ToolConsole 弹出原因，不能只判断外层 OK |
+| 9.7.10 | confirmed 与豁免 | 对 read_only/require_confirm/deny 分别切换 confirmed；检查 permits_unconfirmed_invoke 与现有种子 | read_only 不要求确认，deny 总拒绝；require_confirm 默认需 confirmed，但豁免标志为 true 可放行。execution.runbook、inspection.runs.create、execution.tasks.propose 种子带豁免，不等于绕过 Execution 状态机 |
+| 9.7.11 | 直接调用数据范围 | 给测试角色绑定非 all 数据范围后调用 `/tools/invoke`，body 再补 owner/dept/team/region/tags | 路由入口因没有对象上下文直接 403，请求体字段不会先进入 Handler；无范围/all 才进入 Gateway 的二次对象校验 |
+| 9.7.12 | 三条工具调用链 | 对比直接调用、analyze-alert 和对话中的 alarm.analyze，再检查 8 个内置工具 | 直接调用和分析会交给 Provider；对话 alarm.analyze 只本地读告警。metrics/postgres/rules/accounts/resources 等 8 个内置工具均由本地 Port 执行，模型补全只用类型 b |
+| 9.7.13 | 种子与执行边界 | 查 logs.search、execution.*、inspection.* 权限种子，并在 Agent Loop 申请执行类工具 | 种子不等于平台内置工具；Loop 拒绝执行类工具。通用转发不保证真实查询或 pending_confirm 任务，执行计划仍走既有 Execution 创建接口 |
+| 9.7.14 | 审计语义 | 完成 Provider CRUD、直接 allowed=false 调用、对话工具拒绝，再查日志和 `/api/audits` | Provider CRUD 只有应用日志；直接 tool_invoke 不含 allowed/mode/reason且拒绝仍 result=success；对话 tool_invoke 才有完整状态。写入均按 best-effort 边界验收 |
+| 9.7.15 | 类型 b 降级与真实模型 | 用 mock 构造 429/5xx/非法 JSON/空响应和正常结构化回答；另用真实模型做凭据/配额/模型能力验收 | 非流式按代码最多 3 次尝试并可返回 data.degraded=true；allowed=true 不代表真实分析成功。mock 通过不替代真实模型、视觉或配额验证 |
+| 9.7.16 | 前端与自动化边界 | 检查 ProviderManager、ToolConsole、Identity 工具授权和现有 AI 脚本 | Provider 无筛选/健康/测试连接，ToolConsole 无对象字段且确认提示不是动态规则；固定工具目录非角色实授。三者无专项 Vitest，无直接 invoke/完整 Provider CRUD/角色工具绑定专项 E2E |
 
-> 前置：已执行迁移 `0048`；类型 `b` 必须配置 `model`，否则保存返回 400。YAML `ai.providers` 仅在 `ai_provider` 表为空时作为种子写入。
+> 前置：按所验工具执行到对应迁移；0048 只建 Provider 表，不种子 Provider 记录，YAML `ai.providers` 仅在空表时写入。`e2e-ai-mock-provider.ps1` 是共享 fixture，只注册/删除保留 ID 的类型 b mock；其他 `e2e-ai-*.ps1` 主要使用 mock/fake，且部分脚本缺 active 告警会 SKIP 后正常退出。上述覆盖来自静态核对，执行结果须另记。
 
 ### 9.8 AI 运维助手（migration 0049）
 
@@ -636,7 +678,7 @@ go run ./cmd/migrate
 | 9.8.2 | 创建会话 | `POST /api/ai/chat/sessions`（带 `alert_id` 上下文） | 返回 `session_id`，`context.alert_id` 回显，审计含 `chat_session` |
 | 9.8.3 | 发送消息 | `POST /api/ai/chat/sessions/{id}/messages` | `answer.summary/risk_level/actions` 完整；`status=ok/degraded/insufficient_context` 合法；审计含 `chat_message` 与 `tool_invoke` |
 | 9.8.4 | 工具拒绝可见 | 移除某角色的 `alarm.analyze` 或 `metrics.query` 工具权限后提问 | 工具调用 `allowed=false` 且带 `reason`；回答仍返回并展示拒绝原因，不静默降级 |
-| 9.8.5 | 降级回答 | 禁用/删除启用中的类型 `b` provider 后提问 | `status=degraded`、`degraded_reason=model_unavailable`；保留已获取的只读上下文；无执行建议 |
+| 9.8.5 | 降级回答 | 禁用/删除启用中的类型 `b` provider 后提问 | `status=degraded`、`degraded_reason=model_unavailable`；保留已获取的只读上下文和不确定性；action 权限仍单独计算，不把降级当模型成功 |
 | 9.8.6 | 会话归属 | 用另一账号 `GET /api/ai/chat/sessions/{id}` | 403 `PERMISSION_DENIED`，不返回其他用户会话内容 |
 | 9.8.7 | 反馈 | `POST .../messages/{message_id}/feedback` 提交 `valid` / `invalid` | 会话详情回显 `feedback`；审计含 `chat_feedback`；对用户消息提交反馈返回 400 |
 | 9.8.8 | 生成执行计划 | 点击回答中的「生成执行计划」 | 调用 `POST /api/executions/tasks`（`source_type=ai_conversation`），任务为 `pending_confirm`；未确认前不可执行 |
@@ -652,12 +694,19 @@ go run ./cmd/migrate
 | 9.8.18 | 幂等冲突 | 手工插入一条仅含用户消息（无回答）的 `client_message_id`（或中断一次请求后重试同一 id） | 返回 409 `FAILED_PRECONDITION`，提示上一次请求仍在处理或已中断；不新增消息、不调用模型 |
 | 9.8.19 | 资源级上下文（资产） | 资产页选中应用并高亮某个资源后打开 AI 助手 | 上下文展示应用/资源 ID；`POST .../messages` 请求体 `context` 含 `application_id`、`resource_id`、`resource_type` |
 | 9.8.20 | 资源级上下文（执行 / 观测） | 执行页打开任务详情、观测页执行一次指标查询后分别唤起 AI 助手 | 执行页上下文含 `execution_id`（告警来源另带 `alert_id`、资源目标另带 `resource_id`）；观测页上下文含 `resource_id` 与 `time_range`；关闭详情或查询后字段随页面切换清理 |
-| 9.8.21 | 可选模型列表 | 普通账号（仅 `app:ai:chat`）调用 `GET /api/ai/chat/models` | 返回启用中的类型 b 模型数组，含 `provider_id/name/model`；不含 `base_url/api_key/headers/timeout_ms`；管理员 provider 管理接口权限不因此放开 |
-| 9.8.22 | 会话内模型切换 | 新建会话前切换模型并发送首条消息；回答完成后再次切换并发送下一条消息 | 每次请求 `context.provider_id`/`provider_id` 为当前所选模型，审计实际 `provider_id` 一致；已有消息时选择器仍可用，仅生成回答期间禁用 |
-| 9.8.23 | 模型不可用回退 | 请求已删除/禁用 provider 的 `provider_id` | 请求不失败，回退默认模型；`answer.uncertainties` 首条含“所选模型 … 不可用，已回退 …”；审计 `provider_fallback=true` |
-| 9.8.24 | 消息复制 | 悬停用户消息气泡；点击 AI 回答头部「复制全文」 | 用户消息复制原文；AI 回答复制 Markdown（摘要/依据/影响/建议/回滚/不确定性）；提示“已复制”；非安全上下文回退成功 |
+| 9.8.21 | 可选模型列表 | 普通账号（仅 `app:ai:chat`）调用 `GET /api/ai/chat/models` | 返回运行时启用中的类型 b 模型数组，含 `provider_id/name/model/vision_enabled`；不含 `base_url/api_key/headers/timeout_ms`；管理员 provider 管理接口权限不因此放开 |
+| 9.8.22 | 会话内模型切换 | 新建会话前切换模型并发送首条消息；回答完成后再次切换并发送下一条消息 | 每次请求 `context.provider_id`/顶层 `provider_id` 为当前所选模型，审计实际 `provider_id` 一致；当前生成期间选择器实际未禁用，不能按旧预期验收 |
+| 9.8.23 | 模型不可用回退 | 请求已删除/禁用 provider 的 `provider_id`，再测试无任何默认模型 | 有默认时请求不失败并回退，`answer.uncertainties` 首条含回退说明，审计 `provider_fallback=true`；无默认时 degraded/model_unavailable |
+| 9.8.24 | 消息复制 | 悬停用户消息气泡；点击 AI 回答底部「复制全文」 | 用户消息复制原文；AI 回答复制 Markdown（摘要/依据/影响/建议/回滚/不确定性）；提示“已复制”；非安全上下文回退成功 |
+| 9.8.25 | 历史窗口与事务 | 构造超过 200 条消息，另在模型/助手落库失败后读取会话 | 详情只返回最近 200 条升序，不代表全量；用户与助手消息为两个事务，失败后可保留 user，不能宣称整轮原子提交 |
+| 9.8.26 | 幂等键内容边界 | 同一会话用相同 key 改 content/provider_id，再分别对 degraded/incomplete 结果重试 | 均返回首次 message_id/answer，不重新取数或调用模型；不同内容也比对 key 而非 hash。真正的新提问必须使用新 key |
+| 9.8.27 | 模型持久化字段 | 已有会话模型的前提下只传顶层 provider_id 换模型，再在下轮省略；随后同时传 context.provider_id 重试 | 只传顶层时仅本轮生效，旧会话模型仍保留；同时传 context 才持久切换。当前页面会同时传两字段 |
+| 9.8.28 | 归档与状态审计 | 重复归档/恢复，再在归档会话输入文字并点击发送；最后用相同 key 重放已有回答 | 同状态不推进 updated_at但仍写 chat_session_status；当前输入会被清空，属于已登记缺口；已生成回答在归档后仍可重放，新提问 409 |
+| 9.8.29 | 前端重试与刷新 | 对已落库 degraded/incomplete 回答点击重新提问；刷新页面后再次尝试；检查列表刷新按钮 | 旧 key 只重放且本地可能重复消息；历史重试内容被清空，按钮可能不可用；刷新按钮只取列表，无通用当前详情刷新，需导航或重新加载页面 |
+| 9.8.30 | 执行提议权限记录 | 检查一次正常回答的 tool_calls、actions、审计和 Execution 列表 | execution.tasks.propose 可作为权限校验出现在 tool_calls/tool_invoke，但不创建任务；只有点击 action 并调 `/api/executions/tasks` 后才产生 pending_confirm 任务 |
+| 9.8.31 | 会话脚本边界 | 核对 `e2e-ai-assistant.ps1` 的输入、输出和清理 | 同步 API + mock 主路径可覆盖结构、执行、顺序幂等、反馈、归档/恢复、删除和部分审计；degraded 仍可结构通过，主会话/消息/任务/审计保留，不是 UI 或真实模型验收 |
 
-> 前置：已执行迁移 `0049`、`0050`（0050 为消息幂等键）；9.8.3 的模型回答需要已启用类型 `b` provider。E2E 脚本：`scripts/e2e-ai-assistant.ps1`（自动覆盖 9.8.2/9.8.3/9.8.7/9.8.8/9.8.9/9.8.10/9.8.15/9.8.16/9.8.17）。
+> 前置：已执行迁移 `0049`、`0050`（0050 为消息幂等键）；9.8.3 的模型回答需要已启用类型 `b` provider。E2E 脚本：`scripts/e2e-ai-assistant.ps1` 对 9.8.2/9.8.3/9.8.7/9.8.8/9.8.9/9.8.10/9.8.15/9.8.16/9.8.17 只有**部分自动断言**：未完整覆盖 chat_session、审计脱敏、replayed=true、不再调用模型、invalid/用户消息反馈、并发幂等、跨用户、模型切换或浏览器 UI；归档 probe 实为 active 会话。
 >
 > 数据范围（9.8.13/9.8.14）：告警快照读取按对象数据范围过滤，分析路径与对话路径共用同一入口，映射与拒绝语义见 `ops/ai-contract.md` §10.6.4、§10.11。注意告警列表/详情接口的自身数据范围口径不在 AI 模块范围内。
 
@@ -665,17 +714,20 @@ go run ./cmd/migrate
 
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
-| 9.9.1 | 有效反馈沉淀 | 对一条 `status=ok` 的回答提交 `valid` 反馈 | `ai_memory_case` 新增一条：`source_message_id` 为该回答、`quality_score=1`、`status=active`；重复提交不新增第二条 |
-| 9.9.2 | 降级回答不入记忆 | 在无可用 provider（`degraded=true`）时提交 `valid` | 不生成案例；反馈接口仍返回 200 |
+| 9.9.1 | 有效反馈沉淀 | 对一条 `status=ok` 的回答提交 `valid` 反馈 | `ai_memory_case` 新增一条：`source_type=chat_message`、`source_message_id` 为该回答、`quality_score=1`、`status=active`；重复提交不新增第二条。memory E2E 只间接验证引用，不直接查管理列表或分数，需按本项单独记录 |
+| 9.9.2 | 降级回答不入记忆 | 在无可用 provider（`degraded=true`）时提交 `valid` | 不生成案例；反馈接口仍返回 200。memory E2E 在该场景 SKIP，不能自动覆盖 |
+| 9.9.5 | 跨用户隔离 | 用另一账号对同一应用/资源提问 | 不返回 A 用户的案例（`memory_status=empty`），日志不含案例摘要 |
+| 9.9.6 | 降级不阻断 | 停库或让检索失败后提问（可用错表/断连接复现） | 回答正常返回；审计 `memory_status=error`、`memory_used=0` |
 | 9.9.3 | 检索注入与引用 | 用同一告警再次提问（或重复调用 `POST /api/ai/analyze-alert`） | 对话 `references` 含 `type=memory_case`、`id=case_id`；provider payload 含 `memory_cases`（分析接口为 `similar_cases`） |
 | 9.9.4 | 无效反馈降分与淘汰 | 对同一回答连续提交两次 `invalid` | 第一次 `quality_score=1 → -1` 仍 `active`；第二次 `≤ -2` 转 `retired`；后续检索不再命中 |
 | 9.9.5 | 跨用户隔离 | 用另一账号对同一应用/资源提问 | 不返回 A 用户的案例（`memory_status=empty`），日志不含案例摘要 |
 | 9.9.6 | 降级不阻断 | 停库或让检索失败后提问（可用错表/断连接复现） | 回答正常返回；审计 `memory_status=error`、`memory_used=0` |
-| 9.9.7 | 审计字段 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | `chat_message` payload 含 `memory_used` / `memory_status`，不含案例原文 |
-| 9.9.8 | 记忆管理列表 | admin 调用 `GET /api/ai/memory/cases?status=active&keyword=...`；非 admin 调用 | 返回脱敏案例列表（摘要/建议/质量分/状态）；非 admin 返回 403 |
-| 9.9.9 | 手动停用/启用 | `POST /api/ai/memory/cases/{case_id}/status` 依次提交 `retired`、`active` | 停用后提问不再命中该案例且审计 `memory_review`（`previous_status`/`status`）；启用后重新参与检索；重复提交同状态幂等且不新增审计 |
+| 9.9.7 | 审计字段 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | `chat_message` payload 含 `memory_used` / `memory_status`，不含案例原文；自动 valid/invalid 的记忆增减不写独立 memory 审计 |
+| 9.9.8 | 记忆管理列表 | admin 调用 `GET /api/ai/memory/cases?status=active&keyword=...`；非 admin 调用 | 返回脱敏案例列表（摘要/建议/质量分/状态）；非 admin 返回 403。`session_id/alert_signature/keywords` 为空时省略；admin 可按 user_id 查他人案例，无对象级数据范围 |
+| 9.9.9 | 手动停用/启用 | `POST /api/ai/memory/cases/{case_id}/status` 依次提交 `retired`、`active` | 停用后提问不再命中该案例且审计 `memory_review`（`previous_status`/`status`）；启用后重新参与检索，质量分保持；重复提交同状态幂等且不新增审计 |
+| 9.9.10 | 前端管理边界 | 检查 MemoryManager 的筛选、分页、详情和二次确认 | 页面只有 status/keyword/user_id，limit=100 且无 application_id/resource_id/offset 分页；详情不展示 session_id；停用有确认、启用没有；无前端 Vitest |
 
-> 前置：已执行迁移 `0051`、`0054`；9.9.3/9.9.4 需要已启用类型 `b` provider。契约见 `ops/ai-contract.md` §10.14、§10.19。E2E 脚本：`scripts/e2e-ai-memory.ps1`（自动覆盖 9.9.1/9.9.3/9.9.4/9.9.7；跨用户隔离 9.9.5 与降级 9.9.6 仍需人工验证）；`scripts/e2e-ai-knowledge.ps1` 额外覆盖 9.9.8 的列表检索与 9.9.9 的停用动作。
+> 前置：已执行迁移 `0051`、`0054`；9.9.3/9.9.4 需要已启用类型 `b` provider。契约见 `ops/ai-contract.md` §10.14、§10.19。E2E 脚本：`scripts/e2e-ai-memory.ps1` 只部分覆盖 9.9.3/9.9.4/9.9.7，首条回答 degraded 会 SKIP 后 exit 0；不调用管理列表、不校验 quality_score/幂等，未覆盖 9.9.1/9.9.2/9.9.5/9.9.6/9.9.8/9.9.9/9.9.10；`scripts/e2e-ai-knowledge.ps1` 额外部分覆盖记忆列表检索与 retire，也不覆盖 403、审计或完整 UI。
 
 ### 9.10 知识沉淀（migration 0052，阶段 2）
 
@@ -690,24 +742,29 @@ go run ./cmd/migrate
 | 9.10.7 | 有效反馈计入 useful | 对注入了知识的回答提交 `valid` | 条目 `useful_count` +1；不会自动停用 |
 | 9.10.8 | 低效自动停用 | 让某条目被注入 ≥5 次且从未获得 `valid` | 条目转 `disabled`，审计 `knowledge_review` 且 `action=auto_disable`；后续不再注入 |
 | 9.10.9 | 审计可查 | `GET /api/audits?resource_type=ai&resource_id={item_id}` | 可查 `knowledge_edit` / `knowledge_review`，payload 含 `action` 与 `status` |
-| 9.10.10 | 反馈聚合生成草稿 | 对同一应用积累 ≥3 条 `valid` 反馈后，在「AI 配置 → 知识沉淀」填写应用 ID 点击「反馈聚合生成草稿」 | 返回 `action=created`，生成 `origin=feedback_aggregate`、`status=draft`、`item_id=agg-<app_id>` 的条目；内容含历史案例摘要与建议；审计 `knowledge_edit` 且 `action=aggregate` |
+| 9.10.10 | 反馈聚合生成草稿 | 对同一应用积累 ≥3 条 `valid` 反馈后，在「AI 配置 → 知识沉淀」填写应用 ID 点击「反馈聚合生成草稿」 | 返回 `action=created`，生成 `origin=feedback_aggregate`、`status=draft`、`item_id=agg-<app_id>` 的条目；内容含历史案例摘要与建议；审计 `knowledge_edit` 且 `action=aggregate`。UI 不暴露 min_cases，脚本也未断言固定 item_id，需单独核对 |
 | 9.10.11 | 聚合幂等与保护 | 再次聚合同一应用；随后把该条目激活并再次聚合 | 未激活时 `action=updated` 且条目仍只有一条；激活后 `action=skipped_active`，线上内容不被覆盖 |
-| 9.10.12 | 聚合案例不足 | 对有效案例 <3 条的应用点击聚合 | 返回 `action=insufficient_cases`，不生成草稿，前端提示案例不足 |
+| 9.10.12 | 聚合案例不足 | 对有效案例 <3 条的应用点击聚合 | 返回 `action=insufficient_cases`，不生成草稿，前端提示案例不足；`min_cases<=0` 默认 3，聚合取数最多 20 条 |
+| 9.10.13 | 前端与验证边界 | 检查 KnowledgeManager 的展示、确认、聚合和迁移权限 | 页面不展示审核人/审核时间/创建者/时间，无详情弹窗；激活/停用无二次确认；scope_ref 校验依赖后端。无前端 Vitest；knowledge E2E 需要 0052+0054 |
 
-> 前置：已执行迁移 `0052`。契约见 `ops/ai-contract.md` §10.15。管理入口：「系统设置 → AI 配置 → 知识沉淀」页签（列表 / 新建 / 编辑 / 激活 / 停用 / 删除 / 反馈聚合）。E2E 脚本：`scripts/e2e-ai-knowledge.ps1`（自动覆盖 9.10.2/9.10.3/9.10.4/9.10.6/9.10.7/9.10.10；编辑回草稿 9.10.5、低效自动停用 9.10.8、聚合幂等 9.10.11 与案例不足 9.10.12 仍需人工/单测补充）。
+> 前置：已执行迁移 `0052`、`0054`（knowledge E2E 会调用 memory/cases）。契约见 `ops/ai-contract.md` §10.15。管理入口：「系统设置 → AI 配置 → 知识沉淀」页签（列表 / 新建 / 编辑 / 激活 / 停用 / 删除 / 反馈聚合）。E2E 脚本：`scripts/e2e-ai-knowledge.ps1` 部分覆盖 9.10.2/9.10.3/9.10.4/9.10.6/9.10.7/9.10.10 及记忆列表/retire；未覆盖 403、编辑回草稿 9.10.5、低效自动停用 9.10.8、聚合幂等 9.10.11 与案例不足 9.10.12 的完整断言或 UI 9.10.13。
 
 ### 9.11 受限 Agent Loop（阶段 3，无新迁移）
 
 | # | 检查项 | 操作 | 预期 |
 |---|--------|------|------|
 | 9.11.1 | 追加只读工具 | 配置一个会在上下文不足时输出 `tool_requests`（`metrics.query`）的模型，提问 | 服务端执行追加取数后二次调用模型；`tool_calls` 含该轮调用；审计 `chat_message` 的 `loop_rounds ≥ 1` |
-| 9.11.2 | 执行类工具不可达 | 让模型申请 `execution.command.run` / `execution.tasks.propose` | 该工具 `allowed=false`、`reason=tool is not allowed in agent loop`；**不会产生任何执行动作**，回答仍返回 |
-| 9.11.3 | 轮数预算 | 让模型按不同参数持续申请 `metrics.query` | 追加轮数最多 3 轮，随后返回 `status=degraded`、`degraded_reason=agent_loop_exhausted`，保留已取观测 |
-| 9.11.4 | 无进展收敛 | 让模型持续申请被拒绝的工具 | 至多两次模型调用即收敛（一次纠正机会），不悬挂、不超时 |
-| 9.11.5 | 审计可回放 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | 每轮工具调用都有 `tool_invoke`；`chat_message` payload 含 `loop_rounds`、`tokens` |
-| 9.11.6 | 重复申请去重 | 让模型跨轮重复申请已成功的同工具同参数 | 后续申请记 `status=denied`、`reason=duplicate tool request: identical parameters already executed in this turn`，不重复取数、不占有效轮数；连续两轮无进展后返回 `agent_loop_exhausted` |
+| 9.11.2 | 执行类工具不可达 | 让模型申请 `execution.command.run` / `execution.tasks.propose`，并核对 Execution 列表 | 该申请 `allowed=false`、`reason=tool is not allowed in agent loop`，不产生执行动作；finalize 阶段另可做执行提议权限校验，二者不得混淆 |
+| 9.11.3 | 轮数预算与强制收敛 | 让模型按不同参数持续申请 `metrics.query`，分别让强制轮回答和继续申请工具 | 最多 3 个追加轮后先强制收敛；强制轮给出合法 answer 时可 ok/insufficient_context且 forced_convergence=true，仍失败才 degraded/agent_loop_exhausted，保留观测 |
+| 9.11.4 | 无进展收敛 | 让模型持续申请被拒绝的工具 | 连续两轮无实际取数后进入强制收敛，通常为首轮+纠正轮+强制轮；不是“至多两次模型调用”，成功可正常回答，失败才 agent_loop_exhausted |
+| 9.11.5 | 审计可回放 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | 每轮工具调用都有 `tool_invoke`；`chat_message` 含 loop_rounds、tokens，强制轮另有 forced_convergence；loop_rounds 不含强制轮 |
+| 9.11.6 | 重复申请去重 | 跨轮重复已成功的同工具同参数，再对失败/非法参数修正重试 | 成功组合后续 denied/duplicate reason，不重复取数且纯重复不占轮；失败或非法参数可修正重试。连续两轮无进展后先强制收敛，不直接等同 degraded |
+| 9.11.7 | token、时间与申请数预算 | 分别构造累计 usage 达到 60000、turn_budget_s=2、单轮超过 3 个不同参数申请 | token 达预算先强制收敛，时间耗尽直接 turn_budget_exceeded；单轮只受理前 3 个不同 tool_code+params，超出不执行 |
+| 9.11.8 | 前端多轮展示 | 同工具不同参数、多轮调用后检查 AnswerCard/ContextPanel | tool_calls 保留记录，但 AnswerCard key 仅 tool_code，右侧只保留每个工具最后状态且目录固定，不是完整 Loop 时间线；execution.tasks.propose 不是 Loop 白名单 |
+| 9.11.9 | Loop 脚本边界 | 核对 `e2e-ai-agent-loop.ps1` 的 SKIP、数据与断言 | 覆盖只读 Loop、执行拒绝、发现和 3 轮耗尽的部分断言；无 active 告警会 SKIP 后 exit 0。会话保留，未覆盖全部预算/去重/强制收敛/无执行任务断言，不是 UI 验收 |
+| 9.11.10 | 证据覆盖缺口 | 分别使用资源分组型规则、超过 288 点曲线、长窗口和大规则集，检查模型实际 observations | 资源分组型规则应先展开实例维度（每条最多 3 个样本）再体检，展开失败才 no_resource_scope；每条规则最多 3 实例抽样并取越限最严重样本（`checked_resources`/`sampled` 标明覆盖）。288 点定稿保留 `peak_at` 与破限片段/时长；长窗口聚合仍不能还原原始秒级误报，需短窗口复查 |
 
-> 前置：契约见 `ops/ai-contract.md` §10.16；无需新迁移。循环内不产生任何执行动作，`actions` 仍由服务端生成。E2E 脚本：`scripts/e2e-ai-agent-loop.ps1`（通过脚本化 mock 模型自动覆盖 9.11.1/9.11.2/9.11.3/9.11.5，需要一条 active 告警；无进展收敛 9.11.4 与重复申请去重 9.11.6 由既有单测覆盖）。
+> 前置：契约见 `ops/ai-contract.md` §10.16；无需新迁移。循环内不产生执行动作，`actions` 仍由服务端生成。`e2e-ai-agent-loop.ps1` 只自动覆盖 9.11.1/9.11.2/9.11.3/9.11.5 的部分场景，需要 active 告警；9.11.4/9.11.6 及预算/强制收敛其他分支由既有单测与人工验收分别记录。
 
 ### 9.12 流式对话与取消（SSE，契约 §10.17）
 
@@ -717,14 +774,14 @@ go run ./cmd/migrate
 | 9.12.2 | 工具事件 | 用有 `alarm.analyze` 权限的账号发起 9.12.1 | 收到 `type=tool`、`tool_code=alarm.analyze`、`allowed=true`、`status=ok`；无权限账号收到 `allowed=false` 且带 `reason`，回答仍返回 |
 | 9.12.3 | 业务错误转事件 | 对已归档会话调用流式接口 | HTTP 200，收到 `{"type":"error","code":"FAILED_PRECONDITION",...}`；无 `answer` 事件；不落 assistant 消息 |
 | 9.12.4 | 缺 content | 请求体为空 | 写 SSE 之前返回 400（统一响应结构），无事件下发 |
-| 9.12.5 | 客户端断开 / 停止 | 收到首个事件后终止 curl（或前端点「停止生成」） | 会话只剩用户消息、无 assistant 消息；审计 `chat_canceled` 含 `phase` 与 `result=canceled`；同步接口不受影响 |
+| 9.12.5 | 客户端断开 / 停止 | 在用户消息已落库且尚未进入最终 answer 落库阶段时终止 curl（或前端点「停止生成」） | 命中取消检查点时保留 user、无 assistant，审计 `chat_canceled` 含 phase/result=canceled；首个 gathering 事件本身不保证 user 已落库，最终 answer 竞态另按 9.12.23 验收 |
 | 9.12.6 | 幂等重放 | 同一 `client_message_id` 先调同步接口，再调流式接口 | 流式只收到 `gathering` + `answer`，`message_id` 与首次一致；不新增消息、不再次调用模型；审计 `chat_message` 带 `replayed=true` |
-| 9.12.7 | 前端阶段提示与停止 | AI 助手页发送长问题；发送中点击「停止生成」 | 阶段提示按服务端事件切换（思考 → 查询工具 → 生成回答），不再依赖固定定时器；`delta` 只展示“已生成 N 字”；停止后输入区恢复、无半成品回答、提示「已停止生成」 |
+| 9.12.7 | 前端阶段提示与停止 | AI 助手页发送长问题；发送中点击「停止生成」 | 阶段提示按事件切换；thinking delta 可展示过程文本，answer delta 只显示“已生成 N 字”；停止后回读、无本地半成品并提示已停止，不能推广为所有断流都不落 assistant |
 | 9.12.8 | SSE 心跳 | 让模型调用持续 >15s（或临时调小 `sseHeartbeatInterval`） | 事件之间出现 `: ping` 注释且连接不断；客户端解析器忽略注释行 |
 | 9.12.9 | 回合时间预算 | 临时设置 `AIOPS_AI__TURN_BUDGET_S=2`，让模型调用阻塞超过预算 | 返回 `status=degraded`、`degraded_reason=turn_budget_exceeded`；保留已获取的只读观测；审计 `chat_message` 记录该原因 |
 | 9.12.10 | 流式长回答超时语义 | provider `timeout_ms=30000`，mock 持续输出增量超过 30s | 不被 30s 总超时切断；首块 60s / 空闲默认 180s 内持续输出即继续，最终 `status=ok`；总时长受 `turn_budget_s` 约束；`ai.stream_idle_timeout_s` 可调且低于 30s 按 30s 处理 |
 | 9.12.11 | 首块前重试 | mock 首次返回 429（带 `Retry-After`）或 5xx，随后成功 | 服务端退避后重试，最多 2 次；最终正常返回 `answer`；审计可见本轮成功 |
-| 9.12.12 | 部分保留 | mock 输出部分 `delta` 后断开/静默超过空闲阈值 | 返回 `status=incomplete`、`answer.incomplete=true`、`incomplete_reason` 有值；已获取观测保留；assistant 消息落库且重放保留标记；前端显示橙色“生成中断”与重新提问入口 |
+| 9.12.12 | 部分保留 | mock 输出部分 `delta` 后断开/静默超过空闲阈值 | 返回 `status=incomplete`、`answer.incomplete=true`、`incomplete_reason` 有值；观测保留，assistant 落库且重放保留标记；前端显示橙色中断原因，但旧 key 重试只重放，不等于重新生成 |
 | 9.12.13 | 已输出不重试 | mock 输出部分内容后断开 | 不发起第二次模型请求（避免重复文本）；走 9.12.12 的部分保留路径 |
 | 9.12.14 | 非重试错误 | provider 返回 400/401/403 | 不重试，直接失败；不产生 `incomplete` 回答 |
 | 9.12.15 | 429 退避重试 | mock 首次 429（`Retry-After: 1`），随后成功 | 服务端退避后重试成功；最终 `status=ok`，耗时约 1s 以上 |
@@ -735,8 +792,11 @@ go run ./cmd/migrate
 | 9.12.20 | 空闲计时不被心跳误判 | mock 只发送 `: ping` 注释（间隔小于空闲阈值）后再发送正文 | 空闲计时被注释行重置，不返回 `incomplete`，最终正常 `answer` |
 | 9.12.21 | 输出超限 | mock 输出部分正文后返回 `finish_reason=length`，再发 `[DONE]` | 返回 `status=incomplete`、`incomplete_reason=output_truncated`、`degraded_reason=output_truncated`；不重试；前端提示“达到模型输出长度上限”，不出现“模型不可用”文案 |
 | 9.12.22 | 中断原因透出 | mock 触发 `stream_idle_timeout` / `stream_read_error` / `empty_model_response` | `chat_message` 审计含 `incomplete_reason`；assistant `answer.incomplete_reason` 保留具体值；前端橙色横幅显示中文原因，未知原因原样透出 |
+| 9.12.23 | 最终 answer 竞态 | 在 assistant 已落库后模拟最终 answer 写失败/客户端断开，再获取详情 | 已落库 assistant 不回滚，也不补写 chat_canceled；只有取消检查点前才保证不写 assistant，必须重新获取详情判断实际状态 |
+| 9.12.24 | 传输中断与重试 | 模拟无 answer/error 的连接中断后回读，再点击重试；与主动 stop 对比 | 当前工作台可能仍显示 failed，即使回读已有回答；旧 key 重试只重放并可能本地重复消息。主动 stop 与传输中断不是同一 UI 结果 |
+| 9.12.25 | 流式脚本清理与覆盖 | 核对 `e2e-ai-stream.ps1` 的会话、临时文件、mock 和 `-SkipSlow` | 临时文件/mock fixture 清理，业务会话/消息/审计保留；慢流可跳过。无告警时不覆盖 tool 事件，缺参主要匹配 INVALID_ARGUMENT，重放未直接证明 replayed=true/不再调模型 |
 
-> 前置：契约见 `ops/ai-contract.md` §10.17 / §10.17.7；`ai.turn_budget_s` 默认 600s，服务端 read/write timeout 必须 ≥ 预算+60s；`ai.stream_idle_timeout_s` 默认 180s（最低 30s，建议 180–300s）。E2E 脚本：`scripts/e2e-ai-stream.ps1`（通过脚本化 mock 模型自动覆盖 9.12.1/9.12.3/9.12.4/9.12.5/9.12.6，含 `delta(thinking/answer)` 断言；9.12.2 工具事件需要告警上下文，9.12.7/9.12.8 前端与心跳需人工抽检，9.12.9 由单测覆盖；9.12.10–9.12.17 由 `internal/ai/toolgateway/chat_stream_retry_test.go` 与 `internal/ai/application/chat_service_test.go` 覆盖；E2E 脚本的 `MOCK_STREAM_429` / `MOCK_STREAM_429_ALWAYS` / `MOCK_STREAM_PARTIAL` / `MOCK_STREAM_SLOW` 分支覆盖 9.12.11/9.12.12/9.12.15/9.12.16/9.12.17（`-SkipSlow` 可跳过 45s 慢流）；9.12.18 需人工抽检前端；9.12.19 由 `web/src/views/ai-assistant/composables/useChat.spec.ts` 覆盖跨会话并发与同会话排队，UI 表现需人工抽检；9.12.20/9.12.21 由 `chat_stream_retry_test.go` 覆盖，9.12.22 由 `chat_service_test.go` 与 `toolReason.spec.ts` 覆盖，前端横幅需人工抽检）。
+> 前置：契约见 `ops/ai-contract.md` §10.17 / §10.17.7；`ai.turn_budget_s` 默认 600s，服务端 read/write timeout 必须 ≥ 预算+60s；`ai.stream_idle_timeout_s` 默认 180s（最低 30s，建议 180–300s）。E2E 脚本：`scripts/e2e-ai-stream.ps1` 通过脚本化 mock 自动覆盖 9.12.1/9.12.3/9.12.4/9.12.5/9.12.6 的部分断言及 delta；9.12.2 工具事件需另带告警，9.12.7/9.12.8 前端与心跳需人工抽检，9.12.9 由单测覆盖。9.12.10–9.12.17 由 toolgateway/application 测试覆盖，E2E 的 `MOCK_STREAM_429` / `MOCK_STREAM_429_ALWAYS` / `MOCK_STREAM_PARTIAL` / `MOCK_STREAM_SLOW` 分支另覆盖 9.12.11/9.12.12/9.12.15/9.12.16/9.12.17（`-SkipSlow` 可跳慢流）。9.12.18 需人工抽检；9.12.19 由 useChat.spec.ts 覆盖跨会话并发/同会话排队，UI 仍需人工；9.12.20/9.12.21 由 chat_stream_retry_test.go 覆盖，9.12.22 由 chat_service_test.go 与 toolReason.spec.ts 覆盖。9.12.23–9.12.25 当前只登记边界，不把脚本存在写成已通过。
 
 ### 9.13 会话只读分享（migration 0053，契约 §10.18）
 
@@ -764,8 +824,8 @@ go run ./cmd/migrate
 | 9.14.5 | Loop 审计 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | `chat_message` 含 `loop_rounds` 与实际规则/指标工具码；每个 `tool_invoke` 含 `evidence_id`；无执行类工具调用 |
 | 9.14.6 | huawei ak_sk 真实规则 | 用带 `alerts` 能力的真实 ak_sk 账号申请规则列表（参数含 account_id/namespace/region） | 观测 `status=ok`、`rule_count>=1`；规则含 metric/operator/threshold/window_seconds；`tool_invoke` 审计带 `evidence_id` |
 | 9.14.7 | huawei agency 不支持 | 用 agency 账号申请规则列表 | 观测 `status=unsupported`、reason 稳定；回答仍正常返回 |
-| 9.14.8 | 批量规则体检 | 让模型申请 `alert.rules.health`，params 带 `namespace=SYS.RDS`、`limit<=20`、30 天窗口与 `period=3600` | 观测 `status=ok`，每条规则含 `point_count/avg/p95/peak/last/breach_ratio/unit/rule_unit`；`sampled=true` 表示只取了样本资源；无关联资源的规则 `skipped/no_resource_scope`；`tool_invoke` 审计的 `evidence_id` 取首条成功规则证据 |
-| 9.14.9 | 规则体检边界 | `limit=21`、超过 30 天、>7 天且 `period<3600`、只传 `from` | 均返回 `status=invalid_argument` 且不取数；单条规则取数失败不影响其它规则；总预算耗尽时剩余规则 `skipped/rule health query timeout` |
+| 9.14.8 | 批量规则体检 | 让模型申请 `alert.rules.health`，params 带 `namespace=SYS.RDS`、`limit<=20`、30 天窗口与 `period=3600`，另覆盖资源分组型规则 | 观测 `status=ok`，每条规则含统计字段；sampled=true 仅首实例，不是全实例。只有 resource_group_id 无 dimensions 的规则当前 no_resource_scope，未调用分组展开；无资源维度同样跳过，审计 evidence_id 取首条成功证据 |
+| 9.14.9 | 规则体检边界 | `limit=21`、超过 30 天、>7 天且 `period<3600`、只传 `from`；再检查 288 点定稿和小时级聚合 | 非法参数返回 `status=invalid_argument` 且不取数；单条失败不阻断其它规则，总预算耗尽剩余 `skipped/rule health query timeout`，指标查询超过 24 次剩余 `skipped/rule health query budget exhausted`。288 点定稿统计按全量并保留峰值时刻/越限时长，小时级 max 仍不能还原原始秒级误报 |
 
 > 前置：已执行迁移 `0055` 与 `0062`；契约见 `ops/ai-contract.md` §10.12.1 / §10.16。E2E 脚本：`scripts/e2e-ai-rules.ps1`（脚本化 mock 模型 + fake `auth_type=none` 账号，自动覆盖 9.14.1/9.14.2/9.14.3/9.14.5；9.14.4 数据范围拒绝、9.14.6 real ak_sk、9.14.7 agency 不支持、9.14.8/9.14.9 批量体检由单测覆盖，真实账号需手工回归）。
 

@@ -109,20 +109,21 @@ func (a *AlertRulesCollector) List(ctx context.Context, userID string, q aiapp.A
 	}
 	for _, rule := range result.Rules {
 		out.Rules = append(out.Rules, aiapp.AlertRuleSummary{
-			RuleID:        rule.RuleID,
-			Name:          rule.Name,
-			Namespace:     rule.Namespace,
-			Severity:      rule.Severity,
-			Enabled:       rule.Enabled,
-			Description:   rule.Description,
-			Metric:        rule.Metric,
-			Operator:      rule.Operator,
-			Threshold:     rule.Threshold,
-			Unit:          rule.Unit,
-			WindowSeconds: rule.WindowSeconds,
-			Labels:        rule.Labels,
-			ResourceCount: rule.ResourceCount,
-			Resources:     rule.Resources,
+			RuleID:             rule.RuleID,
+			Name:               rule.Name,
+			Namespace:          rule.Namespace,
+			Severity:           rule.Severity,
+			Enabled:            rule.Enabled,
+			Description:        rule.Description,
+			Metric:             rule.Metric,
+			Operator:           rule.Operator,
+			Threshold:          rule.Threshold,
+			Unit:               rule.Unit,
+			WindowSeconds:      rule.WindowSeconds,
+			Labels:             rule.Labels,
+			ResourceCount:      rule.ResourceCount,
+			Resources:          rule.Resources,
+			ResourceGroupCount: len(rule.ResourceGroupIDs),
 		})
 	}
 	return out, nil

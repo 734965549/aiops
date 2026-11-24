@@ -422,7 +422,7 @@ Recommendation
 
 后续替换路径：`infrastructure/provider/huawei_ces` 等实现同一组 Port，注册到 `ProviderRegistry`，不影响 application 与 HTTP 契约。
 
-**阶段 3 指标里程碑（已落地）**：`huawei_cloud` + `auth_type=ak_sk` 的 `QueryMetrics` 已走真实 CES；前端可创建带 `project_id` 的华为账号；连通性检查为字段校验；同账号的 logs/traces/topology/assets/alerts 对真实凭据返回 unsupported，对 `auth_type=none` 仍为 fake。
+**阶段 3 及后续当前状态**：`huawei_cloud` + `auth_type=ak_sk` 的 `QueryMetrics` 已走真实 CES；资源发现/同步、CES 告警规则和告警拉取也已有真实 Adapter，logs/traces/topology 对真实凭据返回 unsupported，agency 不降级 fake，`auth_type=none` 仍为 fake。前端可创建带 `project_id` 的华为账号，连通性检查仍为字段校验。migration `0060` 已增加 AI 指标定稿快照与 hash，普通指标证据仍无 payload，公共证据详情 API/UI 未提供。
 
 **本阶段验收（华为 CES 指标）**：
 
@@ -465,9 +465,9 @@ Recommendation
 - Huawei CES 指标查询（**已落地真实 metrics**：`auth_type=ak_sk` + `CredentialProvider` → CES `ShowMetricData`；`auth_type=none` 仍为 fake）。
 - Huawei AOM/LTS 日志查询（**待替换** fake `LogSearchPort`）。
 - Huawei APM 和 Signoz Trace 查询（**待替换** fake `TraceQueryPort`）。
-- EvidenceRef 证据引用（`0019` 已建 `obs_evidence_ref` 表）。
+- EvidenceRef 证据引用（`0019` 基表，`0060` 已扩展 AI 定稿 payload/hash）。
 
-**当前边界**：真实凭据的 `huawei_cloud` 账号调用 logs/traces/topology/assets/alerts 时返回 `capability unsupported`，不会返回 fake 样本；`signoz`/`prometheus` 仍为全 fake。
+**当前边界**：真实凭据的 `huawei_cloud` 账号调用 logs/traces/topology 时返回 `capability unsupported`，不会返回 fake 样本；assets/alerts 已有真实只读 Adapter，需按各自模块单独验收。`signoz`/`prometheus` 仍为全 fake。普通 Metrics 无 AI 定稿 payload，公共证据详情 API/UI 未提供。
 
 验收：
 
@@ -479,10 +479,10 @@ Recommendation
 
 交付：
 
-- `internal/inspection` 上下文。
-- 手动触发巡检 API。
-- 定时巡检 Worker。
-- Agent 工具编排，生成 Finding 和 Recommendation。
+- `internal/inspection` 上下文（已落地）。
+- 手动触发巡检 API（已落地，同一请求同步返回终态）。
+- 定时巡检 Worker（未落地，schedule 仅保存）。
+- 当前由固定规则 EvidenceAnalyzer 生成 Finding 和 Recommendation，不是 AI Agent；真实云采集还受固定 region/namespace/空 dimensions 限制，fake 主路径与真实云验收分开。
 
 验收：
 
@@ -494,17 +494,17 @@ Recommendation
 
 交付：
 
-- `internal/notification` 上下文。
-- 通知通道和模板。
-- 建议发送到外部 IM/邮件/Webhook。
-- 从 Recommendation 创建 Execution Task，并选择执行介体。
+- `internal/notification` 上下文（未落地）。
+- 通知通道和模板（未落地）。
+- 建议发送到外部 IM/邮件/Webhook（未落地）。
+- 从 Recommendation 创建 Execution Task 后端已落地；当前只允许 agent 模式且 medium_id 必填，没有自动介体选择或前端入口。
 - `ops/execution-agent-contract.md` 中定义的介体、代理、命令规格和租约模型。
 
 验收：
 
 - 通知发送有重试、失败记录和审计。
 - 中高风险建议只生成待确认执行任务。
-- Execution 完成后回写 Recommendation 状态。
+- 当前仅在创建后更新 Recommendation=execution_created；Execution 完成回写、任务 ID 持久化和跨模块事务仍待实现。
 - 禁用介体、离线代理、未确认任务均不能执行。
 - AI 生成的命令必须匹配 Command Spec，参数 schema 不通过时拒绝创建任务。
 

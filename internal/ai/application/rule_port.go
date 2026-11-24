@@ -31,6 +31,8 @@ type AlertRuleSummary struct {
 	// ResourceCount 是规则关联资源总数；Resources 是其维度样本（服务端已截断）。
 	ResourceCount int                 `json:"resource_count,omitempty"`
 	Resources     []map[string]string `json:"resources,omitempty"`
+	// ResourceGroupCount 大于 0 表示规则按资源分组关联，资源范围由分组展开得到。
+	ResourceGroupCount int `json:"resource_group_count,omitempty"`
 }
 
 // AlertRuleListResult 查询结果；status 非 ok 时 Rules 为空且 Reason 说明原因。

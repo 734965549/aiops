@@ -230,17 +230,17 @@
 
 | 函数 | 接口 | 说明 |
 | --- | --- | --- |
-| `listProviders` | `GET /api/ai/providers` | Provider 列表；只返回 `has_api_key` 与 `model`，不回显明文密钥 |
-| `upsertProvider` | `POST /api/ai/providers` | 新增或更新；落库并立即生效，类型 `b` 必须填 `model`，省略 `api_key` 保留原密钥 |
-| `deleteProvider` | `DELETE /api/ai/providers/:id` | 删除并同步运行时 |
-| `invokeTool` | `POST /api/ai/tools/invoke` | 工具调用；成功响应内须检查 `allowed` |
+| `listProviders` | `GET /api/ai/providers` | 数据库 Provider 全量列表；不返回 `api_key`，以 `has_api_key` 表示密钥存在；headers 原样返回 |
+| `upsertProvider` | `POST /api/ai/providers` | 同 ID 全量 upsert；类型 `b` 必须填 `model`，省略/空白 `api_key` 保留原密钥，其他省略字段按零值覆盖；写库并同步当前进程 |
+| `deleteProvider` | `DELETE /api/ai/providers/:id` | 硬删除并移除当前进程运行时；不存在的 ID 当前也可返回 deleted=true |
+| `invokeTool` | `POST /api/ai/tools/invoke` | 直接授权并转发给指定 Provider；成功响应内须检查 `allowed`，类型 b 还须识别 `data.degraded` |
 | `analyzeAlert` | `POST /api/ai/analyze-alert` | 告警上下文 AI 分析；返回 summary、risk_level、recommendations、references，以及长事务场景 `diagnosis`（事实、根因状态、假设、缺失证据） |
 | `listChatModels` | `GET /api/ai/chat/models` | 普通用户可见的启用中类型 b 模型（`provider_id/name/model/vision_enabled`，不含敏感字段） |
 | `createChatSession` | `POST /api/ai/chat/sessions` | 创建 AI 助手会话，可带页面上下文与 `provider_id`（会话级模型） |
 | `listChatSessions` | `GET /api/ai/chat/sessions?limit=` | 当前用户最近会话 |
-| `getChatSession` | `GET /api/ai/chat/sessions/:session_id` | 会话详情与历史消息（assistant 消息带 `answer`） |
-| `sendChatMessage` | `POST /api/ai/chat/sessions/:session_id/messages` | 发送消息并同步返回结构化回答；超时按 90s 设置；支持 `client_message_id` 幂等键与 `images` 附图（视觉模型，契约 §10.20） |
-| `streamChatMessage` | `POST /api/ai/chat/sessions/:session_id/messages/stream` | 流式发送：fetch 读取 SSE（`stage`/`tool`/`answer`/`error`），返回最终 `SendChatMessageResult`；`signal` 可中断，服务端取消后不落回答；同样支持 `images` 附图 |
+| `getChatSession` | `GET /api/ai/chat/sessions/:session_id` | 会话及最近 200 条消息（assistant 消息带 `answer`），不是全量历史分页 |
+| `sendChatMessage` | `POST /api/ai/chat/sessions/:session_id/messages` | 同步返回结构化回答；Axios 超时 90s，与后端默认 600s Loop 预算不一致；支持 `provider_id`、`client_message_id` 与 `images` |
+| `streamChatMessage` | `POST /api/ai/chat/sessions/:session_id/messages/stream` | fetch 读取 SSE（`stage`/`tool`/`delta`/`answer`/`error`）；`signal` 可中断，取消检查点不写 assistant，最终 answer 落库后的推送失败不回滚 |
 | `archiveChatSession` | `POST /api/ai/chat/sessions/:session_id/archive` | 归档会话（只读，可看历史）；幂等 |
 | `unarchiveChatSession` | `POST /api/ai/chat/sessions/:session_id/unarchive` | 恢复归档会话；幂等 |
 | `deleteChatSession` | `DELETE /api/ai/chat/sessions/:session_id` | 删除会话及消息，不可恢复；重复删除返回 404 |
@@ -260,28 +260,32 @@
 
 页面：
 
-- AI 运维助手工作台 `views/ai-assistant/index.vue`（三栏：会话列表 / 对话 / 上下文与工具），对话逻辑在 `views/ai-assistant/composables/useChat.ts`，与全局浮层 `layouts/components/AIAssistantOverlay.vue` 共用。
-- AI 配置（Provider 管理 + 工具调用调试 + 知识沉淀 + 记忆管理）在 `views/system/ai-config/index.vue`，路由 `/system/ai-config`；`views/ai-assistant` 不再承载 Provider 管理。
+- AI 运维助手工作台 `views/ai-assistant/index.vue`（三栏：会话列表 / 对话 / 上下文与工具），对话逻辑在 `views/ai-assistant/composables/useChat.ts`，与全局浮层 `layouts/components/AIAssistantOverlay.vue` 共用。独立工作台使用 streamChatMessage；同步 sendChatMessage 仅保留为 API 能力。
+- 当前会话交互差距：归档提示前输入/附图已被清空；生成中模型选择未禁用；刷新按钮只取列表，无通用当前详情刷新；重试复用旧 key 会重放旧回答且本地消息可能重复；历史重试内容被清空。模型切换时前端会同时发送顶层 provider_id 和 context.provider_id，自定义客户端只传顶层字段时，已有会话模型不会被持久改写。
+- AI 配置（Provider 管理 + 工具调用调试 + 知识沉淀 + 记忆管理）在 `views/system/ai-config/index.vue`，路由 `/system/ai-config`；`views/ai-assistant` 不再承载 Provider 管理。ProviderManager 无健康检查/测试连接，普通编辑不携带 headers 并会清空旧值；ToolConsole 不提供 owner/dept/team/region/tags 输入，两者均无专项 Vitest。
+- AI 工具权限字典与角色绑定由 `identity-admin.ts` 和 `views/identity/access-control/index.vue` 维护；角色绑定是全量替换。对话右侧固定工具目录不读取当前角色实际授权，不能据页面显示推断工具必定 allowed。
 - 告警详情 `views/alerts/index.vue` 会写入页面上下文（`stores/aiContext.ts`），并支持 `/alerts?alert_id=` 深链打开详情。
 - 资源级上下文写入方：资产页（应用 + 高亮资源）、执行页（任务详情 `execution_id`）、观测页（指标查询后的资源维度与时间范围）；字段与规则见 `ops/ai-contract.md` §10.8。
 
 契约：`ops/ai-contract.md`（§10 为 AI 助手会话与对话）。要点：
 
-- 成功判断使用 `code === "OK"`；`sendChatMessage` 的 `data.status` 为 `ok` / `degraded` / `insufficient_context`，前端必须分别展示失败、无足够上下文状态。
+- 成功判断使用 `code === "OK"`；`sendChatMessage` 的 `data.status` 为 `ok` / `degraded` / `insufficient_context` / `incomplete`，前端必须分别展示降级、无足够上下文和生成中断状态。
 - `data.answer.diagnosis` 为可选长事务诊断结构：`facts`（平台事实及 evidence_id/pointer，可含匹配 Query ID 的 Top SQL 脱敏摘要）、`root_cause`（undetermined/suspected/confirmed、code、说明、证据 ID）、`hypotheses` 和 `missing_evidence`；前端不得把 suspected 渲染成人工已确认根因。空闲长事务的 confirmed 只表示分类有直接会话证据，页面显示“分类已确认”，应用代码级原因仍为未定。
 - `data.answer.actions` 由服务端按权限生成；`execution.propose.allowed=false` 时必须禁用按钮并展示 `reason`。
-- 「生成执行计划」调用既有 `createExecutionTask`（`source_type=ai_conversation`，`source_id=session_id`），任务进入 Execution `pending_confirm`；前端不得提供任何直接执行入口。
+- 「生成执行计划」调用既有 `createExecutionTask`（`source_type=ai_conversation`，`source_id=session_id`），任务进入 Execution `pending_confirm`；前端不得提供任何直接执行入口。响应 tool_calls 中的 execution.tasks.propose 只是 finalize 阶段的权限校验和审计记录，不表示模型已创建任务，也不是 Agent Loop 白名单工具。
 - 工具调用结果必须检查 `allowed`；被拒绝是业务结果，需展示 `reason`（`toolReason.ts` 负责原因码的中文映射）。
-- 对话只读工具：`alarm.analyze`、自由参数 `metrics.query`、`alert.rules.list`、`alert.rules.health`（批量规则体检）、`postgres.activity.query`（RDS for PostgreSQL 历史会话，§10.21）；`status=invalid_argument / skipped / unsupported / permission_denied` 都需展示原因，不能当作网络错误。
+- 对话内置只读工具共 8 个：`alarm.analyze`、自由参数 `metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`accounts.list`、`resource.analyze`、`resources.list`。它们由后端本地 Port 执行，不经 AI Provider 转发；`status=invalid_argument / skipped / unsupported / permission_denied / denied` 都需展示原因，不能当作网络错误。实时 ChatPanel/ContextPanel 展示较完整，AnswerCard 当前只对 allowed=false 的调用把 reason 放进提示，allowed=true 的非 ok 原因仍有展示缺口。
+- 规则体检证据有覆盖边界：资源分组型规则会先展开实例维度，并最多对 3 个实例分别取数、取越限最严重样本（`checked_resources`/`sampled` 标明覆盖）；曲线定稿最多 288 点，峰值时刻与越限时长在降采样前计算保留，长窗口小时级聚合仍不能还原原始秒级误报。页面展示峰值不代表原始粒度证据完整，不能以“展示正常”排除取数问题。
 - 引用类型：`alert`、`observability_evidence` 带 `url` 可跳转；`memory_case`（相似案例记忆，`ops/ai-contract.md` §10.14）与 `knowledge_item`（知识沉淀，§10.15）无 `url`，只展示标签与条数提示。
-- 知识沉淀管理接口（§10.15）要求 `app:ai:knowledge:manage`（当前仅 admin），入口在「系统设置 → AI 配置 → 知识沉淀」（`KnowledgeManager.vue`）；未授权时返回 403。
-- 记忆管理接口（§10.19）要求 `app:ai:memory:manage`（当前仅 admin），入口在「系统设置 → AI 配置 → 记忆管理」（`MemoryManager.vue`）；停用/启用只影响后续检索并写 `memory_review` 审计，回答注入仍按归属用户隔离。
-- 会话归档后只读：`sendChatMessage` 会返回 409 `FAILED_PRECONDITION`，前端应在发送前按 `session.status` 拦截并提示先恢复。
-- 消息幂等：每次提问生成 `client_message_id`（`crypto.randomUUID`），重试复用同一值；服务端已生成回答时返回首次结果，回答缺失时返回 409 `FAILED_PRECONDITION`，此时提示用户刷新会话而不是静默重发。
-- 归档/恢复/删除入口在会话列表（`SessionList.vue`），三者均需二次确认；删除当前会话后自动切到下一个会话。
-- 流式对话（§10.17）：`streamChatMessage` 走 `fetch` + `web/src/api/sse.ts` 解析 SSE，不用 `EventSource`（需要 POST 与 Bearer 头）。`stage` 事件驱动阶段提示，`tool` 事件即时展示工具校验结果，`delta` 事件只用于“已生成 N 字”进度（`thinking`/`answer`，最终答案仍以 `answer` 事件整体渲染）；`: ping` 注释心跳由解析器忽略，未知事件类型优雅忽略。`answer` 事件与同步接口同构。发送中可点「停止生成」（`AbortController`），服务端中止模型调用、不落回答并写 `chat_canceled` 审计；停止后回读会话以去掉本地乐观消息。收到 `error` 事件时抛 `ApiHttpError`（HTTP 200 + 业务码）。
+- 知识沉淀管理接口（§10.15）要求 `app:ai:knowledge:manage`（当前仅 admin），入口在「系统设置 → AI 配置 → 知识沉淀」（`KnowledgeManager.vue`）；未授权时全局拦截器提示。页面未展示审核人/审核时间/创建者/时间，scope_ref 非空与 128 字符依赖后端校验，激活/停用无二次确认，聚合固定默认 `min_cases=3` 且未暴露入参。
+- 记忆管理接口（§10.19）要求 `app:ai:memory:manage`（当前仅 admin），入口在「系统设置 → AI 配置 → 记忆管理」（`MemoryManager.vue`）；停用/启用只影响后续检索并写 `memory_review` 审计，回答注入仍按归属用户隔离。页面只传 status/keyword/user_id，limit 固定 100，未使用 application_id/resource_id/offset 或分页，详情未展示 session_id。
+- 会话归档后只读：`sendChatMessage` 会返回 409 `FAILED_PRECONDITION`，前端会提示先恢复，但当前输入已被清空，不能宣称不丢输入。重复归档/恢复不推进 updated_at，仍会写状态审计；已生成回答在归档后仍可幂等重放。
+- 消息幂等：每次提问生成 `client_message_id`，传输重试复用同一值；服务端不比较内容 hash，已生成回答（含 degraded/incomplete）一律重放，回答缺失时返回 409。新的提问必须换新 key；当前“重新提问”按钮复用旧 key，不是重新生成。
+- 归档/恢复/删除入口在会话列表（`SessionList.vue`），三者均需二次确认；删除当前会话后自动切到下一个会话。详情只含最近 200 条，模型 Prompt 历史另取最近 12 条；用户与助手消息分属两个事务。
+- 流式对话（§10.17）：`streamChatMessage` 走 `fetch` + `web/src/api/sse.ts`，401 刷新一次，error 事件转 `ApiHttpError`，无 answer 结束转 ABORTED。stage 驱动阶段，tool 展示观测，thinking delta 展示过程文本，answer delta 只计数；`: ping` 注释与未知事件忽略。停止后回读会话；取消检查点保留 user/不写 assistant并写 chat_canceled，最终 answer 已落库后的断开不回滚。当前无 answer 的传输中断可能仍显示 failed，需与主动停止分开验收。
 - 会话分享（§10.18）：仅**对内只读**，访问者必须登录且具备 `app:ai:chat`；token 只在创建响应返回一次，前端不持久化。共享页路由 `/ai-assistant/shared/:token`（`SharedSession.vue`）只读渲染，禁用反馈与动作；过期/撤销/源会话删除统一 404。入口在会话列表「分享」→ `ShareDialog.vue`。
-- Provider 的 `api_key` 只显示掩码与 `has_api_key`，不在前端持久化；页面上下文只保存业务 ID，不保存凭据或告警正文。
+- Provider 列表不返回 `api_key` 或 `****` 掩码字段，只用 `has_api_key` 和页面“已配置/未配置”表达；自定义 headers 会原样返回，不应存放 Token/Authorization。页面上下文只保存业务 ID，不保存凭据或告警正文。
+- 直接 `/tools/invoke` 入口对非 all 数据范围用户会因缺少路由对象上下文返回 403；进入 Gateway 后的业务拒绝才是 200 + allowed=false。其审计不含 allowed/reason且拒绝时仍可能 result=success；Provider CRUD 没有操作审计，不能用审计中心证明这些配置变更已完整留痕。
 
 ## Audit（`audit.ts`）
 
@@ -316,7 +320,18 @@
 
 页面：`views/integrations/index.vue`。契约：`ops/cloud-observability-contract.md` §4、`ops/huawei-ces-sync-contract.md` §15.1。
 
-调用链：页面表单 -> `integration.ts` -> Integration AccountService -> CredentialVault / Provider checker。前端不保存明文凭据。`extra_config` 仅用于 provider 非敏感扩展配置，例如华为云 `sync_mode/resource_group_name/max_resources`；密钥、Token、AK/SK、密码仍只能通过 `credential` 写入。
+调用链：页面表单 -> `integration.ts` -> Integration AccountService -> CredentialVault / Provider checker。凭据只在表单内存中短暂持有，不写入前端持久化状态。`extra_config` 仅用于 provider 非敏感扩展配置，例如华为云 `sync_mode/resource_group_name/max_resources`；密钥、Token、AK/SK、密码仍只能通过 `credential` 写入。
+
+实现边界：
+
+- 六个接口分别使用 `app:integrations:read/create/update/delete/check`，当前只有静态 RBAC，无 owner_team/region 数据范围过滤。
+- 列表 API 支持 `keyword`（name/account_id/owner_team ILIKE），页面只有 Provider 和 enabled 筛选；删除是账号软删除 + enabled=false + 凭据硬删除，当前无恢复接口。
+- 更新省略或传空 credential 都保留原凭据，没有清空语义；切到 `auth_type=none` 不删除旧密文。后端允许 provider 更新，页面禁用 provider 编辑。
+- 所有 checker 当前仅做字段校验，不访问真实华为云、SigNoz 或 Prometheus；`status=ok` 和 capabilities 不代表网络、云端权限或实际 Adapter 全部可用。
+- checker 失败结果成功落库时 HTTP 仍为 200 + `code="OK"`，必须检查 `data.status`。页面目前统一使用成功 Toast，即使 status=failed；capabilities 非空时还可能不显示失败 message。
+- 页面缺少 `agency_name/domain_name`，agency 只能通过 API 完整配置；没有检查历史或凭据清空 UI。
+- 当前 Vault 只有当前密钥/版本，未提供多版本解密、外部 Secret Manager 或在线重加密流程。
+- `huaweiConfig.spec.ts` 只覆盖配置纯函数。`e2e-integration.ps1` 只使用 `huawei_cloud + none` 覆盖创建、列表/详情、检查 ok、更新、viewer 创建 403 和删除，不覆盖真实凭据/网络、其他 auth_type、检查 failed、keyword、审计或完整 UI。
 
 ### 华为云 CES 资源同步前端契约
 
@@ -354,18 +369,40 @@
 
 调用链：页面查询条件 -> `observability.ts` -> Observability QueryService -> IntegrationAccountPort -> ProviderRegistry -> fake / Huawei / SigNoz / Prometheus adapter。返回结果要通过 `evidence_id` 串联巡检和审计。
 
+实现边界：
+
+- 只有上述四个公共路由，统一 `app:observability:read` 静态 RBAC，无 owner_team/region 数据范围过滤；资源发现、告警规则、RDS 历史会话和证据详情没有同名公共 API。
+- `provider` 省略时由后端按账号解析。公共 `MetricQueryInput` 没有 `project_id`，多项目只能依赖账号顶层 project_id 或 `extra_config.region_projects`；内部 AI 路径才支持显式 project_id。
+- 公共指标窗口最长 7 天、period 默认 60/平台最小 10、估算最多 1440 点；logs 最大 500、traces 最大 1000。真实 CES 另有 period/filter 枚举和 1–4 个 dimensions 等约束，period=10 等通用合法值不一定被真实 CES 接受。
+- 华为 `none` 全部 fake；AK/SK 指标真实，logs/traces/topology 显式 unsupported，资源/规则走真实 Adapter；agency 全部 unsupported。SigNoz 和 Prometheus 当前即使配置 token 也为 fake，不能把响应当作外部平台实测数据。
+- 普通 evidence 保存脱敏 summary/query_hash，普通 Metrics 另有 query_params/window/collected_at 但没有 payload。AI Metrics 先 collecting，定稿快照保存成功后才进入模型；失败不作为支持性引用。
+- `ai.metric_evidence.v1` 和 `ai.postgres_activity.v1` 快照已有内部仓储，当前没有公共证据详情 API 或前端抽屉；页面仅显示 evidence_id 文本。
+- 页面加载前 100 个 enabled 账号，指标只展示 `series[0].points`，Logs 固定 limit=100、Traces 固定 50；当前 Vitest 只覆盖指标参数与 AI 上下文。
+- `e2e-observability.ps1` 使用 `huawei_cloud + none` 覆盖四类 fake 查询；`e2e-ai-evidence.ps1` 使用 fake 指标 + mock 模型 + Docker PostgreSQL 比对定稿 hash，均不代表真实 CES 通过。
+
 ## Inspection（`inspection.ts`）
 
 | 函数 | 接口 | 说明 |
 | --- | --- | --- |
 | `listPolicies` / `createPolicy` / `updatePolicy` / `deletePolicy` | `/api/inspections/policies` | 巡检策略 CRUD |
-| `triggerRun` | `POST /api/inspections/policies/:policy_id/runs` | 手动触发巡检 |
+| `getPolicy` | `GET /api/inspections/policies/:policy_id` | 策略详情；后端和封装均已存在，页面未使用 |
+| `triggerRun` | `POST /api/inspections/policies/:policy_id/runs` | 同步执行巡检并通常返回 success/partial/failed 终态 |
 | `getRun` / `listRuns` | `/api/inspections/runs` | 运行状态与时间线 |
 | `listFindings` | `GET /api/inspections/findings` | 发现与嵌套建议，含 `evidence_refs` |
 
 页面：`views/inspections/index.vue`。契约：`ops/cloud-observability-contract.md` §6。迁移依赖 `0020`。
 
 调用链：策略/运行操作 -> `inspection.ts` -> Inspection RunService -> ObservabilityQueryPort -> EvidenceAnalyzer -> Finding / Recommendation。建议转执行时只创建 Execution Task，不在前端或 AI 侧直接执行。
+
+实现边界：
+
+- 后端共 10 个路由，策略/运行/发现使用 `app:inspections:read/write`，建议转执行使用 `app:executions:create`，全部静态 RBAC，无 scope 数据范围过滤。
+- `scope.account_id` 和 checks 必填；application_ids 校验注册表存在。schedule、agent_profile、notification_policy_id 目前只是配置，定时 worker、AI Agent 和通知未落地。
+- TriggerRun 在同一请求同步执行，HTTP 200 也可能返回 `status=failed`；页面统一显示成功 Toast，必须检查 run.status。Run 无取消接口。
+- 当前采集固定最近 1 小时、cn-north-4、SYS.ECS 且无 dimensions，真实华为指标会失败；environment/resource_types 不参与查询，affected_resources 固定为 payment-service。fake E2E 不能代表真实云巡检。
+- `POST /api/inspections/recommendations/:id/execution` 只允许 agent 模式，medium_id 必填，无自动介体选择；Recommendation 不保存 task_id 或完成回写，任务创建与状态更新非同一事务。当前 `inspection.ts` 和页面都没有该接口封装/入口。
+- 页面只有策略列表/新建/立即巡检/删除、运行列表和发现筛选；无策略编辑/启停、Run 时间线、建议接受/忽略/通知/转执行，也无前端 Vitest。
+- `e2e-inspection.ps1` 使用 fake 账号覆盖创建应用/账号/策略、同步运行、Run 详情、Finding/Recommendation 和删除清理，不覆盖更新/列表、partial/failed、审计、真实云、转执行或 UI；Execution Agent E2E 也不经过 Inspection Recommendation。
 
 ## 环境变量
 

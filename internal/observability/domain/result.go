@@ -103,6 +103,9 @@ type AlertRule struct {
 	ResourceCount int `json:"resource_count,omitempty"`
 	// Resources 是前若干个关联资源的维度样本（最多 3 条），用于按规则范围取数。
 	Resources []map[string]string `json:"resources,omitempty"`
+	// ResourceGroupIDs 是规则按资源分组关联时的分组 ID；
+	// 这类规则 provider 只返回分组、不返回实例维度，需要由资源分组展开补全。
+	ResourceGroupIDs []string `json:"resource_group_ids,omitempty"`
 }
 
 // EvidenceRef 查询证据引用，供巡检与 AI 分析复用。

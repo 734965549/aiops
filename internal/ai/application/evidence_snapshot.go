@@ -33,6 +33,10 @@ func finalizeMetricEvidence(ctx context.Context, store EvidenceSnapshotStore, qu
 		evidence.Status = EvidenceStatusOK
 	}
 	prepareMetricEvidenceMetadata(evidence, query)
+	if evidence.Status == EvidenceStatusOK {
+		// 峰值时刻与破限片段必须在降采样前基于全量序列计算。
+		annotateMetricEvidenceDerivedStats(evidence, query)
+	}
 	if evidence.TraceID == "" {
 		evidence.TraceID = httpx.TraceIDFromCtx(ctx)
 	}
@@ -46,7 +50,7 @@ func finalizeMetricEvidence(ctx context.Context, store EvidenceSnapshotStore, qu
 	} else {
 		ensureMetricEvidenceID(evidence)
 		if opts.MaxPointsPerSeries > 0 && metricEvidenceNeedsDownsample(evidence.Metrics, opts.MaxPointsPerSeries) {
-			evidence.Metrics = downsampleMetricsForPrompt(evidence.Metrics)
+			evidence.Metrics = downsampleMetricsForPrompt(evidence.Metrics, opts.MaxPointsPerSeries)
 			evidence.Truncated = true
 			evidence.Sampling = &MetricEvidenceSampling{
 				Strategy: "stride_first_last", MaxPointsPerSeries: opts.MaxPointsPerSeries,

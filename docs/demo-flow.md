@@ -259,6 +259,146 @@ GET /api/runbooks/recommendations?alert_id={id}
 
 ---
 
+## 8A. 配置 Integration 接入账号
+
+**页面**：`/integrations`。该页面管理账号与凭据引用，不是实际观测数据查询页面。
+
+| 步骤 | 操作 | 预期 |
+|------|------|------|
+| 8A.1 | 在 dev 创建 `huawei_cloud + none` 账号 | 返回 `acc-...`，无凭据时 `has_credential=false`；华为新账号 extra_config 默认 `sync_mode=ces`，历史空配置账号经 0029 保留 native |
+| 8A.2 | 通过安全输入创建 AK/SK 或 api_token 账号 | 响应只有 `has_credential=true`，不回显 credential、密文或 ref；凭据在服务端 AES-GCM 加密，不写文档、日志或前端持久化 |
+| 8A.3 | 点击“连通性” | 当前仅做字段校验，不访问云端/SigNoz/Prometheus；ok 不代表云端权限或 capabilities 实测通过 |
+| 8A.4 | 构造缺 region/token/base_url 再检查 | 结果可为 HTTP 200 + `data.status=failed`，message 脱敏；页面仍可能显示成功 Toast，必须看业务 status，不能只看提示颜色 |
+| 8A.5 | 编辑账号但凭据留空，随后禁用、删除 | 留空保留原凭据，切 none 也不会清除；禁用保留凭据且检查 412，删除软删除账号并硬删除密文，无恢复接口 |
+| 8A.6 | 核对页面边界 | 页面无关键字/agency 凭据字段/检查历史/凭据清空，provider 编辑禁用；agency 需通过 API 配置。capabilities 是默认声明，真实查询另按 Observability 验收 |
+
+开发环境可运行：
+
+```powershell
+.\scripts\e2e-integration.ps1
+```
+
+脚本只覆盖 `huawei_cloud + none` 的创建、列表/详情、检查 ok、更新、viewer 创建 403 和删除，不验证真实凭据或网络、其他 auth_type、检查 failed、审计、密钥轮换或完整 UI。
+
+---
+
+## 8B. 执行 Observability 查询与核对证据
+
+**页面**：`/observability`。先明确账号数据性质，再解释结果，不能把 fake 样本讲成真实云端观测。
+
+| 步骤 | 操作 | 预期 |
+|------|------|------|
+| 8B.1 | 使用 dev 的 `huawei_cloud + none` 账号分别查询指标、日志、链路和拓扑 | 返回确定性 fake 结果和 `ev-<uuid>`；只证明统一 API、权限和证据链路，不代表真实云平台 |
+| 8B.2 | 使用真实只读 AK/SK 账号查询一条合法 CES 指标 | 填写账号已配置 region、namespace、1–4 个真实 dimensions 和 CES 支持的 period/filter；公共请求不接收 project_id，由账号或 region_projects 解析。真实日志/链路/拓扑仍 unsupported |
+| 8B.3 | 对比 agency、SigNoz 和 Prometheus | 华为 agency 不降级 fake；SigNoz/Prometheus 当前仍为 fake，即使配置 token 也不是在线查询 |
+| 8B.4 | 检查普通证据记录 | Metrics 可有 query_params、业务窗口和 collected_at，但 payload 为空；Logs 以脱敏 summary 为主。普通 evidence_id 不等于存在模型定稿快照 |
+| 8B.5 | 运行 AI 证据快照专项 | fake 指标先 collecting，定稿 payload/hash 落库后才进入 mock 模型；比较模型输入和数据库规范化 SHA-256，失败证据不作为支持引用 |
+| 8B.6 | 检查展示边界 | 页面指标只显示首条序列，证据 ID 仅文本；无公共证据详情 API/抽屉。运行时 `/observability/topology` 与 CMDB `/assets/topology` 不混用 |
+
+开发环境脚本：
+
+```powershell
+.\scripts\e2e-observability.ps1
+# 另需 migration 0060、本地 mock 模型和 Docker PostgreSQL：
+.\scripts\e2e-ai-evidence.ps1
+```
+
+两个脚本都使用 fake/mock，不是实际 CES 验收。真实指标需要独立只读账号按 9.2/9.6 专项核对，当前没有专用真实指标 E2E。
+
+---
+
+## 8C. 执行一次手动 Inspection 巡检
+
+**页面**：`/inspections`。当前演示的是同步规则巡检，不是定时或 AI Agent 巡检。
+
+| 步骤 | 操作 | 预期 |
+|------|------|------|
+| 8C.1 | 准备真实 Asset 应用和 dev fake 华为账号，创建含 metrics.cpu、traces.error_rate、logs.error_burst 的策略 | scope.account_id 和 checks 必填，application_ids 必须是已注册应用；agent_profile/schedule/notification_policy_id 只是配置 |
+| 8C.2 | 点击“立即巡检” | 请求内同步完成采集和分析，直接返回 success/partial/failed；不是异步 pending。页面即使 failed 也显示成功 Toast，必须看 run.status |
+| 8C.3 | 查看 Run 与 Finding | success 表示所有检查有证据，partial 表示部分失败，全部失败为 failed；Finding 带 evidence_refs、固定 confidence/uncertainty 和嵌套建议 |
+| 8C.4 | 核对 scope 边界 | 当前固定最近 1h、cn-north-4、SYS.ECS、无 dimensions，真实华为指标会失败；affected_resources 仍为 payment-service 示例，fake 主路径不代表真实云巡检 |
+| 8C.5 | 核对自动化边界 | schedule 无 worker、Run 无取消、Recommendation 无接受/忽略/通知或执行完成回写，前端也没有转执行按钮 |
+| 8C.6 | 如需 API 演示转执行 | 仅对 can_create_execution=true 的建议调用 execution 接口，必须显式 medium_id，使用 agent + Command Spec；只创建待确认任务，不直接执行。Recommendation 不保存 task_id，失败重试先查 Execution/审计 |
+
+开发环境可运行：
+
+```powershell
+.\scripts\e2e-inspection.ps1
+```
+
+脚本覆盖 fake 账号下创建应用/账号/策略、同步运行、Run 详情、Finding/Recommendation 和删除清理，不覆盖策略更新/列表、partial/failed、审计、真实云、转执行或 UI。`e2e-execution-agent.ps1` 直接创建 manual Agent 任务，不经过 Inspection Recommendation，不能用来证明转执行已验收。
+
+---
+
+## 8D. 配置 AI Provider 并核对工具网关
+
+**页面**：`/system/ai-config`，以及 `/identity/access-control` 的角色 AI 工具权限区域。演示优先使用本地 mock Provider，不把 mock 结果讲成真实模型验收。
+
+| 步骤 | 操作 | 预期 |
+|------|------|------|
+| 8D.1 | 在 Provider 管理新增类型 b，填写 mock 可达 base_url、model、api_key 和 timeout | 保存到 ai_provider 并同步当前 API 进程；api_key 只保存密文，列表只显示“已配置”，没有掩码值或健康状态 |
+| 8D.2 | 留空 key 编辑名称/模型，再禁用和启用 | 原密钥保留；当前实例运行时立即变化。enabled 只是配置状态，保存不做测试连接，多副本不会自动同步本次内存变更 |
+| 8D.3 | 通过 API 配置 headers 后在页面普通保存 | headers 被清空，因为页面没有该字段；headers 本身原样保存和返回，不能放 Token/Authorization |
+| 8D.4 | 在工具调用调试页选择 Provider 并调用一个已授权 tool_code，再撤销角色工具权限重试 | 前者转发给指定 Provider；后者 HTTP 200 + OK 但 allowed=false，页面展示 reason且不调用 Provider。该页不是对话本地工具调试器 |
+| 8D.5 | 核对 confirmed 与数据范围 | require_confirm 默认需确认，但 permits_unconfirmed_invoke=true 可豁免；现有部分 admin 种子带豁免。非 all 数据范围用户直接调 /tools/invoke 会在路由入口 403 |
+| 8D.6 | 在 AI 助手触发告警、指标、规则或资源工具 | 8 个内置工具由本地 Port 执行并做对象/账号数据范围校验，不经 AI Provider 转发；只有类型 b 负责模型补全，执行类工具不在 Loop 白名单 |
+| 8D.7 | 查看操作审计 | Provider CRUD 没有操作审计；直接 tool_invoke 不含 allowed/reason且拒绝也可能 result=success。对话 tool_invoke 才展示完整 allowed/status/reason，不能混用结果口径 |
+
+`e2e-ai-mock-provider.ps1` 只是其他 AI 脚本的共享 fixture，负责注册和删除保留 ID 的 mock。现有助手、规则、证据和 Loop 脚本主要验证 mock/fake 编排，不覆盖完整 Provider CRUD、直接 `/tools/invoke`、角色工具权限绑定或真实外部模型；部分脚本缺 active 告警会 SKIP 后正常退出，必须看实际输出而不是只看退出码。
+
+---
+
+## 8E. 演示 AI 会话、SSE 与受限 Agent Loop
+
+**页面**：`/ai-assistant`。使用本地 mock 模型和一条 active 告警，先区分 API 能力与当前页面交互缺口。
+
+| 步骤 | 操作 | 预期 |
+|------|------|------|
+| 8E.1 | 新建带 alert_id 的会话并发送问题 | 返回结构化回答、工具观测和执行提议 action；execution.tasks.propose 在 tool_calls 中只是权限校验，真正任务仍要点击 action 调 Execution 创建接口 |
+| 8E.2 | 切换模型后再发一条，随后请求已删除/禁用的 provider_id | 页面同时发送顶层与 context.provider_id；有默认模型时回退并在 uncertainties 说明，无默认时 degraded/model_unavailable。当前生成期间选择器实际未禁用 |
+| 8E.3 | 同一 client_message_id 重发相同和不同内容，再对新问题换新 key | 相同 key 都重放首次回答，不比较内容 hash，degraded/incomplete 也重放；新 key 才产生新消息。当前重试按钮复用旧 key，不是重新生成 |
+| 8E.4 | 归档、重复归档、恢复、删除会话 | 历史保留，同状态不推进 updated_at但仍写状态审计；归档后新提问 409，已有回答仍可重放。当前归档发送会先清空输入，属于已登记缺口 |
+| 8E.5 | 观察 SSE 后点击停止，并对比最终 answer 竞态 | stage/tool/delta/answer/error 分事件，thinking delta 可展示文本，answer delta 只计数；取消检查点保留 user/不写 assistant，最终 answer 已落库后的断开不回滚 |
+| 8E.6 | 用脚本化 mock 让模型连续申请只读工具和执行类工具 | 8 个内置工具逐轮权限校验，执行申请 denied；最多 3 个追加轮，轮数/token 或连续无进展后先强制收敛，强制成功可正常回答，仍失败才 agent_loop_exhausted |
+| 8E.7 | 检查长历史、证据覆盖与当前页面边界 | 详情只取最近 200 条，用户/助手消息为两个事务；同步封装 90s 与后端 600s 预算不同。资源分组规则会先展开实例再按每规则最多 3 个实例抽样，288 点定稿保留峰值时刻/越限时长；小时级聚合与预算仍会限制覆盖，必要时缩窗复查；当前无通用详情刷新，历史重试可能不可用，多轮右侧不是完整时间线 |
+
+可分别运行：
+
+```powershell
+.\scripts\e2e-ai-assistant.ps1
+.\scripts\e2e-ai-stream.ps1
+.\scripts\e2e-ai-agent-loop.ps1
+```
+
+三者都是 API/curl + mock/fake，不是浏览器或真实模型验收。assistant 脚本 degraded 仍可结构通过并保留主会话/任务；stream 保留业务会话、`-SkipSlow` 可跳慢流；Agent Loop 无 active 告警会 SKIP 后 exit 0。覆盖与清理边界以验收清单 9.8/9.11/9.12 为准，不要仅看 PASS 或退出码。
+
+---
+
+## 8F. 演示记忆沉淀与知识审核
+
+**页面**：`/ai-assistant` 提问并反馈；`/system/ai-config` 查看「记忆管理」和「知识沉淀」。memory 脚本需真实 provider，knowledge 脚本可用 mock。
+
+| 步骤 | 操作 | 预期 |
+|------|------|------|
+| 8F.1 | 对同一告警得到 `status=ok` 回答后提交「有效」 | `ai_memory_case` 按 user+message 幂等沉淀一条 chat_message 案例；`memory_used/memory_status=ok` 进入 chat_message 审计。当前 UI 对历史 degraded 回答重试可能只重放旧结果，不能当作新案例 |
+| 8F.2 | 用相近问题再次提问 | references 出现 memory_case（label 摘要最多 80 字），Prompt 注入最多 3 条；检索只按当前用户 active 案例。管理端自动 valid/invalid 的记忆变化不写独立 memory 审计 |
+| 8F.3 | 提交「无效」两次 | quality_score 降到 -2 或更低后转 retired，后续检索不命中；不存在案例时 invalid 是 no-op |
+| 8F.4 | 在记忆管理手动停用/启用 | 停用有确认并写 memory_review；启用无确认、质量分不变；同状态幂等不写审计。页面只有 status/keyword/user_id，limit=100，无 application/resource/offset 筛选或分页 |
+| 8F.5 | 在知识沉淀新建 scope=application 条目并激活 | manual 固定 draft，激活后 references 含 knowledge_item，回答落库 hit_count+1；invalid 不减 useful_count，只评估低效停用 |
+| 8F.6 | 编辑 active 条目 | 回 draft 并清空审核人，但保留计数与 origin；需要重新激活。页面激活/停用无二次确认，审核人/时间/创建者未展示 |
+| 8F.7 | 对某应用积累 ≥3 条 valid 案例后聚合 | 生成 `agg-<application_id>` 的 draft；再次聚合 updated，激活后 skipped_active。UI 固定 min_cases=3，未暴露入参；聚合读取当前操作者自己的案例 |
+
+可分别运行：
+
+```powershell
+.\scripts\e2e-ai-memory.ps1
+.\scripts\e2e-ai-knowledge.ps1
+```
+
+memory 脚本不调用管理列表、不校验分数/幂等，首条回答 degraded 会 SKIP 后 exit 0，业务数据保留。knowledge 脚本需要 0052+0054 和 dev/mock，finally 只删除残留条目、retire 残留案例并清理 mock，会话保留；不覆盖 403、编辑回草稿、自动停用或 UI。
+
+---
+
 ## 9. 查看 Dashboard 汇总
 
 **页面**：`/dashboard`

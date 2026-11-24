@@ -14,23 +14,26 @@ import (
 )
 
 func TestFinalizeMetricEvidencePersistsExactModelSnapshot(t *testing.T) {
-	points := make([][2]float64, 150)
+	points := make([][2]float64, 720)
 	for i := range points {
-		points[i] = [2]float64{float64(1700000000 + i*60), float64(i)}
+		points[i] = [2]float64{float64(1700000000 + i*3600), float64(i)}
 	}
 	input := &MetricEvidenceResult{Status: EvidenceStatusOK, Metrics: []MetricEvidence{{
 		Metric: "cpu_util", EvidenceID: "ev-1", Points: points,
 	}}}
 	store := &fakeEvidenceSnapshotStore{}
 	out := finalizeMetricEvidence(context.Background(), store, MetricEvidenceQuery{
-		From: 1700000000, To: 1700003600, Period: 60, Aggregator: "average",
-	}, input, evidenceSnapshotOptions{MaxPointsPerSeries: 96, MaxBytes: maxEvidencePayloadBytes})
+		From: 1700000000, To: 1700003600, Period: 3600, Aggregator: "average",
+	}, input, evidenceSnapshotOptions{MaxPointsPerSeries: chatMetricPromptMaxPoints, MaxBytes: maxEvidencePayloadBytes})
 
 	if out.Status != EvidenceStatusOK || out.EvidenceID != "ev-1" {
 		t.Fatalf("unexpected finalized evidence: %+v", out)
 	}
-	if out.OriginalCount != 150 || out.RetainedCount != 96 || !out.Truncated || out.Sampling == nil {
+	if out.OriginalCount != 720 || out.RetainedCount != chatMetricPromptMaxPoints || !out.Truncated || out.Sampling == nil {
 		t.Fatalf("unexpected truncation metadata: %+v", out)
+	}
+	if len(input.Metrics[0].Points) != 720 {
+		t.Fatal("finalization must not mutate the collector result")
 	}
 	if !reflect.DeepEqual(out, store.saved) {
 		t.Fatal("persisted snapshot differs from the object returned for model input")
@@ -45,9 +48,6 @@ func TestFinalizeMetricEvidencePersistsExactModelSnapshot(t *testing.T) {
 	}
 	if string(storedJSON) != string(modelJSON) {
 		t.Fatal("persisted JSON differs from model JSON")
-	}
-	if len(input.Metrics[0].Points) != 150 {
-		t.Fatal("finalization must not mutate the collector result")
 	}
 }
 
@@ -177,5 +177,39 @@ func TestFinalizeMetricEvidenceRequiresSnapshotStore(t *testing.T) {
 	}, evidenceSnapshotOptions{})
 	if out.Status != EvidenceStatusError || out.Reason != "evidence_snapshot_store_disabled" || len(out.Metrics) != 0 {
 		t.Fatalf("missing store must fail closed: %+v", out)
+	}
+}
+
+func TestFinalizeMetricEvidenceKeepsDerivedStatsAfterDownsample(t *testing.T) {
+	points := make([][2]float64, 150)
+	for i := range points {
+		value := 70.0
+		if i == 100 {
+			value = 95
+		}
+		points[i] = [2]float64{float64(1700000000 + i*60), value}
+	}
+	threshold := 80.0
+	input := &MetricEvidenceResult{Status: EvidenceStatusOK, Metrics: []MetricEvidence{{
+		Metric: "cpu_util", EvidenceID: "ev-1", Points: points,
+	}}}
+	out := finalizeMetricEvidence(context.Background(), &fakeEvidenceSnapshotStore{}, MetricEvidenceQuery{
+		From: 1700000000, To: 1700003600, Period: 60, Aggregator: "average",
+		Threshold: &threshold, Operator: ">",
+	}, input, evidenceSnapshotOptions{MaxPointsPerSeries: 96, MaxBytes: maxEvidencePayloadBytes})
+
+	if out.Status != EvidenceStatusOK || !out.Truncated || len(out.Metrics) != 1 {
+		t.Fatalf("unexpected evidence: %+v", out)
+	}
+	metric := out.Metrics[0]
+	if len(metric.Points) != 96 {
+		t.Fatalf("points = %d, want downsample to 96", len(metric.Points))
+	}
+	if metric.PeakAt == nil || *metric.PeakAt != 1700000000+100*60 {
+		t.Fatalf("peak_at must come from full series, got %+v", metric.PeakAt)
+	}
+	if metric.BreachPoints != 1 || metric.BreachEpisodes != 1 ||
+		metric.BreachDurationSeconds != 60 || metric.LongestBreachSeconds != 60 {
+		t.Fatalf("breach stats = %+v", metric)
 	}
 }

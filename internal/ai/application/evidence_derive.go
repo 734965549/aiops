@@ -351,14 +351,90 @@ func metricEvidencePointCount(evidence *MetricEvidenceResult) int {
 }
 
 // chatMetricPromptMaxPoints 限制进 Prompt 的每序列数据点数：全量点会使 Prompt
-// 随轮次膨胀、模型调用耗时线性上涨；降采样保留趋势形状，统计量按全量计算。
-const chatMetricPromptMaxPoints = 96
+// 随轮次膨胀、模型调用耗时线性上涨；峰值时刻与破限片段统计已在降采样前基于全量序列
+// 计算（annotateMetricEvidenceDerivedStats），点集用于呈现趋势形状。
+const chatMetricPromptMaxPoints = 288
+
+// annotateMetricEvidenceDerivedStats 在降采样前补充峰值时刻与越限片段统计，
+// 避免点数裁剪后模型无法回答"峰值出现在何时、越限持续多久、是否频繁抖动"。
+func annotateMetricEvidenceDerivedStats(evidence *MetricEvidenceResult, q MetricEvidenceQuery) {
+	if evidence == nil {
+		return
+	}
+	period := q.Period
+	if period <= 0 {
+		period = evidence.Period
+	}
+	for i := range evidence.Metrics {
+		metric := &evidence.Metrics[i]
+		if len(metric.Points) == 0 {
+			continue
+		}
+		peakIndex := 0
+		for j := 1; j < len(metric.Points); j++ {
+			if metric.Points[j][1] > metric.Points[peakIndex][1] {
+				peakIndex = j
+			}
+		}
+		peakAt := int64(metric.Points[peakIndex][0])
+		metric.PeakAt = &peakAt
+		if q.Threshold == nil || strings.TrimSpace(q.Operator) == "" {
+			continue
+		}
+		episodes, current, longest, breachCount, inBreach := 0, 0, 0, 0, false
+		for _, point := range metric.Points {
+			if isBreachValue(q.Operator, point[1], *q.Threshold) {
+				breachCount++
+				if !inBreach {
+					episodes++
+					inBreach = true
+					current = 0
+				}
+				current++
+				if current > longest {
+					longest = current
+				}
+			} else {
+				inBreach = false
+			}
+		}
+		metric.BreachPoints = breachCount
+		metric.BreachEpisodes = episodes
+		if period > 0 {
+			metric.BreachDurationSeconds = int64(breachCount) * int64(period)
+			metric.LongestBreachSeconds = int64(longest) * int64(period)
+		}
+	}
+}
+
+func isBreachValue(operator string, value, threshold float64) bool {
+	switch strings.TrimSpace(operator) {
+	case ">":
+		return value > threshold
+	case ">=":
+		return value >= threshold
+	case "<":
+		return value < threshold
+	case "<=":
+		return value <= threshold
+	case "=", "==":
+		return value == threshold
+	case "!=":
+		return value != threshold
+	default:
+		return false
+	}
+}
 
 // downsampleMetricsForPrompt 返回 points 降采样后的序列副本，供观测携带进 Prompt。
-func downsampleMetricsForPrompt(metrics []MetricEvidence) []MetricEvidence {
+// maxPoints 由调用方（快照选项）传入，缺省回落到对话路径上限。
+func downsampleMetricsForPrompt(metrics []MetricEvidence, maxPoints int) []MetricEvidence {
+	if maxPoints <= 0 {
+		maxPoints = chatMetricPromptMaxPoints
+	}
 	out := make([]MetricEvidence, len(metrics))
 	for i, m := range metrics {
-		m.Points = strideSamplePoints(m.Points, chatMetricPromptMaxPoints)
+		m.Points = strideSamplePoints(m.Points, maxPoints)
 		out[i] = m
 	}
 	return out

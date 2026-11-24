@@ -19,15 +19,20 @@ AI 助手只做分析、解释、建议与执行计划，不直接执行任何�
 
 ## 3. 权限模型
 
-所有 AI 接口均挂载在 `/api/ai` 路由组下，统一要求已登录用户访问，并在进入业务逻辑前执行统一授权校验：
+AI 接口均挂载在 `/api/ai` 下并要求登录，但不同入口的授权方式不能合并描述：
 
-- RBAC：检查当前用户是否具备对应角色权限；
-- 数据权限：检查目标对象是否落在允许的数据范围内；
-- 工具权限：检查当前工具是否允许调用、是否需要人工确认。
+| 入口 | 权限与数据范围 |
+| --- | --- |
+| Provider 列表/upsert/删除 | 分别为 `app:ai.providers:read`、`app:ai.providers:write`、`app:ai.providers:delete`；使用 `AuthorizeStatic`，不按 Provider 做对象数据范围过滤 |
+| 直接 `POST /api/ai/tools/invoke` | 入口先要求 `app:ai.tools:invoke`，再由 Gateway 校验可选 resource/action 对应权限、数据范围、AI 工具权限与 confirmed |
+| `POST /api/ai/analyze-alert` | 入口和内部 `alarm.analyze` 都使用 `app:ai.analysis:analyze`；告警读取端口先做对象数据范围校验，网关再复核 |
+| 对话内置工具 | 每个工具以 `app:ai:chat` + tool_code 做 RBAC/工具权限校验并跳过通用对象检查；Alert、Integration、Observability、Asset 的具体 Port 再按对象或账号收口数据范围 |
 
-如果授权失败，HTTP 返回 **403**，`code` 为 `PERMISSION_DENIED`（与 HTTP 401 `UNAUTHENTICATED` 区分）。
+未认证返回 401 `UNAUTHENTICATED`。路由或入口鉴权失败返回 403 `PERMISSION_DENIED`；进入直接工具调用后，Gateway 的业务拒绝通常返回 HTTP 200 + `code="OK"` + `data.allowed=false`，必须检查 `reason`。
 
-`POST /api/ai/analyze-alert` 的内部工具调用使用固定权限码 `app:ai.analysis:analyze`（通过内部 `ToolRequest.RequiredPermission` 传递，与 HTTP 入口一致），不再按 `resource/action` 拼接权限码。若工具网关返回 `allowed=false`，分析仍返回本地兜底摘要，但审计记为 `result=partial` 并在 `tool_error` 记录拒绝原因（`authorization_denied: ...`），避免静默降级。
+直接 `/tools/invoke` 的路由中间件没有 `SkipDataScope=true`，也没有从请求体提取对象字段。绑定非 all 数据范围的用户会因入口缺少对象上下文得到 403，即使请求体填写了 owner/dept/team/region/tags 也不会先进入 Handler；无数据范围或 all 范围用户才进入后续 Gateway 校验。
+
+`POST /api/ai/analyze-alert` 不再按 resource/action 拼接内部权限码。若工具网关返回 `allowed=false`，分析仍返回本地兜底摘要，但 `analyze_alert` 审计记为 `result=partial` 并在 `tool_error` 记录 `authorization_denied: ...`。
 
 ## 4. Provider 管理接口
 
@@ -39,7 +44,7 @@ AI 助手只做分析、解释、建议与执行计划，不直接执行任何�
 
 #### 响应示例
 
-列表接口**不返回** `api_key` 字段；通过 `has_api_key` 表示是否已配置密钥。`model` 仅对类型 `b` 有意义，类型 `a` / `c` 返回空字符串。
+列表接口**不返回** `api_key` 字段，也不返回单独的 `****` 掩码值；通过 `has_api_key` 表示是否已配置密钥。`model` 仅对类型 `b` 执行器有意义，但服务端不会强制清空类型 `a` / `c` 已保存的 model。列表还包含 `headers`、`reasoning_effort` 和 `vision_enabled`；headers 会原样返回，不应当作秘密字段使用。
 
 ```json
 {
@@ -92,12 +97,15 @@ AI 助手只做分析、解释、建议与执行计划，不直接执行任何�
 | `type` | string | 是 | provider 类型，`a` / `b` / `c` |
 | `base_url` | string | 是 | provider 基础地址；类型 `b` 填含版本段的模型 API 根地址（如 `https://ark.cn-beijing.volces.com/api/v3`、`https://api.openai.com/v1`），平台只追加 `/chat/completions` |
 | `model` | string | 类型 `b` 必填 | 模型名或推理接入点 ID（如 `ep-20241128xxxxx`） |
-| `api_key` | string | 新增必填；更新可省略 | 调用凭据；更新时省略则保留原密钥 |
-| `timeout_ms` | number | 否 | 非流式请求总时长上限，默认 `300000`；流式对话使用首块 60s + 空闲默认 180s（`ai.stream_idle_timeout_s` 可调），总时长受 `ai.turn_budget_s` 约束 |
-| `reasoning_effort` | string | 否 | 思考型模型推理强度 `low` / `high` / `max`，随 chat/completions 发送 `reasoning_effort`；空串不发送。不支持该参数的模型可能 400，按 provider 配置 |
-| `headers` | object | 否 | 额外请求头 |
-| `enabled` | boolean | 否 | 是否启用 |
-| `description` | string | 否 | 备注说明 |
+| `api_key` | string | 新增必填；更新可省略 | 调用凭据；更新时省略、空串或全空白均保留原密钥，不能通过空白更新清除 |
+| `timeout_ms` | number | 否 | 非流式请求总时长上限；`<=0` 由应用归一化为 `300000`。流式对话使用首块 60s + 空闲默认 180s（`ai.stream_idle_timeout_s` 可调），总时长受 `ai.turn_budget_s` 约束 |
+| `reasoning_effort` | string | 否 | 思考型模型推理强度 `low` / `high` / `max`，随 chat/completions 发送；空串不发送。不支持该参数的模型可能 400 |
+| `headers` | object | 否 | 额外请求头；省略会写为空对象。JSONB 原样保存并在列表返回，不得放敏感值 |
+| `enabled` | boolean | 否 | 是否启用；后端普通 bool 零值为 false，API 省略不会自动变成 true |
+| `description` | string | 否 | 备注说明；按本次请求覆盖 |
+| `vision_enabled` | boolean | 否 | 类型 b 是否接受图片输入；省略/未传为 false |
+
+该接口是**同 ID 全量 upsert**，不是通用 PATCH。除 api_key 外，省略字段不会保留旧值：model、headers、enabled、description、reasoning_effort、vision_enabled 都按本次请求覆盖。前端 Provider 编辑当前未携带 headers，因此页面普通保存也会清空既有自定义头。
 
 #### 请求示例
 
@@ -123,15 +131,26 @@ AI 助手只做分析、解释、建议与执行计划，不直接执行任何�
 - Path: `/api/ai/providers/:id`
 - 鉴权: 是
 
-### 4.4 持久化与密钥约定
+### 4.4 持久化、运行时与密钥约定
 
-- provider 配置落库到 `ai_provider`（迁移 `0048`），数据库是事实源；`ai.providers` YAML 仅在新库/空表时作为种子写入，之后以页面配置为准。
-- 页面入口位于「系统设置 → AI 配置」的 Provider 管理页签（`web/src/views/system/ai-config`）；AI 运维助手页只负责对话，不再承载 AI 配置。
-- 启动时从数据库解密并加载到运行时注册表；新增/更新/删除经 `POST` / `DELETE` 同步写库并立即生效，无需重启。
-- `api_key` 使用平台凭据加密机制（AES-GCM，复用 Integration credential vault）保存为密文；接口只返回 `has_api_key`，从不回显明文。
-- 更新时省略 `api_key` 保留原密钥；新增时必填。日志与审计只记录 `has_api_key` / `provider_id` / `type` / `base_url` / `model` 等字段。
-- 单条 provider 启动加载失败（解密失败或配置非法）只跳过该条并记录 warn，不阻断 API 启动；坏配置可在页面修正后保存生效。
-- 告警分析动态选择 provider：优先启用中的类型 `b`，其次类型 `c`，最后任意启用项；因此页面启停/换模型无需重启。
+- Provider 配置落库到 `ai_provider`（迁移 `0048`），数据库是列表和持久化事实源；`ai.providers` YAML 仅在数据库为空时作为种子写入，之后不会覆盖已有配置。
+- 页面入口位于「系统设置 → AI 配置 → Provider 管理」；AI 运维助手页只负责对话，不再承载 AI 配置。
+- 启动时从数据库解密并加载到当前进程的运行时注册表；新增/更新/删除同步写库并更新**当前进程**，本实例无需重启。数据库与内存不是同一事务，多实例之间没有变更广播，不能宣称其他副本已即时刷新。
+- 单条 Provider 启动加载失败只跳过该条并记录 Warn，不阻断 API 启动；列表仍从数据库读取，可能继续显示 `enabled=true`。enabled 是配置状态，不是运行时健康或在线状态。
+- `api_key` 复用 Integration Credential Vault 的 AES-GCM 机制保存为密文；接口只返回 `has_api_key`，不回显明文或独立掩码字段。新增必填，更新留空保留原密钥。
+- Provider CRUD（upsert/delete）当前只有应用日志，没有对应操作审计；日志使用 ProviderConfig.AuditFields，不写 api_key 或 headers。
+- 删除为数据库硬删除并移除当前进程运行时配置；不存在的 ID 当前也可返回 `{ "deleted": true }`，不要依赖 404 做重复删除判断。
+- 告警分析动态选择 Provider：启用项按类型 `b → c → 其他`，同类型按 provider_id 升序。没有持久化的默认 Provider 字段；直接工具调用始终使用请求指定的 provider_id。
+
+保存只校验配置和出站 URL/DNS，不调用真实模型或工具端点。当前没有测试连接、健康状态、最近错误或连通性检查 API。
+
+### 4.5 出站限制
+
+- 仅允许 HTTP/HTTPS，禁止重定向；默认拦截私有、链路本地、metadata、组播和未指定地址。
+- loopback 仅在 dev 或 `ai.outbound_allow_loopback=true` 时允许。
+- `ai.outbound_allowed_hosts` 非空时启用主机白名单，支持精确主机与点号后缀匹配。
+- 注册和实际 Dial 前都执行地址校验；这不是对上游凭据、模型能力或业务响应的验证。
+- 类型 a/c 的工具响应体上限 1MiB；类型 b 的非流式模型响应上限 4MiB。上游非 2xx 不会把原始响应正文直接作为平台错误消息返回。
 
 ## 5. 工具调用接口
 
@@ -176,16 +195,34 @@ AI 助手只做分析、解释、建议与执行计划，不直接执行任何�
 
 #### 响应说明
 
-HTTP 200 且 `code` 为 `"OK"` 时，`data` 内仍可能 `allowed = false`（业务层拒绝，如未勾选 `confirmed`）；前端须检查 `data.allowed`。
+HTTP 200 且 `code` 为 `"OK"` 时，`data` 内仍可能 `allowed=false`；前端须检查 `data.allowed`，不能只判断 HTTP 或外层 code。
 
-- `allowed = true`：授权成功并完成调用；
-- `allowed = false`：`reason` 说明拒绝原因；
-- `provider`：实际使用的 provider；
-- `data`：provider 原始返回数据。
+- `allowed=true`：授权通过且 Executor 已返回，不等于外部系统业务成功；类型 b 还可能返回 `data.degraded=true` 的保守分析。
+- `allowed=false`：`reason` 说明 RBAC、数据范围、工具权限或确认拒绝，Provider 不会被调用。
+- `mode`：授权结果可携带的 `read_only/require_confirm/deny` 工具模式，部分拒绝响应会省略。
+- `provider`：实际使用的 provider_id；`data` 为 Executor 返回的 map，不是统一工具业务 DTO。
 
-## 6. P1+ 观测与执行工具边界
+直接调用使用请求指定的 provider_id，不自动回退。Provider 不存在返回 404，禁用返回 412，缺少执行器或上游不可用通常返回 503；这些与 `allowed=false` 的业务拒绝分开处理。
 
-后续接入云厂商只读观测和执行介体后，AI 工具网关需要明确区分只读观测、任务提议和真实执行。
+#### 5.2 工具模式与确认
+
+| permission_mode | Gateway 行为 |
+| --- | --- |
+| `read_only` | 不要求 confirmed |
+| `require_confirm` | 默认要求 confirmed=true；`permits_unconfirmed_invoke=true` 时允许未确认调用 |
+| `deny` | 始终拒绝 |
+
+Identity 响应中的 `permits_unconfirmed_invoke` 来自数据库列 `allow_confirm`。现有 `execution.runbook`、`inspection.runs.create`、`execution.tasks.propose` 种子均为 require_confirm 且该标志为 true，因此 admin 的通用工具网关调用可以在未勾选 confirmed 时通过。工具调试页“require_confirm 类工具必填”只是当前 UI 提示，不是服务端无条件约束；该豁免也不替代 Execution 自身的确认状态机。
+
+工具字典和角色授权由 Identity 提供：`GET /api/identity/ai-tool-permissions` 需要 `app:identity.ai_tool_permissions:read`，支持 permission_mode 过滤；`GET /api/identity/admin/roles/:role_id/ai-tool-permissions` 使用同一读权限，`PUT` 全量替换需要 `app:identity.access_control:write`。授权变更写 `identity_role / set_role_ai_tools` 审计，审计失败不回滚已完成的绑定变更。
+
+#### 5.3 直接调用审计
+
+Handler best-effort 写 `resource_type=ai`、`resource_id=tool_code`、`action=tool_invoke`，Payload 当前只有 provider_id/tool_code/resource/action/result，以及 Go error 时的 error。只要 Gateway 没返回 Go error，即使响应 `allowed=false`，审计仍写 `result=success`，且不包含 allowed/mode/reason；不能用这条记录判断业务调用已获准或成功。审计失败不回滚 Provider 调用或 HTTP 响应。
+
+## 6. 观测与执行工具边界
+
+AI 工具网关必须区分外部 Provider 通用转发、平台内置只读工具、任务提议和真实执行。下表中的 cloud.* 仍是规划命名，不因列出而成为已注册工具。
 
 | tool_code | 建议模式 | 说明 |
 | --- | --- | --- |
@@ -207,7 +244,7 @@ HTTP 200 且 `code` 为 `"OK"` 时，`data` 内仍可能 `allowed = false`（业
 - AI 生成的命令必须匹配 Execution 模块中的 Command Spec，并由运维人员确认后才能执行。
 - 执行介体、代理、租约和日志回传契约见 `ops/execution-agent-contract.md`。
 
-> 状态（2026-11）：cloud.* 系列与 `execution.tasks.propose` 工具化保持推迟（§10.12.2 / §10.12.3）。对话链路当前可用的只读工具为 `alarm.analyze` / `metrics.query`（§10.6.3）/ `alert.rules.list` / `alert.rules.health`（规则体检）/ `accounts.list` / `resource.analyze` / `resources.list`（上下文发现，§10.12.1）。
+> 状态（2026-11）：对话/Agent Loop 的内置只读工具共有 8 个：`alarm.analyze`、`metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`accounts.list`、`resource.analyze`、`resources.list`。它们由 AI application 经受控 Port 本地执行，不经 AI Provider 转发；模型补全只使用类型 b。cloud.* 系列与 `execution.tasks.propose` 的平台内置工具化保持推迟（§10.12.2 / §10.12.3）。`logs.search`、Execution/Inspection 等权限种子不代表已有本地实现；通用 `/tools/invoke` 只能按权限把请求转发给指定外部 Provider，不能据此保证平台业务语义。
 
 ## 7. Provider 类型说明
 
@@ -225,28 +262,31 @@ AI 运维助手（§10）只使用类型 `b` 做对话补全：没有启用中�
 
 ### 8.1 Provider 管理页（系统设置 → AI 配置）
 
-- 左侧为 provider 列表，支持按启用状态筛选；类型 `b` 的 `model` 直接展示在列表中；
-- 右侧为表单编辑区，可新增、编辑、删除 provider；类型 `b` 必须填写模型 / Endpoint；
-- 点击“测试连接”可校验 `base_url`、`api_key`、`headers` 是否可用；
-- 提交后立即刷新列表。
+- 左侧列表展示 ID、名称、类型、model、密钥是否已配置和 enabled；当前没有启用状态筛选、健康状态或测试连接按钮。
+- 右侧表单可新增、编辑和删除；类型 b 必须填写模型/Endpoint，可设置 timeout、reasoning_effort、vision_enabled 和 enabled。
+- API Key 新增必填，编辑留空保留；页面只显示“已配置/未配置”，没有独立掩码值。
+- 当前表单没有 headers 编辑器，普通编辑保存会清空既有 headers；保存后刷新列表，本实例运行时同步生效。
+- 页面没有独立 403 保留结构状态，错误主要依赖统一请求拦截器；无 ProviderManager 专项 Vitest。
 
 ### 8.2 工具调用页
 
-- 先选择 provider；
-- 再填写工具编码与调用参数；
-- 若工具要求人工确认，则前端需先勾选“已确认”再允许提交；
-- 返回结果区展示 `allowed`、`reason`、`provider` 和 `data`。
+- 先选择 Provider，再填写 tool_code、resource/action、payload 和 confirmed；返回区展示原始 JSON，allowed=false 时弹出 reason。
+- confirmed 复选框不会根据工具定义动态锁定提交；服务端的 require_confirm 还可能受 permits_unconfirmed_invoke 豁免，不能把 UI 文案当作强制规则。
+- 当前表单不提供 owner_id/dept/team/region/tags，虽然 API 封装和后端 DTO 支持这些字段。
+- 该页只验证通用转发，不是 8 个对话内置工具的本地执行调试器；无 ToolConsole 专项 Vitest 或直接 `/tools/invoke` E2E。
 
-## 8. 错误语义
+### 8.3 错误语义
 
 | code | HTTP | 说明 |
 | --- | --- | --- |
 | `OK` | 200 | 成功 |
 | `INVALID_ARGUMENT` | 400 | provider / invoke 请求参数非法 |
 | `UNAUTHENTICATED` | 401 | 未登录或 token 无效 |
-| `PERMISSION_DENIED` | 403 | RBAC / 数据范围 / 工具权限校验未通过 |
-| `UNAVAILABLE` | 503 | provider registry 或 gateway 未配置 |
-| `INTERNAL` | 500 | provider 调用失败或内部错误 |
+| `PERMISSION_DENIED` | 403 | 路由/入口 RBAC 或数据范围拒绝；进入 Gateway 后的工具业务拒绝通常为 200 + allowed=false |
+| `NOT_FOUND` | 404 | 直接调用的 Provider 不存在 |
+| `FAILED_PRECONDITION` | 412 | Provider 禁用或运行时配置不满足调用条件 |
+| `UNAVAILABLE` | 503 | registry/gateway/executor 未配置或上游不可用 |
+| `INTERNAL` | 500 | 持久化或平台内部错误 |
 
 前端判断成功应使用 `code === "OK"`，勿使用数字 `0`。
 
@@ -299,7 +339,7 @@ AI 运维助手（§10）只使用类型 `b` 做对话补全：没有启用中�
 | `unsupported` | 账号认证方式（如 agency）暂不支持指标查询 |
 | `error` | 账号解析或指标查询失败，已降级；`reason` 不包含凭据或底层原始错误 |
 
-`points` 为 `[Unix 秒, 值]`。单条定稿快照上限由 `ai.evidence_payload_max_bytes` 控制（默认 32768 字节）：超限时先丢弃 `points` 仅保留统计摘要，仍超限则丢弃 `metrics` 并保留状态、证据 ID、查询与截断元数据；`truncated=true`、`original_count` 与 `retained_count` 记录裁剪前后点数。对话路径在大小裁剪前还会按 §10.6.6 做每序列最多 96 点的降采样，并携带 `sampling.strategy=stride_first_last`。
+`points` 为 `[Unix 秒, 值]`。单条定稿快照上限由 `ai.evidence_payload_max_bytes` 控制（默认 32768 字节）：超限时先丢弃 `points` 仅保留统计摘要，仍超限则丢弃 `metrics` 并保留状态、证据 ID、查询与截断元数据；`truncated=true`、`original_count` 与 `retained_count` 记录裁剪前后点数。对话路径在大小裁剪前还会按 §10.6.6 做每序列最多 288 点的降采样，并携带 `sampling.strategy=stride_first_last`。
 
 持久化顺序固定为“采集 → 定稿/裁剪 → 写 `obs_evidence_ref.payload` 与 `payload_hash` → 交给模型”。AI 查询初始记录为 `collecting`，只有快照写入成功才转为 `ok`；写入失败时返回 `status=error`、`reason=evidence_snapshot_persist_failed`，移除指标和支持性引用，不允许模型把未落库数据当作事实。已进入 collector 的非 OK 终态也会尽力保存失败快照，其 ID 可进入工具观测和审计，但不能作为支持性 `references`。
 
@@ -383,7 +423,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | `app:ai:knowledge:manage` | 知识条目管理：新建/编辑/审核/删除/反馈聚合（§10.15，migration `0052`） |
 | `app:ai:memory:manage` | 记忆条目管理：检索/手动停用启用（§10.19，migration `0054`） |
 
-迁移 `0049` 同时把以上权限绑定到内置 `admin` 角色。工具权限沿用既有种子：`alarm.analyze`、`metrics.query`（只读），`execution.tasks.propose`（`require_confirm`，仅用于生成执行计划入口的权限判断）。
+迁移 `0049` 只把 `app:ai:chat` 和 `app:ai:chat:feedback` 绑定到内置 `admin`；知识、记忆等权限由各自后续迁移绑定。工具权限沿用既有种子：`alarm.analyze`、`metrics.query`（只读），`execution.tasks.propose`（`require_confirm`，仅用于生成执行计划入口的权限判断，不在 Agent Loop 白名单中）。
 
 ### 10.3 创建会话
 
@@ -433,7 +473,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - Path: `/api/ai/chat/sessions/:session_id`
 - 鉴权: 是（`app:ai:chat`）
 
-返回 `{ session, messages[] }`，消息按时间升序；`assistant` 消息带结构化 `answer`，并含 `tool_calls` 与 `references`。会话不属于当前用户时返回 403 `PERMISSION_DENIED`。
+返回 `{ session, messages[] }`，只取**最近 200 条消息**并按时间升序；`assistant` 消息带结构化 `answer`，并含 `tool_calls` 与 `references`。这不是全量历史分页接口，响应达到 200 条时不能据此判断数据库总消息数。会话不属于当前用户时返回 403 `PERMISSION_DENIED`，不存在返回 404。
 
 ### 10.6 发送消息（同步返回回答）
 
@@ -445,9 +485,11 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `content` | string | 是 | 用户问题，最长 4000 字符 |
-| `context` | object | 否 | 覆盖会话上下文（浮层从任意页面唤起时携带） |
+| `content` | string | 是（无图片时） | 用户问题，最长 4000 字符；纯图片消息见 §10.20 |
+| `context` | object | 否 | 覆盖会话上下文；其中 provider_id 为空时保留会话已选模型 |
+| `provider_id` | string | 否 | 本轮模型，最长 64 字符；优先级见 §10.6.7 |
 | `client_message_id` | string | 否 | 幂等键，最长 64 字符；同一会话内重复提交返回首次结果，见 §10.6.5 |
+| `images` | string[] | 否 | 用户附图，规则见 §10.20 |
 
 响应 `data`（节选）：
 
@@ -475,7 +517,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
   "tool_calls": [
     { "tool_code": "alarm.analyze", "allowed": true, "mode": "read_only", "status": "ok" },
     { "tool_code": "metrics.query", "allowed": false, "status": "denied", "reason": "tool permission denied" },
-    { "tool_code": "execution.tasks.propose", "allowed": true, "mode": "require_confirm", "status": "ok" }
+    { "tool_code": "execution.tasks.propose", "allowed": true, "mode": "require_confirm", "status": "ok", "summary": "生成执行计划的权限校验（真实执行仍须人工确认）" }
   ],
   "references": [
     { "type": "alert", "id": "alt-1", "label": "HighCPU", "url": "/alerts?alert_id=alt-1" },
@@ -501,7 +543,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 - `risk_level`：`low` / `medium` / `high` / `info`；模型返回 `critical` 时按 `high` 呈现。
 - `actions` 由服务端按权限生成，**不采信模型输出**：
-  - `execution.propose`：服务端校验 `execution.tasks.propose` 工具权限，`allowed=false` 时带 `reason`；
+  - `execution.propose`：服务端在回答生成后校验 `execution.tasks.propose` 工具权限，将该校验追加到 `tool_calls` 并写 `tool_invoke` 审计，再生成 action；`allowed=false` 时带 `reason`。此记录只证明做过权限检查，不表示模型调用了任务创建工具，也不表示已创建 Execution Task；
   - `view.alert` / `view.metrics`：只读跳转入口，`target` 为前端路由；
   - `memory_case` 类型引用只在 §10.14 记忆命中时出现，无 `url`，`id` 为 `case_id`（阶段 1）。
 - `require_confirm`：模型声明或 `risk_level` 为 medium/high 时为 `true`。该字段只表达“建议需要人工确认”，不替代 Execution 状态机的确认。
@@ -511,14 +553,14 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 - 每条消息在 gather 阶段先执行 `accounts.list`（未配置时跳过），把当前用户可见的集成账号清单注入观测，供模型选择 `account_id`。
 - 上下文中的 `alert_id` 会触发告警快照读取：先做 `alarm.analyze` 的 RBAC 与工具权限校验，再由 `AlertReader.GetForAnalysis` 按当前用户的数据范围校验对象（映射见 §10.6.4）；可推导指标查询条件时触发 `metrics.query` 权限校验并采集只读指标证据。
-- 无 `alert_id` 但会话带 `resource_id` 时触发 `resource.analyze`：读取资源并推导 `account_id/region/namespace/dimensions`；资源数据范围由 Asset 应用层按账号归属团队/区域收口（拒绝记为 `status=denied`、`reason=data_scope_denied`）。
-- 模型可在 Agent Loop 中申请 `metrics.query`（自由参数）、`alert.rules.list`（规则体检）、`alert.rules.health`（批量规则体检）、`accounts.list`、`resource.analyze` 与 `resources.list`（资源发现）；执行类工具仍在白名单之外。
+- 无 `alert_id` 但会话带 `resource_id` 时触发 `resource.analyze`：读取资源并推导 `account_id/region/namespace/dimensions`；资源数据范围由 Asset 应用层按账号归属团队/区域收口（拒绝记为 `allowed=false`、`status=denied`、`reason=data_scope_denied`）。
+- 模型可在 Agent Loop 中申请 `alarm.analyze`、`metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`accounts.list`、`resource.analyze` 与 `resources.list`；执行类工具仍在白名单之外。
 - 每次工具校验/调用都写入审计：`resource_type=ai`、`resource_id=session_id`、`action=tool_invoke`，payload 含 `tool_code/allowed/mode/status/reason/evidence_id/result`，不含 prompt 与凭据。
 - 回答写入审计：`action=chat_message`，含 `status/risk_level/require_confirm/tool_codes/tool_denied/reference_count/provider_id/tokens/degraded_reason/incomplete_reason`。
 - 数据范围校验口径：
-  - 告警快照的对象级数据范围在 `AlertReader` 收口（`POST /api/ai/analyze-alert` 与对话共用同一入口），拒绝时返回 `PERMISSION_DENIED`，不返回任何告警字段；
-  - 对话路径把拒绝降级为一次观测：`alarm.analyze` 的 `allowed=true`、`status=denied`、`reason=data_scope_denied`（工具权限本身已通过，拒绝来自对象数据范围），不产生告警 `references`，也不返回 `view.alert` 跳转入口，模型仍可基于其它上下文（或降级结果）作答；
-  - 工具校验固定 `SkipDataScope=true` 且排在对象读取之前：告警/资源的数据范围由各自读取端口判断，而 `metrics.query`、`alert.rules.list`、`alert.rules.health`、`accounts.list`、`resources.list`、`execution.tasks.propose` 没有对象上下文（账号级范围由观测取数、规则/资源查询、账号发现端口二次校验），在此强制数据范围会把正常对话误判为“缺少对象上下文”，也会让无权用户靠拒绝原因探测对象是否存在。
+  - 告警快照的对象级数据范围在 `AlertReader` 收口（`POST /api/ai/analyze-alert` 与对话共用同一入口），拒绝时不返回任何告警字段；
+  - 对话路径把拒绝降级为一次观测：`alarm.analyze` 的 `allowed=false`、`status=denied`、`reason=data_scope_denied`，不产生告警 `references`，也不返回 `view.alert` 跳转入口，模型仍可基于其它上下文（或降级结果）作答；
+  - 工具校验固定 `SkipDataScope=true` 且排在对象读取之前：告警/资源的数据范围由各自读取端口判断，而 `metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`accounts.list`、`resources.list`、`execution.tasks.propose` 没有通用对象上下文；账号级范围由观测取数、规则/资源查询、账号发现端口二次校验。在此强制通用对象数据范围会把正常对话误判为“缺少对象上下文”。
   - 分析路径在读取通过后会把同一份对象上下文随 `alarm.analyze` 工具请求下发，由网关复核（纵深防御）。
 - 对话历史最多取最近 12 条送入模型；单条历史内容截断，不读取全量会话。
 
@@ -547,16 +589,18 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 - 落库：`ai_session_message.client_message_id`（migration `0050`），仅 user 消息写入；`(session_id, client_message_id)` 上有一个 `WHERE client_message_id <> ''` 的部分唯一索引，并发重复提交由数据库兜底。
 - 首次提交：正常落用户消息、校验工具、调用模型、落回答。
-- 重复提交（已有对应回答）：**原样返回首次结果**——相同的 `message_id`、`answer`、`tool_calls`、`references`、`status`；不新增消息、不再调用模型、不再采集指标证据。审计仍写一条 `action=chat_message`，并带 `replayed=true` 与 `client_message_id`。
-- 重复提交（用户消息已落库但回答缺失，如服务端中断）：返回 **409 `FAILED_PRECONDITION`**，message 提示上一次请求仍在处理或已中断；客户端应刷新会话查看结果，不要静默重发。
+- 重复提交（已有对应回答）：**原样返回首次结果**——相同的 `message_id`、`answer`、`tool_calls`、`references`、`status`；不新增消息、不再调用模型、不再采集指标证据。审计仍写一条 `action=chat_message`，并带 `replayed=true` 与 `client_message_id`。重放先于归档检查，因此事后归档不影响已生成结果重放。
+- 重复提交（用户消息已落库但回答缺失，如服务端中断）：返回 **409 `FAILED_PRECONDITION`**，message 提示上一次请求仍在处理或已中断；客户端应重新获取会话详情确认实际状态，该响应不能证明原请求仍在运行。
 - 并发重复提交：插入撞唯一索引后回落到上面的分支（有回答则重放，无回答则 409）。
 - 未提供 `client_message_id`：行为与之前一致（每次都是新消息），不承诺幂等。
+- 服务端不比较 content/context/provider_id 的 hash；相同 key 即使请求内容不同也返回首次结果。新的提问必须使用新 key，degraded/incomplete 也已落库的回答同样会重放。
+- 后端没有会话级串行锁，不同 key 的并发消息不属于该幂等保证。`FindAssistantAnswer` 取该用户消息之后的第一条 assistant，不是独立外键关联。
 - 边界：本能力只保证「同一会话内同一幂等键最多一条用户消息 + 至多返回一次相同结果」，不是端到端 exactly-once；流式模型调用在未产生任何增量前可内部退避重试（见 §10.17.7），已产生增量后不重试。
 
 #### 10.6.6 Prompt 时间基准与可读引用
 
 - user prompt 顶层固定带 `now`（服务端当前 Unix 秒，Agent Loop 每轮重新取值）；system prompt 要求 `metrics.query` 的 `from/to` 必须以 `now` 为基准，禁止从规则 ID、告警 ID 或其他标识符推断时间。
-- 指标观测 `summary` / `data` 带 `metric_label`（常见 CES 指标中文名映射；未映射时为空，模型必须保留原始指标代码并注明“未映射”，禁止臆造含义）与 `point_count`（定稿前原始数据点数）。`point_count=0` 时 summary 明确写“无数据点”，模型应先调整时间窗口重查或说明该窗口无数据。`data.metrics` 携带该次查询定稿后的序列（`first`/`peak`/`last`/`breach_points`/`points`）：先按每序列 ≤96 点做 `stride_first_last` 降采样并保留首末点，再按快照字节上限裁剪；统计量按全量计算。`retained_point_count` 是最终保留点数，`truncated` / `sampling` 标明裁剪口径。`data.evidence_id` / `schema_version` / `trace_id` / `collected_at` / `window_start` / `window_end` / `period` / `aggregator` 与 `dimensions` 标明证据身份和查询口径。该份序列与 `obs_evidence_ref.payload` 完全相同，禁止落库后再次独立降采样；快照写失败时观测降级为 `error`，不携带指标或支持性引用。模型应基于这些数值收敛作答，不得换参数重查同一窗口。
+- 指标观测 `summary` / `data` 带 `metric_label`（常见 CES 指标中文名映射；未映射时为空，模型必须保留原始指标代码并注明“未映射”，禁止臆造含义）与 `point_count`（定稿前原始数据点数）。`point_count=0` 时 summary 明确写“无数据点”，模型应先调整时间窗口重查或说明该窗口无数据。`data.metrics` 携带该次查询定稿后的序列（`first`/`peak`/`peak_at`/`last`/`breach_points`/`breach_episodes`/`breach_duration_seconds`/`longest_breach_seconds`/`points`）：先基于全量序列计算峰值时刻与破限片段统计，再按每序列 ≤288 点做 `stride_first_last` 降采样并保留首末点，最后按快照字节上限裁剪；统计量按全量计算，降采样不丢失峰值时刻与越限时长。`retained_point_count` 是最终保留点数，`truncated` / `sampling` 标明裁剪口径。`data.evidence_id` / `schema_version` / `trace_id` / `collected_at` / `window_start` / `window_end` / `period` / `aggregator` 与 `dimensions` 标明证据身份和查询口径。该份序列与 `obs_evidence_ref.payload` 完全相同，禁止落库后再次独立降采样；快照写失败时观测降级为 `error`，不携带指标或支持性引用。模型应基于这些数值收敛作答，不得换参数重查同一窗口。
 - 规则观测每条规则带 `metric_label`；回答引用规则时使用可读形式「规则名（指标中文名 操作符 阈值，采样窗口 Xs，级别）」，`rule_id` / `evidence_id` 只作为括号内的证据引用，不得把机器 ID 当作唯一指代。
 - 推荐操作必须逐条结构化：目标规则（名称+ID）、调整字段、现值→建议值、理由与风险；涉及多条规则逐条列出，禁止只写“部分规则需调整”式笼统结论。
 
@@ -566,15 +610,16 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - Path: `/api/ai/chat/models`
 - 鉴权：是（`app:ai:chat`，普通用户可调）
 
-响应 `data`：`[{ "provider_id": "...", "name": "...", "model": "..." }]`，仅**启用中的类型 b**，按 `provider_id` 升序；不含 `base_url` / `api_key` / `headers` / `timeout_ms` 等运维字段。
+响应 `data`：`[{ "provider_id": "...", "name": "...", "model": "...", "vision_enabled": false }]`，仅**运行时启用中的类型 b**，按 `provider_id` 升序；不含 `base_url` / `api_key` / `headers` / `timeout_ms` 等运维字段。数据库 enabled 但启动加载失败的 Provider 不会出现在该运行时目录中。
 
 切换语义：
 
-- 创建会话时 `context.provider_id` 可选，写入会话上下文；发送消息时 `body.provider_id` 可选。
-- 优先级：请求 `provider_id` > 会话 `context.provider_id` > 默认（第一个启用的类型 b）。
-- 所选模型不存在/被禁用时**不失败**：回退默认模型，`answer.uncertainties` 首条写入「所选模型 X 不可用，已回退 Y」。
+- 创建会话时 `context.provider_id` 可选，写入会话上下文；发送消息时顶层 `provider_id` 与 `context.provider_id` 均可选。
+- 本轮优先级：顶层请求 `provider_id` > 会话 `context.provider_id` > 默认（provider_id 最小的启用类型 b）。
+- 顶层 provider_id 只在会话尚未保存模型时写入上下文；已有模型后如需持久切换，自定义客户端必须同时更新 `context.provider_id`，否则只影响本次请求。当前前端同时发送两个字段，因此页面切换可以保存。
+- 所选模型不存在/被禁用且存在默认模型时**不失败**：回退默认模型，`answer.uncertainties` 首条写入「所选模型 X 不可用，已回退 Y」；没有默认模型时返回 degraded/model_unavailable。
 - 审计：`chat_message` 同时记录 `provider_id`（实际使用）、`requested_provider_id`（请求/会话选择）与 `provider_fallback`（是否回退）。
-- 前端在会话中可切换模型，选择从下一条消息生效；生成回答期间选择器临时禁用。后端按每次请求的 `provider_id` 选择本轮模型。
+- 前端在会话中可切换模型，选择从下一条消息生效；当前 ChatPanel 没有把 sending 传给 ModelControl 的 disabled，**生成期间选择器实际未禁用**。后端按每次请求的 provider_id 选择本轮模型。
 - 换模型不改变 RBAC、工具权限与审计口径；工具调用继续继承当前用户身份。
 
 ### 10.7 提交回答反馈
@@ -626,18 +671,20 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 上下文只存业务 ID 与标题，禁止写入凭据、Token、告警正文、任务参数、标签明文或自由文本。
 - 退出详情或切换页面时清空资源级字段；`execution_id` 与 `resource_id` 一样被视为资源级上下文（有值时不会被路由切换覆盖）。
 
-### 10.9 前端状态映射（页面原型 §23.2）
+### 10.9 前端状态映射与当前差距
 
-| UI 状态 | 判定 |
+| UI 状态 | 当前判定与展示 |
 | --- | --- |
-| AI 思考中 / 查询工具中 / 生成回答中 | 流式接口按 `stage` / `tool` 事件即时切换；同步接口按请求进行中提示 |
-| 用户取消 / 连接中断 | 流提前结束且无 `answer` / `error`；服务端不落回答，记 `chat_canceled` 审计（§10.17.4） |
-| AI 回答失败 | `status=degraded` 且 `degraded_reason` 为 `model_unavailable` / `model_failed` / `model_output_invalid` / `provider_rate_limited`，展示原因与可重试入口 |
-| AI 未得出结论 | `status=degraded` 且 `degraded_reason` 为 `agent_loop_exhausted` / `turn_budget_exceeded`，橙色提示「取数预算内未得出结论」，按普通回答卡渲染已获取证据并保留重新提问入口 |
-| AI 回答生成中断 | `status=incomplete` 或 `answer.incomplete=true`，橙色提示 + 重新提问入口；按普通回答卡渲染已保留内容，不展示为失败 |
-| AI 无足够上下文 | `status=insufficient_context` 或 `answer.insufficient_context=true` |
-| AI 建议需人工确认 | `answer.require_confirm=true` |
-| AI 建议不可执行 | `actions` 中 `execution.propose.allowed=false`，展示 `reason` |
+| AI 思考中 / 查询工具中 / 生成回答中 | gathering/thinking 归入思考中，tool 事件切入查询工具，answering 显示生成中；thinking delta 展示过程文本，answer delta 只计数 |
+| 用户主动停止 | AbortController 中断后回读会话，移除本地乐观消息；命中取消检查点时服务端保留 user、不写 assistant 并记 chat_canceled |
+| 连接中断 | 流结束无 answer/error 时抛 ABORTED；当前工作台回读后仍可能把 UI 标为 failed，即使已经找到落库回答，不能与主动停止混为一谈 |
+| AI 回答失败 | degraded 且 reason 为 model_unavailable/model_failed/model_output_invalid/provider_rate_limited，展示对应原因 |
+| AI 未得出结论 | degraded 且 reason 为 agent_loop_exhausted/turn_budget_exceeded，按橙色 inconclusive 展示已获取证据 |
+| AI 回答生成中断 | status=incomplete 或 answer.incomplete=true，按普通回答卡保留内容并展示 incomplete_reason |
+| AI 无足够上下文 | status=insufficient_context 或 answer.insufficient_context=true |
+| AI 建议需人工确认 / 不可执行 | 分别由 answer.require_confirm 和 execution.propose.allowed=false 驱动 |
+
+当前“重新提问”与传输重试复用同一个 client_message_id：如果首次回答已落库，点击后只会重放旧回答，不会重新调用模型；本地乐观消息也未按 message_id 去重。历史详情加载又会清空重试内容，因此历史 degraded/incomplete 回答的重试按钮可能不可用。验收时应区分“幂等重放”与“使用新 key 真正重新提问”，不能把按钮存在解释为已满足重新生成。
 
 ### 10.10 存储与迁移
 
@@ -645,10 +692,10 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 迁移 `0050_ai_session_message_idempotency`：`ai_session_message.client_message_id`（+ `(session_id, client_message_id)` 部分唯一索引），支撑 §10.6.5 消息幂等；幂等补齐，不改写已发布的 `0049`。
 - 迁移 `0053_ai_session_share`：`ai_session_share`（`share_id` 业务唯一、`session_id`、`owner_user_id`、`token_hash` 唯一、`status`、`expires_at`），支撑 §10.18 会话只读分享；只存 token 哈希，无外键，时间戳由 Go 维护。
 - 迁移 `0060_obs_evidence_snapshot`：扩展 Observability `obs_evidence_ref`，保存 CES 定稿 payload、SHA-256、查询参数、窗口、采集时间、状态与截断元数据；不在本切片新增证据详情 API 或前端证据抽屉。
-- `assistant` 消息的 `content` 保存结构化回答 JSON；读取时由服务端解析为 `answer` 字段（含 `degraded` / `degraded_reason`，保证重放与非重放一致的 `status`）。
-- 消息落库与会话 `updated_at` / 标题 / 上下文更新在同一事务内完成。
-- 会话归属用户：跨用户访问返回 403；不暴露自增 `id`。
-- 归档只更新 `status` 与 `updated_at`（保留历史消息）；删除在同一事务内先删消息再删会话，避免孤儿消息。会话表结构不变，因此归档/删除不新增迁移。
+- `assistant` 消息的 `content` 保存结构化回答 JSON；读取时由服务端解析为 `answer` 字段（含 degraded/degraded_reason/incomplete，保证重放状态一致）。会话详情只读最近 200 条。
+- 每次 `AppendMessage` 把一条消息与会话 updated_at/标题/上下文更新放在同一事务；用户消息和助手消息是两个事务，后续失败不会自动删除已保存的用户消息。
+- 会话归属用户：跨用户访问返回 403；不暴露自增 `id`。模型历史另只取最近 12 条，且与详情 200 条窗口不是同一口径。
+- 归档只更新 status 与 updated_at（保留历史消息）；目标状态相同则不推进 updated_at，但仍写状态审计。删除在同一事务内先删消息再删会话，避免孤儿消息；审计在事务后 best-effort。归档/删除不新增迁移。
 
 ### 10.11 已知限制与 P1 待办
 
@@ -658,11 +705,14 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - **资源级上下文已完成**：告警、资产、执行、观测四类页面按 §10.8 写入资源级字段；`execution_id` 为 `0050` 之后新增的上下文维度（仅上下文 JSON，无表结构变更）。
 - **相似案例记忆（阶段 1）已完成**：见 §10.14（migration `0051_ai_memory_case`）。
 - **知识沉淀（阶段 2）已完成**：见 §10.15（migration `0052_ai_knowledge_item`，人工录入 + 反馈聚合生成 draft + 审核激活 + scope 注入 + 低效自动停用），管理页签在「系统设置 → AI 配置 → 知识沉淀」。
-- **受限 Agent Loop（阶段 3）已完成**：见 §10.16（≤3 轮只读工具循环、token 预算、每轮 RBAC 复核、`loop_rounds` 审计）；循环仍只做只读取数，执行类工具不可达。
-- **流式与取消已完成**：见 §10.17（SSE 事件级推送、取消不落回答并写 `chat_canceled` 审计）；同步接口 §10.6 保留不变。
+- **受限 Agent Loop（阶段 3）已完成**：见 §10.16（≤4 轮只读工具循环、80000 token 预算、每轮 RBAC 复核、`loop_rounds` 审计）；循环仍只做只读取数，执行类工具不可达。
+- **流式与取消检查点已落地**：见 §10.17（SSE 事件级推送、取消检查点不写 assistant 并写 `chat_canceled`）；assistant 落库后的最终 answer 推送失败不回滚，不能概括为所有断流都不落回答。同步接口 §10.6 保留不变。
 - **会话分享已完成**：见 §10.18（对内只读链接 + 1–720 小时有效期 + owner 撤销；不提供匿名/对外访问）。
 - **记忆手动管理已完成**：见 §10.19（migration `0054`，管理员检索与手动停用/启用，写 `memory_review` 审计）；回答注入范围不因管理接口扩大。
-- **工具范围扩展已落地**：当前只读工具为 `alarm.analyze` / `metrics.query`（自由参数）/ `alert.rules.list` / `alert.rules.health` / `accounts.list` / `resource.analyze` / `resources.list`（§10.12.1）；日志、变更类与 `cloud.*` 只读工具仍推迟接入。
+- **工具范围扩展已落地**：当前对话只读工具为 `alarm.analyze` / `metrics.query` / `postgres.activity.query` / `alert.rules.list` / `alert.rules.health` / `accounts.list` / `resource.analyze` / `resources.list`（§10.12.1、§10.21）；日志、变更类与 `cloud.*` 只读工具仍推迟接入。
+- **当前前端差距**：归档提示前会清空输入；生成中模型选择未禁用；详情无通用手动刷新入口；重试复用旧 key 会重放旧回答且历史重试可能不可用；多轮工具目录不是完整时间线。上述均属于实现缺口，不随“会话/Loop 后端已落地”自动关闭。
+- **同步客户端预算差距**：`web/src/api/ai.ts` 的同步 sendChatMessage 仍为 90 秒超时，与后端默认 600 秒回合预算不一致；独立工作台使用 SSE，但自定义同步调用方需单独评估。
+- **验证边界**：E2E 均为 API/curl + mock/fake，不是浏览器 UI 或真实模型验收；部分脚本保留业务数据，Agent Loop 无 active 告警会 SKIP 后 exit 0，必须看实际输出。
 
 ### 10.12 演进方向与推迟项（2026-11 决策，规则体检与上下文发现已落地）
 
@@ -670,7 +720,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 #### 10.12.1 规则体检与上下文发现只读工具
 
-- **已落地**：`alert.rules.list`、`alert.rules.health`、自由参数 `metrics.query`、上下文发现三件套 `accounts.list` / `resource.analyze` / `resources.list`。执行类工具仍不可达。
+- **已落地**：`alarm.analyze`、自由参数 `metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、上下文发现三件套 `accounts.list` / `resource.analyze` / `resources.list`。执行类工具仍不可达。
 - **上下文发现解决的问题**：无告警上下文时模型拿不到 `account_id/region/namespace/instance_id`；`accounts.list` 提供账号清单，`resource.analyze` 从资产页/观测页带入资源上下文，`resources.list` 让模型在纯对话场景发现实例。
 - **仍推迟什么**：`logs.search`、`changes.list`、`assets.get`（非云资源详情）、`cloud.*` 系列。资产资源只读范围已按集成账号数据范围收口，但变更类对象仍无统一口径。
 - **为什么先做规则体检**：告警规则查询 Port 已存在（`AlertRuleQueryPort`），指标查询已有成熟证据链与数据范围校验；用 namespace 过滤即可覆盖数据库类规则的 MVP 场景。
@@ -682,12 +732,13 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | `alert.rules.list` | read_only | AI 工具权限 `alert.rules.list`（migration `0055`，仅 admin） | 按 namespace 查询告警规则及阈值字段 |
 | `alert.rules.health` | read_only | AI 工具权限 `alert.rules.health`（migration `0062`，仅 admin） | 按规则批量取历史曲线并统计峰值/破限比例 |
 | `metrics.query` | read_only | AI 工具权限 `metrics.query`（既有种子） | 自由参数，服务端校验后取指标证据 |
+| `postgres.activity.query` | read_only | AI 工具权限 `postgres.activity.query`（migration `0061`，仅 admin） | 查询 RDS for PostgreSQL 历史会话证据，详见 §10.21 |
 | `alarm.analyze` | read_only | AI 工具权限 `alarm.analyze`（既有种子） | 重新读取当前告警快照，无参数 |
 | `accounts.list` | read_only | AI 工具权限 `accounts.list`（migration `0056`，仅 admin） | 列出当前用户可见的启用账号（脱敏摘要，上限 10 条） |
 | `resource.analyze` | read_only | AI 工具权限 `resource.analyze`（migration `0056`，仅 admin） | 读取会话选中的资源（业务 ID 或 cloud_resource_id），推导账号/区域/namespace/主维度 |
 | `resources.list` | read_only | AI 工具权限 `resources.list`（migration `0056`，仅 admin） | 按账号查询本地云同步资源（source=cloud_sync） |
 
-执行路径：`alarm.analyze` 仍由 provider 执行；`metrics.query` / `alert.rules.list` 由 AI application 经 `MetricEvidencePort` / `AlertRuleListPort` 本地执行；`alert.rules.health` 经 `RuleHealthPort` 组合 `ListAlertRules` 与 `QueryMetrics` 本地执行；`accounts.list` 经 `AccountListPort`（Integration `AccountService.List` + 账号数据范围），`resource.analyze` / `resources.list` 经 `AssetReader` / `ResourceDiscoveryPort`（Asset 应用层数据范围）本地执行，均不经 `ProviderRegistry` 转发。`toolgateway` 负责工具权限校验与内置工具清单登记（`internal/ai/toolgateway/builtin.go`），工具权限均落在 `iam_ai_tool_permission` + `iam_role_ai_tool_permission`。
+执行路径：在**对话/Agent Loop**中，`alarm.analyze` 由 AI application 经 AlertReader 本地读取；`metrics.query` / `alert.rules.list` 经 `MetricEvidencePort` / `AlertRuleListPort`，`postgres.activity.query` 经 `PostgresEvidencePort`，`alert.rules.health` 经 `RuleHealthPort` 组合规则与指标查询，`accounts.list` 经 `AccountListPort`，`resource.analyze` / `resources.list` 经 `AssetReader` / `ResourceDiscoveryPort`。这些内置工具均不经 `ProviderRegistry` 转发。只有在 `POST /api/ai/analyze-alert` 或直接 `/tools/invoke` 链中，`alarm.analyze` 才会继续交给 AI Provider 执行。`toolgateway` 负责工具权限校验与内置工具清单登记（`internal/ai/toolgateway/builtin.go`），工具权限均落在 `iam_ai_tool_permission` + `iam_role_ai_tool_permission`。
 
 **`metrics.query` 参数 schema（`tool_requests[].params`）**
 
@@ -707,7 +758,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 阈值语义：`threshold` / `operator` 只从告警结构化条件继承；当模型覆盖 `metric` 且与告警 `metric_name` 不同时，证据不再携带告警阈值，避免破限点误判。
 - 指标别名归一化：`namespace=SYS.RDS` 时常见通用名（`cpu_util`/`mem_util`/`disk_util`/`conn_usage`/`connections`/`replication_lag` 等）服务端归一化为 CES 真实代码（`rds001_cpu_util`/`rds002_mem_util`/`rds039_disk_util`/`rds083_conn_usage`/`rds046_replication_lag`），避免错误指标名取回空序列被误判上下文不足；其他命名空间不归一化。
 - 数据范围：取数前按 `account_id` 解析账号并过 `AccountAccessAuthorizer`；拒绝时工具权限本身已通过，观测记为 `allowed=true`、`status=permission_denied`、`reason=no access to integration account for evidence`，审计 `result=partial`。
-- 证据：观测 `summary` 含指标中文名与原始数据点数（`无数据点` / `N 点`）；`data` 含 `metric`、`metric_label`、`metric_count`、`point_count`、`retained_point_count`、`evidence_ids`、`evidence_id`、`schema_version`、`from`/`to`/`period`、`window_start`/`window_end`、`collected_at`、`aggregator`、`dimensions`、`truncated`/`sampling` 与 `metrics`（定稿序列，≤96 点/序列含首末，统计量按全量计算）。序列先定稿并写入 migration `0060` 的 `obs_evidence_ref.payload`（含 SHA-256 `payload_hash`），再进入 Prompt；写失败返回 `error`，不生成支持性引用。最终回答 `references` 仅对 `status=ok` 的快照包含 `observability_evidence`。
+- 证据：观测 `summary` 含指标中文名与原始数据点数（`无数据点` / `N 点`）；`data` 含 `metric`、`metric_label`、`metric_count`、`point_count`、`retained_point_count`、`evidence_ids`、`evidence_id`、`schema_version`、`from`/`to`/`period`、`window_start`/`window_end`、`collected_at`、`aggregator`、`dimensions`、`truncated`/`sampling` 与 `metrics`（定稿序列，≤288 点/序列含首末，统计量按全量计算，含 `peak_at` 与破限片段/时长）。序列先定稿并写入 migration `0060` 的 `obs_evidence_ref.payload`（含 SHA-256 `payload_hash`），再进入 Prompt；写失败返回 `error`，不生成支持性引用。最终回答 `references` 仅对 `status=ok` 的快照包含 `observability_evidence`。
 
 **`alert.rules.list` 参数 schema（`tool_requests[].params`）**
 
@@ -738,10 +789,12 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | `period` | int 秒 | 否 | 默认 **3600**；超过 7 天窗口不得小于 3600；点数（`window/period+1`）≤1440 |
 | `aggregator` | string | 否 | 默认 **max**；支持 `avg/average/max/min/sum/variance` |
 
-- 执行口径：按 `namespace/keyword/limit` 拉取规则；每条规则用其第一个关联资源维度（`resources[0]`）取一条序列；规则关联多个资源时该条标记 `sampled=true`，统计只代表样本资源。
-- 逐规则状态：无指标名（事件规则）→ `skipped/no_metric`；规则未返回关联资源 → `skipped/no_resource_scope`；单条取数失败 → `error` + 稳定 reason；总预算（默认 30s）耗尽 → 剩余规则 `skipped/rule health query timeout`。单条失败不阻断其它规则。
-- 统计字段：`point_count`、`first`、`min`、`avg`、`p95`、`peak`、`last`、`breach_points`、`breach_ratio`（按规则 `operator/threshold` 计算）。`unit` 优先取 CES 数据点单位，缺失时回退规则策略单位。
-- 证据：每条成功规则携带 `evidence_id`（对应一次 `metrics` 证据快照）；最终回答 `references` 最多追加 10 条规则体检证据；`tool_invoke` 审计的 `evidence_id` 取首条成功规则证据。观测 `data` 另含 `granularity_note`：破限比例是聚合口径，不能直接推断原始采样窗口（如 1s 规则）的误报频率。
+- 执行口径：按 `namespace/keyword/limit` 拉取规则；资源分组型规则先经 CES `ListResourceGroupsServicesResources` 展开实例维度（单次规则列表最多展开 10 条、每条最多 3 个实例样本）；每条规则对最多 3 个实例样本分别取序列，统计取越限最严重（breach_ratio > breach_points > peak）的样本；`sampled=true` 表示只覆盖部分实例，`checked_resources` 与实际实例数，`resource_group_count>0` 表示规则按资源分组关联。
+- **资源分组展开**：CES 资源分组/云产品级规则只有 resource_group_id、没有 dimensions 时，provider 会在 `alert.rules.list` 阶段按分组展开实例维度并回填 `resources`；展开失败只降级该规则（Warn 日志），仍为空时按 `no_resource_scope` 呈现。不能把 `no_resource_scope` 简化为“云端没有数据”。
+- 逐规则状态：无指标名（事件规则）→ `skipped/no_metric`；规则未返回关联资源且分组展开失败 → `skipped/no_resource_scope`；单条取数失败 → `error` + 稳定 reason；总预算（默认 30s）耗尽 → 剩余规则 `skipped/rule health query timeout`；单次体检指标查询总数超过 24 时，剩余样本 → `skipped/rule health query budget exhausted`。单条失败不阻断其它规则。
+- 统计字段：`point_count`、`first`、`min`、`avg`、`p95`、`peak`、`peak_at`、`last`、`breach_points`、`breach_ratio`、`breach_episodes`、`breach_duration_seconds`、`longest_breach_seconds`（后三项按规则 `operator/threshold` 与请求 `period` 推算）。`unit` 优先取 CES 数据点单位，缺失时回退规则策略单位。
+- **曲线与预算**：长窗口 period 可能是小时级 max 聚合，不能还原规则原始秒级窗口；进入 Prompt 的每条曲线定稿为最多 **288 点**，峰值时刻（`peak_at`）与越限持续时长在降采样前基于全量序列计算，因此裁剪不会丢失时刻与持续性；跨轮重复申请仍会被去重。大规则集在总查询预算内可能只覆盖部分实例，不能仅凭页面有峰值就宣称证据充分；需要短窗口、指定实例复查时由模型继续申请。
+- 证据：每条成功规则携带 `evidence_id`（对应一次 `metrics` 证据快照）；最终回答 `references` 最多追加 10 条规则体检证据；`tool_invoke` 审计的 `evidence_id` 取首条成功规则证据。观测 `data` 另含 `checked_resource_count` 与 `granularity_note`：破限比例/越限时长是聚合口径，不能直接推断原始采样窗口（如 1s 规则）的误报频率。
 - provider 支持矩阵与 `alert.rules.list` 一致（huawei `ak_sk` ✅、`none` ✅、`agency` ❌）；数据范围拒绝返回 `status=permission_denied`。
 
 **`accounts.list` 参数与观测**
@@ -778,7 +831,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 上下文缺失：`allowed=true`、`status=skipped`；常见 reason：`no_alert` / `no_account` / `no_region` / `no_namespace` / `no_metric` / `no_dimensions`。
 - 资源上下文缺失/不可用：`resource_not_found` / `resource_not_cloud_linked` / `resource_load_failed` / `data_scope_denied`。
 - 审计：每次执行写 `tool_invoke`，payload 含 `tool_code/allowed/mode/status/reason/evidence_id/result`；`evidence_id` 仅在成功取数时出现；`metrics.query` 另含 `query`（`metric/dimensions/from/to/period/point_count`，不含凭据）供排查空调数。`chat_message` 仍含 `tool_codes` / `tool_denied` / `loop_rounds`。
-- Agent Loop 白名单扩展为 `alarm.analyze` / `metrics.query` / `alert.rules.list` / `alert.rules.health` / `accounts.list` / `resource.analyze` / `resources.list`；其余约束（≤3 轮、60000 token、单轮≤3 个申请、轮内/跨轮按 tool_code+params 去重、每轮 RBAC、执行类拒绝）不变（§10.16）。
+- Agent Loop 白名单为 `alarm.analyze` / `metrics.query` / `postgres.activity.query` / `alert.rules.list` / `alert.rules.health` / `accounts.list` / `resource.analyze` / `resources.list`；其余约束（≤4 轮、80000 token、单轮≤4 个申请、轮内/跨轮按 tool_code+params 去重、每轮 RBAC、执行类拒绝）不变（§10.16）。
 
 #### 10.12.2 云厂商只读观测工具（cloud.* 系列）— 推迟
 
@@ -788,7 +841,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 #### 10.12.3 `execution.tasks.propose` 工具化 — 推迟
 
-- **推迟了什么**：不把 `execution.tasks.propose` 注册为 toolgateway 工具；AI 生成执行计划的唯一出口仍是 answer `actions` 中的 `execution.propose` 入口（前端调 `POST /api/executions/tasks`，`source_type=ai_conversation`，任务落 `pending_confirm`）。
+- **推迟了什么**：不把 `execution.tasks.propose` 注册为可执行的平台内置工具，也不允许模型在 Agent Loop 中调用。现有权限种子只用于回答生成后的 action 权限校验和通用直接转发；AI 创建执行计划的业务出口仍是 answer `actions` 中的 `execution.propose`（前端调 `POST /api/executions/tasks`，`source_type=ai_conversation`，任务落 `pending_confirm`）。
 - **为什么推迟**：现有 actions 出口已完整满足安全闭环（人工确认 + 审计 + Execution 状态机），工具化不解决任何现存缺口；反而引入新的边界问题——模型可填字段的白名单、require_confirm 与 §10.16「循环内只读」约束的兼容性（当前裁决：循环内不可达，循环后由服务端触发）。
 - **什么时候推进**：仅当出现「模型必须在无人交互场景生成待确认任务」的真实需求（如巡检 Worker 建议 → 待确认任务）时重启定义；届时必须先解决字段白名单、幂等键与 Loop 边界三个问题。
 
@@ -837,7 +890,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 - 三个接口复用 `app:ai:chat`：会话是用户私有资源，真正的边界是 application 层的归属校验（跨用户 403），不引入新权限码，避免新增迁移与记忆路线图的版本编号冲突。
 - 会话不存在或已删除 → 404 `NOT_FOUND`；不属于当前用户 → 403 `PERMISSION_DENIED`；归档会话发消息 → 409 `FAILED_PRECONDITION`（既有语义）。
-- 前端在归档会话上发消息时提前拦截并提示先恢复，避免用户输入丢失。
+- 前端在归档会话上发消息时会提示先恢复，但 ChatPanel 当前先清空输入和附图，再由 useChat 拦截，因此不能保证输入不丢失。重复归档/恢复不推进 updated_at，但仍写 chat_session_status 审计。
 
 ### 10.14 相似案例记忆（阶段 1，RAG-lite）
 
@@ -845,26 +898,29 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 #### 10.14.1 沉淀规则
 
+当前唯一实际写入来源是 AI 助手回答的 `valid` 反馈；`source_type` 常量还包括 `alert_analysis` / `knowledge_item`，但没有对应实现写入方，不能据枚举宣称两类案例已存在。
+
 - 触发：`POST .../feedback` 提交 `valid`。
 - 条件：对应 assistant 消息的结构化回答可解析、`degraded=false`、`summary` 非空；降级回答不入记忆。
 - 幂等：迁移 `0051` 的部分唯一索引 `(user_id, source_message_id)` 保证同一条消息只沉淀一条案例；重复反馈不重复写入。
 - 字段：归属 `user_id`、`session_id`、`source_message_id`、`application_id`/`resource_id`/`resource_type`、`alert_signature`、`keywords`、`summary`（≤500 runes）、`recommendations`（≤3 条）、`risk_level`、`quality_score`（有效初始 +1）。
-- 无效反馈：对已有案例 `quality_score -2`；降到 `≤ -2` 时置 `retired`，之后不再被检索（阶段 1 不复活）。案例尚未沉淀时无效反馈是 no-op。
+- 无效反馈：对已有案例 `quality_score -2`；降到 `≤ -2` 时置 `retired`，之后不再被检索。案例尚未沉淀时无效反馈是 no-op；`retired` 后再次 invalid 继续降分，但不会自动变回 active。
 - 失败降级：沉淀/降分失败只记 Warn，不影响反馈接口响应；不写案例原文到日志。
+- 审计：自动 valid/invalid 引起的记忆变化不写独立 `memory_case` 操作审计，事实反映在 `chat_feedback` 与 `chat_message.memory_used/memory_status`；管理端手动启停才写 `memory_review`。
 
 #### 10.14.2 检索与注入
 
 - 触发：`POST .../messages` 在调用模型前检索；`POST /api/ai/analyze-alert` 在组装 payload 时检索。
 - 匹配优先级（`match_rank`）：`alert_signature` 精确命中 3 → `application_id` 或 `resource_id` 命中 2 → 关键词全文命中 1；同分按 `quality_score`、`updated_at` 倒序。
-- `alert_signature` = `alert_name + metric + 维度哈希`（名称/指标小写，维度按 key 排序后取 sha1 前 8 字节），同类告警可稳定命中。
-- 关键词由摘要、建议、告警名、资源类型切词去重生成（PostgreSQL `simple` 分词，`to_tsvector(...) @@ plainto_tsquery(...)`）。
+- `alert_signature` = `alert_name + metric + 维度哈希`（名称/指标小写，维度按 key 排序后取 sha1 前 8 字节）。参与签名的告警/指标维度键固定为 `instance_id`、`cloud_resource_id`、`pod`、`node`；其他标签不进入指纹。
+- 关键词由摘要、建议、告警名、资源类型和用户问题切词去重生成（PostgreSQL `simple` 分词，`to_tsvector(...) @@ plainto_tsquery(...)`）。
 - 上限：单次最多注入 `3` 条；每条摘要 ≤500 runes；建议 ≤3 条。
 - 跨用户隔离：检索条件强制 `user_id = 当前用户` 且 `status = active`，A 用户案例不会出现在 B 用户回答中。
 
 #### 10.14.3 回答侧表现
 
 - 对话 prompt 追加 `memory_cases`：`[{case_id, summary, recommendations, risk_level}]`；system prompt 增加约束「记忆仅作参考证据、引用需标注 `case_id`、不得照搬结论」。
-- `answer.references` 新增 `{ "type": "memory_case", "id": "<case_id>", "label": "历史案例：<摘要摘要>" }`（无 `url`）。
+- `answer.references` 新增 `{ "type": "memory_case", "id": "<case_id>", "label": "历史案例：<摘要>" }`；label 中的摘要最多 80 runes，条目没有 `url`。
 - 分析接口 provider payload 新增 `similar_cases`（与 `evidence` 平级），`include_metrics` 与否无关。
 - 审计：`chat_message` 与 `analyze_alert` 的 payload 新增 `memory_used`（注入条数）与 `memory_status`；
   - `ok`：命中并注入；`empty`：无匹配；`error`：检索失败已降级；`skipped`：记忆能力未装配。
@@ -909,7 +965,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | --- | --- | --- |
 | `GET` | `/api/ai/knowledge/items?status=&scope=&limit=&offset=` | 列表，返回 `{ items: [...] }`；`limit` 1–100，默认 20 |
 | `POST` | `/api/ai/knowledge/items` | 新建（总是 `draft`，`origin=manual`） |
-| `PUT` | `/api/ai/knowledge/items/:item_id` | 编辑内容/范围；**编辑 active 条目会回到 draft 并清空审核人** |
+| `PUT` | `/api/ai/knowledge/items/:item_id` | 全量替换 scope/scope_ref/title/content；**编辑 active 条目会回到 draft 并清空审核人，但保留 origin、hit_count/useful_count** |
 | `POST` | `/api/ai/knowledge/items/:item_id/review` | `{ "action": "activate" \| "disable" }` |
 | `DELETE` | `/api/ai/knowledge/items/:item_id` | 删除；重复删除 404 |
 | `POST` | `/api/ai/knowledge/aggregate` | 反馈聚合：`{ application_id, min_cases? }` → 生成/更新 draft，不覆盖 active |
@@ -924,7 +980,8 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 排序与上限：按 `hit_count` 倒序、`updated_at` 倒序；最多 **5** 条，标题+内容累计 ≤ **3000 runes**（超长条目跳过，不截断内容）。
 - 注入形态：追加到 system prompt 末尾的「知识沉淀」段落，**固定安全约束段落保持在前**；同时写入 `answer.references`：`{ "type": "knowledge_item", "id": "<item_id>", "label": "<title>" }`（无 `url`）。
 - 命中统计：回答落库后 `hit_count + 1`；用户对含该条目的回答提交 `valid` → `useful_count + 1`。
-- 自动停用：`hit_count ≥ 5` 且 `useful_count == 0` 的 active 条目自动转 `disabled`，写 `knowledge_review` 审计（`action=auto_disable`），立即停止注入。
+- `invalid` 反馈不减 useful_count，只触发低效评估；激活/停用动作本身不改计数。
+- 自动停用：`hit_count ≥ 5` 且 `useful_count == 0` 的 active 条目自动转 `disabled`，清空 reviewer，写 `knowledge_review` 审计（`action=auto_disable`，actor 为空），立即停止注入。该动作 best-effort，失败只记日志。
 - 审计：`chat_message` payload 新增 `knowledge_used`（条数）与 `knowledge_status`（`ok/empty/error/skipped`），不含条目正文。
 
 #### 10.15.4 降级与边界
@@ -938,11 +995,13 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | 条目内容含敏感信息 | 由录入/审核人负责；服务端只做长度与空白裁剪，注入前不做二次改写 |
 
 - 知识只影响建议质量，不改变权限判断、`actions` 生成或执行链路。
+- 当前 KnowledgeManager 页面只展示标题、范围、来源、状态、hit/useful 和操作，未展示 reviewed_by/reviewed_at/created_by/created_at/updated_at，也没有详情弹窗。列表固定 limit=100，不使用 offset；scope_ref 输入不限制 128 字符、非 global 未提前校验非空，非法值依赖后端 400。激活/停用没有二次确认（删除有）；聚合界面固定默认 `min_cases=3`。
 - 反馈聚合（`POST /api/ai/knowledge/aggregate`）：
-  - 来源是该用户在某应用下 `status=active` 的记忆案例（§10.14），`min_cases` 默认 3、上限 20；案例不足不生成草稿（`action=insufficient_cases`）。
-  - 生成条目 `scope=application`、`scope_ref=application_id`、`origin=feedback_aggregate`、`status=draft`、`item_id=agg-<application_id>`（固定，保证同应用重复聚合同一条目）。
+  - 来源是当前操作者在该应用下 `status=active` 的记忆案例（§10.14）；不跨用户聚合。
+  - `min_cases<=0` 使用 3。它是“至少需要多少案例”的阈值，不是入参上限；服务端没有把该参数钳制为最大值。聚合取数最多 20 条，传入更大阈值通常只会得到 `insufficient_cases`。
+  - 生成条目 `scope=application`、`scope_ref=application_id`、`origin=feedback_aggregate`、`status=draft`、`item_id=agg-<application_id>`（固定，保证同应用重复聚合同一条目）。内容按案例摘要和最多 2 条建议拼装，单条摘要 ≤300 runes。
   - 幂等与保护：草稿/停用条目被**更新**（`action=updated`）；已 `active` 的条目**不被机器覆盖**（`action=skipped_active`），需人工先停用再聚合。
-  - 聚合只读记忆案例、只写草稿条目，不改变回答链路；管理页签见「系统设置 → AI 配置 → 知识沉淀」。
+  - 聚合只读记忆案例、只写草稿条目，不改变回答链路；管理页签见「系统设置 → AI 配置 → 知识沉淀」，当前页面未暴露 min_cases 输入，固定按默认 3 聚合。
 
 ### 10.16 受限 Agent Loop（阶段 3）
 
@@ -951,7 +1010,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 #### 10.16.1 编排形态
 
 ```text
-第 0 轮：服务端常规取数（告警快照 + 指标证据，与 §10.3 一致）
+第 0 轮：服务端常规取数（告警快照 + 指标证据，与 §10.6.3 一致）
   -> 模型输出结构化 answer，或输出 tool_requests 申请追加只读数据
   -> 服务端逐个校验 RBAC + 工具权限并执行，结果作为 observations 追加
   -> 下一轮模型调用（携带全部 observations）
@@ -962,10 +1021,10 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 | 控制点 | 要求 |
 | --- | --- |
-| 工具白名单 | 仅 `alarm.analyze`、`metrics.query`、`alert.rules.list`、`alert.rules.health`、`accounts.list`、`resource.analyze`、`resources.list` 可被申请；其它工具（含 `execution.tasks.propose` / `dispatch` / `command.run`）一律拒绝并记 `allowed=false`、`reason=tool is not allowed in agent loop` |
+| 工具白名单 | 仅 `alarm.analyze`、`metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`accounts.list`、`resource.analyze`、`resources.list` 可被申请；其它工具（含 `execution.tasks.propose` / `dispatch` / `command.run`）一律拒绝并记 `allowed=false`、`reason=tool is not allowed in agent loop` |
 | 参数透传 | `tool_requests[].params` 按 §10.12.1 校验；非法参数记 `status=invalid_argument` 并反馈给模型，不执行取数 |
 | 权限 | 每轮每个工具独立过 RBAC + 工具权限（与首轮同一套校验），`allowed=false` 时把原因反馈给模型而不中断 |
-| 预算 | 追加轮数 ≤ **3**；累计 token ≥ **60000** 即终止（思考型模型 low 强度单轮亦数千 token）；单轮最多受理 **3** 个申请（轮内相同 `tool_code+params` 去重，同工具不同参数各自执行）；单次对话总时间预算 `ai.turn_budget_s`（默认 600s），超时立即终止并返回 `turn_budget_exceeded` |
+| 预算 | 追加轮数 ≤ **4**（含无进展轮，纯重复不占）；Provider 回报的累计 token ≥ **80000** 即停止继续取数并进入强制收敛；单轮最多受理 **4** 个不同 `tool_code+params` 申请（同工具不同参数可分别执行）；单次对话总时间预算 `ai.turn_budget_s`（默认 600s），超时立即返回 `turn_budget_exceeded` |
 | 去重 | 轮内相同 `tool_code + params` 只执行一次，不同参数各自执行；跨轮按 `tool_code + params` 去重：已成功执行过的组合重复申请时返回 `status=denied`、`reason=duplicate tool request: identical parameters already executed in this turn`，不再取数且不占用有效轮数；连续两轮无实际取数仍按收敛规则终止 |
 | 收敛 | 连续两轮「申请了但一个工具都没真正执行」才终止，给模型一次看到拒绝原因后自我纠正的机会 |
 | 审计 | 每轮工具调用写 `tool_invoke`（与现状同结构）；`chat_message` 新增 `loop_rounds`（实际追加轮数） |
@@ -984,8 +1043,8 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | 工具被拒绝 | 回答仍正常返回；拒绝原因在 `tool_calls[].reason` 与审计中可见 |
 | 未装配知识/记忆 | 循环本身不受影响 |
 
-- 提示词约束：system prompt 明确「只在现有只读观测不足时申请；可申请 `alarm.analyze` / `metrics.query` / `alert.rules.list` / `alert.rules.health` / `accounts.list` / `resource.analyze` / `resources.list`；`account_id` 优先来自 `accounts.list` 清单（不可用时回退告警/资源上下文），不得臆造；参数边界见 §10.12.1；最多 3 轮且单轮最多 3 个申请，同轮可并列申请多个不同参数的 metrics.query；现有观测足以作答时必须立即输出 answer；同工具同参数重复申请无意义（服务端跨轮去重拒绝）；不得申请执行类工具」。
-- 前端按 §10.9 映射 `status`；多轮调用会自然出现在 `tool_calls`；`loop_rounds` 仅用于审计与排查。
+- 提示词约束：system prompt 明确「只在现有只读观测不足时申请；可申请 `alarm.analyze` / `metrics.query` / `postgres.activity.query` / `alert.rules.list` / `alert.rules.health` / `accounts.list` / `resource.analyze` / `resources.list`；`account_id` 优先来自 `accounts.list` 清单（不可用时回退告警/资源上下文），不得臆造；参数边界见 §10.12.1；最多 4 轮且单轮最多 4 个申请，同轮可并列申请多个不同参数的 metrics.query；现有观测足以作答时必须立即输出 answer；同工具同参数重复申请无意义（服务端跨轮去重拒绝）；不得申请执行类工具」。
+- 前端按 §10.9 映射 `status`；多轮调用会自然出现在 `tool_calls`；`loop_rounds` 不包含强制收敛，仅用于审计与排查。当前 AnswerCard 仅用 tool_code 作为 key，ContextPanel 只保留每个工具最后一次状态，不能视为完整多轮时间线。
 - 循环只影响取数与证据丰富度，不改变权限判断、`actions` 生成或执行链路。
 
 ### 10.17 流式对话（SSE）与取消语义
@@ -997,7 +1056,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - Method: `POST`
 - Path: `/api/ai/chat/sessions/:session_id/messages/stream`
 - 鉴权：是（`app:ai:chat`），会话归属与归档校验与同步接口一致
-- 请求体：与 §10.6 完全一致（`content` / `context` / `client_message_id`）
+- 请求体：与 §10.6 完全一致（`content` / `context` / `provider_id` / `client_message_id` / `images`）
 - 响应头：
   - `Content-Type: text/event-stream; charset=utf-8`
   - `Cache-Control: no-cache`
@@ -1010,7 +1069,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | `type` | 字段 | 说明 |
 | --- | --- | --- |
 | `stage` | `stage`: `gathering` / `thinking` / `answering` | 编排阶段：取数与权限校验 → 模型调用 → 组装回答 |
-| `tool` | `tool`: `{tool_code, allowed, status, reason?, summary?}` | 一次工具校验/执行摘要，与 `tool_calls` 同源；不含 prompt、凭据与告警正文 |
+| `tool` | `tool`: `{tool_code, allowed, status, reason?, summary?}` | gather/Loop 工具校验与执行摘要，与 `tool_calls` 同源；不含 prompt、凭据与告警正文。finalize 的 execution.tasks.propose 权限校验直接追加到最终 tool_calls，不保证另有独立 SSE tool 事件 |
 | `delta` | `phase`: `thinking` / `answer`；`text`: string | 模型增量：`thinking` 来自 `reasoning_content`，`answer` 来自 `content`。`answer` 增量只用于“已生成 N 字”进度，不改变最终 JSON 解析 |
 | `answer` | `result`: 与 §10.6 响应 `data` 同构 | 最终结构化回答；收到即表示本轮结束 |
 | `error` | `code` / `message` | 业务错误；此时 HTTP 状态已是 200 |
@@ -1031,10 +1090,11 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 - 触发：客户端断开（HTTP ctx 取消）或事件写入失败。
 - 服务端在四个检查点响应取消：`before_gather`（取数前）、`before_model`（模型调用前）、`before_persist`（模型返回后、落库前）、`before_answer`（推送 `answering` 前）。
-- 取消后**不写 assistant 消息**；已落库的用户消息保留，不回滚、不删除。
+- 在上述检查点取消后**不写 assistant 消息**；已落库的用户消息保留，不回滚、不删除。
 - 取消写审计：`action=chat_canceled`，payload 含 `session_id` / `user_message_id` / `phase` / `result=canceled`。
 - 取消不是业务失败：不生成 `degraded` 回答，也不触发模型降级重试。
 - 客户端取消后不要用同一 `client_message_id` 立即重试并期待重放：用户消息已存在但无回答，服务端按 §10.6.5 返回 409。
+- **最终 answer 推送是另一个边界**：assistant 已落库后才发送最终事件，该次写失败会被忽略，不回滚 assistant，也不补写 chat_canceled。不能将“任何客户端断开都不落回答”作为绝对保证；发生时间竞争时应重新获取会话详情确认。
 
 #### 10.17.5 幂等与重放
 
@@ -1045,14 +1105,15 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 #### 10.17.6 前端接入约定
 
 - 使用 `fetch` + `ReadableStream` 读取，不用 `EventSource`（需要 POST 与 Bearer 头）；实现见 `web/src/api/sse.ts` 与 `web/src/api/ai.ts` 的 `streamChatMessage`。
-- `stage` 事件驱动阶段提示，`tool` 事件用于即时展示工具校验结果，`delta` 事件只做“已生成 N 字”进度（不渲染半成品 JSON），`answer.result` 走与同步接口相同的渲染与 `actions` 权限判断；`:` 注释心跳必须忽略，未知事件类型优雅忽略。
-- 发送中允许「停止生成」：`AbortController.abort()` 中断读取；服务端按 §10.17.4 不落回答。停止后应回读会话，避免本地乐观消息与服务端不一致。
-- `status=incomplete` 时展示橙色“生成中断”提示与「重新提问」入口，按普通回答卡渲染已保留的 `summary/uncertainties`，不得展示为红色失败卡；提示文案必须带 `answer.incomplete_reason` 的具体原因（空闲超时/连接中断/空响应/输出超限），未识别原因原样透出。
+- `stage` 驱动阶段提示，`tool` 即时展示工具校验；`delta(thinking)` 的过程文本会在过程面板展示且不落库，`delta(answer)` 只用于“已生成 N 字”，不渲染半成品 JSON；`answer.result` 与同步接口同构。`:` 注释心跳必须忽略，未知事件类型优雅忽略。
+- 发送中允许「停止生成」：`AbortController.abort()` 中断读取，随后回读会话以清理本地乐观消息。是否落 assistant 取决于取消发生在哪个检查点；最终 answer 已落库后的断开按 §10.17.4 的竞态边界处理。
+- `status=incomplete` 时展示橙色“生成中断”提示与具体 incomplete_reason，按普通回答卡保留内容，不展示为红色失败卡。当前重试仍复用原 key，已落库时只会重放；历史详情加载还可能使重试按钮不可用，不能把入口存在视为已支持真正重新生成。
+- 当前刷新按钮只刷新会话列表；已加载会话没有通用的手动重新获取详情入口。409 后需要导航回会话或重新加载页面，文档所称“刷新会话”不代表已有专用刷新按钮。
 
 #### 10.17.7 模型超时、重试与部分保留
 
 - **超时语义**：流式调用不再用单个总超时罩住整个 SSE。首块超时 **60s**、空闲超时默认 **180s**（`ai.stream_idle_timeout_s` 可配，低于 30s 按 30s 处理，建议 180–300s），总时长只受 `ai.turn_budget_s`（默认 600s）约束，并与 nginx/server 660s 对齐；provider `timeout_ms` 仅约束非流式请求总时长（默认 300000ms）。**任意非空 SSE 行（包括 provider 的注释/心跳）都会重置空闲计时**，只有连接真正无字节时才按空闲超时处理。
-- **重试条件**（仅在尚未向客户端输出任何 `delta` 时）：429（解析 `Retry-After`）/5xx/网络错误/首块超时/空响应；指数退避 1s、2s 加抖动，单次回合最多 **2 次**重试，且必须落在回合预算内。非流式调用采用同一错误分类与固定退避预算；`Retry-After`/配额提示只用于用户文案，不改变其退避间隔。
+- **重试条件**（仅在尚未向客户端输出任何 `delta` 时）：429（解析 `Retry-After`）/5xx/网络错误/首块超时/空响应；指数退避 1s、2s 加抖动，单次回合最多 **2 次**重试，且必须落在回合预算内。流式调用优先按 Retry-After 退避；非流式调用使用固定指数退避，429/5xx/网络/空响应和结构解析失败可重试，但 context deadline 不重试。
 - **不重试**：3xx/400/401/403 等配置与鉴权错误；客户端断开（`ABORTED`）；已产生任何 `thinking`/`answer` 增量后的中断（避免前端文本重复）。
 - **429 配额提示**：退避优先使用 `Retry-After`；缺失时从响应体解析 `resets in 5h` / `quotaResetDelay: 1h` / `try again in 30m` 等文本，只保留时长、不记录响应体。重试耗尽后返回 `degraded_reason=provider_rate_limited`，答案 `uncertainties` 直接给出“预计约 X 后恢复”，前端失败提示同步展示该文案。
 - **部分保留**：已输出增量后中断时，返回 `Partial=true` 的部分结果；application 层优先解析部分 JSON，失败则返回带已获取观测的保守回答，`status=incomplete`、`answer.incomplete=true`、`answer.incomplete_reason=stream_idle_timeout|stream_first_chunk_timeout|stream_read_error|empty_model_response|output_truncated`。不完整回答仍会落库，重放时保留 `incomplete` 标记。
@@ -1150,8 +1211,8 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - Path: `/api/ai/memory/cases`
 - 鉴权: 是（`app:ai:memory:manage`）
 - Query：`status`（`active` / `retired`）、`user_id`、`application_id`、`resource_id`、`keyword`（摘要/关键词/应用/资源模糊匹配）、`limit`（1–100，默认 20）、`offset`（≥0）。
-- 响应 `data`：`{ "items": [ { case_id, source_type, session_id, user_id, application_id, resource_id, resource_type, alert_signature, keywords, summary, recommendations, risk_level, quality_score, status, created_at, updated_at } ] }`，按 `updated_at` 倒序。
-- 非法 `status`、`limit`、`offset` 返回 400 `INVALID_ARGUMENT`。
+- 响应 `data`：`{ "items": [ { case_id, source_type, session_id?, user_id, application_id, resource_id, resource_type, alert_signature?, keywords?, summary, recommendations, risk_level, quality_score, status, created_at, updated_at } ] }`，按 `updated_at` 倒序；`session_id`/`alert_signature`/`keywords` 为空时字段省略。
+- 非法 `status`、`limit`、`offset` 返回 400 `INVALID_ARGUMENT`。管理端是静态 RBAC：具备权限的管理者可按 `user_id` 查询他人案例，没有对象级数据范围过滤。
 
 #### 10.19.3 手动停用 / 启用
 
@@ -1169,8 +1230,9 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 #### 10.19.4 前端接入
 
 - 管理入口：「系统设置 → AI 配置 → 记忆管理」页签（`web/src/views/system/ai-config/components/MemoryManager.vue`）。
-- 支持按状态、摘要/关键词、归属用户筛选；详情弹窗展示摘要、建议、告警指纹与质量分；停用需二次确认。
-- 无权限时接口返回 403，页面保留结构并提示权限不足。
+- 当前页面只传 status、keyword、user_id，limit 固定 100；后端支持的 application_id/resource_id/offset 没有页面输入，也没有分页控件，超过 100 条会被截断。详情弹窗不展示后端返回的 session_id。
+- 支持按状态、摘要/关键词、归属用户筛选；停用需二次确认，启用没有二次确认。
+- 无权限时由全局请求拦截器提示权限不足，页面保留空态结构；不会注入模块内联 403 提示。
 
 #### 10.19.5 E2E
 

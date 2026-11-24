@@ -140,3 +140,72 @@ func TestRuleHealthCollectorAgencyUnsupported(t *testing.T) {
 		t.Fatalf("result = %+v, rulesCalled=%v", out, rules.called)
 	}
 }
+
+type fakeMultiMetricsQuerier struct {
+	results map[string]*obsapp.MetricQueryResult
+	queries []obsdomain.MetricQuery
+}
+
+func (f *fakeMultiMetricsQuerier) QueryMetrics(_ context.Context, _ obsapp.Actor, q obsdomain.MetricQuery) (*obsapp.MetricQueryResult, error) {
+	f.queries = append(f.queries, q)
+	return f.results[q.Dimensions["rds_instance_id"]], nil
+}
+
+func TestRuleHealthCollectorSamplesWorstInstance(t *testing.T) {
+	threshold := 80.0
+	rules := &fakeAlertRulesQuerier{result: &obsapp.AlertRuleQueryResult{
+		Rules: []obsdomain.AlertRule{{
+			RuleID: "r-1", Name: "CPU high", Namespace: "SYS.RDS",
+			Metric: "rds001_cpu_util", Operator: ">", Threshold: &threshold, Unit: "%",
+			ResourceCount: 4,
+			Resources: []map[string]string{
+				{"rds_instance_id": "i-1"},
+				{"rds_instance_id": "i-2"},
+				{"rds_instance_id": "i-3"},
+				{"rds_instance_id": "i-4"},
+			},
+		}},
+	}}
+	metrics := &fakeMultiMetricsQuerier{results: map[string]*obsapp.MetricQueryResult{
+		"i-1": {EvidenceID: "ev-1", Series: []obsdomain.MetricSeries{{Points: []obsdomain.MetricPoint{
+			{TS: 100, Value: 85}, {TS: 200, Value: 70}, {TS: 300, Value: 75},
+		}}}},
+		"i-2": {EvidenceID: "ev-2", Series: []obsdomain.MetricSeries{{Points: []obsdomain.MetricPoint{
+			{TS: 100, Value: 85}, {TS: 200, Value: 90}, {TS: 300, Value: 75},
+		}}}},
+		"i-3": {EvidenceID: "ev-3", Series: []obsdomain.MetricSeries{{Points: []obsdomain.MetricPoint{}}}},
+	}}
+	collector := NewRuleHealthCollector(rules, metrics, &fakeAccountResolver{snapshot: &obsdomain.AccountSnapshot{
+		AccountID: "acc-1", AuthType: "ak_sk",
+	}}, &fakeAccountAccess{}, time.Second)
+
+	out, err := collector.Check(context.Background(), "u-1", aiapp.RuleHealthQuery{
+		AccountID: "acc-1", Region: "cn-north-4", Namespace: "SYS.RDS", Limit: 10,
+		From: 1700000000, To: 1700000000 + 30*24*3600, Period: 3600, Aggregator: "max",
+	})
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	got := out.Rules[0]
+	if got.Status != aiapp.EvidenceStatusOK || got.CheckedResources != 3 || !got.Sampled {
+		t.Fatalf("rule result = %+v", got)
+	}
+	if got.Dimensions["rds_instance_id"] != "i-2" || got.EvidenceID != "ev-2" {
+		t.Fatalf("worst sample not selected: %+v", got)
+	}
+	if got.PeakAt == nil || *got.PeakAt != 200 || got.Peak == nil || *got.Peak != 90 {
+		t.Fatalf("peak stats = %+v", got)
+	}
+	if got.BreachPoints != 2 || got.BreachEpisodes != 1 ||
+		got.BreachDurationSeconds != 7200 || got.LongestBreachSeconds != 7200 {
+		t.Fatalf("breach stats = %+v", got)
+	}
+	if len(metrics.queries) != 3 {
+		t.Fatalf("queries = %d, want capped 3 samples", len(metrics.queries))
+	}
+	for i, want := range []string{"i-1", "i-2", "i-3"} {
+		if metrics.queries[i].Dimensions["rds_instance_id"] != want {
+			t.Fatalf("query[%d] dims = %+v", i, metrics.queries[i].Dimensions)
+		}
+	}
+}

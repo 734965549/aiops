@@ -13,10 +13,10 @@
 - `execution`：任务状态机、人工确认/拒绝、模拟执行、Runbook、时间线，以及 Medium/Command Spec/Agent 控制面；独立 Agent 与专门 UI 未提供，详见 `internal/execution/README.md`。
 - `dashboard`：告警、资产、Runbook、执行任务聚合摘要；详见 `internal/dashboard/README.md`。
 - `audit`：关键操作审计写入与精确分页查询；前端聚合仅基于当前页，CSV 实际最多 100 条，认证审计由 Identity 独立提供；详见 `internal/audit/README.md`。
-- `ai`：Provider、工具网关、告警分析、多轮会话、SSE/取消、受限 Agent Loop、记忆/知识、分享、多模态、证据诊断和执行提议。
-- `integration`：云账号/观测平台账号、凭据密文、能力声明和连通性测试。
-- `observability`：指标/日志/链路/拓扑统一只读查询，以及资源发现、CES 告警与规则、批量规则体检、RDS 历史会话端口和 AI 证据快照；真实 Provider 支持范围见契约。
-- `inspection`：手动巡检策略、运行、Finding、Recommendation 和证据链；定时 worker 未落地，建议转执行后端能力不等于已有前端入口。
+- `ai`：Provider、工具网关、告警分析、多轮会话、SSE/取消、受限 Agent Loop、记忆/知识、分享、多模态、证据诊断和执行提议；Provider 无在线健康检查，直接转发与对话本地工具分开验收；会话详情最近 200 条，重试/归档/模型交互仍有前端缺口；记忆/知识管理筛选与展示有限，详见 `internal/ai/README.md`。
+- `integration`：云账号/观测平台账号、AES-GCM 凭据引用、默认能力声明和字段级连接检查；当前 checker 不访问外部服务，capabilities 不是实测结果，详见 `internal/integration/README.md`。
+- `observability`：指标/日志/链路/拓扑统一只读查询，以及资源发现、CES 告警与规则、批量规则体检、RDS 历史会话客户端和 AI 定稿快照；真实 Provider、fake、普通证据与模型 payload 边界详见 `internal/observability/README.md`。
+- `inspection`：手动同步规则巡检策略、运行、Finding、Recommendation 和后端转执行；真实 scope 采集有限，定时 worker/取消/通知未落地，转执行无前端入口、自动介体或完成回写，详见 `internal/inspection/README.md`。
 - `version`：版本号、commit、构建时间。
 
 ## 总体调用关系

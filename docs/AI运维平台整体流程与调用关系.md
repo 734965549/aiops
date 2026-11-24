@@ -160,16 +160,16 @@ interfaces/http -> application -> domain <- infrastructure
   -> AccountService
   -> CredentialVault 加密凭据，只保存引用或密文
   -> integration_* 仓储与 UnitOfWork 原子提交
-  -> Provider checker 做只读连通性测试
+  -> Provider checker 做字段级连接检查（当前不访问外部服务）
   -> integration_check_result / integration_capability
-  -> audit: integration_account create/update/check
+  -> audit: integration_account create/update/delete/check（事务外 best-effort）
 ```
 
 关键点：
 
-- API 响应只返回 `has_credential`，不返回 AK/SK/Token。
-- 连通性失败的 `message` 必须脱敏。
-- `huawei_cloud`、`signoz`、`prometheus` 第一阶段可以由 fake/checker 占位，但真实凭据账号不能返回伪造的云端数据。
+- API 响应只返回 `has_credential`，不返回 AK/SK/Token；更新留空凭据会保留，删除账号会硬删除密文。
+- checker 当前只做字段校验，`status=ok` 不代表网络、云端鉴权或全部 capabilities 实测通过；checker 失败结果落库后 HTTP 仍可成功，必须检查 `data.status`。
+- 连通性失败的 `message` 必须脱敏；capabilities 是默认声明，真实凭据账号不能返回伪造的云端数据。
 
 ### 5.3 统一观测查询
 
@@ -187,9 +187,10 @@ interfaces/http -> application -> domain <- infrastructure
 
 关键点：
 
-- Observability 只拿账号摘要和 `credential_ref_id`，不解密凭据。
-- 华为 CES/APM/AOM、SigNoz、Prometheus 只属于 adapter，不进入 domain。
-- fake provider 要保持确定性和脱敏，方便前端、巡检、CI 先跑通。
+- Observability 账号摘要端口只传 `credential_ref_id`，真实华为 Provider 在服务端 infrastructure 边界另行解密，不明文进入 DTO/审计/前端。
+- 华为 AK/SK 的指标、资源发现/同步、告警规则和告警拉取已有真实 Adapter；真实 logs/traces/topology unsupported，agency 不降级 fake。SigNoz/Prometheus 当前仍为 fake。
+- 普通查询保存脱敏证据摘要，普通 Metrics 另有查询参数但无 payload；AI Metrics 先 collecting，定稿快照与 hash 保存成功后才进入模型，失败不作为支持性引用。
+- 当前没有公共证据详情 API/UI；fake/mock 只用于前端、巡检和 CI 联调，不能记为真实云验收。
 
 ### 5.4 巡检到建议
 
@@ -200,17 +201,17 @@ interfaces/http -> application -> domain <- infrastructure
   -> RunService 读取 policy.scope/account_id/checks
   -> EvidenceAnalyzer 通过 ObservabilityQueryPort 收集指标/日志/链路证据
   -> 生成 EvidenceSummary
-  -> 规则或 AI 分析产出 Finding
+  -> 当前由固定阈值规则产出 Finding（不是 AI Agent）
   -> 为 Finding 创建 Recommendation
-  -> 运行状态 success / partial / failed
-  -> audit: inspection_policy / inspection_run / inspection_recommendation
+  -> 同一请求同步返回 success / partial / failed
+  -> audit: inspection_policy / inspection_run / inspection_recommendation（best-effort）
 ```
 
 关键点：
 
-- 外部数据源部分失败时，应保留已采集证据，允许 `partial`。
-- Finding 要带证据引用，Recommendation 要说明原因、风险、是否可转执行。
-- AI 分析只消费脱敏证据，不能获取凭据。
+- 外部数据源部分失败时保留已采集证据，允许 `partial`；全部证据失败可返回 HTTP 200 + run.status=failed，需检查业务状态。
+- Finding 带证据引用、固定置信度和不确定性；当前 affected_resources 仍是固定示例，schedule/agent_profile 不代表定时或 AI Agent 已落地。
+- 采集固定最近 1 小时、cn-north-4、SYS.ECS 且无 dimensions，真实华为指标会失败；fake E2E 与真实云巡检分开验收。
 
 ### 5.5 建议转执行与执行介体
 
@@ -229,9 +230,61 @@ Recommendation
 
 关键点：
 
-- Agent 可以提议任务，但不能直接 dispatch 或执行。
-- 执行命令必须来自 Command Spec，并绑定参数 schema 校验。
+- Recommendation 只能创建 agent 模式任务，medium_id 必填，没有自动介体选择；中高风险进入 pending_confirm 后才能由 Agent lease。
+- 执行命令必须来自 Command Spec 并绑定参数 schema 校验；未显式传 Spec 时 Inspection 有标题默认值和磁盘兜底，调用方需复核。
+- Recommendation 只更新 execution_created，不保存 task_id 或完成回写；任务创建与状态更新非同一事务，重试前需核对 Execution/审计。
 - 执行日志要脱敏，stdout/stderr 摘要不能包含 Token、密码、AK/SK。
+
+### 5.6 AI Provider 与工具网关
+
+```text
+Provider 管理
+  -> ai_provider 数据库为持久化事实源
+  -> 当前 API 进程 ProviderRegistry 为调用事实源
+  -> 类型 a/b/c Executor；无在线健康检查或跨实例配置广播
+
+直接 /api/ai/tools/invoke
+  -> 入口 app:ai.tools:invoke 与数据范围
+  -> Gateway.Validate 再查操作/工具权限和 confirmed
+  -> 指定 Provider 外部转发
+
+AI 会话 / Agent Loop
+  -> Gateway.Validate 只做 RBAC 与工具权限
+  -> 8 个内置工具由 Alert/Observability/Integration/Asset Port 本地执行
+  -> 对象或账号数据范围在具体 Port 二次校验
+  -> 类型 b ChatClient 单独调用模型
+```
+
+关键点：
+
+- `api_key` 只保存密文，列表只返回 has_api_key；headers 原样保存和返回，不能当秘密字段。enabled 不等于运行时健康，保存配置也不执行测试连接。
+- `alarm.analyze` 在告警分析中交给 Provider，在对话中只读取本地告警快照；同一 tool_code 不代表同一执行路径。
+- Provider CRUD 只有应用日志；直接调用审计不记录 allowed/reason，且 allowed=false 时 result 仍可能是 success。对话工具审计才包含完整观测状态。
+- 通用 Gateway 不直接创建或执行 Execution Task；执行计划仍从既有 Execution 创建入口进入状态机。
+
+### 5.7 AI 会话与受限 Agent Loop
+
+```text
+创建/读取当前用户会话
+  -> 发送消息，先按 client_message_id 重放或处理冲突
+  -> 用户消息与会话 touch 同事务保存
+  -> gather 本地只读观测
+  -> 类型 b 模型回答或 tool_requests
+  -> 最多 4 轮追加只读工具，逐轮复核权限
+  -> 预算/无进展时先强制收敛
+  -> finalizeAnswer 生成 actions 并校验 execution.tasks.propose 权限
+  -> 助手消息另一事务保存
+  -> chat_message 与 tool_invoke 审计
+```
+
+关键点：
+
+- 会话详情只返回最近 200 条，模型历史另取最近 12 条；用户与助手消息不是同一事务，失败或取消不会自动删除用户消息。
+- 幂等重放不比较请求内容，degraded/incomplete 也会重放；新的提问必须使用新 key。服务端没有会话级串行锁。
+- Loop 为 8 个本地只读工具、单轮最多 4 个不同参数申请、80000 Provider token 和默认 600 秒回合预算。强制收敛成功可正常返回，只有仍失败才 agent_loop_exhausted。
+- 规则体检的资源分组会先展开实例，并按每条规则最多 3 个实例抽样；曲线定稿最多 288 点，峰值时刻与越限时长在降采样前计算保留。小时级聚合与 Loop 预算仍会限制覆盖，必要时需缩窗复查。
+- execution.tasks.propose 在 finalize 阶段只做 action 权限校验并进入 tool_calls/审计，不创建任务；真实任务仍走 Execution 创建接口。
+- SSE 在取消检查点前不写 assistant，最终 answer 落库后的推送失败不回滚。同步前端 90 秒封装与默认 600 秒回合预算不一致。
 
 ## 6. Provider Port 对应关系
 

@@ -10,11 +10,11 @@
 | --- | --- | --- |
 | §2 权限码 | 大部分落地 | `integrations`/`observability`/`inspections` 已种子化（迁移 0018/0019/0020）；`notifications` 权限码尚未种子化 |
 | §3 统一响应 | 已落地 | 沿用平台统一 envelope |
-| §4 Integration API | 已落地 | 账号 CRUD、凭据不回显、连通性检查（华为 CES 指标里程碑，见 §4.5） |
-| §5 Observability API | 部分落地 | 指标查询（华为 CES 真实）已落地；`ak_sk` 下 logs/traces/topology 返回 `FAILED_PRECONDITION`，fake provider 全可用 |
+| §4 Integration API | 已落地 | 账号 CRUD、凭据不回显、字段级连接检查（见 §4.5）；checker 不访问外部服务，capabilities 非实测 |
+| §5 Observability API | 部分落地 | 华为 AK/SK 指标真实，真实 logs/traces/topology 不支持；SigNoz/Prometheus 为 fake；AI 定稿快照已落地，无公共证据详情 API/UI |
 | §5.5 Asset Sync | 部分落地 | CES `ces`/`hybrid` 主路径完成，EVS 详情增强有已知缺口（见 §5.5） |
 | §6 Inspection API | 部分落地 | 策略 CRUD、手动触发、Finding/Recommendation 已落地；**定时 Worker 未落地**（`schedule` 字段已持久化但无 worker 消费） |
-| §7 Recommendation 到 Execution | 已落地 | `POST /api/inspections/recommendations/:recommendation_id/execution` 已实现 |
+| §7 Recommendation 到 Execution | 后端已落地 | 只允许 agent 且 medium_id 必填；无前端入口、自动介体、跨模块事务或完成回写，详见 §7 |
 | §8 审计动作 | 大部分落地 | Integration/Observability/Inspection/Asset Sync 审计已接入；`notification` 审计动作随通知模块待落地 |
 | §9 错误码 | 已落地 | 沿用平台错误码 |
 | §10 验收脚本 | 大部分落地 | `e2e-integration`/`e2e-observability`/`e2e-asset-sync`/`e2e-inspection`/`e2e-execution-agent` 已存在；`e2e-notification.ps1` 待补 |
@@ -68,6 +68,8 @@ AI 工具权限建议：
 | `execution.media.list` | readonly | 查询可用执行介体 |
 | `execution.tasks.dispatch` | deny | Agent 不得直接分发或执行任务 |
 
+migration `0020` 另种子 `inspection.runs.create` 和 `inspection.findings.analyze` AI 工具权限，但当前没有对应可执行 AI 工具注册或 Handler；权限种子不代表工具能力已交付。
+
 ## 3. 统一响应
 
 所有接口沿用平台统一响应：
@@ -101,7 +103,7 @@ Integration 只管理账号、凭据引用、默认能力声明和字段级检�
 | --- | --- | --- | --- |
 | `account_id` | string | 否 | 业务 ID；为空时后端生成 |
 | `name` | string | 是 | 显示名称 |
-| `provider` | string | 是 | `huawei_cloud` / `signoz` / `prometheus`（第一阶段占位，不含 `custom`） |
+| `provider` | string | 是 | 当前支持 `huawei_cloud` / `signoz` / `prometheus`，不含 `custom`；真实能力按 Provider Adapter 分开验收 |
 | `auth_type` | string | 是 | `ak_sk` / `agency` / `api_token` / `none`；须与 `provider` 兼容，见下表 |
 | `regions` | string[] | 否 | 区域列表 |
 | `project_id` | string | 否 | 华为云 project_id |
@@ -203,9 +205,14 @@ migration `0024` 增加 `extra_config`；`0029` 将仍为空配置的历史华�
 - Path: `/api/integrations/accounts/:account_id`
 - Auth: Bearer + `app:integrations:update`
 
-`credential` 省略时保留原凭据；传入时替换并写审计。
+更新为部分字段语义：
 
-`extra_config` 省略时保留原扩展配置；传入 `{}` 时清空为默认配置。后端会拒绝明显敏感字段名，响应也不会回显敏感键。
+- `credential` 省略或传空对象时保留原凭据；传入非空内容时替换。当前没有通过更新清空凭据的语义，切换到 `auth_type=none` 也不会自动删除旧密文。
+- `regions` 省略时保留，传 `[]` 时清空；`extra_config` 省略时保留，传 `{}` 时恢复 provider 默认配置。
+- provider/auth_type 变化会校验新凭据或已存凭据；provider 变化还会刷新默认 capabilities。后端允许 provider 更新，但当前前端编辑弹窗禁用了该字段。
+- 更新凭据或 provider 时使用事务；审计在更新成功后 best-effort 写入，不与业务同事务。
+
+后端会拒绝明显敏感字段名，响应也会清理旧数据中的敏感 extra_config 键。
 
 ### 4.4 删除或禁用
 
@@ -213,7 +220,9 @@ migration `0024` 增加 `extra_config`；`0029` 将仍为空配置的历史华�
 - Path: `/api/integrations/accounts/:account_id`
 - Auth: Bearer + `app:integrations:delete`
 
-第一阶段账号行软删除（保留用于审计/巡检证据，不直接删除历史巡检证据）；`integration_credential_ref` 中的凭据密文会在删除时一并硬删除，不再保留。
+账号行软删除并同时设置 `enabled=false`，保留用于审计/巡检证据；`integration_credential_ref` 中的凭据密文会在同一事务中硬删除，不再保留。capabilities 和检查历史没有随删除清理，软删除账号不再出现在列表，详情/更新/检查按 404 处理，当前无恢复接口。
+
+仅需停用时可通过 PUT 设置 `enabled=false`，此时凭据仍保留，但连通性检查返回 412 `FAILED_PRECONDITION`。
 
 ### 4.5 连通性测试
 
@@ -233,18 +242,21 @@ migration `0024` 增加 `extra_config`；`0029` 将仍为空配置的历史华�
 }
 ```
 
-失败时 `message` 只能是脱敏摘要，不返回 AK/SK、Token、原始请求头或完整云端响应。
+checker 出错时，服务生成 `status=failed` 的检查结果并保存脱敏 `message`；只要检查结果和 capabilities 成功落库，HTTP 仍为 200 且 `code="OK"`，调用方必须检查 `data.status`。账号不存在为 404，disabled 为 412，checker 未配置为 503，结果持久化失败才作为请求错误返回。
 
-**实现状态（华为 CES 指标里程碑）**：
+失败时 `message` 只能是脱敏摘要，不返回 AK/SK、Token、原始请求头或完整云端响应。每次检查写入 `integration_check_result`，账号 DTO 只返回最近一次 `last_check_status`，当前没有检查历史 API。
+
+**实现状态（当前全部为字段级 checker）**：
 
 | provider / auth_type | 检查方式 | 说明 |
 | --- | --- | --- |
 | `huawei_cloud` + `auth_type=none` | 字段校验 | 无需凭据，直接返回默认能力 |
-| `huawei_cloud` + `auth_type=ak_sk` | **字段校验（准真实）** | 校验 `access_key`/`secret_key` 非空、`regions` 非空；**尚未**调用 IAM/CES 做在线鉴权 |
+| `huawei_cloud` + `auth_type=ak_sk` | 字段校验 | 校验 `access_key`/`secret_key` 非空、`regions` 非空；不调用 IAM/CES 做在线鉴权 |
 | `huawei_cloud` + `auth_type=agency` | 字段校验 | 校验 `agency_name`/`domain_name` 非空、`regions` 非空 |
-| `signoz` / `prometheus` | 字段校验 | 校验 token 或 `base_url` 等非空 |
+| `signoz` | 字段校验 | api_token 模式检查 token；不访问 SigNoz |
+| `prometheus` | 字段校验 | 非 none 检查 `base_url`，api_token 另检查 token；不访问 Prometheus |
 
-真实云 API 连通性（如 CES `ShowMetricData` 探活）可在后续阶段替换 `HuaweiCloudChecker`，不影响 Observability HTTP 契约。
+`status=ok` 不证明网络可达、凭据有效、云端权限足够或每项 capability 可用。真实云 API/观测平台探活可在后续替换对应 Checker，不影响 Observability HTTP 契约。
 
 ### 4.6 Provider 能力声明
 
@@ -263,18 +275,44 @@ migration `0024` 增加 `extra_config`；`0029` 将仍为空配置的历史华�
 
 默认占位能力（fake / 连通性 checker）见 `internal/integration/domain/capability.go` 的 `DefaultCapabilitiesForProvider`；`prometheus` 默认仅 `metrics` + `alerts`，不含 `topology`。
 
+创建时直接写默认声明；检查时若 checker 未返回 capabilities，也会补默认声明，包括 `status=failed` 的结果。因而 capabilities 是后续模块的门控元数据，不是在线实测通过清单，真实支持范围仍须按 §5 和对应 Provider 契约验收。
+
+### 4.7 凭据存储与轮换边界
+
+- 使用独立密钥派生 AES-GCM 密钥、随机 nonce 加密 credential JSON，密文首字节为当前 key version。
+- `integration_credential_ref.external_ref` 和 `store_type=external_ref` 为预留模型，当前写入路径固定 `local_encrypted`，没有外部 Secret Manager 实现。
+- 当前 Vault 只持有当前密钥和版本；版本不匹配直接拒绝，未提供多版本解密、在线轮换或批量重加密工具。
+- 创建账号/凭据/capabilities、更新凭据或 provider、删除账号/凭据、保存检查结果/capabilities 分别使用对应事务；审计不在这些事务内。
+
+### 4.8 前端与审计边界
+
+当前 `/integrations` 支持列表、Provider/启用筛选、创建/编辑、启停、删除、检查和 Asset Sync 入口；API 的 keyword、provider 更新、检查历史和凭据清空没有对应完整页面能力。
+
+- 编辑不回显凭据，留空即保留；provider 在页面禁用修改。
+- 页面缺少 `agency_name/domain_name`，agency 只能通过 API 完整配置。
+- 检查 HTTP 成功后页面统一显示成功 Toast，即使 `data.status=failed`；默认 capabilities 非空时可能不显示失败 message，验收必须看业务 status，不能只看 Toast。
+- 页面只有华为 extra_config 纯函数 Vitest，没有完整账号页面测试。
+- 创建/更新/删除/检查写 `resource_type=integration_account`、同名 action，Payload 不含凭据；审计为业务事务后的 best-effort，失败不回滚业务。
+
 ## 5. Observability API
 
-> **实现状态（阶段 3 指标里程碑 — 华为 CES 已落地）**：
->
-> - **前端** `/integrations`：可创建 `huawei_cloud` + `auth_type=ak_sk` + `regions` + `project_id` 账号；凭据仅写入、不回显。
-> - **连通性** `/api/integrations/accounts/:account_id/check`：`huawei_cloud` + `ak_sk` 当前为**字段级校验**（见 §4.5），不调用云端 API。
-> - **指标查询** `/api/observability/metrics/query`：`huawei_cloud` + `auth_type=ak_sk` 走真实 CES `ShowMetricData`；返回平台标准 `MetricSeries`，生成 `evidence_id` 并写 `observability_query` 审计。
-> - `signoz` / `prometheus`：全部为 fake adapter（确定性样本），CI 无需外部密钥。
-> - `huawei_cloud` + `auth_type=none`：全部能力仍为 fake，便于无云账号联调。
-> - `huawei_cloud` + `auth_type=ak_sk|agency` 的 logs/traces/topology/alerts：返回 `FAILED_PRECONDITION`（capability unsupported），**不**返回 fake 样本，避免误当作云端数据。
-- `huawei_cloud` + `auth_type=ak_sk` 的 **assets**：`sync_mode=ces` 默认走 CES 资源分组/资源列表发现，同步范围为**指定资源分组**下资源（默认候选名“全部资源”，需用户在 CES 控制台预先创建；未命中即失败，不静默回退最大资源组）；`sync_mode=native` 保留 ECS/CCE/RDS/ELB 原生只读兼容路径；`auth_type=none` 仍为 fake。完整模式定义见 `ops/huawei-ces-sync-contract.md`。
-> - 响应、日志、审计中不出现 AK/SK、`Authorization` header 或原始敏感云端报错；凭据在 API 进程装配时经 `CredentialProvider(integration_credential_ref + vault)` 解密，见 `cmd/api/main.go`。
+当前只有 metrics/logs/traces/topology 四个公共查询路由，统一要求 Bearer + `app:observability:read`，使用静态 RBAC；账号删除/禁用由 AccountAdapter 拒绝，但公共查询不按 owner_team/region 做对象级数据范围过滤。AI 专用采集链路的账号数据范围校验是独立边界。
+
+Provider 当前支持矩阵：
+
+| Provider / auth | metrics | logs / traces / topology | assets / alerts |
+| --- | --- | --- | --- |
+| `huawei_cloud + none` | fake | fake | fake |
+| `huawei_cloud + ak_sk` | 真实 CES `ShowMetricData` | `FAILED_PRECONDITION`，不返回 fake | 真实资源发现/同步与 CES 规则；CES 告警拉取见 Alert 契约 |
+| `huawei_cloud + agency` | unsupported | unsupported | unsupported |
+| `signoz`（含 api_token） | fake | fake | fake 告警规则，无 assets Port |
+| `prometheus`（含 api_token/ak_sk） | fake | 无对应 Port | fake 告警规则，无 assets Port |
+
+capabilities 是 Integration 默认声明和 QueryService 的第一道门控，不是实测结果。真实凭据下不支持的能力必须显式失败，不能回退 fake。`signoz` 和 `prometheus` 当前即使配置 token 也仍返回确定性 fake 样本。
+
+真实华为资源同步以 CES 资源分组为主路径：显式组未命中失败，默认候选名均未命中时进入 `all_groups` 并集；该并集不等于未分组资源全量。完整模式与 stale 门控见 `ops/huawei-ces-sync-contract.md`。
+
+响应、日志、审计中不得出现 AK/SK、`Authorization` header 或原始敏感云端报错；真实华为凭据由服务端 `CredentialProvider(integration_credential_ref + vault)` 解密，见 `cmd/api/main.go`。
 
 ### 5.0 Provider Port（Application 层）
 
@@ -286,11 +324,14 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 | `LogSearchPort` | `SearchLogs` | 日志搜索（脱敏摘要） |
 | `TraceQueryPort` | `QueryTraces` | 链路 Span |
 | `TopologyQueryPort` | `QueryTopology` | 服务拓扑（需账号声明 `topology` 能力） |
-| `AssetDiscoveryPort` | `ListResources` | 云资源发现（阶段 2 HTTP / Asset Sync 复用） |
+| `AssetDiscoveryPort` | `ListResources` | 云资源发现，供 Asset Sync / AI 资源工具复用；无独立公共 HTTP 路由 |
 | `CloudFullSyncPort` | `ListAllResources` | 云资源全量同步发现（Asset Sync 专用，不受交互查询 `limit <= 500` 限制） |
 | `AlertRuleQueryPort` | `ListAlertRules` | 告警规则（AI 规则体检复用）；返回含 `metric/operator/threshold/unit/window_seconds` 可选字段以及 `resource_count/resources`（关联资源总数与前 3 个维度样本）。huawei `auth_type=none` 走 fake，`ak_sk` 走真实 CES V2 `ListAlarmRules`，`agency` 返回 unsupported |
+| `AlarmRecordPullPort` | `PullAlarmRecords` | CES V2 告警记录拉取，供 Alert 模块使用；不是公共 Observability 路由 |
 
-账号解析依赖 `IntegrationAccountPort`（adapter 包装 Integration 仓储），QueryService 编排：能力校验 → Provider Port → `obs_evidence_ref` → 审计。
+`rds_history_client.go` 另为 AI RDS for PostgreSQL 历史会话、等待事件和 Top SQL 提供只读客户端；它不属于公共 Observability HTTP 路由，实例和数据范围由 AI 调用链约束。
+
+账号解析依赖 `IntegrationAccountPort`（adapter 包装 Integration 仓储），QueryService 编排：能力校验 → Provider Port → `obs_evidence_ref` → 审计。生产仓储已配置时，证据保存失败会终止查询；审计在证据之后 best-effort 写入。测试或未装配仓储的调用可只生成 evidence_id，不能据此证明生产已落库。
 
 第一阶段 fake provider 覆盖 `huawei_cloud`、`signoz`、`prometheus`；CI 无需云密钥。`huawei_cloud` 在 API 装配时已注入 `CredentialProvider`（integration credential repo + vault），`auth_type=ak_sk` 可走真实 CES 指标查询；`signoz`/`prometheus` 仍为 fake。
 
@@ -309,7 +350,6 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
   "account_id": "acc_xxx",
   "provider": "huawei_cloud",
   "region": "cn-north-4",
-  "project_id": "project-xxx",
   "namespace": "SYS.ECS",
   "metric": "cpu_util",
   "dimensions": {
@@ -322,7 +362,11 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 }
 ```
 
-`period` 默认 60 秒，最小 10 秒；HTTP 查询单次时间窗口最大 7 天，最多返回 1440 个点，超过限制返回 `INVALID_ARGUMENT`。AI 只读工具路径（`ops/ai-contract.md` §10.12.1）允许超过 7 天、最长 30 天的窗口，但 `period` 不得小于 3600（小时级），仍受 1440 点上限约束。`project_id` 可选；缺省时按账号或 `extra_config.region_projects` 的 region 映射解析。多项目账号建议显式传入，避免查询到错误项目导致空序列。
+`period` 默认 60 秒，平台通用最小 10 秒；HTTP 查询单次时间窗口最大 7 天，按 window/period 估算最多 1440 点，超过限制返回 `INVALID_ARGUMENT`。AI 只读工具路径（`ops/ai-contract.md` §10.12.1）允许超过 7 天、最长 30 天的窗口，但 `period` 不得小于 3600（小时级），仍受 1440 点上限约束。
+
+当前公共 HTTP Handler 不接收 `project_id`，前端类型也未暴露；多项目公共查询按账号顶层 project_id 或 `extra_config.region_projects` 的 region 映射解析。内部 `domain.MetricQuery` 和 AI 路径才支持显式 project_id，不能把早期示例当作公共逐请求覆盖能力。
+
+华为真实指标另要求 region 属于账号、namespace 必填、1–4 个 dimensions，且最终 project_id 可解析。CES SDK 仅接受其枚举：当前服务实际可用 period 为 60/300/1200/3600/14400/86400，filter 为 average/avg/max/min/sum/variance/var。通用 period>=10 不保证真实 CES 可用，前端数值输入也不能替代该枚举校验。
 
 响应 `unit` 优先取 provider 数据点单位；provider 未返回时按官方文档固定表推断（`rds001/rds002/rds039` 使用率、`rds072/rds083` 连接数使用率为 `Percent`，`rds045` 为 `MiB`，`rds073` 为 `s`，`rds042`/`active_connections` 为 `Count`，`oldest_transaction_duration` 为 `ms`）。未登记指标保持空字符串，不得按名称后缀臆造单位。
 
@@ -342,7 +386,7 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
       ]
     }
   ],
-  "evidence_id": "ev_xxx"
+  "evidence_id": "ev-<uuid>"
 }
 ```
 
@@ -397,10 +441,30 @@ Observability application 通过以下 Port 屏蔽厂商差异；infrastructure 
 ### 5.4 查询拓扑
 
 - Method: `GET`
-- Path: `/api/observability/topology?application_id=app_xxx&from=1710000000&to=1710003600`
+- Path: `/api/observability/topology?account_id=acc_xxx&application_id=app_xxx&from=1710000000&to=1710003600`
 - Auth: Bearer + `app:observability:read`
 
-响应包含节点、边、调用量、错误率、P95/P99 等摘要字段。
+`account_id`、`from`、`to` 必填。响应包含节点、边、调用量、错误率和 P95 等摘要字段；当前 DTO 没有 P99。这里的运行时调用拓扑与 CMDB `/assets/topology` 是不同模型。
+
+### 5.4.1 证据引用与 AI 定稿快照
+
+普通成功查询生成 `ev-<uuid>` 并保存 query_hash、脱敏 summary 和 status=ok；Metrics 还保存 provider、trace_id、实际 query_params、资源标识、业务窗口和 collected_at，但 payload 为空。Logs 的 keyword 只保存 hash/len，不保存原文。历史 0019 证据在 0060 后仍保持 summary-only，不伪造 payload。
+
+AI 指标使用 SnapshotRequired 时，初始记录为 collecting；只有定稿快照保存成功后才以 ok 进入模型支持性证据：
+
+```text
+采集 -> 统计/降采样/大小裁剪 -> SaveSnapshot -> payload/payload_hash -> 模型输入
+```
+
+- 对话路径每序列最多 288 点，`sampling.strategy=stride_first_last` 保留首末点；峰值时刻（`peak_at`）与破限片段/越限时长等统计基于完整序列计算并在裁剪后保留。
+- payload 默认最多 32KiB，超限时先清 points、再清 metrics；original_count/retained_count 记录裁剪前后总点数，retained_count 在 payload/summary 而非独立列。
+- payload_hash 是定稿 payload 经规范化 JSON/JSONB 的 SHA-256，不是云端原始响应 hash。
+- OK 证据存储未配置、编码或保存失败会 fail-closed：转 error、清 metrics/evidence_id，不作为支持性 references。
+- skipped/permission_denied/unsupported/error 可尽力保存失败快照用于追踪，但不能作为支持性引用。
+
+`SnapshotStore` 也保存 `evidence_type=postgres_activity`、`schema_version=ai.postgres_activity.v1` 的 RDS 历史会话/等待事件/Top SQL 脱敏快照。详细诊断语义见 `ops/ai-contract.md`。
+
+当前没有 `GET /api/observability/evidence/:id` 等公共详情接口或前端证据抽屉；普通 evidence_id 不保证存在 payload。
 
 ### 5.5 云资源同步（Asset Sync，阶段 2 部分落地：CES P0/P1 主路径完成，hybrid 增强存在已知缺口）
 
@@ -733,19 +797,23 @@ CMDB 拓扑描述应用归属和资源配置关系，与 §5.4 的 Observability
 
 ## 6. Inspection API
 
-> **实现状态（阶段 4 第一步）**：下列 API 已落地；运行触发后同步执行 Observability 证据采集 + `EvidenceAnalyzer` 规则分析（fake/真实 provider 均可），生成 Finding/Recommendation 并引用 `evidence_id`。`Recommendation -> Execution` 接口已落地（见 §7，`POST /api/inspections/recommendations/:recommendation_id/execution`）。**定时 Worker 仍未落地**：策略 `schedule` 字段已持久化、`TriggerType="scheduled"` 枚举已定义，但尚无后台 worker 按 cron 自动触发巡检，当前仅支持手动触发。
+当前提供策略 CRUD、同步手动运行、Finding/Recommendation 和后端建议转执行接口。`EvidenceAnalyzer` 是固定阈值规则实现，不是 AI Agent；`agent_profile` 只是元数据。运行在同一 HTTP 请求内完成并通常返回 success/partial/failed 终态。
 
-### 6.0 策略 scope 补充
+**自动化边界**：schedule 和 `trigger_type=scheduled` 已保存/定义，但没有定时 worker；cancelled 只在状态机中存在，没有取消 API；Notification、Recommendation accepted/dismissed 和 Execution 完成回写未落地。
 
-契约示例未显式列出 `account_id`，但巡检需调用 Observability 查询，因此 `scope` JSON 必须包含：
+**真实数据边界**：当前采集固定最近 1 小时、region=cn-north-4、Metrics namespace=SYS.ECS 且无 dimensions，真实华为 CES 指标会因此失败；真实 logs/traces 也不支持。现有可重复主路径主要是 `huawei_cloud + none` fake，不能笼统写成真实 Provider 巡检已完成。
 
-| 字段 | 类型 | 必填 | 说明 |
+### 6.0 策略 scope 与权限
+
+| 字段 | 类型 | 必填 | 当前语义 |
 | --- | --- | --- | --- |
-| `account_id` | string | 是 | Integration 接入账号业务 ID |
+| `account_id` | string | 是 | Integration 账号业务 ID；创建时只校验非空，运行时再由 Observability 校验存在/启用 |
 | `provider` | string | 否 | 默认取账号 provider |
-| `environment` | string | 否 | 环境标签 |
-| `application_ids` | string[] | 否 | 目标应用 |
-| `resource_types` | string[] | 否 | 资源类型过滤 |
+| `environment` | string | 否 | 仅保存，当前不参与证据查询 |
+| `application_ids` | string[] | 否 | 去空/去重并校验注册表存在；仅第一个 ID 作为 service 字符串 |
+| `resource_types` | string[] | 否 | 仅保存，当前不参与证据查询 |
+
+所有 Inspection 路由使用静态 RBAC，不按 scope 做对象级数据范围过滤。`app:inspections:read/write` 默认由 0020 绑定 admin；建议转执行只要求 `app:executions:create`，不额外要求 inspections:write。
 
 ### 6.1 创建巡检策略
 
@@ -762,6 +830,8 @@ CMDB 拓扑描述应用归属和资源配置关系，与 §5.4 的 Observability
   "schedule": "*/5 * * * *",
   "scope": {
     "environment": "prod",
+    "account_id": "acc_xxx",
+    "provider": "huawei_cloud",
     "application_ids": ["app_xxx"],
     "resource_types": ["host", "pod", "service"]
   },
@@ -778,6 +848,19 @@ CMDB 拓扑描述应用归属和资源配置关系，与 §5.4 的 Observability
 }
 ```
 
+name 和至少一个合法 checks 必填，enabled 默认 true。agent_profile 默认 `sre_default` 但不驱动 AI；notification_policy_id 仅保存；schedule 没有 worker 消费。更新为部分字段语义，checks 省略保留、空数组拒绝。删除为软删除并清空 application_ids，历史 Run/Finding/Recommendation 保留。
+
+其他管理接口：
+
+| 方法 | 完整路径 | 权限 |
+| --- | --- | --- |
+| `GET` | `/api/inspections/policies` | `app:inspections:read` |
+| `GET` | `/api/inspections/policies/:policy_id` | `app:inspections:read` |
+| `PUT` | `/api/inspections/policies/:policy_id` | `app:inspections:write` |
+| `DELETE` | `/api/inspections/policies/:policy_id` | `app:inspections:write` |
+
+列表支持 page/page_size、enabled 和 name keyword，统一最大 page_size=100。
+
 ### 6.2 手动触发巡检
 
 - Method: `POST`
@@ -788,13 +871,18 @@ CMDB 拓扑描述应用归属和资源配置关系，与 §5.4 的 Observability
 
 ```json
 {
-  "run_id": "run_xxx",
-  "policy_id": "policy_xxx",
-  "status": "pending",
+  "run_id": "run-<uuid>",
+  "policy_id": "pol-<uuid>",
+  "status": "success",
   "trigger_type": "manual",
-  "created_at": 1710000000
+  "summary": "completed with 1 findings",
+  "timeline": [],
+  "created_at": 1710000000,
+  "updated_at": 1710000000
 }
 ```
+
+该接口同步执行采集和分析，通常直接返回终态，不是异步 pending 任务。全部证据失败时也可在成功落库后返回 HTTP 200 + `status=failed`；调用方必须检查 run.status。disabled 策略返回 412。
 
 ### 6.3 查询巡检运行
 
@@ -807,6 +895,10 @@ CMDB 拓扑描述应用归属和资源配置关系，与 §5.4 的 Observability
 ```text
 pending -> running -> success|partial|failed|cancelled
 ```
+
+`GET /api/inspections/runs` 支持 page/page_size、policy_id 和 status 筛选。success 表示所有计划检查均获得证据，可以有 0 个 Finding；partial 表示部分证据失败但至少有成功项；全部证据失败为 failed。cancelled 没有当前调用点。
+
+Findings、Recommendations 和最终 Run 同事务保存；Run 创建、running 更新和 best-effort 审计不在该事务内。分析/保存失败时会尽量另写 failed 终态并返回错误。
 
 ### 6.4 查询发现和建议
 
@@ -824,6 +916,10 @@ pending -> running -> success|partial|failed|cancelled
 - `recommendations`
 - `confidence`
 - `uncertainty`
+
+列表支持 page/page_size、run_id、policy_id 和 risk_level。confidence/uncertainty 来自固定规则，不是模型评分。当前 affected_resources 固定为 `service/payment-service`，没有按 application_ids 展开真实资源；environment/resource_types 不参与采集。
+
+规则阈值：CPU >=80 high、60–80 medium；内存 >=75 high；磁盘 >=70 medium；有错误 Span 为 high；有高延迟样本为 medium；error 日志摘要 >=2 为 medium。可执行建议对应 high/critical Finding 时，Recommendation 风险降为 medium。
 
 ## 7. Recommendation 到 Execution
 
@@ -845,14 +941,17 @@ pending -> running -> success|partial|failed|cancelled
 }
 ```
 
-要求：
+当前要求与边界：
 
-- 只能创建 Execution Task，不能直接执行。
-- medium/high/critical 风险必须进入 `pending_confirm`。
-- 生成任务后写入 Recommendation 时间线和审计。
-- `execution_mode=agent` 时，必须绑定执行介体或满足可解释的自动介体选择策略。
-- `command_spec_id` 必须存在且启用，`arguments` 必须通过参数 schema 校验。
-- Agent 只能提出执行计划；实际分发由 Execution 状态机在确认后触发。
+- Recommendation 必须 `can_create_execution=true`；已 execution_created 返回 409，不幂等返回原任务。
+- 只能创建 Agent 模式 Execution Task，不能直接执行；execution_mode 省略默认 agent，其他模式返回 400。
+- `medium_id` 在 HTTP 层必填，**没有自动介体选择**。
+- `confirm_intent` 省略或必须为 create_task_only；medium/high/critical 进入 pending_confirm，low 按 Execution 规则进入 pending_execute。
+- command_spec_id 省略时按标题选择默认只读 Spec，未命中兜底 `cmd_linux_disk_usage`；磁盘空 arguments 默认 mount_point=/。调用方必须复核默认值，最终 Spec 和参数 schema 由 Execution 校验。
+- Adapter 固定 source_type=inspection、source_id=recommendation_id、operation_type=command；后续确认、lease、日志和结果由 Execution 负责。
+- Recommendation 只更新 `execution_created`，不保存 task_id 或独立时间线；task_id 仅在本次响应和 create_execution 审计中返回。
+- Execution 创建与 Recommendation 状态更新不在同一事务；状态更新失败时任务可能已存在，重试前需核对 Execution/审计，避免重复创建。
+- accepted/dismissed、通知和 Execution 完成回写未落地，前端也无转执行入口。
 
 执行介体、执行代理、Command Spec、租约和日志回传契约见 `execution-agent-contract.md`。
 
@@ -862,10 +961,10 @@ pending -> running -> success|partial|failed|cancelled
 | --- | --- |
 | `integration_account` | `create` / `update` / `delete` / `check` |
 | `asset_sync_batch` | 当前统一为 `sync`；payload 以 status 或 `event=reap_expired_running` 区分阶段。早期目标 `sync_started` / `sync_finished` / `sync_reaped` 尚未落地 |
-| `observability_query` | `metrics_query` / `logs_search` / `traces_query` / `topology_get` |
+| `observability_query` | `metrics_query` / `logs_search` / `traces_query` / `topology_get`；内部资源和规则采集另有 `resources_list` / `alerts_list` |
 | `inspection_policy` | `create` / `update` / `enable` / `disable` / `delete` |
-| `inspection_run` | `create` / `start` / `finish` / `cancel` |
-| `inspection_recommendation` | `create` / `notify` / `create_execution` |
+| `inspection_run` | 当前实际写入 `create` / `start` / `finish`；cancel 仅保留常量，无调用点 |
+| `inspection_recommendation` | 当前实际写入 `create` / `create_execution`；notify 未实现 |
 | `notification` | `send` / `retry` / `fail` |
 | `execution_medium` | `select` |
 | `execution_agent` | `dispatch` |
@@ -890,12 +989,13 @@ pending -> running -> success|partial|failed|cancelled
 
 | 脚本 | 范围 | 状态 |
 | --- | --- | --- |
-| `scripts/e2e-integration.ps1` | 账号 CRUD、凭据不回显、连通性检查、权限负向 | 已落地 |
-| `scripts/e2e-observability.ps1` | 指标/日志/链路 fake provider 查询、EvidenceRef 生成 | 已落地 |
+| `scripts/e2e-integration.ps1` | 使用 `huawei_cloud + none` 覆盖创建、列表/详情、检查 ok、更新、viewer 创建 403、删除 | 已落地；不覆盖真实凭据/网络、其他 auth_type、检查 failed、keyword、审计或完整 UI |
+| `scripts/e2e-observability.ps1` | `huawei_cloud + none` 的指标/日志/链路/拓扑 fake 查询与 evidence_id | 已落地；不验证真实 CES、权限负向、审计或证据详情 |
+| `scripts/e2e-ai-evidence.ps1` | fake 指标 + 本地 mock 模型 + Docker PostgreSQL，比对模型输入与定稿 payload 的规范化 SHA-256 | 已落地；不是实际 CES 验收，不覆盖公共证据详情 API/UI |
 | `scripts/e2e-asset-sync.ps1` | 云资源同步、批次、stale 标记、cloud_resource_id 入库 | 已落地 |
-| `scripts/e2e-inspection.ps1` | 策略 CRUD、手动触发、Finding/Recommendation、审计 | 已落地 |
+| `scripts/e2e-inspection.ps1` | fake 账号下创建应用/账号/策略、同步运行、Run 详情、Findings/Recommendations 和删除清理 | 已落地；不覆盖更新/列表、partial/failed、审计、真实云、转 Execution 或 UI |
 | `scripts/e2e-notification.ps1` | 通知通道、发送记录、失败重试 | 待补（通知模块未落地） |
-| `scripts/e2e-execution-agent.ps1` | Recommendation 创建 agent 模式任务、介体选择、fake agent 领取、日志和结果回传 | 已落地 |
+| `scripts/e2e-execution-agent.ps1` | 直接创建 Medium 和 manual Agent 任务，注册/心跳、确认前后 lease、日志、结果及非法参数 | 已落地；不经过 Inspection Recommendation，不覆盖真实命令、审计或完整幂等 |
 
 没有真实云账号的 CI 环境应使用 fake provider 或本地 mock server，避免将云厂商密钥放入测试环境。
 
@@ -914,3 +1014,5 @@ integration:
 非 dev 环境 `Validate()` 会拒绝空密钥、弱密钥、以及与 `auth.jwt_secret` 相同的值。
 
 `auth_type=none` 时 `credential` 可省略；若需保存 `base_url` 等非密钥连接参数，可传入 `credential` 对象，后端仍会加密存储但不强制密钥字段。
+
+密钥版本字节只是当前密文格式标识。当前运行时只接受配置的当前版本，没有多版本解密和在线重加密流程；执行轮换前必须另行设计旧凭据可读与重加密方案，不能只修改 key/version 后假定历史凭据仍可使用。

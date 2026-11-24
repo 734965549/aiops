@@ -171,7 +171,7 @@ cors:
   allow_credentials: true
 
 # 以下 provider 均为占位示例，api_key 禁止用于真实环境；生产请通过密钥管理注入。
-# 启动时 cmd/api 会从 ai.providers 载入内存注册表；亦可启动后 POST /api/ai/providers 维护。
+# ai.providers 仅在 ai_provider 表为空时作为种子；之后以数据库和「系统设置 → AI 配置」为准。
 # outbound_allowed_hosts 非空时仅允许访问列表内主机；生产建议显式配置白名单。
 # outbound_allow_loopback 为 true 时允许 127.0.0.1 等 loopback（dev 环境默认等同 true）。
 ai:
@@ -201,7 +201,7 @@ ai:
       enabled: true
       description: "通用 HTTP API Key 工具提供方样例（仅占位）"
     # providers 仅在新库/空表时作为种子写入 ai_provider；
-    # 之后以「AI 运维助手 -> Provider 管理」页面配置为准，修改无需重启。
+    # 之后以「系统设置 → AI 配置 → Provider 管理」为准，当前 API 实例修改无需重启。
     - id: "demo-openai-b"
       name: "Demo OpenAI Compatible Provider B"
       type: "b"

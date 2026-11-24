@@ -143,15 +143,21 @@ func (s *ChatService) refreshRuleHealthObservation(ctx context.Context, userID s
 	obs.Reason = result.Reason
 	rules := capRuleHealthForObservation(result.Rules)
 	obs.EvidenceID = firstRuleHealthEvidenceID(result.Rules)
-	obs.Summary = fmt.Sprintf("规则体检 %s（规则 %d 条，已取曲线 %d 条）", obs.Status, result.RuleCount, result.CheckedCount)
+	sampled := 0
+	for _, rule := range result.Rules {
+		sampled += rule.CheckedResources
+	}
+	obs.Summary = fmt.Sprintf("规则体检 %s（规则 %d 条，成功 %d 条，实例曲线 %d 条）", obs.Status, result.RuleCount, result.CheckedCount, sampled)
 	obs.Data = map[string]any{
 		"status": obs.Status, "reason": obs.Reason,
 		"window_start": result.WindowStart, "window_end": result.WindowEnd,
 		"period": result.Period, "aggregator": result.Aggregator,
 		"rule_count": result.RuleCount, "checked_count": result.CheckedCount,
-		"rules": rules,
-		"granularity_note": "破限比例按请求的 period 聚合口径统计；规则原始采样窗口小于 period 时，" +
-			"不能据此推断原始窗口的误报频率，需缩小窗口用原始粒度复查",
+		"checked_resource_count": sampled,
+		"rules":                  rules,
+		"granularity_note": "破限比例与越限时长按请求的 period 聚合口径统计（越限时长为 breach_points × period 的上限估计）；" +
+			"规则原始采样窗口小于 period 时，不能据此推断原始窗口的误报频率，需缩小窗口用原始粒度复查；" +
+			"规则关联多个实例时最多抽样 3 个实例，统计取越限最严重的样本，实际覆盖见 checked_resources 与 resource_count/resource_group_count",
 	}
 	appendRuleHealthReferences(data, result.Rules)
 	s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)

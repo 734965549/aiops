@@ -113,7 +113,7 @@ migration `0024` 增加该列，`0029` 将仍为空配置的历史华为账号�
 - 支持 Provider/启用状态筛选、分页、新建、编辑、启停、删除确认、检查和触发 Asset Sync。
 - 列表 API 另支持 `keyword`，按 name/account_id/owner_team 做 ILIKE，但页面没有关键字输入。
 - 编辑不回显凭据，留空即保留；页面没有清空凭据入口，也禁用了 provider 修改。
-- 认证下拉展示全部选项，最终组合由后端校验；页面缺少 `agency_name/domain_name`，无法正常完成 agency 账号创建或更新。
+- 认证下拉展示全部选项，最终组合由后端校验；页面缺少 `agency_name/domain_name`，无法新建 agency 账号或新填/替换 agency 凭据。已有 agency 账号仍可在保留原凭据时编辑其他字段。
 - 检查接口 HTTP 成功后页面统一使用成功 Toast，即使 `data.status=failed`；默认 capabilities 非空时还可能不展示失败 message。验收必须以 status 和最近检查结果为准，不能仅看 Toast 颜色。
 - “同步资源”入口对各行显示，真正 enabled/assets capability/RBAC 校验由 Asset Sync 后端执行；按钮存在不代表该账号一定可同步。
 - 当前只有 `huaweiConfig.spec.ts` 覆盖 region/region_projects 解析、转义和未知 extra_config 保留，没有完整页面 Vitest。

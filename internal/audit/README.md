@@ -60,7 +60,7 @@ Payload 在服务端按调用方提供的内容保存，没有通用敏感键清
 | Observability | `observability_query` | `metrics_query`、`logs_search`、`traces_query`、`topology_get`、`resources_list`、`alerts_list` |
 | Inspection | `inspection_policy`、`inspection_run`、`inspection_recommendation` | 策略 `create/update/delete/enable/disable`；运行 `create/start/finish`；建议 `create/create_execution` |
 
-Dashboard 只有只读聚合，不新增操作审计。审计查询和 CSV 导出本身也不会再写操作审计。
+Dashboard 只有只读聚合，不新增操作审计。审计查询和 CSV 导出本身也不会再写操作审计。AI Provider upsert/delete 当前只有应用日志，不在上表新增审计动作；直接 `/api/ai/tools/invoke` 的 tool_invoke 不含 allowed/reason，业务拒绝也可能记 result=success，对话内置工具的详细 tool_invoke 需与其区分。
 
 ## 4. 查询接口与语义
 

@@ -158,8 +158,8 @@
       <h4>工具调用</h4>
       <div class="tool-tags">
         <a-tooltip
-          v-for="call in toolCalls"
-          :key="call.tool_code"
+          v-for="(call, index) in toolCalls"
+          :key="`${call.tool_code}-${index}`"
           :content="toolTooltip(call)"
         >
           <a-tag :color="call.allowed ? 'arcoblue' : 'red'">

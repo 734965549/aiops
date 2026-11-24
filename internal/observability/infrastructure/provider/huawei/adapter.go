@@ -23,6 +23,8 @@ type Adapter struct {
 	cesFullSync CESResourceDiscoveryClient
 	alarmPull   AlarmHistoryPullClient
 	ruleList    AlarmRuleListClient
+	// ruleResources 把资源分组型规则展开为实例维度样本，供规则体检按实例取数。
+	ruleResources RuleResourceResolver
 }
 
 func NewAdapter(credentials *CredentialProvider, ces MetricDataClient, resources ResourceDiscoveryClient) *Adapter {
@@ -33,14 +35,23 @@ func NewAdapter(credentials *CredentialProvider, ces MetricDataClient, resources
 		resources = NewResourceClient()
 	}
 	return &Adapter{
-		inner:       fake.New(string(integdomain.ProviderHuaweiCloud)),
-		credentials: credentials,
-		ces:         ces,
-		resources:   resources,
-		cesFullSync: NewCESResourceClient(),
-		alarmPull:   NewCESAlarmHistoryClient(),
-		ruleList:    NewCESAlarmRuleListClient(),
+		inner:         fake.New(string(integdomain.ProviderHuaweiCloud)),
+		credentials:   credentials,
+		ces:           ces,
+		resources:     resources,
+		cesFullSync:   NewCESResourceClient(),
+		alarmPull:     NewCESAlarmHistoryClient(),
+		ruleList:      NewCESAlarmRuleListClient(),
+		ruleResources: NewCESRuleResourceResolver(),
 	}
+}
+
+// WithRuleResourceResolver 注入规则资源分组展开器，主要用于测试。
+func (a *Adapter) WithRuleResourceResolver(resolver RuleResourceResolver) *Adapter {
+	if resolver != nil {
+		a.ruleResources = resolver
+	}
+	return a
 }
 
 // WithAlarmRuleList 注入告警规则查询客户端，主要用于测试。
@@ -267,6 +278,7 @@ func (a *Adapter) listAlertRulesReal(ctx context.Context, pctx domain.ProviderCo
 	if q.Limit > 0 && len(rules) > q.Limit {
 		rules = rules[:q.Limit]
 	}
+	a.expandRuleResources(ctx, cred, projectID, region, rules)
 	return rules, nil
 }
 

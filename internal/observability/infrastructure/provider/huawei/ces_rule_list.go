@@ -108,6 +108,11 @@ func mapListAlarmRule(item cesv2model.ListAlarmRespBodyAlarms) domain.AlertRule 
 	if rule.RuleID == "" {
 		rule.RuleID = rule.Name
 	}
+	if item.Resources != nil && len(*item.Resources) > 0 {
+		rule.ResourceCount = len(*item.Resources)
+		rule.Resources = mapRuleResourceSamples(*item.Resources)
+		rule.ResourceGroupIDs = mapRuleResourceGroupIDs(*item.Resources)
+	}
 	if item.Policies == nil {
 		return rule
 	}
@@ -134,11 +139,32 @@ func mapListAlarmRule(item cesv2model.ListAlarmRespBodyAlarms) domain.AlertRule 
 		}
 		break
 	}
-	if item.Resources != nil && len(*item.Resources) > 0 {
-		rule.ResourceCount = len(*item.Resources)
-		rule.Resources = mapRuleResourceSamples(*item.Resources)
-	}
 	return rule
+}
+
+// mapRuleResourceGroupIDs 提取规则关联的资源分组 ID；资源分组型规则没有实例维度，
+// 需要在 adapter 层调用 CES 资源分组接口展开为实例维度样本。
+func mapRuleResourceGroupIDs(resources []cesv2model.ResourcesInListResp) []string {
+	out := make([]string, 0, len(resources))
+	seen := make(map[string]struct{}, len(resources))
+	for i := range resources {
+		if resources[i].ResourceGroupId == nil {
+			continue
+		}
+		groupID := strings.TrimSpace(*resources[i].ResourceGroupId)
+		if groupID == "" {
+			continue
+		}
+		if _, ok := seen[groupID]; ok {
+			continue
+		}
+		seen[groupID] = struct{}{}
+		out = append(out, groupID)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // mapRuleResourceSamples 提取前若干个关联资源的维度样本；资源分组无维度时只计数不采样。

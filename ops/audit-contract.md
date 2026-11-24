@@ -129,6 +129,8 @@ Audit 不与业务操作共享统一事务。当前主要业务写入点普遍�
 
 表中使用 `/` 只是为了紧凑列举独立 action，查询时必须传完整动作字符串。例如应传 `chat_share_create`，而不是 `chat_share_create/revoke/view`。
 
+AI Provider upsert/delete 当前只有应用日志，不写入上表的操作审计。直接 `POST /api/ai/tools/invoke` 的 `tool_invoke` 由 HTTP Handler 写入，Payload 不含 allowed/mode/reason；只要 Gateway 没返回 Go error，即使业务响应 `allowed=false`，result 仍记为 success。对话内置工具的 `tool_invoke` 才包含 allowed/status/reason 等完整观测字段，两种记录不能按同一结果语义解读。
+
 ## 6. 前端明细、聚合与导出
 
 页面为 `web/src/views/audits/index.vue`，只通过 `web/src/api/audit.ts` 调用列表接口。

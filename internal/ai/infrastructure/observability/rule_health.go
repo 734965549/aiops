@@ -18,6 +18,11 @@ import (
 const (
 	ruleHealthTotalTimeout = 30 * time.Second
 	ruleHealthRulesCap     = 20
+	// ruleHealthMaxResourceSamples 限制单条规则取数的实例样本数，避免多实例规则放大调用量。
+	ruleHealthMaxResourceSamples = 3
+	// ruleHealthMaxMetricQueries 限制单次体检的总指标查询数：
+	// 20 条规则 × 3 实例会超出 30s 总超时预算，超出后剩余规则按预算耗尽标记 skipped。
+	ruleHealthMaxMetricQueries = 24
 )
 
 // RuleHealthCollector 实现 aiapp.RuleHealthPort：
@@ -108,8 +113,9 @@ func (c *RuleHealthCollector) Check(ctx context.Context, userID string, q aiapp.
 	if len(rules) > ruleHealthRulesCap {
 		rules = rules[:ruleHealthRulesCap]
 	}
+	queries := 0
 	for _, rule := range rules {
-		item := c.checkRule(checkCtx, userID, q, rule)
+		item := c.checkRule(checkCtx, userID, q, rule, &queries)
 		if item.Status == aiapp.EvidenceStatusOK {
 			out.CheckedCount++
 		}
@@ -125,12 +131,15 @@ func (c *RuleHealthCollector) effectiveTotalTimeout() time.Duration {
 	return ruleHealthTotalTimeout
 }
 
-func (c *RuleHealthCollector) checkRule(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule) aiapp.RuleHealthRuleResult {
+// checkRule 对单条规则按关联实例抽样取数（最多 3 个），统计字段取越限最严重的样本，
+// 避免多实例规则只验证第一个实例。budget 为单次体检共享的查询预算计数。
+func (c *RuleHealthCollector) checkRule(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, queries *int) aiapp.RuleHealthRuleResult {
 	item := aiapp.RuleHealthRuleResult{
 		RuleID: rule.RuleID, Name: rule.Name, Metric: rule.Metric,
 		Operator: rule.Operator, Threshold: rule.Threshold, RuleUnit: rule.Unit,
 		WindowSeconds: rule.WindowSeconds, ResourceCount: rule.ResourceCount,
-		Status: aiapp.EvidenceStatusOK,
+		ResourceGroupCount: len(rule.ResourceGroupIDs),
+		Status:             aiapp.EvidenceStatusOK,
 	}
 	if strings.TrimSpace(rule.Metric) == "" {
 		item.Status = aiapp.EvidenceStatusSkipped
@@ -142,44 +151,115 @@ func (c *RuleHealthCollector) checkRule(ctx context.Context, userID string, q ai
 		item.Reason = "no_resource_scope"
 		return item
 	}
-	item.Dimensions = cloneDimensions(rule.Resources[0])
-	item.Sampled = rule.ResourceCount > 1
-	if ctx.Err() != nil {
-		item.Status = aiapp.EvidenceStatusSkipped
-		item.Reason = "rule health query timeout"
-		return item
+	samples := rule.Resources
+	if len(samples) > ruleHealthMaxResourceSamples {
+		samples = samples[:ruleHealthMaxResourceSamples]
 	}
+	var best *aiapp.RuleHealthRuleResult
+	checked := 0
+	lastStatus, lastReason := "", ""
+	incomplete := false
+	for _, dims := range samples {
+		if ctx.Err() != nil {
+			lastStatus, lastReason = aiapp.EvidenceStatusSkipped, "rule health query timeout"
+			incomplete = true
+			break
+		}
+		if queries != nil && *queries >= ruleHealthMaxMetricQueries {
+			lastStatus, lastReason = aiapp.EvidenceStatusSkipped, "rule health query budget exhausted"
+			incomplete = true
+			break
+		}
+		if queries != nil {
+			*queries = *queries + 1
+		}
+		res, status, reason := c.queryRuleMetrics(ctx, userID, q, rule, dims)
+		if status != "" {
+			lastStatus, lastReason = status, reason
+			incomplete = true
+			continue
+		}
+		candidate := aiapp.RuleHealthRuleResult{
+			Dimensions: cloneDimensions(dims),
+			EvidenceID: res.EvidenceID,
+			Status:     aiapp.EvidenceStatusOK,
+		}
+		summarizeRuleHealth(&candidate, res.Series, rule, q.Period)
+		checked++
+		if best == nil || betterRuleHealthSample(&candidate, best) {
+			sample := candidate
+			best = &sample
+		}
+	}
+	if best != nil {
+		merged := *best
+		merged.RuleID, merged.Name, merged.Metric = item.RuleID, item.Name, item.Metric
+		merged.Operator, merged.Threshold, merged.RuleUnit = item.Operator, item.Threshold, item.RuleUnit
+		merged.WindowSeconds, merged.ResourceCount = item.WindowSeconds, item.ResourceCount
+		merged.ResourceGroupCount, merged.CheckedResources = item.ResourceGroupCount, checked
+		// 分组型规则的 ResourceCount 是分组数，不能用来判断是否抽样；分组型一律标记 Sampled。
+		merged.Sampled = item.ResourceGroupCount > 0 || item.ResourceCount > checked || incomplete
+		return merged
+	}
+	item.CheckedResources = 0
+	item.Status = lastStatus
+	item.Reason = lastReason
+	if item.Status == "" {
+		item.Status = aiapp.EvidenceStatusError
+		item.Reason = "metric query failed"
+	}
+	return item
+}
+
+// queryRuleMetrics 在单实例上取曲线；返回稳定状态与原因，供规则级降级展示。
+func (c *RuleHealthCollector) queryRuleMetrics(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, dims map[string]string) (*obsapp.MetricQueryResult, string, string) {
 	queryCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	res, err := c.metrics.QueryMetrics(queryCtx, obsapp.Actor{UserID: userID}, obsdomain.MetricQuery{
 		AccountID: q.AccountID, Region: q.Region, Namespace: q.Namespace, Metric: rule.Metric,
-		Dimensions: cloneDimensions(rule.Resources[0]),
+		Dimensions: cloneDimensions(dims),
 		From:       q.From, To: q.To, Period: q.Period, Aggregator: q.Aggregator,
 		SnapshotRequired: true, AllowLongWindow: true,
 	})
 	timedOut := errors.Is(queryCtx.Err(), context.DeadlineExceeded)
 	cancel()
 	if err != nil {
-		item.Status = aiapp.EvidenceStatusError
 		if timedOut {
-			item.Reason = "metric query timeout"
-		} else {
-			item.Reason = evidenceErrorReason(err, "metric query failed")
+			return nil, aiapp.EvidenceStatusError, "metric query timeout"
 		}
-		return item
+		return nil, aiapp.EvidenceStatusError, evidenceErrorReason(err, "metric query failed")
 	}
 	if res == nil {
-		item.Status = aiapp.EvidenceStatusError
-		item.Reason = "empty metric query result"
-		return item
+		return nil, aiapp.EvidenceStatusError, "empty metric query result"
 	}
-	item.EvidenceID = res.EvidenceID
-	summarizeRuleHealth(&item, res.Series, rule)
-	return item
+	return res, "", ""
 }
 
-// summarizeRuleHealth 汇总定稿点数、峰值、P95 与破限比例；空序列只保留 point_count=0。
+// betterRuleHealthSample 选择越限最严重的实例样本：破限比例优先，其次破限点数与峰值。
+func betterRuleHealthSample(candidate, current *aiapp.RuleHealthRuleResult) bool {
+	ratio := func(item *aiapp.RuleHealthRuleResult) float64 {
+		if item.BreachRatio != nil {
+			return *item.BreachRatio
+		}
+		return 0
+	}
+	if ratio(candidate) != ratio(current) {
+		return ratio(candidate) > ratio(current)
+	}
+	if candidate.BreachPoints != current.BreachPoints {
+		return candidate.BreachPoints > current.BreachPoints
+	}
+	peak := func(item *aiapp.RuleHealthRuleResult) float64 {
+		if item.Peak != nil {
+			return *item.Peak
+		}
+		return math.Inf(-1)
+	}
+	return peak(candidate) > peak(current)
+}
+
+// summarizeRuleHealth 汇总定稿点数、峰值、P95、破限比例与破限片段统计；空序列只保留 point_count=0。
 // 只使用第一条有数据点的序列，避免多序列（异常 provider 返回）混算不同实例。
-func summarizeRuleHealth(item *aiapp.RuleHealthRuleResult, series []obsdomain.MetricSeries, rule obsdomain.AlertRule) {
+func summarizeRuleHealth(item *aiapp.RuleHealthRuleResult, series []obsdomain.MetricSeries, rule obsdomain.AlertRule, period int) {
 	points := make([]obsdomain.MetricPoint, 0)
 	unit := ""
 	for _, s := range series {
@@ -206,11 +286,28 @@ func summarizeRuleHealth(item *aiapp.RuleHealthRuleResult, series []obsdomain.Me
 	values := make([]float64, 0, len(points))
 	sum := 0.0
 	breach := 0
+	episodes, currentRun, longestRun, inBreach := 0, 0, 0, false
+	peakValue, peakAt := points[0].Value, int64(points[0].TS)
 	for _, p := range points {
 		values = append(values, p.Value)
 		sum += p.Value
+		if p.Value > peakValue {
+			peakValue = p.Value
+			peakAt = int64(p.TS)
+		}
 		if isBreachPoint(rule.Operator, p.Value, rule.Threshold) {
 			breach++
+			if !inBreach {
+				episodes++
+				inBreach = true
+				currentRun = 0
+			}
+			currentRun++
+			if currentRun > longestRun {
+				longestRun = currentRun
+			}
+		} else {
+			inBreach = false
 		}
 	}
 	first, last := values[0], values[len(values)-1]
@@ -230,7 +327,13 @@ func summarizeRuleHealth(item *aiapp.RuleHealthRuleResult, series []obsdomain.Me
 	ratio := float64(breach) / float64(len(values))
 	item.First, item.Min, item.Avg = &first, &minValue, &avg
 	item.P95, item.Peak, item.Last = &p95, &peak, &last
+	item.PeakAt = &peakAt
 	item.BreachPoints, item.BreachRatio = breach, &ratio
+	item.BreachEpisodes = episodes
+	if period > 0 {
+		item.BreachDurationSeconds = int64(breach) * int64(period)
+		item.LongestBreachSeconds = int64(longestRun) * int64(period)
+	}
 }
 
 func ruleHealthDegraded(status, reason string) *aiapp.RuleHealthResult {

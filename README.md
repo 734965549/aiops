@@ -16,10 +16,11 @@
 | Execution 自动化执行 | 核心闭环与 Agent 控制面已落地 | `/executions` | `e2e-execution.ps1`、`e2e-execution-agent*.ps1` | 默认模拟执行；独立 Agent、专门 UI、自动选择、mTLS、Runbook→Agent 和 Agent Alert 时间线未完整交付 |
 | Dashboard 首页驾驶舱 | 已落地 | `/dashboard` | 单元/HTTP 测试；Identity E2E 单次摘要调用，无专用 E2E | 告警、执行、资产、Runbook 聚合摘要；降级 0 与真实 0 不可区分，无数据范围过滤 |
 | Audit 审计中心 | 已落地，前端聚合与导出有范围限制 | `/audits` | 服务单元测试与跨模块 E2E 审计断言，无独立 E2E/前端 Vitest | 精确分页检索；聚合仅当前页，CSV 实际最多 100 条；资源类型快捷选项未与真实目录对齐，认证审计独立查询 |
-| AI 运维助手 | 多轮助手与受限工具循环已落地 | `/ai-assistant`、全局浮层、`/system/ai-config` | `e2e-ai-*.ps1` 等专项脚本 | 会话、SSE、记忆、知识、分享、多模态和前端内存队列按专项契约验收；只生成待确认执行计划 |
-| Integration 接入账号 | 已落地 | `/integrations` | `e2e-integration.ps1` | 账号、凭据密文、能力声明与连通性检查；实际能力取决于对应 Provider Adapter |
-| Observability 统一观测 | 统一查询已落地，真实 Provider 部分落地 | `/observability` | `e2e-observability.ps1` 使用 fake；AI 证据另有专项脚本 | 华为 CES 指标与证据快照已落地；真实日志/链路/拓扑仍有限制，快照暂无公共详情 API/UI |
-| Inspection 巡检中心 | 手动巡检已落地 | `/inspections` | `e2e-inspection.ps1` | 策略、运行、Finding、Recommendation 已落地；定时 worker 未落地，建议转执行尚无前端入口 |
+| AI Provider 与工具网关 | 持久化配置、三类 Executor、直接转发与 8 个对话只读工具已落地 | `/system/ai-config`、Identity 权限管理 | 后端单元/HTTP/出站测试；AI E2E 使用 mock/fake，无直接 invoke 专项 | 无健康检查/测试连接；Provider CRUD 无操作审计，页面编辑会清 headers；执行类内置工具未落地 |
+| AI 运维助手 | 会话、幂等、SSE、受限循环、记忆与知识已落地，前端部分交互有差距 | `/ai-assistant`、全局浮层、`/system/ai-config` | 后端/前端部分测试与 `e2e-ai-*.ps1`；均为 mock/fake，非浏览器或真实模型全量验收 | 详情最近 200 条；重试会重放旧回答，归档输入/模型禁用/详情刷新有缺口；记忆/知识管理筛选与展示有限，真实/负向场景需专项；只生成待确认执行计划 |
+| Integration 接入账号 | 账号与字段级检查已落地 | `/integrations` | 单元/HTTP/配置纯函数测试；`e2e-integration.ps1` 覆盖 none 主路径 | AES-GCM 凭据、能力声明、软删除清密文已落地；检查不访问外部服务，capabilities 非实测；agency 前端和完整密钥轮换未落地 |
+| Observability 统一观测与证据 | 四类查询与 AI 定稿快照已落地，真实 Provider 部分落地 | `/observability` | 单元/mock/PostgreSQL 测试与前端 Vitest；查询和快照 E2E 均使用 fake/mock | 华为 AK/SK 指标真实，真实日志/链路/拓扑不支持；SigNoz/Prometheus 为 fake；快照无公共详情 API/UI，真实指标 E2E 未提供 |
+| Inspection 巡检中心 | 手动同步规则巡检与后端转执行已落地 | `/inspections` | 单元/HTTP 测试；`e2e-inspection.ps1` 使用 fake；无转执行专项测试 | 非 AI Agent；定时 worker/取消/通知未落地，真实 scope 采集受限；转执行无前端、自动介体、跨模块事务或完成回写 |
 
 **文档**：
 - [演示流程](docs/demo-flow.md) — 10 步完整闭环演示
