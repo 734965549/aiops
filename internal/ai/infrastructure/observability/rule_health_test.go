@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -83,11 +84,19 @@ func TestRuleHealthCollectorSummarizesRules(t *testing.T) {
 	if out.Rules[2].Status != aiapp.EvidenceStatusSkipped || out.Rules[2].Reason != "no_resource_scope" {
 		t.Fatalf("no scope rule = %+v", out.Rules[2])
 	}
-	if metrics.query.Namespace != "SYS.RDS" || metrics.query.Metric != "rds001_cpu_util" ||
-		metrics.query.Dimensions["rds_instance_id"] != "i-1" ||
-		metrics.query.From != 1700000000 || metrics.query.Period != 3600 ||
-		metrics.query.Aggregator != "max" || !metrics.query.AllowLongWindow || !metrics.query.SnapshotRequired {
-		t.Fatalf("metric query = %+v", metrics.query)
+	if len(metrics.queries) != 2 {
+		t.Fatalf("queries = %d, want primary + recent", len(metrics.queries))
+	}
+	primary := metrics.queries[0]
+	if primary.Namespace != "SYS.RDS" || primary.Metric != "rds001_cpu_util" ||
+		primary.Dimensions["rds_instance_id"] != "i-1" ||
+		primary.From != 1700000000 || primary.Period != 3600 ||
+		primary.Aggregator != "max" || !primary.AllowLongWindow || !primary.SnapshotRequired {
+		t.Fatalf("metric query = %+v", primary)
+	}
+	if recent := metrics.queries[1]; recent.Period != ruleHealthRecentPeriod ||
+		recent.To-recent.From != ruleHealthRecentWindowSecs {
+		t.Fatalf("recent query = %+v", recent)
 	}
 	if !access.called || access.ref.AccountID != "acc-1" {
 		t.Fatalf("account access not checked: %+v", access)
@@ -145,10 +154,13 @@ func TestRuleHealthCollectorAgencyUnsupported(t *testing.T) {
 type fakeMultiMetricsQuerier struct {
 	results map[string]*obsapp.MetricQueryResult
 	queries []obsdomain.MetricQuery
+	mu      sync.Mutex
 }
 
 func (f *fakeMultiMetricsQuerier) QueryMetrics(_ context.Context, _ obsapp.Actor, q obsdomain.MetricQuery) (*obsapp.MetricQueryResult, error) {
+	f.mu.Lock()
 	f.queries = append(f.queries, q)
+	f.mu.Unlock()
 	return f.results[q.Dimensions["rds_instance_id"]], nil
 }
 
@@ -175,6 +187,9 @@ func TestRuleHealthCollectorSamplesWorstInstance(t *testing.T) {
 			{TS: 100, Value: 85}, {TS: 200, Value: 90}, {TS: 300, Value: 75},
 		}}}},
 		"i-3": {EvidenceID: "ev-3", Series: []obsdomain.MetricSeries{{Points: []obsdomain.MetricPoint{}}}},
+		"i-4": {EvidenceID: "ev-4", Series: []obsdomain.MetricSeries{{Points: []obsdomain.MetricPoint{
+			{TS: 100, Value: 70}, {TS: 200, Value: 75},
+		}}}},
 	}}
 	collector := NewRuleHealthCollector(rules, metrics, &fakeAccountResolver{snapshot: &obsdomain.AccountSnapshot{
 		AccountID: "acc-1", AuthType: "ak_sk",
@@ -188,8 +203,8 @@ func TestRuleHealthCollectorSamplesWorstInstance(t *testing.T) {
 		t.Fatalf("check: %v", err)
 	}
 	got := out.Rules[0]
-	if got.Status != aiapp.EvidenceStatusOK || got.CheckedResources != 3 || !got.Sampled {
-		t.Fatalf("rule result = %+v", got)
+	if got.Status != aiapp.EvidenceStatusOK || got.CheckedResources != 4 || got.Sampled {
+		t.Fatalf("full coverage must not mark sampled: %+v", got)
 	}
 	if got.Dimensions["rds_instance_id"] != "i-2" || got.EvidenceID != "ev-2" {
 		t.Fatalf("worst sample not selected: %+v", got)
@@ -201,12 +216,19 @@ func TestRuleHealthCollectorSamplesWorstInstance(t *testing.T) {
 		got.BreachDurationSeconds != 7200 || got.LongestBreachSeconds != 7200 {
 		t.Fatalf("breach stats = %+v", got)
 	}
-	if len(metrics.queries) != 3 {
-		t.Fatalf("queries = %d, want capped 3 samples", len(metrics.queries))
+	// 不再按 3 个抽样截断：4 个关联实例全部取数，另加 1 次近端复核。
+	if len(metrics.queries) != 5 {
+		t.Fatalf("queries = %d, want 4 primary + recent", len(metrics.queries))
 	}
-	for i, want := range []string{"i-1", "i-2", "i-3"} {
-		if metrics.queries[i].Dimensions["rds_instance_id"] != want {
-			t.Fatalf("query[%d] dims = %+v", i, metrics.queries[i].Dimensions)
+	seen := map[string]bool{}
+	for _, query := range metrics.queries {
+		if query.Period != ruleHealthRecentPeriod {
+			seen[query.Dimensions["rds_instance_id"]] = true
+		}
+	}
+	for _, want := range []string{"i-1", "i-2", "i-3", "i-4"} {
+		if !seen[want] {
+			t.Fatalf("instance %s not queried: %+v", want, seen)
 		}
 	}
 }
@@ -320,9 +342,17 @@ func TestRuleHealthCollectorBreadthFirstBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("check: %v", err)
 	}
-	// 预算 4 / 2 条规则 = 每条 2 个实例，广度优先保证两条规则都有曲线。
-	if len(metrics.queries) != 4 {
-		t.Fatalf("queries = %d, want 4", len(metrics.queries))
+	// 预算 4 / 2 条规则 = 每条 2 个实例，广度优先保证两条规则都有曲线；另有每条 1 次近端复核。
+	primaryCount, recentCount := 0, 0
+	for _, query := range metrics.queries {
+		if query.Period == ruleHealthRecentPeriod {
+			recentCount++
+		} else {
+			primaryCount++
+		}
+	}
+	if primaryCount != 4 || recentCount != 2 {
+		t.Fatalf("primary=%d recent=%d, want 4/2", primaryCount, recentCount)
 	}
 	for i, got := range out.Rules {
 		if got.Status != aiapp.EvidenceStatusOK || got.CheckedResources != 2 || !got.Sampled {
@@ -370,8 +400,14 @@ func TestRuleHealthCollectorBudgetKeepsBreadth(t *testing.T) {
 		out.Rules[2].Reason != "rule health query budget exhausted" {
 		t.Fatalf("last rule must be budget-exhausted: %+v", out.Rules[2])
 	}
-	if len(metrics.queries) != 2 {
-		t.Fatalf("queries = %d, want 2", len(metrics.queries))
+	primaryCount := 0
+	for _, query := range metrics.queries {
+		if query.Period != ruleHealthRecentPeriod {
+			primaryCount++
+		}
+	}
+	if primaryCount != 2 {
+		t.Fatalf("primary queries = %d, want 2", primaryCount)
 	}
 }
 
@@ -439,10 +475,13 @@ type fakeProbeMetricsQuerier struct {
 	primary *obsapp.MetricQueryResult
 	probe   *obsapp.MetricQueryResult
 	queries []obsdomain.MetricQuery
+	mu      sync.Mutex
 }
 
 func (f *fakeProbeMetricsQuerier) QueryMetrics(_ context.Context, _ obsapp.Actor, q obsdomain.MetricQuery) (*obsapp.MetricQueryResult, error) {
+	f.mu.Lock()
 	f.queries = append(f.queries, q)
+	f.mu.Unlock()
 	if q.Period == ruleHealthProbePeriod {
 		return f.probe, nil
 	}

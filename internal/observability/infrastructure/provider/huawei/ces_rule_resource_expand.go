@@ -35,7 +35,7 @@ func (a *Adapter) fillRuleResources(ctx context.Context, cred AKSKCredential, pr
 		}
 		fetched++
 		samples, total, err := a.ruleResourceList.ListRuleResources(
-			ctx, cred, projectID, region, rule.RuleID, ruleResourceSampleMax)
+			ctx, cred, projectID, region, rule.RuleID, ruleResourceMaxSamples)
 		if err != nil {
 			logger.From(ctx).Warn("huawei ces alarm rule resources lookup failed",
 				logger.String("rule_id", rule.RuleID),
@@ -82,11 +82,11 @@ func (a *Adapter) expandRuleResources(ctx context.Context, cred AKSKCredential, 
 func (a *Adapter) expandRuleResourceGroups(ctx context.Context, cred AKSKCredential, projectID, region string, rule *domain.AlertRule, service string) []map[string]string {
 	samples := rule.Resources
 	for _, groupID := range rule.ResourceGroupIDs {
-		if len(samples) >= ruleResourceSampleMax {
+		if len(samples) >= ruleResourceMaxSamples {
 			break
 		}
 		dims, err := a.ruleResources.ExpandGroupDimensions(
-			ctx, cred, projectID, region, groupID, service, ruleResourceSampleMax-len(samples))
+			ctx, cred, projectID, region, groupID, service, ruleResourceMaxSamples-len(samples))
 		if err != nil {
 			logger.From(ctx).Warn("huawei ces rule resource group expand failed",
 				logger.String("rule_id", rule.RuleID),
@@ -114,7 +114,7 @@ func appendUniqueRuleResources(existing []map[string]string, samples []map[strin
 		}
 		seen[key] = struct{}{}
 		existing = append(existing, dims)
-		if len(existing) >= ruleResourceSampleMax {
+		if len(existing) >= ruleResourceMaxSamples {
 			break
 		}
 	}

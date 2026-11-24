@@ -16,7 +16,8 @@ const (
 )
 
 // RuleHealthQuery 是一次按规则批量取历史曲线的请求（provider 无关）。
-// Limit 控制规则条数；每条规则使用其第一个关联资源维度取一条样本序列。
+// Limit 控制规则条数；实现方按预算尽量覆盖每条规则的全部关联实例，
+// 统计取越限最严重的样本，并附带近端分钟级复核与零数据探测。
 type RuleHealthQuery struct {
 	AccountID  string
 	Region     string
@@ -81,6 +82,17 @@ type RuleHealthRuleResult struct {
 	ProbePointCount    int   `json:"probe_point_count,omitempty"`
 	ProbePeriod        int   `json:"probe_period,omitempty"`
 	ProbeWindowSeconds int64 `json:"probe_window_seconds,omitempty"`
+	// Recent* 是近端分钟级复核（默认近 24 小时、period=60）的越限统计，
+	// 用于评估秒级规则窗口的触发频率；30 天小时级统计仍用于趋势与阈值分布。
+	RecentWindowSeconds        int64    `json:"recent_window_seconds,omitempty"`
+	RecentPeriod               int      `json:"recent_period,omitempty"`
+	RecentPointCount           int      `json:"recent_point_count,omitempty"`
+	RecentBreachPoints         int      `json:"recent_breach_points,omitempty"`
+	RecentBreachRatio          *float64 `json:"recent_breach_ratio,omitempty"`
+	RecentBreachEpisodes       int      `json:"recent_breach_episodes,omitempty"`
+	RecentLongestBreachSeconds int64    `json:"recent_longest_breach_seconds,omitempty"`
+	// ScopeNote 说明兜底抽样失败的具体原因（引擎/维度/发现条数），供模型和用户核对。
+	ScopeNote string `json:"scope_note,omitempty"`
 }
 
 // RuleHealthResult 是批量规则体检结果。

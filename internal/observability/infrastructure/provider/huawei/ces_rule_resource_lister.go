@@ -8,7 +8,7 @@ import (
 	cesv2model "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/ces/v2/model"
 )
 
-// ruleResourcePageLimit 是 ListAlarmRuleResources 的单页上限；规则资源样本只需要前几条。
+// ruleResourcePageLimit 是 ListAlarmRuleResources 的单页上限。
 const ruleResourcePageLimit = 100
 
 // AlarmRuleResourceLister 查询告警规则的完整关联资源。
@@ -52,8 +52,8 @@ func (l *CESAlarmRuleResourceLister) ListRuleResources(
 	if alarmID == "" {
 		return nil, 0, nil
 	}
-	if limit <= 0 || limit > ruleResourceSampleMax {
-		limit = ruleResourceSampleMax
+	if limit <= 0 || limit > ruleResourceMaxSamples {
+		limit = ruleResourceMaxSamples
 	}
 	api, err := l.newAPI(cred, projectID, region)
 	if err != nil {
@@ -62,7 +62,7 @@ func (l *CESAlarmRuleResourceLister) ListRuleResources(
 	out := make([]map[string]string, 0, limit)
 	total := 0
 	offset := int32(0)
-	for page := 0; page < 3 && len(out) < limit; page++ {
+	for page := 0; page < ruleResourceMaxSamples/ruleResourcePageLimit && len(out) < limit; page++ {
 		pageLimit := int32(ruleResourcePageLimit)
 		resp, err := callCESWithRetry(ctx, region, "list alarm rule resources",
 			func() (*cesv2model.ListAlarmRuleResourcesResponse, error) {

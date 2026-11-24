@@ -4,9 +4,11 @@ package observability
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	aiapp "github.com/734965549/aiops/internal/ai/application"
@@ -17,26 +19,31 @@ import (
 )
 
 const (
-	ruleHealthTotalTimeout = 75 * time.Second
+	ruleHealthTotalTimeout = 180 * time.Second
 	ruleHealthRulesCap     = 20
-	// ruleHealthMaxResourceSamples 限制单条规则取数的实例样本数，避免多实例规则放大调用量。
-	ruleHealthMaxResourceSamples = 3
-	// ruleHealthMaxMetricQueries 限制单次体检的总指标查询数；
-	// 覆盖策略为广度优先：先保证每条规则至少 1 个实例，预算有余再补第 2/3 个实例。
-	ruleHealthMaxMetricQueries = 60
-	// ruleHealthDiscoveryLimit 是资源发现兜底的单次拉取条数，足够覆盖 3 个样本并容忍无效行。
-	ruleHealthDiscoveryLimit = 12
+	// ruleHealthMaxMetricQueries 限制单次体检的总指标查询数；覆盖策略为广度优先：
+	// 先保证每条规则至少 1 个实例，剩余预算再按规则轮转补全实例。
+	ruleHealthMaxMetricQueries = 400
+	// ruleHealthQueryConcurrency 是单次体检的并发指标查询数，避免全实例串行导致超时。
+	ruleHealthQueryConcurrency = 6
+	// ruleHealthResourceSafetyCap 是单条规则最多取数的实例数（防止异常大规则打爆预算）。
+	ruleHealthResourceSafetyCap = 200
+	// ruleHealthDiscoveryLimit 是资源发现兜底的单次拉取条数。
+	ruleHealthDiscoveryLimit = 200
 	// ruleHealthMaxProbes 限制单次体检对零数据规则做近端探测的次数。
 	ruleHealthMaxProbes       = 6
 	ruleHealthProbeWindowSecs = int64(3600)
 	ruleHealthProbePeriod     = 60
+	// 近端分钟级复核：用近 24 小时/60s 统计越限频率，弥补 30 天小时级聚合的粒度损失。
+	ruleHealthRecentWindowSecs = int64(24 * 3600)
+	ruleHealthRecentPeriod     = 60
 	// ruleHealthLongWindowSec 与 AI 工具侧的 7 天长窗口阈值一致，只影响 AllowLongWindow 标记。
 	ruleHealthLongWindowSec = int64(7 * 24 * 3600)
 )
 
 // RuleHealthCollector 实现 aiapp.RuleHealthPort：
-// 先按 namespace 拉取规则，再对每条规则按关联实例抽样取历史曲线并计算统计量；
-// 规则没有任何资源绑定时，按 namespace 对应的资源类型发现实例做兜底抽样。
+// 先按 namespace 拉取规则，再对每条规则的全部关联实例（或兜底发现实例）并发取历史曲线，
+// 统计取越限最严重的样本；同时提供近端分钟级复核与零数据探测。
 type RuleHealthCollector struct {
 	rules         AlertRulesQuerier
 	metrics       MetricsQuerier
@@ -128,13 +135,19 @@ func (c *RuleHealthCollector) Check(ctx context.Context, userID string, q aiapp.
 	if len(rules) > ruleHealthRulesCap {
 		rules = rules[:ruleHealthRulesCap]
 	}
-	queries := 0
-	probes := 0
-	budget := c.effectiveQueryBudget()
 	fallbackScopes := c.collectFallbackScopes(checkCtx, userID, q, rules)
+	available := make([]int, len(rules))
 	for i, rule := range rules {
-		perRule := samplesPerRule(budget-queries, len(rules)-i)
-		item := c.checkRule(checkCtx, userID, q, rule, fallbackScopes[fallbackScopeKey(rule)], perRule, &queries, &probes)
+		available[i] = len(rule.Resources)
+		if available[i] == 0 {
+			available[i] = len(fallbackScopes[fallbackScopeKey(rule)].samples)
+		}
+	}
+	allocations := allocateRuleSamples(available, c.effectiveQueryBudget())
+	sem := make(chan struct{}, ruleHealthQueryConcurrency)
+	queries, probes := 0, 0
+	for i, rule := range rules {
+		item := c.checkRule(checkCtx, userID, q, rule, fallbackScopes[fallbackScopeKey(rule)], allocations[i], &queries, &probes, sem)
 		if item.Status == aiapp.EvidenceStatusOK {
 			out.CheckedCount++
 		}
@@ -162,19 +175,38 @@ func ruleEngineHint(rule obsdomain.AlertRule) string {
 	return ""
 }
 
-// samplesPerRule 按剩余预算与剩余规则数分配每条规则的实例样本数（广度优先，1..3）。
-func samplesPerRule(remainingBudget, remainingRules int) int {
-	if remainingRules <= 0 || remainingBudget <= 0 {
-		return 1
+// allocateRuleSamples 在预算内分配每条规则可查询的实例数：先每条 1 个，再轮转补全。
+func allocateRuleSamples(available []int, budget int) []int {
+	out := make([]int, len(available))
+	remaining := budget
+	for i, count := range available {
+		if remaining <= 0 {
+			break
+		}
+		if count > 0 {
+			out[i] = 1
+			remaining--
+		}
 	}
-	share := remainingBudget / remainingRules
-	if share < 1 {
-		share = 1
+	progress := true
+	for remaining > 0 && progress {
+		progress = false
+		for i, count := range available {
+			if remaining <= 0 {
+				break
+			}
+			limit := count
+			if limit > ruleHealthResourceSafetyCap {
+				limit = ruleHealthResourceSafetyCap
+			}
+			if out[i] < limit {
+				out[i]++
+				remaining--
+				progress = true
+			}
+		}
 	}
-	if share > ruleHealthMaxResourceSamples {
-		share = ruleHealthMaxResourceSamples
-	}
-	return share
+	return out
 }
 
 func (c *RuleHealthCollector) effectiveQueryBudget() int {
@@ -191,10 +223,15 @@ func (c *RuleHealthCollector) effectiveTotalTimeout() time.Duration {
 	return ruleHealthTotalTimeout
 }
 
-// collectFallbackScopes 为没有任何资源维度的规则按 namespace 发现实例样本（每个 namespace 只查一次）。
-// 云产品级规则在 CES 规则详情里没有实例维度，只能从已同步资源推导查询维度。
-func (c *RuleHealthCollector) collectFallbackScopes(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rules []obsdomain.AlertRule) map[string][]map[string]string {
-	out := make(map[string][]map[string]string)
+// fallbackScope 是资源发现兜底结果：实例样本 + 未能匹配时的原因说明。
+type fallbackScope struct {
+	samples []map[string]string
+	note    string
+}
+
+// collectFallbackScopes 为没有任何资源维度的规则按 namespace 发现实例样本（同维度/引擎只查一次）。
+func (c *RuleHealthCollector) collectFallbackScopes(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rules []obsdomain.AlertRule) map[string]fallbackScope {
+	out := make(map[string]fallbackScope)
 	if c.resources == nil {
 		return out
 	}
@@ -212,17 +249,20 @@ func (c *RuleHealthCollector) collectFallbackScopes(ctx context.Context, userID 
 			continue
 		}
 		attempted[key] = struct{}{}
-		out[key] = c.discoverScopeSamples(ctx, userID, q, namespace, strings.TrimSpace(rule.DimensionName), ruleEngineHint(rule))
+		samples, note := c.discoverScopeSamples(
+			ctx, userID, q, namespace, strings.TrimSpace(rule.DimensionName), ruleEngineHint(rule))
+		out[key] = fallbackScope{samples: samples, note: note}
 	}
 	return out
 }
 
-// discoverScopeSamples 按 namespace/维度/引擎发现最多 3 个实例维度样本。
+// discoverScopeSamples 按 namespace/维度/引擎发现实例维度样本。
 // dimensionName 来自 CES 规则的 product_name；engineHint 用于避免把 PG 规则抽到 MySQL 实例。
-func (c *RuleHealthCollector) discoverScopeSamples(ctx context.Context, userID string, q aiapp.RuleHealthQuery, namespace, dimensionName, engineHint string) []map[string]string {
+// 返回的 note 在未找到可查询实例时给出原因（引擎/维度/发现条数），供模型和用户核对。
+func (c *RuleHealthCollector) discoverScopeSamples(ctx context.Context, userID string, q aiapp.RuleHealthQuery, namespace, dimensionName, engineHint string) ([]map[string]string, string) {
 	resourceType := resourceTypeFromCESNamespace(namespace)
 	if resourceType == "" {
-		return nil
+		return nil, "无法从 namespace 推导资源类型"
 	}
 	queryCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
@@ -234,13 +274,18 @@ func (c *RuleHealthCollector) discoverScopeSamples(ctx context.Context, userID s
 			logger.String("namespace", namespace),
 			logger.String("resource_type", resourceType),
 			logger.Error(err))
-		return nil
+		status := ""
+		if result != nil {
+			status = result.Status
+		}
+		return nil, fmt.Sprintf("资源发现失败（status=%s）", status)
 	}
 	type candidate struct {
 		dims   map[string]string
 		engine string
 	}
 	candidates := make([]candidate, 0, len(result.Resources))
+	engineLabeled := 0
 	for _, item := range result.Resources {
 		enriched := aiapp.EnrichResourceSummary(item)
 		if enriched.Namespace != "" && !strings.EqualFold(enriched.Namespace, namespace) {
@@ -257,25 +302,32 @@ func (c *RuleHealthCollector) discoverScopeSamples(ctx context.Context, userID s
 		if name == "" || enriched.DimensionValue == "" {
 			continue
 		}
+		engine := strings.ToLower(strings.TrimSpace(enriched.Engine))
+		if engine != "" {
+			engineLabeled++
+		}
 		candidates = append(candidates, candidate{
 			dims:   map[string]string{name: enriched.DimensionValue},
-			engine: strings.ToLower(strings.TrimSpace(enriched.Engine)),
+			engine: engine,
 		})
 	}
-	if engineHint != "" {
+	note := ""
+	if engineHint != "" && engineLabeled > 0 {
 		matched := make([]candidate, 0, len(candidates))
 		for _, cand := range candidates {
 			if cand.engine != "" && strings.Contains(cand.engine, engineHint) {
 				matched = append(matched, cand)
 			}
 		}
-		// 只有确认存在引擎标签时才按引擎过滤，避免资源标签缺失导致完全抽不到样本。
 		if len(matched) > 0 {
 			candidates = matched
+		} else {
+			note = fmt.Sprintf("资源清单中未发现 %s 引擎实例（维度 %s，候选 %d 条）", engineHint, dimensionName, len(candidates))
+			candidates = nil
 		}
 	}
-	samples := make([]map[string]string, 0, ruleHealthMaxResourceSamples)
-	seen := make(map[string]struct{}, ruleHealthMaxResourceSamples)
+	samples := make([]map[string]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
 	for _, cand := range candidates {
 		key := scopeSampleKey(cand.dims)
 		if _, ok := seen[key]; ok {
@@ -283,11 +335,15 @@ func (c *RuleHealthCollector) discoverScopeSamples(ctx context.Context, userID s
 		}
 		seen[key] = struct{}{}
 		samples = append(samples, cand.dims)
-		if len(samples) >= ruleHealthMaxResourceSamples {
+		if len(samples) >= ruleHealthResourceSafetyCap {
 			break
 		}
 	}
-	return samples
+	if len(samples) == 0 && note == "" {
+		note = fmt.Sprintf("资源清单中未找到匹配实例（namespace=%s 维度=%s 引擎=%s，候选 %d 条）",
+			namespace, dimensionName, engineHint, len(result.Resources))
+	}
+	return samples, note
 }
 
 func scopeSampleKey(dims map[string]string) string {
@@ -316,10 +372,18 @@ func resourceTypeFromCESNamespace(namespace string) string {
 	return strings.ToLower(strings.TrimSpace(segments[len(segments)-1]))
 }
 
-// checkRule 对单条规则按关联实例抽样取数，统计字段取越限最严重的样本；maxSamples 是
-// 本次预算分配给该规则的实例样本数（广度优先，最多 3 个）。
-// fallback 是规则没有资源绑定时由资源发现得到的实例样本；queries 为单次体检共享的查询计数。
-func (c *RuleHealthCollector) checkRule(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, fallback []map[string]string, maxSamples int, queries, probes *int) aiapp.RuleHealthRuleResult {
+// checkRule 对单条规则按分配到的实例数并发取数，统计字段取越限最严重的样本。
+// fallback 是规则没有资源绑定时由资源发现得到的实例样本；queries/probes 为单次体检共享计数。
+func (c *RuleHealthCollector) checkRule(
+	ctx context.Context,
+	userID string,
+	q aiapp.RuleHealthQuery,
+	rule obsdomain.AlertRule,
+	fallback fallbackScope,
+	maxSamples int,
+	queries, probes *int,
+	sem chan struct{},
+) aiapp.RuleHealthRuleResult {
 	item := aiapp.RuleHealthRuleResult{
 		RuleID: rule.RuleID, Name: rule.Name, Metric: rule.Metric,
 		Operator: rule.Operator, Threshold: rule.Threshold, RuleUnit: rule.Unit,
@@ -340,51 +404,91 @@ func (c *RuleHealthCollector) checkRule(ctx context.Context, userID string, q ai
 		source = "resource_group"
 	}
 	if len(samples) == 0 {
-		samples = fallback
+		samples = fallback.samples
 		source = "resource_discovery"
+		item.ScopeNote = fallback.note
 	}
 	if len(samples) == 0 {
 		item.Status = aiapp.EvidenceStatusSkipped
 		item.Reason = "no_resource_scope"
 		return item
 	}
-	if maxSamples <= 0 || maxSamples > ruleHealthMaxResourceSamples {
-		maxSamples = ruleHealthMaxResourceSamples
+	for len(samples) > 0 && len(samples[0]) == 0 {
+		samples = samples[1:]
+	}
+	if len(samples) == 0 {
+		item.Status = aiapp.EvidenceStatusSkipped
+		item.Reason = "no_resource_scope"
+		return item
+	}
+	if maxSamples <= 0 {
+		maxSamples = 1
+	}
+	if maxSamples > ruleHealthResourceSafetyCap {
+		maxSamples = ruleHealthResourceSafetyCap
 	}
 	availableSamples := len(samples)
 	if len(samples) > maxSamples {
 		samples = samples[:maxSamples]
 	}
+	// 预算预留：并发前一次性扣减，避免 goroutine 竞争计数器。
+	incomplete := availableSamples > len(samples)
+	if queries != nil {
+		remaining := c.effectiveQueryBudget() - *queries
+		if remaining <= 0 {
+			item.Status = aiapp.EvidenceStatusSkipped
+			item.Reason = "rule health query budget exhausted"
+			return item
+		}
+		if len(samples) > remaining {
+			samples = samples[:remaining]
+			incomplete = true
+		}
+		*queries += len(samples)
+	}
+
+	type outcome struct {
+		res    *obsapp.MetricQueryResult
+		status string
+		reason string
+		dims   map[string]string
+	}
+	outcomes := make([]outcome, len(samples))
+	var wg sync.WaitGroup
+	for idx, dims := range samples {
+		wg.Add(1)
+		go func(idx int, dims map[string]string) {
+			defer wg.Done()
+			if ctx.Err() != nil {
+				outcomes[idx] = outcome{status: aiapp.EvidenceStatusSkipped, reason: "rule health query timeout"}
+				return
+			}
+			if !acquireSem(ctx, sem) {
+				outcomes[idx] = outcome{status: aiapp.EvidenceStatusSkipped, reason: "rule health query timeout"}
+				return
+			}
+			defer releaseSem(sem)
+			res, status, reason := c.queryRuleMetricsRange(ctx, userID, q, rule, dims, q.From, q.To, q.Period)
+			outcomes[idx] = outcome{res: res, status: status, reason: reason, dims: dims}
+		}(idx, dims)
+	}
+	wg.Wait()
+
 	var best *aiapp.RuleHealthRuleResult
 	checked := 0
 	lastStatus, lastReason := "", ""
-	incomplete := availableSamples > len(samples)
-	for _, dims := range samples {
-		if ctx.Err() != nil {
-			lastStatus, lastReason = aiapp.EvidenceStatusSkipped, "rule health query timeout"
-			incomplete = true
-			break
-		}
-		if queries != nil && *queries >= c.effectiveQueryBudget() {
-			lastStatus, lastReason = aiapp.EvidenceStatusSkipped, "rule health query budget exhausted"
-			incomplete = true
-			break
-		}
-		if queries != nil {
-			*queries = *queries + 1
-		}
-		res, status, reason := c.queryRuleMetrics(ctx, userID, q, rule, dims)
-		if status != "" {
-			lastStatus, lastReason = status, reason
+	for _, oc := range outcomes {
+		if oc.status != "" {
+			lastStatus, lastReason = oc.status, oc.reason
 			incomplete = true
 			continue
 		}
 		candidate := aiapp.RuleHealthRuleResult{
-			Dimensions: cloneDimensions(dims),
-			EvidenceID: res.EvidenceID,
+			Dimensions: cloneDimensions(oc.dims),
+			EvidenceID: oc.res.EvidenceID,
 			Status:     aiapp.EvidenceStatusOK,
 		}
-		summarizeRuleHealth(&candidate, res.Series, rule, q.Period)
+		summarizeRuleHealth(&candidate, oc.res.Series, rule, q.Period)
 		checked++
 		if best == nil || betterRuleHealthSample(&candidate, best) {
 			sample := candidate
@@ -399,14 +503,19 @@ func (c *RuleHealthCollector) checkRule(ctx context.Context, userID string, q ai
 		merged.ResourceGroupCount, merged.CheckedResources = item.ResourceGroupCount, checked
 		merged.ResourceLevel, merged.DimensionName = item.ResourceLevel, item.DimensionName
 		merged.ScopeSource = source
+		merged.ScopeNote = item.ScopeNote
 		// 分组型规则的 ResourceCount 是分组数，不能用来判断是否抽样；分组型与实例发现兜底一律标记 Sampled。
 		merged.Sampled = source == "resource_discovery" || item.ResourceGroupCount > 0 || item.ResourceCount > checked || incomplete
 		if source == "resource_discovery" {
 			// 实例发现兜底时规则本身没有资源总数，避免把抽样数误当成规则资源数。
 			merged.ResourceCount = 0
 		}
+		if merged.ScopeNote == "" && incomplete && item.ResourceCount > 0 {
+			merged.ScopeNote = fmt.Sprintf("规则资源 %d 个，本次覆盖 %d 个", item.ResourceCount, checked)
+		}
+		c.fillRecentStats(ctx, userID, q, rule, &merged, sem)
 		if merged.PointCount == 0 {
-			c.probeEmptySample(ctx, userID, q, rule, &merged, probes)
+			c.probeEmptySample(ctx, userID, q, rule, &merged, probes, sem)
 		}
 		return merged
 	}
@@ -420,12 +529,43 @@ func (c *RuleHealthCollector) checkRule(ctx context.Context, userID string, q ai
 	return item
 }
 
-// queryRuleMetrics 在单实例上取曲线；返回稳定状态与原因，供规则级降级展示。
-func (c *RuleHealthCollector) queryRuleMetrics(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, dims map[string]string) (*obsapp.MetricQueryResult, string, string) {
-	return c.queryRuleMetricsRange(ctx, userID, q, rule, dims, q.From, q.To, q.Period)
+// fillRecentStats 对最差实例做一次近端分钟级复核（默认近 24 小时/60s）。
+// 近端复核不计入主查询预算：每条规则最多一次，整体额外查询数不超过规则数。
+func (c *RuleHealthCollector) fillRecentStats(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, merged *aiapp.RuleHealthRuleResult, sem chan struct{}) {
+	if merged == nil || len(merged.Dimensions) == 0 || merged.PointCount == 0 {
+		return
+	}
+	window := q.To - q.From
+	if window <= 0 {
+		return
+	}
+	if window > ruleHealthRecentWindowSecs {
+		window = ruleHealthRecentWindowSecs
+	}
+	if window <= int64(ruleHealthRecentPeriod) {
+		return
+	}
+	if !acquireSem(ctx, sem) {
+		return
+	}
+	defer releaseSem(sem)
+	from := q.To - window
+	res, status, _ := c.queryRuleMetricsRange(ctx, userID, q, rule, merged.Dimensions, from, q.To, ruleHealthRecentPeriod)
+	if status != "" || res == nil {
+		return
+	}
+	recent := aiapp.RuleHealthRuleResult{}
+	summarizeRuleHealth(&recent, res.Series, rule, ruleHealthRecentPeriod)
+	merged.RecentWindowSeconds = window
+	merged.RecentPeriod = ruleHealthRecentPeriod
+	merged.RecentPointCount = recent.PointCount
+	merged.RecentBreachPoints = recent.BreachPoints
+	merged.RecentBreachRatio = recent.BreachRatio
+	merged.RecentBreachEpisodes = recent.BreachEpisodes
+	merged.RecentLongestBreachSeconds = recent.LongestBreachSeconds
 }
 
-// queryRuleMetricsRange 按指定窗口/粒度取单实例曲线（零数据探测使用近端短窗口）。
+// queryRuleMetricsRange 按指定窗口/粒度取单实例曲线（近端复核与零数据探测复用）。
 func (c *RuleHealthCollector) queryRuleMetricsRange(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, dims map[string]string, from, to int64, period int) (*obsapp.MetricQueryResult, string, string) {
 	queryCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	res, err := c.metrics.QueryMetrics(queryCtx, obsapp.Actor{UserID: userID}, obsdomain.MetricQuery{
@@ -450,7 +590,7 @@ func (c *RuleHealthCollector) queryRuleMetricsRange(ctx context.Context, userID 
 }
 
 // probeEmptySample 对零数据样本做近 1 小时/60s 探测，区分“近期有数据但窗口无点”和“近期也无数据”。
-func (c *RuleHealthCollector) probeEmptySample(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, sample *aiapp.RuleHealthRuleResult, probes *int) {
+func (c *RuleHealthCollector) probeEmptySample(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, sample *aiapp.RuleHealthRuleResult, probes *int, sem chan struct{}) {
 	if sample == nil || len(sample.Dimensions) == 0 || ctx.Err() != nil {
 		return
 	}
@@ -464,6 +604,10 @@ func (c *RuleHealthCollector) probeEmptySample(ctx context.Context, userID strin
 	if probes != nil {
 		*probes = *probes + 1
 	}
+	if !acquireSem(ctx, sem) {
+		return
+	}
+	defer releaseSem(sem)
 	res, status, _ := c.queryRuleMetricsRange(ctx, userID, q, rule, sample.Dimensions, from, q.To, ruleHealthProbePeriod)
 	if status != "" || res == nil {
 		return
@@ -475,6 +619,24 @@ func (c *RuleHealthCollector) probeEmptySample(ctx context.Context, userID strin
 	sample.ProbePointCount = count
 	sample.ProbePeriod = ruleHealthProbePeriod
 	sample.ProbeWindowSeconds = ruleHealthProbeWindowSecs
+}
+
+func acquireSem(ctx context.Context, sem chan struct{}) bool {
+	if sem == nil {
+		return true
+	}
+	select {
+	case sem <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func releaseSem(sem chan struct{}) {
+	if sem != nil {
+		<-sem
+	}
 }
 
 // betterRuleHealthSample 选择越限最严重的实例样本：破限比例优先，其次破限点数与峰值。

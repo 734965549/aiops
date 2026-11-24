@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,18 +14,23 @@ import (
 )
 
 type fakeMetricsQuerier struct {
-	result *obsapp.MetricQueryResult
-	err    error
-	called bool
-	actor  obsapp.Actor
-	query  obsdomain.MetricQuery
-	block  bool
+	result  *obsapp.MetricQueryResult
+	err     error
+	called  bool
+	actor   obsapp.Actor
+	query   obsdomain.MetricQuery
+	queries []obsdomain.MetricQuery
+	block   bool
+	mu      sync.Mutex
 }
 
 func (f *fakeMetricsQuerier) QueryMetrics(ctx context.Context, actor obsapp.Actor, q obsdomain.MetricQuery) (*obsapp.MetricQueryResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.called = true
 	f.actor = actor
 	f.query = q
+	f.queries = append(f.queries, q)
 	if f.block {
 		<-ctx.Done()
 		return nil, ctx.Err()

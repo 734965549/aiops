@@ -334,14 +334,15 @@ func TestAdapterListAlertRulesExpandsResourceGroupRules(t *testing.T) {
 	if len(resolver.calls) != 1 || resolver.calls[0] != "rg-1|SYS.RDS" {
 		t.Fatalf("resolver calls = %+v", resolver.calls)
 	}
-	if resolver.limits[0] != ruleResourceSampleMax {
-		t.Fatalf("expand limit = %d, want %d", resolver.limits[0], ruleResourceSampleMax)
+	if resolver.limits[0] != ruleResourceMaxSamples {
+		t.Fatalf("expand limit = %d, want %d", resolver.limits[0], ruleResourceMaxSamples)
 	}
 	groupRule := rules[0]
-	if len(groupRule.Resources) != ruleResourceSampleMax {
+	// 全量展开：分组内的 4 个实例都应带回，不再按 3 个抽样截断。
+	if len(groupRule.Resources) != 4 {
 		t.Fatalf("group rule samples = %+v", groupRule.Resources)
 	}
-	for i, want := range []string{"i-1", "i-2", "i-3"} {
+	for i, want := range []string{"i-1", "i-2", "i-3", "i-4"} {
 		if groupRule.Resources[i]["rds_instance_id"] != want {
 			t.Fatalf("sample[%d] = %+v", i, groupRule.Resources[i])
 		}
@@ -409,7 +410,7 @@ func TestAdapterListAlertRulesFillsResourcesFromRuleResourceAPI(t *testing.T) {
 		rules[0].Resources[0]["rds_instance_id"] != "pg-1" {
 		t.Fatalf("rule resources = %+v", rules)
 	}
-	if len(lister.calls) != 1 || lister.calls[0] != "al-pg" || lister.limits[0] != ruleResourceSampleMax {
+	if len(lister.calls) != 1 || lister.calls[0] != "al-pg" || lister.limits[0] != ruleResourceMaxSamples {
 		t.Fatalf("lister calls = %+v limits=%+v", lister.calls, lister.limits)
 	}
 	if rules[0].ResourceCount != 2 {

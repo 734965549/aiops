@@ -43,8 +43,8 @@ func (r *CESRuleResourceResolver) ExpandGroupDimensions(
 	if groupID == "" || service == "" {
 		return nil, nil
 	}
-	if limit <= 0 || limit > ruleResourceSampleMax {
-		limit = ruleResourceSampleMax
+	if limit <= 0 || limit > ruleResourceMaxSamples {
+		limit = ruleResourceMaxSamples
 	}
 	api, err := r.newAPI(cred, projectID, region)
 	if err != nil {

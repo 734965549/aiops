@@ -14,8 +14,9 @@ const (
 	ruleListPageLimit = 100
 	ruleListMaxPages  = 10
 	ruleListCapMax    = 500
-	// ruleResourceSampleMax 限制单条规则返回的资源维度样本，避免观测体积膨胀。
-	ruleResourceSampleMax = 3
+	// ruleResourceMaxSamples 是单条规则可返回/可体检的资源上限；
+	// 展示给模型的 alert.rules.list 观测仍会在 AI 层截断到 3 条。
+	ruleResourceMaxSamples = 200
 )
 
 // ruleListAPI 抽象 SDK 调用，便于 fixture 单测（同 alarmHistoryAPI 模式）。
@@ -187,9 +188,9 @@ func mapRuleResourceGroupIDs(resources []cesv2model.ResourcesInListResp) []strin
 
 // mapRuleResourceSamples 提取前若干个关联资源的维度样本；资源分组无维度时只计数不采样。
 func mapRuleResourceSamples(resources []cesv2model.ResourcesInListResp) []map[string]string {
-	out := make([]map[string]string, 0, ruleResourceSampleMax)
+	out := make([]map[string]string, 0, ruleResourceMaxSamples)
 	for i := range resources {
-		if len(out) >= ruleResourceSampleMax {
+		if len(out) >= ruleResourceMaxSamples {
 			break
 		}
 		if resources[i].Dimensions == nil || len(*resources[i].Dimensions) == 0 {
