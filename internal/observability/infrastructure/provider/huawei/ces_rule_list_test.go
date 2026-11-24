@@ -316,6 +316,7 @@ func TestAdapterListAlertRulesExpandsResourceGroupRules(t *testing.T) {
 	}}
 	adapter := NewAdapter(credentials, nil, nil).
 		WithAlarmRuleList(listClient).
+		WithAlarmRuleResourceLister(&fakeAlarmRuleResourceLister{}).
 		WithRuleResourceResolver(resolver)
 
 	rules, err := adapter.ListAlertRules(context.Background(), domain.ProviderContext{
@@ -347,5 +348,68 @@ func TestAdapterListAlertRulesExpandsResourceGroupRules(t *testing.T) {
 	}
 	if dimRule := rules[1]; len(dimRule.Resources) != 1 || dimRule.Resources[0]["rds_instance_id"] != "i-9" {
 		t.Fatalf("dimension rule must not be re-expanded: %+v", dimRule)
+	}
+}
+
+type fakeAlarmRuleResourceLister struct {
+	samples map[string][]map[string]string
+	err     error
+	calls   []string
+	limits  []int
+}
+
+func (f *fakeAlarmRuleResourceLister) ListRuleResources(_ context.Context, _ AKSKCredential, _, _, alarmID string, limit int) ([]map[string]string, error) {
+	f.calls = append(f.calls, alarmID)
+	f.limits = append(f.limits, limit)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.samples[alarmID], nil
+}
+
+func TestMapListAlarmRuleKeepsProductScope(t *testing.T) {
+	level := cesv2model.GetListAlarmRespBodyAlarmsResourceLevelEnum().PRODUCT
+	rule := mapListAlarmRule(cesv2model.ListAlarmRespBodyAlarms{
+		AlarmId:       strPtr("al-product"),
+		Namespace:     strPtr("SYS.RDS"),
+		ProductName:   strPtr("SYS.RDS,rds_instance_id"),
+		ResourceLevel: &level,
+	})
+	if rule.ResourceLevel != "product" || rule.ProductName != "SYS.RDS,rds_instance_id" ||
+		rule.DimensionName != "rds_instance_id" {
+		t.Fatalf("product scope mapping = %+v", rule)
+	}
+}
+
+func TestAdapterListAlertRulesFillsResourcesFromRuleResourceAPI(t *testing.T) {
+	credentials, repo, vault := newTestCredentialProvider(t)
+	seedAKSKCredential(t, credentials, repo, vault, "acc-1")
+	listClient := &fakeAlarmRuleListClient{rules: []domain.AlertRule{{
+		RuleID: "al-pg", Name: "RDS-postgresql", Namespace: "SYS.RDS",
+		ResourceLevel: "product", ProductName: "SYS.RDS,rds_instance_id",
+		DimensionName: "rds_instance_id",
+	}}}
+	lister := &fakeAlarmRuleResourceLister{samples: map[string][]map[string]string{
+		"al-pg": {{"rds_instance_id": "pg-1"}, {"rds_instance_id": "pg-2"}},
+	}}
+	adapter := NewAdapter(credentials, nil, nil).
+		WithAlarmRuleList(listClient).
+		WithAlarmRuleResourceLister(lister)
+
+	rules, err := adapter.ListAlertRules(context.Background(), domain.ProviderContext{
+		Account: domain.AccountSnapshot{
+			AccountID: "acc-1", AuthType: string(integdomain.AuthAKSK),
+			ProjectID: "p-1", Regions: []string{"cn-north-4"}, CredentialRefID: "cref-1",
+		},
+	}, domain.AlertRuleQuery{Namespace: "SYS.RDS", Limit: 10})
+	if err != nil {
+		t.Fatalf("list alert rules: %v", err)
+	}
+	if len(rules) != 1 || len(rules[0].Resources) != 2 ||
+		rules[0].Resources[0]["rds_instance_id"] != "pg-1" {
+		t.Fatalf("rule resources = %+v", rules)
+	}
+	if len(lister.calls) != 1 || lister.calls[0] != "al-pg" || lister.limits[0] != ruleResourceSampleMax {
+		t.Fatalf("lister calls = %+v limits=%+v", lister.calls, lister.limits)
 	}
 }

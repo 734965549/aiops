@@ -40,16 +40,18 @@ type ResourceQuery struct {
 // ResourceSummary 是注入对话观测的云资源摘要。
 // Labels 仅用于服务端推导 namespace/主维度，json:"-" 保证不进入模型输入。
 type ResourceSummary struct {
-	ResourceID        string            `json:"resource_id"`
-	Name              string            `json:"name,omitempty"`
-	CloudResourceType string            `json:"cloud_resource_type,omitempty"`
-	CloudResourceID   string            `json:"cloud_resource_id,omitempty"`
-	Region            string            `json:"region,omitempty"`
-	AccountID         string            `json:"account_id,omitempty"`
-	Namespace         string            `json:"namespace,omitempty"`
-	DimensionName     string            `json:"dimension_name,omitempty"`
-	DimensionValue    string            `json:"dimension_value,omitempty"`
-	Labels            map[string]string `json:"-"`
+	ResourceID        string `json:"resource_id"`
+	Name              string `json:"name,omitempty"`
+	CloudResourceType string `json:"cloud_resource_type,omitempty"`
+	CloudResourceID   string `json:"cloud_resource_id,omitempty"`
+	Region            string `json:"region,omitempty"`
+	AccountID         string `json:"account_id,omitempty"`
+	Namespace         string `json:"namespace,omitempty"`
+	DimensionName     string `json:"dimension_name,omitempty"`
+	DimensionValue    string `json:"dimension_value,omitempty"`
+	// Engine 是数据库等资源的引擎类型（mysql/postgresql/sqlserver），用于规则体检按引擎匹配实例。
+	Engine string            `json:"engine,omitempty"`
+	Labels map[string]string `json:"-"`
 }
 
 // ResourceListResult 是资源发现结果；status 非 ok 时 Resources 为空且 Reason 说明原因。

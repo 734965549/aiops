@@ -8,7 +8,7 @@
 
 | # | 检查项 | 命令 / 操作 | 通过标准 |
 |---|--------|-------------|----------|
-| 1.1 | Go 单元测试 | `go test ./cmd/... ./internal/... ./pkg/...` | 全部 PASS，无 race |
+| 1.1 | Go 单元测试 | `go test -race -count=1 ./cmd/... ./internal/... ./pkg/...`（与 `make test` 一致） | 全部 PASS，含 race 检测 |
 | 1.2 | 前端类型检查与构建 | `cd web && npm run build` | 无 TS 错误，dist 产出正常 |
 | 1.2a | 前端生产镜像 | `docker build -f web/Dockerfile -t aiops-web:<version> web` | `npm ci` 成功（以 `package-lock.json` 为准，勿依赖宿主机脏 `node_modules`） |
 | 1.2b | 前端依赖审计 | `cd web && npm audit --omit=dev`；全量 `npm audit` | **生产依赖 0 漏洞**。全量报告中 Vite/esbuild 的 moderate/high 属 **devServer 构建工具链**（GHSA-67mh-4wv8-2f99），不影响运行时产物；升级到 Vite 7/8 属独立变更，勿用 `npm audit fix --force` 强推 |
@@ -97,10 +97,12 @@ $env:API_BASE = "https://staging-api.example.com"   # 如需要
 | # | 脚本 | 覆盖范围 | 通过标准 |
 |---|------|----------|----------|
 | 6.1 | `e2e-alert.ps1` | 告警源、ingest、状态流转 | 输出 PASS |
-| 6.2 | `e2e-asset.ps1` | 应用/资源 CRUD、匹配规则、绑定、云同步 | 输出 PASS |
+| 6.2 | `e2e-asset.ps1` | 应用/资源 CRUD、匹配规则、告警绑定（**不含云同步**，云同步另跑 `e2e-asset-sync.ps1`） | 输出 PASS |
 | 6.3 | `e2e-runbook.ps1` | 推荐、多步执行、时间线回写 | 输出 PASS |
 | 6.4 | `e2e-execution.ps1` | 简单任务确认执行 | 输出 PASS |
 | 6.5 | `e2e-identity-access.ps1` | viewer 角色、授权写接口、403 边界、审计 | 输出 PASS |
+
+云同步、观测、巡检、Agent 控制面与 AI 助手等扩展链路按需追加：`e2e-alert-sync.ps1`（fake CES）、`e2e-asset-sync.ps1`（fake）/`e2e-asset-sync-real.ps1`（真实 AK/SK，不进 CI）、`e2e-integration.ps1`、`e2e-observability.ps1`、`e2e-inspection.ps1`、`e2e-execution-agent.ps1`（及权限负向）、AI 系列（assistant/stream/agent-loop/rules/evidence/memory/knowledge/postgres-history）。各脚本前置、写数据与清理、SKIP 语义见 `scripts/README.md`；逐项覆盖边界以 `docs/acceptance-checklist.md` 为准。
 
 ---
 
@@ -109,7 +111,7 @@ $env:API_BASE = "https://staging-api.example.com"   # 如需要
 | # | 检查项 | 操作 | 通过标准 |
 |---|--------|------|----------|
 | 7.1 | 生产构建 | `npm run build` | 主业务 chunk < 100KB（vendor 独立分包） |
-| 7.2 | 静态资源托管 | Nginx / CDN | `index.html` + `assets/` 可访问 |
+| 7.2 | 静态资源托管 | Nginx / CDN | `index.html` + `static/` 可访问（产物目录为 `static/` 而非 `assets/`，避免与 SPA 路由 `/assets` 冲突，见 `web/vite.config.ts` 的 `build.assetsDir`） |
 | 7.3 | API 反代（同源模式） | Nginx `location /api` | 浏览器无 CORS 错误 |
 | 7.4 | 路由 history 模式 | `try_files` 回退 | 刷新子路由不 404 |
 | 7.5 | 登录与会话 | 浏览器登录 | token 刷新、退出正常 |
@@ -154,8 +156,8 @@ $env:API_BASE = "https://staging-api.example.com"   # 如需要
 .\scripts\deploy-prod.ps1 -DbMode container -SkipProvisionAdmin
 .\scripts\provision-prod-admin.ps1 -PgPassword '<db-password>' -GeneratePassword
 
-# staging 演练：生成随机密码并完成全链路
-.\scripts\deploy-prod.ps1 -PgPassword '<db-password>' -GenerateAdminPassword -ExpectedMigrationVersion 0047
+# staging 演练：生成随机密码并完成全链路（期望版本须与当前迁移基线一致，当前为 0062）
+.\scripts\deploy-prod.ps1 -PgPassword '<db-password>' -GenerateAdminPassword -ExpectedMigrationVersion 0062
 
 # CI dry-run：仅解析 env + 校验 AIOPS_IMAGE
 .\scripts\deploy-prod.ps1 -SkipUp

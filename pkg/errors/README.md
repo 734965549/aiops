@@ -1,36 +1,40 @@
-# pkg/errors 模块说明（粤语版）
+# pkg/errors 模块说明
 
-## 呢个模块做咩
+`errors`（导入别名 `apperr`）是平台统一错误模型：12 个字符串错误码与 `Error` 结构。协议相关的状态码映射放在 `pkg/transport/http`，本包不感知传输层。
 
-`errors` 系平台嘅「统一错误翻译机」。业务里面可能出现好多种错误：参数错、未登录、数据库错、服务未配置。如果每个地方自己乱写，前端就好难处理。所以呢度统一错误码同错误结构。
+## 错误码（`code.go`，与 gRPC 命名一致）
 
-## 调用关系
+`OK` / `INVALID_ARGUMENT` / `UNAUTHENTICATED` / `PERMISSION_DENIED` / `NOT_FOUND` / `ALREADY_EXISTS` / `FAILED_PRECONDITION` / `ABORTED` / `RESOURCE_EXHAUSTED` / `PAYLOAD_TOO_LARGE` / `UNAVAILABLE` / `INTERNAL`
 
-```text
-application / infrastructure
-  -> apperr.New(code, message)
-  -> apperr.Wrap(err, code, message)
-  -> interfaces/http
-  -> httpx.Fail(c, err)
-  -> 统一 JSON 错误响应
-```
+## Error 模型（`errors.go`）
 
-## 入参
-
-| 方法 | 入参 | 说明 |
-| --- | --- | --- |
-| `New` | 错误码、message | 创建业务错误 |
-| `Wrap` | 原始 error、错误码、message | 包装底层错误 |
-| `CodeOf` | error | 提取统一错误码 |
-
-## 出参
-
-| 输出 | 说明 |
+| API | 语义 |
 | --- | --- |
-| 业务错误对象 | 带 code、message、cause |
-| 错误码 | 例如 `INVALID_ARGUMENT`、`UNAUTHENTICATED`、`INTERNAL` |
-| HTTP 响应依据 | HTTP 层可根据错误码返回合适状态同 JSON |
+| `New(code, message)` / `Newf` | 构造业务错误 |
+| `Wrap(err, code, message)` | 包裹底层错误保留链路；err 为 nil 时返回 nil |
+| `Error()/Unwrap()` | 支持 `errors.Is/As` 穿透底层错误 |
+| `FromError(err)` | 已是 `*Error` 原样返回；否则包装为 `INTERNAL`，对外固定文案 `internal server error`，底层细节留在 cause |
+| `CodeOf(err)` | nil → `OK`；未包装 → `INTERNAL` |
+| `MessageOf(err)` | nil → `"ok"`；提取对外安全文案 |
 
-## 通俗比喻
+分层约定：domain 只构造 `Error`；application 优先 `Wrap` 携带链路；interfaces 层只读 `Code/Message`，不再判定下层错误类型。
 
-`errors` 就似客服话术表：无论后厨发生咩，面对客人都要讲清楚「资料唔齐」「未登录」「系统忙」。唔会将厨房入面嘅复杂报错原封不动丢畀客人。
+## HTTP 状态映射（`pkg/transport/http/status.go`）
+
+| Code | HTTP |
+| --- | --- |
+| `OK` | 200 |
+| `INVALID_ARGUMENT` | 400 |
+| `UNAUTHENTICATED` | 401 |
+| `PERMISSION_DENIED` | 403 |
+| `NOT_FOUND` | 404 |
+| `ALREADY_EXISTS` / `ABORTED` | 409 |
+| `FAILED_PRECONDITION` | 412 |
+| `RESOURCE_EXHAUSTED` | 429 |
+| `PAYLOAD_TOO_LARGE` | 413 |
+| `UNAVAILABLE` | 503 |
+| 其它（含 `INTERNAL`） | 500 |
+
+## 测试
+
+`errors_test.go`、`sentinel_test.go` 覆盖构造/包裹/转换语义。

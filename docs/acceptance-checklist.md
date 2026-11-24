@@ -709,7 +709,7 @@ RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测�
 | 9.8.32 | 浮层入口与上下文联动 | 顶栏「AI 助手」/`Alt + A` 默认打开；告警详情点「问 AI 助手」；在选择器中新建会话并发送 | 默认入口无选择器并自动选中最近会话；告警入口先显示会话选择器，新建会话的 `context` 含 `alert_id`；浮层顶部展示当前页面上下文摘要；跨页路由切换后返回，消息与生成状态保留 |
 | 9.8.33 | 排队生命周期 | 会话生成中连续发送第二条并观察队列；分别尝试置顶/删除/清空；点击「停止并清空队列」；刷新页面 | 第二条进入排队列表且首条完成后自动发送；置顶/删除/清空即时生效且只影响当前会话；停止后队列清空且不自动发送；刷新后排队条目与乐观消息丢失，服务端回合按取消/完成落库 |
 
-> 前置：已执行迁移 `0049`、`0050`（0050 为消息幂等键）；9.8.3 的模型回答需要已启用类型 `b` provider。E2E 脚本：`scripts/e2e-ai-assistant.ps1` 对 9.8.2/9.8.3/9.8.7/9.8.8/9.8.9/9.8.10/9.8.15/9.8.16/9.8.17 只有**部分自动断言**：未完整覆盖 chat_session、审计脱敏、replayed=true、不再调用模型、invalid/用户消息反馈、并发幂等、跨用户、模型切换或浏览器 UI；归档 probe 实为 active 会话。9.8.32/9.8.33 为纯前端行为：浮层选择器/上下文联动由 `AIAssistantOverlay.spec.ts` 与 `aiContext.spec.ts` 覆盖，跨会话并发与同会话排队由 `useChat.spec.ts` 覆盖，停止清队/队列管理/归档排队失败/快捷键无专项测试，UI 需人工验收。
+> 前置：已执行迁移 `0049`、`0050`（0050 为消息幂等键）；9.8.3 的模型回答需要已启用类型 `b` provider。E2E 脚本：`scripts/e2e-ai-assistant.ps1` 对 9.8.2/9.8.3/9.8.7/9.8.8/9.8.9/9.8.10/9.8.15/9.8.16/9.8.17 只有**部分自动断言**：未完整覆盖 chat_session、审计脱敏、replayed=true、不再调用模型、invalid/用户消息反馈、并发幂等、跨用户、模型切换或浏览器 UI；归档 probe 实为 active 会话。9.8.32/9.8.33 为纯前端行为：浮层选择器/上下文联动由 `AIAssistantOverlay.spec.ts` 与 `aiContext.spec.ts` 覆盖，跨会话并发与同会话排队由 `useChat.spec.ts` 覆盖，跨页共享控制器、跨页队列置顶/删除与停止清队由 `BasicLayout.spec.ts` 覆盖；归档排队失败、删除会话清理与快捷键无专项测试，UI 需人工验收。
 >
 > 数据范围（9.8.13/9.8.14）：告警快照读取按对象数据范围过滤，分析路径与对话路径共用同一入口，映射与拒绝语义见 `ops/ai-contract.md` §10.6.4、§10.11。注意告警列表/详情接口的自身数据范围口径不在 AI 模块范围内。
 
@@ -763,7 +763,7 @@ RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测�
 | 9.11.7 | token、时间与申请数预算 | 分别构造累计 usage 达到 60000、turn_budget_s=2、单轮超过 3 个不同参数申请 | token 达预算先强制收敛，时间耗尽直接 turn_budget_exceeded；单轮只受理前 3 个不同 tool_code+params，超出不执行 |
 | 9.11.8 | 前端多轮展示 | 同工具不同参数、多轮调用后检查 AnswerCard/ContextPanel | tool_calls 保留记录，但 AnswerCard key 仅 tool_code，右侧只保留每个工具最后状态且目录固定，不是完整 Loop 时间线；execution.tasks.propose 不是 Loop 白名单 |
 | 9.11.9 | Loop 脚本边界 | 核对 `e2e-ai-agent-loop.ps1` 的 SKIP、数据与断言 | 覆盖只读 Loop、执行拒绝、发现和 3 轮耗尽的部分断言；无 active 告警会 SKIP 后 exit 0。会话保留，未覆盖全部预算/去重/强制收敛/无执行任务断言，不是 UI 验收 |
-| 9.11.10 | 证据覆盖缺口 | 分别使用资源分组型规则、云产品级规则（无资源绑定）、超过 288 点曲线、长窗口和大规则集，检查模型实际 observations | 资源分组型规则先展开实例；无绑定的云产品级规则按 namespace 发现实例兜底（`scope_source=resource_discovery`），只有实例发现也取不到才 no_resource_scope；每条规则最多 3 实例抽样并取越限最严重样本（`checked_resources`/`sampled` 标明覆盖）。288 点定稿保留 `peak_at` 与破限片段/时长；长窗口聚合仍不能还原原始秒级误报，需短窗口复查 |
+| 9.11.10 | 证据覆盖缺口 | 分别使用资源分组型规则、云产品级规则（无资源绑定）、超过 288 点曲线、长窗口和大规则集，检查模型实际 observations | 规则资源优先通过 CES `ListAlarmRuleResources` 补全并透传 `resource_level`/`dimension_name`；分组规则再展开实例；无绑定规则按 namespace + 维度名发现实例兜底（`scope_source=resource_discovery`），并按引擎线索匹配实例，只有实例发现也取不到才 no_resource_scope；每条规则最多 3 实例抽样并取越限最严重样本（`checked_resources`/`sampled` 标明覆盖）。288 点定稿保留 `peak_at` 与破限片段/时长；长窗口聚合仍不能还原原始秒级误报，需短窗口复查 |
 
 > 前置：契约见 `ops/ai-contract.md` §10.16；无需新迁移。循环内不产生执行动作，`actions` 仍由服务端生成。`e2e-ai-agent-loop.ps1` 只自动覆盖 9.11.1/9.11.2/9.11.3/9.11.5 的部分场景，需要 active 告警；9.11.4/9.11.6 及预算/强制收敛其他分支由既有单测与人工验收分别记录。
 
@@ -825,8 +825,8 @@ RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测�
 | 9.14.5 | Loop 审计 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | `chat_message` 含 `loop_rounds` 与实际规则/指标工具码；每个 `tool_invoke` 含 `evidence_id`；无执行类工具调用 |
 | 9.14.6 | huawei ak_sk 真实规则 | 用带 `alerts` 能力的真实 ak_sk 账号申请规则列表（参数含 account_id/namespace/region） | 观测 `status=ok`、`rule_count>=1`；规则含 metric/operator/threshold/window_seconds；`tool_invoke` 审计带 `evidence_id` |
 | 9.14.7 | huawei agency 不支持 | 用 agency 账号申请规则列表 | 观测 `status=unsupported`、reason 稳定；回答仍正常返回 |
-| 9.14.8 | 批量规则体检 | 让模型申请 `alert.rules.health`，params 带 `namespace=SYS.RDS`、`limit<=20`、30 天窗口与 `period=3600`，另覆盖资源分组型规则 | 观测 `status=ok`，每条规则含统计字段；sampled=true 仅首实例，不是全实例。只有 resource_group_id 无 dimensions 的规则当前 no_resource_scope，未调用分组展开；无资源维度同样跳过，审计 evidence_id 取首条成功证据 |
-| 9.14.9 | 规则体检边界 | `limit=21`、超过 30 天、>7 天且 `period<3600`、只传 `from`；再检查 288 点定稿和小时级聚合 | 非法参数返回 `status=invalid_argument` 且不取数；单条失败不阻断其它规则，总预算耗尽剩余 `skipped/rule health query timeout`，指标查询超过 24 次剩余 `skipped/rule health query budget exhausted`。288 点定稿统计按全量并保留峰值时刻/越限时长，小时级 max 仍不能还原原始秒级误报 |
+| 9.14.8 | 批量规则体检 | 让模型申请 `alert.rules.health`，params 带 `namespace=SYS.RDS`、`limit<=20`、30 天窗口与 `period=3600`，另覆盖资源分组型与云产品级规则 | 观测 `status=ok`，每条规则含统计字段与 `scope_source`（rule / resource_group / resource_discovery）；资源分组型展开实例、云产品级按 namespace 发现实例兜底，均最多 3 实例抽样并取越限最严重样本（`checked_resources`/`sampled` 标明覆盖）；只有实例发现也取不到才 `no_resource_scope`，审计 evidence_id 取首条成功证据 |
+| 9.14.9 | 规则体检边界 | `limit=21`、超过 30 天、>7 天且 `period<3600`、只传 `from`；再检查 288 点定稿和小时级聚合 | 非法参数返回 `status=invalid_argument` 且不取数；单条失败不阻断其它规则，总预算（75s）耗尽剩余 `skipped/rule health query timeout`，指标查询超过 60 次剩余 `skipped/rule health query budget exhausted`；预算按广度优先分配，先保证每条规则至少 1 个实例。288 点定稿统计按全量并保留峰值时刻/越限时长，小时级 max 仍不能还原原始秒级误报 |
 
 > 前置：已执行迁移 `0055` 与 `0062`；契约见 `ops/ai-contract.md` §10.12.1 / §10.16。E2E 脚本：`scripts/e2e-ai-rules.ps1`（脚本化 mock 模型 + fake `auth_type=none` 账号，自动覆盖 9.14.1/9.14.2/9.14.3/9.14.5；9.14.4 数据范围拒绝、9.14.6 real ak_sk、9.14.7 agency 不支持、9.14.8/9.14.9 批量体检由单测覆盖，真实账号需手工回归）。
 

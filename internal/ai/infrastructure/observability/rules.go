@@ -124,6 +124,8 @@ func (a *AlertRulesCollector) List(ctx context.Context, userID string, q aiapp.A
 			ResourceCount:      rule.ResourceCount,
 			Resources:          rule.Resources,
 			ResourceGroupCount: len(rule.ResourceGroupIDs),
+			ResourceLevel:      rule.ResourceLevel,
+			DimensionName:      rule.DimensionName,
 		})
 	}
 	return out, nil

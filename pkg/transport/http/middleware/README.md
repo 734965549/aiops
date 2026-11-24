@@ -1,53 +1,33 @@
-# HTTP middleware 模块说明（粤语版）
+# HTTP middleware 模块说明
 
-## 呢个模块做咩
-
-`middleware` 系 HTTP 请求入门前嘅「保安通道」。每个请求真正到业务 Handler 之前，都要经过一层层检查同记录。
-
-## 当前中间件
-
-- `trace`：为每个请求生成或接收 `trace_id`。
-- `recovery`：防止 panic 直接打爆服务。
-- `request_log`：记录请求方法、路径、耗时、状态码。
-- `cors`：处理浏览器跨域。
-- `security`：注入安全响应头（X-Frame-Options、X-Content-Type-Options、CSP等）并提供全局请求体大小限制。
-- `auth`：检查 `Authorization: Bearer <token>`。
-
-## 调用关系
+`middleware` 收敛平台 HTTP 通用中间件。`internal/server.NewEngine` 按固定顺序装配：
 
 ```text
-客户端请求
-  -> SecurityHeaders
-  -> Trace
-  -> Recovery
-  -> RequestLog
-  -> CORS
-  -> RequestBodyLimit
-  -> Auth（受保护路由）
-  -> 业务 Handler
+SecurityHeaders -> Trace -> Recovery -> RequestLog -> CORS -> RequestBodyLimit(可选)
+  -> /api/public 挂 AuthOptional、/api/authed 挂 AuthRequired
+  -> 业务路由内再按需挂 AuthorizeStatic/AuthorizeDynamic
 ```
 
-## 入参
+## 各中间件语义
 
-| 中间件 | 入参 | 说明 |
-| --- | --- | --- |
-| SecurityHeaders | 无 | 为响应头注入安全标头 |
-| Trace | Header `X-Trace-ID` 或空 | 有就沿用，冇就生成 |
-| Recovery | Gin Context | 捕获 panic |
-| RequestLog | 请求方法、路径、IP、耗时 | 写访问日志 |
-| CORS | Origin、Method、Headers | 判断是否允许跨域 |
-| RequestBodyLimit | 最大字节限制（如 10MB） | 超过大小时终止并返回 413 Payload Too Large |
-| Auth | Bearer access token | 验证登录身份 |
-
-## 出参
-
-| 输出 | 说明 |
+| 中间件 | 语义 |
 | --- | --- |
-| `trace_id` | 放入 context 同响应，方便排查 |
-| 日志 | 记录请求同错误 |
-| 用户信息 | Auth 通过后写入 user_id、username |
-| 错误响应 | token 缺失、过期、无效时返回未认证 |
+| `SecurityHeaders` | 每个响应注入 `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: strict-origin-when-cross-origin`、`Permissions-Policy`（geolocation/microphone/camera 全禁）。不含 CSP |
+| `Trace` | 优先取合法 UUID 且 ≤128 字符的上游 `X-Trace-Id`，否则生成 UUID；写响应头 + Gin key + 标准 context，并把带 `trace_id` 字段的 logger 注入 ctx（`logger.From(ctx)` 自动携带） |
+| `Recovery` | 兜底 panic：Error 日志（含 stack）后返回统一 `INTERNAL`；业务错误应走 `*apperr.Error`，不经此路径 |
+| `RequestLog` | 访问日志 method/path/route/status/latency/client_ip/user_agent；路径经 `RedactSensitivePath` 脱敏；≥500 记 Error、≥400 记 Warn、其余 Info |
+| `CORS` | 按 `config.CORSConfig` 生成；再防御 `allow_credentials=true` 与 `*` 并存（过滤后为空则不注册 CORS 头，适配同源反代）；AllowMethods 固定 GET/POST/PUT/PATCH/DELETE/OPTIONS，AllowHeaders 含 Authorization 与 X-Trace-Id |
+| `RequestBodyLimit` | 用 `http.MaxBytesReader` 包裹请求体；`ShouldBindJSON` 触发的 `MaxBytesError` 在响应未写出时中止并返回 `PAYLOAD_TOO_LARGE`（413）。仅 `server.max_request_body_bytes > 0` 时注册 |
+| `AuthRequired` | 无 Authenticator 直接 503；缺 Bearer 或校验失败统一 401（不区分缺失/过期，避免信息差）；成功后写入 `user_id/username/roles` 并把身份注入请求 logger |
+| `AuthOptional` | 解析存在的 token 但不强制；无 token 或校验失败都放行（公共接口共享链路） |
 
-## 通俗比喻
+## 统一授权（`authorization.go`）
 
-中间件就似机场安检：先睇登机牌，再过安检，再记录登机口。通过之后，你先可以去真正嘅航班柜台。
+- `AuthorizationInput`：resource/action + 对象字段（owner/dept/team/region/tags）+ 可选 tool_code/confirmed + `RequiredPermission` + `SkipDataScope`（静态路由只查 RBAC，不查数据范围）。
+- `AuthorizationService.Authorize` 由 Identity 装配注入；结果写 `CtxKeyAuthDecision` 供后续复用。
+- `AuthorizeStatic`：固定 resource/action + `SkipDataScope=true`；`AuthorizeDynamic`：由路由自行解析输入（如直接工具调用的对象字段）。svc 未配置 503、resolver 失败 400、`allowed=false` 403（带 reason）、Authorize 返回 error 走 `Fail`。
+- 注意：中间件授权与 application 层二次校验是纵深防御的两层，不能只依赖其中一层（见 `ops/ai-contract.md` 工具网关三条调用链）。
+
+## 测试
+
+`auth` 相关由 Identity 集成测试覆盖；`authorization_test.go`/`cors_test.go`/`security_test.go`/`trace_test.go` 覆盖本包语义。

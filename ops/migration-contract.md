@@ -150,9 +150,9 @@ docker compose -f deployments/docker-compose.yml -f deployments/docker-compose.d
 
 自研 runner 对此的处理：
 
-- 每个 `*.up.sql` 在事务内**按语句逐条**执行（`splitSQLStatements`），并关闭 `PrepareStmt`；
-- 语句分隔以分号为准，忽略整行 `--` 注释，单引号字符串内的分号不拆分（支持 PostgreSQL `''` 转义）；
-- **不支持**美元引用（`$tag$...$tag$`）或函数/触发器体内的多语句块——若未来需要，应拆成独立迁移文件或扩展 splitter。
+- 每个 `*.up.sql` 在事务内**按语句逐条**执行（`splitSQLStatements`，该事务会话显式关闭 `PrepareStmt`，兼容 extended query 模式）；
+- 语句分隔以分号为准：剔除**整行** `--` 注释，单引号字符串内的分号不拆分（支持 PostgreSQL `''` 转义）。**行尾 `--` 注释或块注释 `/* */` 内的分号不会被剔除**，会被误当作语句分隔符把一条语句切碎——迁移文件必须避免这两类写法（含分号的说明一律写成整行 `--` 注释）；
+- **不支持**美元引用（`$tag$...$tag$`）或函数/触发器体内的多语句块——若未来需要，应拆成独立迁移文件或扩展 splitter；`0041`/`0042` 的 `CHECK(n=0)` 守卫即为兼容该 splitter 的纯 DML 写法。
 
 `cmd/migrate` 超时读取 `database.migrate_timeout_s`（默认 300s），远程高延迟库联调时可适当调大。
 

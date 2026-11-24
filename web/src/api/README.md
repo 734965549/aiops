@@ -6,11 +6,27 @@
 
 ## 请求与错误处理（`request.ts`）
 
-- 401：尝试 `auth.refresh()`，失败则登出并跳转 `/login`。
+- 统一 axios 实例：`baseURL` 取 `VITE_API_BASE`（缺省 `/`，dev 由 Vite 把 `/api`、`/healthz` 等代理到后端 8080）；默认超时 30 秒，个别接口可覆盖（`analyzeAlert` 与对话同步封装均为 90 秒；流式对话走 fetch 不受该超时约束）。请求拦截器自动附 `Authorization: Bearer <token>`。
+- 成功判断：HTTP 200 且 `code === "OK"` 才算成功；`code` 非 OK 时按业务失败弹 `Message.error` 并 reject `ApiHttpError(200, code)`。不能只看 HTTP 状态码，也不能判断数字 `0`。
+- `ApiHttpError` 统一携带 `status/code/message/traceId`；用 `isApiHttpError` 类型守卫或 `getApiError` 提取，`traceId` 可用于审计中心按 trace 关联。
+- 401：非登录/刷新/登出路径会做**一次** `auth.refresh()` 重试（`_retry` 标记防循环）；刷新失败或无 refresh token 时登出，并在非公开路由上带 `redirect` 跳转 `/login`。
 - 403：`Message.warning`；`PERMISSION_DENIED` 时提示检查权限迁移与角色绑定。
-- 409 `ALREADY_EXISTS` 且 `POST /api/assets/sync` 返回 `sync already in progress for this account`：`request.ts` 不弹全局错误，由页面用 `isAssetSyncInProgressError` 统一提示“该账号正在同步，请稍后重试”。
+- 409 两类业务冲突不弹全局错误：`POST /api/assets/sync` 的 `sync already in progress`（页面用 `isAssetSyncInProgressError` 提示）与 AI 对话消息 409（归档/幂等冲突由对话区给出中文说明）。
 - 503 / `UNAVAILABLE`：服务未就绪提示。
+- 无响应的网络错误统一 `Message.error`。
+- `http<T>()` 返回解包后的 `data.data`；响应无 `data` 字段时得到 undefined，调用方需自行兜底，不能把 undefined 当有效业务值。
+- `request.ts` 当前没有专项 Vitest；401 刷新、403 提示、409 静默语义依赖页面测试与人工验收。
 - AI 工具调用即使 HTTP 200 且 `code="OK"`，也必须检查 `data.allowed`。
+
+## SSE（`sse.ts`）
+
+对话流式接口使用 POST + Bearer Token，不能用浏览器原生 EventSource，因此基于 fetch ReadableStream 自行解析：
+
+- `SSEParser`：跨分片缓冲并归一化 CRLF/CR；按空行切帧，合并多行 `data`（`\n` 连接），保留 `event` 字段，忽略注释行与 `id/retry` 字段；`flush()` 兜底解析缺少结尾空行的最后一帧。
+- `consumeSSE(response, onFrame, signal)`：逐帧回调；`onFrame` 抛错会 cancel 响应体并中断读取（收到 error 事件后立即停止）；每次 read 前检查 signal，主动取消抛 `AbortError`，`releaseLock` 在 finally 保证不泄漏。
+- `isAbortError` 同时识别 `AbortError` 与 axios `CanceledError`。
+- 当前唯一使用方是 `ai.ts` 的 `streamChatMessage`（`stage/tool/delta/answer/error` 五类事件，`: ping` 注释被解析器忽略）。
+- 覆盖：`sse.spec.ts` 共 7 个用例（跨分片拼接、CRLF+注释、多行 data、flush、无 data 帧、取消识别）；`consumeSSE` 的读取与取消链路无专项测试，由 useChat.spec 间接覆盖。
 
 ## Identity（`identity.ts`）
 
@@ -276,7 +292,7 @@
 - 「生成执行计划」调用既有 `createExecutionTask`（`source_type=ai_conversation`，`source_id=session_id`），任务进入 Execution `pending_confirm`；前端不得提供任何直接执行入口。响应 tool_calls 中的 execution.tasks.propose 只是 finalize 阶段的权限校验和审计记录，不表示模型已创建任务，也不是 Agent Loop 白名单工具。
 - 工具调用结果必须检查 `allowed`；被拒绝是业务结果，需展示 `reason`（`toolReason.ts` 负责原因码的中文映射）。
 - 对话内置只读工具共 8 个：`alarm.analyze`、自由参数 `metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`accounts.list`、`resource.analyze`、`resources.list`。它们由后端本地 Port 执行，不经 AI Provider 转发；`status=invalid_argument / skipped / unsupported / permission_denied / denied` 都需展示原因，不能当作网络错误。实时 ChatPanel/ContextPanel 展示较完整，AnswerCard 当前只对 allowed=false 的调用把 reason 放进提示，allowed=true 的非 ok 原因仍有展示缺口。
-- 规则体检证据有覆盖边界：资源分组型规则会先展开实例维度；无资源绑定的云产品级规则按 namespace 发现实例兜底（`scope_source=resource_discovery`），并最多对 3 个实例分别取数、取越限最严重样本（`checked_resources`/`sampled` 标明覆盖）；曲线定稿最多 288 点，峰值时刻与越限时长在降采样前计算保留，长窗口小时级聚合仍不能还原原始秒级误报。页面展示峰值不代表原始粒度证据完整，不能以“展示正常”排除取数问题。
+- 规则体检证据有覆盖边界：规则资源优先通过 CES `ListAlarmRuleResources` 补全并透传 `resource_level`/`dimension_name`；分组规则再展开实例；无绑定规则按 namespace + 维度名发现实例兜底（`scope_source=resource_discovery`），并按引擎线索匹配实例，最多对 3 个实例分别取数、取越限最严重样本（`checked_resources`/`sampled` 标明覆盖）；曲线定稿最多 288 点，峰值时刻与越限时长在降采样前计算保留，长窗口小时级聚合仍不能还原原始秒级误报。页面展示峰值不代表原始粒度证据完整，不能以“展示正常”排除取数问题。
 - 引用类型：`alert`、`observability_evidence` 带 `url` 可跳转；`memory_case`（相似案例记忆，`ops/ai-contract.md` §10.14）与 `knowledge_item`（知识沉淀，§10.15）无 `url`，只展示标签与条数提示。
 - 知识沉淀管理接口（§10.15）要求 `app:ai:knowledge:manage`（当前仅 admin），入口在「系统设置 → AI 配置 → 知识沉淀」（`KnowledgeManager.vue`）；未授权时全局拦截器提示。页面未展示审核人/审核时间/创建者/时间，scope_ref 非空与 128 字符依赖后端校验，激活/停用无二次确认，聚合固定默认 `min_cases=3` 且未暴露入参。
 - 记忆管理接口（§10.19）要求 `app:ai:memory:manage`（当前仅 admin），入口在「系统设置 → AI 配置 → 记忆管理」（`MemoryManager.vue`）；停用/启用只影响后续检索并写 `memory_review` 审计，回答注入仍按归属用户隔离。页面只传 status/keyword/user_id，limit 固定 100，未使用 application_id/resource_id/offset 或分页，详情未展示 session_id。

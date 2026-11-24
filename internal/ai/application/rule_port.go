@@ -33,6 +33,10 @@ type AlertRuleSummary struct {
 	Resources     []map[string]string `json:"resources,omitempty"`
 	// ResourceGroupCount 大于 0 表示规则按资源分组关联，资源范围由分组展开得到。
 	ResourceGroupCount int `json:"resource_group_count,omitempty"`
+	// ResourceLevel 为 CES 规则资源层级（product=云产品级，dimension=子维度）；
+	// DimensionName 是规则维度名（如 rds_instance_id），云产品级规则靠它推导取数维度。
+	ResourceLevel string `json:"resource_level,omitempty"`
+	DimensionName string `json:"dimension_name,omitempty"`
 }
 
 // AlertRuleListResult 查询结果；status 非 ok 时 Rules 为空且 Reason 说明原因。

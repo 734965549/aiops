@@ -2,6 +2,7 @@ package observability
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -277,5 +278,156 @@ func TestRuleHealthCollectorFallsBackToResourceDiscovery(t *testing.T) {
 	}
 	if got.Dimensions["rds_instance_id"] != "i-2" || got.PeakAt == nil || *got.PeakAt != 200 {
 		t.Fatalf("worst fallback sample = %+v", got)
+	}
+}
+
+func TestRuleHealthCollectorBreadthFirstBudget(t *testing.T) {
+	threshold := 80.0
+	rules := &fakeAlertRulesQuerier{result: &obsapp.AlertRuleQueryResult{
+		Rules: []obsdomain.AlertRule{
+			{
+				RuleID: "r-1", Namespace: "SYS.RDS", Metric: "m-1", Operator: ">", Threshold: &threshold,
+				ResourceCount: 3, Resources: []map[string]string{
+					{"rds_instance_id": "a1"}, {"rds_instance_id": "a2"}, {"rds_instance_id": "a3"},
+				},
+			},
+			{
+				RuleID: "r-2", Namespace: "SYS.RDS", Metric: "m-2", Operator: ">", Threshold: &threshold,
+				ResourceCount: 3, Resources: []map[string]string{
+					{"rds_instance_id": "b1"}, {"rds_instance_id": "b2"}, {"rds_instance_id": "b3"},
+				},
+			},
+		},
+	}}
+	series := func(id string) *obsapp.MetricQueryResult {
+		return &obsapp.MetricQueryResult{EvidenceID: id, Series: []obsdomain.MetricSeries{{Points: []obsdomain.MetricPoint{
+			{TS: 100, Value: 90}, {TS: 200, Value: 70},
+		}}}}
+	}
+	metrics := &fakeMultiMetricsQuerier{results: map[string]*obsapp.MetricQueryResult{
+		"a1": series("e-a1"), "a2": series("e-a2"), "a3": series("e-a3"),
+		"b1": series("e-b1"), "b2": series("e-b2"), "b3": series("e-b3"),
+	}}
+	collector := NewRuleHealthCollector(rules, metrics, &fakeAccountResolver{snapshot: &obsdomain.AccountSnapshot{
+		AccountID: "acc-1", AuthType: "ak_sk",
+	}}, &fakeAccountAccess{}, nil, time.Second)
+	collector.queryBudget = 4
+
+	out, err := collector.Check(context.Background(), "u-1", aiapp.RuleHealthQuery{
+		AccountID: "acc-1", Region: "cn-north-4", Namespace: "SYS.RDS", Limit: 10,
+		From: 1700000000, To: 1700000000 + 30*24*3600, Period: 3600, Aggregator: "max",
+	})
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	// 预算 4 / 2 条规则 = 每条 2 个实例，广度优先保证两条规则都有曲线。
+	if len(metrics.queries) != 4 {
+		t.Fatalf("queries = %d, want 4", len(metrics.queries))
+	}
+	for i, got := range out.Rules {
+		if got.Status != aiapp.EvidenceStatusOK || got.CheckedResources != 2 || !got.Sampled {
+			t.Fatalf("rule[%d] = %+v", i, got)
+		}
+	}
+}
+
+func TestRuleHealthCollectorBudgetKeepsBreadth(t *testing.T) {
+	threshold := 80.0
+	rules := &fakeAlertRulesQuerier{result: &obsapp.AlertRuleQueryResult{
+		Rules: []obsdomain.AlertRule{
+			{RuleID: "r-1", Namespace: "SYS.RDS", Metric: "m-1", Operator: ">", Threshold: &threshold,
+				ResourceCount: 1, Resources: []map[string]string{{"rds_instance_id": "i-1"}}},
+			{RuleID: "r-2", Namespace: "SYS.RDS", Metric: "m-2", Operator: ">", Threshold: &threshold,
+				ResourceCount: 1, Resources: []map[string]string{{"rds_instance_id": "i-2"}}},
+			{RuleID: "r-3", Namespace: "SYS.RDS", Metric: "m-3", Operator: ">", Threshold: &threshold,
+				ResourceCount: 1, Resources: []map[string]string{{"rds_instance_id": "i-3"}}},
+		},
+	}}
+	series := func(id string) *obsapp.MetricQueryResult {
+		return &obsapp.MetricQueryResult{EvidenceID: id, Series: []obsdomain.MetricSeries{{Points: []obsdomain.MetricPoint{
+			{TS: 100, Value: 90},
+		}}}}
+	}
+	metrics := &fakeMultiMetricsQuerier{results: map[string]*obsapp.MetricQueryResult{
+		"i-1": series("e-1"), "i-2": series("e-2"), "i-3": series("e-3"),
+	}}
+	collector := NewRuleHealthCollector(rules, metrics, &fakeAccountResolver{snapshot: &obsdomain.AccountSnapshot{
+		AccountID: "acc-1", AuthType: "ak_sk",
+	}}, &fakeAccountAccess{}, nil, time.Second)
+	collector.queryBudget = 2
+
+	out, err := collector.Check(context.Background(), "u-1", aiapp.RuleHealthQuery{
+		AccountID: "acc-1", Region: "cn-north-4", Namespace: "SYS.RDS", Limit: 10,
+		From: 1700000000, To: 1700000000 + 30*24*3600, Period: 3600, Aggregator: "max",
+	})
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if out.Rules[0].Status != aiapp.EvidenceStatusOK || out.Rules[1].Status != aiapp.EvidenceStatusOK {
+		t.Fatalf("breadth coverage lost: %+v", out.Rules)
+	}
+	if out.Rules[2].Status != aiapp.EvidenceStatusSkipped ||
+		out.Rules[2].Reason != "rule health query budget exhausted" {
+		t.Fatalf("last rule must be budget-exhausted: %+v", out.Rules[2])
+	}
+	if len(metrics.queries) != 2 {
+		t.Fatalf("queries = %d, want 2", len(metrics.queries))
+	}
+}
+
+func TestRuleHealthCollectorFallbackFiltersEngineAndDimension(t *testing.T) {
+	threshold := 80.0
+	rules := &fakeAlertRulesQuerier{result: &obsapp.AlertRuleQueryResult{
+		Rules: []obsdomain.AlertRule{{
+			RuleID: "al-pg", Name: "RDS-postgresql", Description: "postgresql生产环境资源",
+			Namespace: "SYS.RDS", Metric: "rds001_cpu_util", Operator: ">", Threshold: &threshold,
+			ResourceLevel: "product", ProductName: "SYS.RDS,rds_instance_id",
+			DimensionName: "rds_instance_id",
+		}},
+	}}
+	series := func(id string) *obsapp.MetricQueryResult {
+		return &obsapp.MetricQueryResult{EvidenceID: id, Series: []obsdomain.MetricSeries{{Points: []obsdomain.MetricPoint{
+			{TS: 100, Value: 90}, {TS: 200, Value: 70},
+		}}}}
+	}
+	metrics := &fakeMultiMetricsQuerier{results: map[string]*obsapp.MetricQueryResult{
+		"pg-1": series("e-pg1"), "pg-2": series("e-pg2"), "pg-3": series("e-pg3"),
+	}}
+	discovery := &fakeResourceDiscovery{result: &aiapp.ResourceListResult{
+		Status: aiapp.EvidenceStatusOK,
+		Resources: []aiapp.ResourceSummary{
+			{ResourceID: "a-my", CloudResourceType: "rds", CloudResourceID: "my-1",
+				Namespace: "SYS.RDS", DimensionName: "rds_instance_id", DimensionValue: "my-1", Engine: "MySQL"},
+			{ResourceID: "a-pg1", CloudResourceType: "rds", CloudResourceID: "pg-1",
+				Namespace: "SYS.RDS", DimensionName: "rds_instance_id", DimensionValue: "pg-1", Engine: "PostgreSQL"},
+			{ResourceID: "a-pg2", CloudResourceType: "rds", CloudResourceID: "pg-2",
+				Namespace: "SYS.RDS", DimensionName: "rds_instance_id", DimensionValue: "pg-2", Engine: "PostgreSQL"},
+			{ResourceID: "a-pg3", CloudResourceType: "rds", CloudResourceID: "pg-3",
+				Namespace: "SYS.RDS", DimensionName: "rds_instance_id", DimensionValue: "pg-3", Engine: "PostgreSQL"},
+		},
+	}}
+	collector := NewRuleHealthCollector(rules, metrics, &fakeAccountResolver{snapshot: &obsdomain.AccountSnapshot{
+		AccountID: "acc-1", AuthType: "ak_sk",
+	}}, &fakeAccountAccess{}, discovery, time.Second)
+
+	out, err := collector.Check(context.Background(), "u-1", aiapp.RuleHealthQuery{
+		AccountID: "acc-1", Region: "cn-north-4", Namespace: "SYS.RDS", Limit: 10,
+		From: 1700000000, To: 1700000000 + 30*24*3600, Period: 3600, Aggregator: "max",
+	})
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	got := out.Rules[0]
+	if got.Status != aiapp.EvidenceStatusOK || got.ScopeSource != "resource_discovery" ||
+		got.CheckedResources != 3 || got.DimensionName != "rds_instance_id" {
+		t.Fatalf("fallback result = %+v", got)
+	}
+	for i, q := range metrics.queries {
+		if value := q.Dimensions["rds_instance_id"]; strings.HasPrefix(value, "my-") {
+			t.Fatalf("query[%d] sampled mysql instance for pg rule: %+v", i, q.Dimensions)
+		}
+		if value := q.Dimensions["rds_instance_id"]; !strings.HasPrefix(value, "pg-") {
+			t.Fatalf("query[%d] unexpected dimension: %+v", i, q.Dimensions)
+		}
 	}
 }

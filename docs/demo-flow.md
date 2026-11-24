@@ -431,7 +431,7 @@ memory 脚本不调用管理列表、不校验分数/幂等，首条回答 degra
 | 8H.6 | 切到另一会话发送，再切回原会话 | 两个会话可同时生成，列表分别显示「生成中」；切回不串消息、不覆盖乐观消息 |
 | 8H.7 | 排队期间刷新页面 | 排队条目与乐观消息丢失（不持久化）；正在生成的回合由服务端按取消或完成落库，不能把浮层当作可恢复工作区 |
 
-覆盖说明：选择器/上下文联动由 `AIAssistantOverlay.spec.ts`、`aiContext.spec.ts` 覆盖；并发与排队由 `useChat.spec.ts` 覆盖；停止清队、队列管理、快捷键无专项测试，需人工演示。排队为纯前端行为，同一会话的服务端并发仍由幂等语义兜底。
+覆盖说明：选择器/上下文联动由 `AIAssistantOverlay.spec.ts`、`aiContext.spec.ts` 覆盖；并发与排队由 `useChat.spec.ts` 覆盖；跨页共享控制器、跨页队列置顶/删除与停止清队由 `BasicLayout.spec.ts` 覆盖；归档排队失败、删除清理与快捷键无专项测试，需人工演示。排队为纯前端行为，同一会话的服务端并发仍由幂等语义兜底。
 
 ---
 
@@ -517,7 +517,7 @@ curl.exe -H "Authorization: Bearer <token>" "http://127.0.0.1:8080/api/identity/
 
 ## 一键自动化验收
 
-按依赖顺序执行全部 E2E 脚本，全部输出 `PASS` 即主链路通过：
+按依赖顺序执行**主链路** E2E，全部输出 `PASS` 即主链路通过：
 
 ```powershell
 # 环境
@@ -531,11 +531,11 @@ go run ./cmd/migrate
 .\scripts\e2e-execution.ps1
 
 # 构建验收
-go test ./cmd/... ./internal/... ./pkg/...
+go test -race -count=1 ./cmd/... ./internal/... ./pkg/...
 cd web && npm run build
 ```
 
-更细的检查项见 [acceptance-checklist.md](./acceptance-checklist.md)；上线前见 [release-checklist.md](./release-checklist.md)。
+以上只是 4 个主链路脚本，**不是全部 E2E**：云同步、Integration/Observability/巡检、Agent 控制面、AI 助手各专项与两个带真实凭据的可选脚本见 `scripts/README.md` 索引；逐项覆盖边界与 SKIP 语义以 [acceptance-checklist.md](./acceptance-checklist.md) 各节为准；上线前见 [release-checklist.md](./release-checklist.md)。
 
 ---
 
@@ -549,4 +549,4 @@ cd web && npm run build
 
 ---
 
-**文档版本**：与 migration `0017`（默认管理员权限全集修复）及 Dashboard 拆包同期维护。
+**文档版本**：随迁移基线演进维护；当前迁移基线为 `0062`（演示扩展 8A–8I 涉及的迁移见各节前置说明）。

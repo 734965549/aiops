@@ -105,6 +105,15 @@ func mapListAlarmRule(item cesv2model.ListAlarmRespBodyAlarms) domain.AlertRule 
 		Description: strings.TrimSpace(valueOf(item.Description)),
 		Labels:      map[string]string{"provider": "huawei_cloud"},
 	}
+	if item.ResourceLevel != nil {
+		rule.ResourceLevel = strings.TrimSpace(item.ResourceLevel.Value())
+	}
+	if item.ProductName != nil {
+		rule.ProductName = strings.TrimSpace(*item.ProductName)
+	}
+	if rule.DimensionName == "" {
+		rule.DimensionName = dimensionNameFromProductName(rule.ProductName)
+	}
 	if rule.RuleID == "" {
 		rule.RuleID = rule.Name
 	}
@@ -140,6 +149,15 @@ func mapListAlarmRule(item cesv2model.ListAlarmRespBodyAlarms) domain.AlertRule 
 		break
 	}
 	return rule
+}
+
+// dimensionNameFromProductName 从 "SYS.RDS,rds_instance_id" 提取维度名（逗号后部分）。
+func dimensionNameFromProductName(productName string) string {
+	parts := strings.Split(productName, ",")
+	if len(parts) != 2 {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
 }
 
 // mapRuleResourceGroupIDs 提取规则关联的资源分组 ID；资源分组型规则没有实例维度，

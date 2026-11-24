@@ -1,41 +1,27 @@
-# pkg/logger 模块说明（粤语版）
+# pkg/logger 模块说明
 
-## 呢个模块做咩
+`logger` 是平台唯一日志门面（zap 封装）。项目宪章要求：业务代码只用 `logger.L()/From(ctx)` 与字段 helper，不直接 import `go.uber.org/zap`，也不引入第二套日志门面。
 
-`logger` 系平台嘅「闭路电视同记事簿」。系统发生咩事、边个请求入嚟、边度出错，都要有记录，方便之后排查。
+## 初始化与全局单例
 
-## 调用关系
+- `New(opt)` 构造独立实例（库/测试注入用，不改全局）；`Init(opt)` 设置进程级全局单例（`atomic.Value`，重复调用会替换）。
+- `Options`：`level`（debug/info/warn/error，空缺省 info）、`format`（json/console）、`output`（stdout/stderr/file）、`service_name`（写入固定字段 `service`）、`file_path/max_size_mb/max_backups/max_age_days`（file 模式经 lumberjack 滚动并压缩，路径缺省 `logs/aiops.log`）。
+- **dev 环境强制 console 编码 + 彩色 level**（忽略 format=json）。
+- 未 `Init` 时全局为 NopLogger，业务调用不会 panic；`Initialized()` 报告是否已初始化。
+- `ReportError(message, err)`：已初始化写 Error 日志，否则降级输出 stderr——供 CLI 入口在 bootstrap 前可靠报错（`cmd/api`/`cmd/migrate` 使用）。
 
-```text
-bootstrap.Init
-  -> logger.Init(options)
+## context 注入与字段
 
-server middleware
-  -> 为请求生成 trace_id
-  -> logger.From(ctx).Info/Warn/Error
+- `WithContext(ctx, l)` / `WithContextFields(ctx, fields...)`：把带字段的子 logger 写入标准 context；`From(ctx)` 取出，不存在时回退全局。
+- Trace 中间件注入的 logger 自带 `trace_id` 字段，业务侧 `logger.From(ctx).Info(...)` 自动携带。
+- 字段 helper：`String/Strings/Int/Int64/Bool/Duration/Time/Any/ByteString/Error`；调用方不直接构造 `zap.Field`。
+- `Sync()` 供 main 退出前 flush；`L()` 全局 logger；`With(...)` 追加全局字段。
 
-各业务模块
-  -> logger.L() 或 logger.From(ctx)
-```
+## 输出约定
 
-## 入参
+- 字段只放业务 ID、trace、状态、计数与脱敏信息；凭据、Token、原始 Authorization header、provider api key、数据库密码不得入日志（项目宪章）。SQL 默认不出原始语句（见 `pkg/database` 的 GORM 日志桥接）。
+- 级别语义：正常关键节点 `Info`，可恢复降级/拒绝 `Warn`，系统错误 `Error`，启动致命 `Fatal`。
 
-| 参数 | 说明 |
-| --- | --- |
-| `Level` | 日志级别，例如 debug/info/warn/error |
-| `Format` | JSON 或 console |
-| `Output` | stdout 或文件 |
-| `FilePath/MaxSizeMB/MaxBackups/MaxAgeDays` | 文件日志滚动配置 |
-| `context.Context` | 从请求上下文带出 trace_id |
+## 测试
 
-## 出参
-
-| 输出 | 说明 |
-| --- | --- |
-| 日志行 | 包含时间、级别、message、trace_id、字段 |
-| 全局 logger | `logger.L()` 可直接使用 |
-| 上下文 logger | `logger.From(ctx)` 自动带 trace 信息 |
-
-## 通俗比喻
-
-`logger` 就似商场 CCTV：平时没人专门盯住，但一出事就可以翻查「几时、边个入口、发生咩」。trace_id 就似录像编号，可以由头追到尾。
+`logger_test.go` 覆盖初始化、级别解析与 context 注入。

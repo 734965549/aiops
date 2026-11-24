@@ -19,7 +19,7 @@ Browser
 - PostgreSQL 外挂：使用 RDS、自建高可用 PostgreSQL、或平台 DBA 提供的实例。
 - Redis 外挂：生产环境必须可用，`AIOPS_REDIS__REQUIRED=true`。
 - 数据库初始化和迁移必须在 API 发布前由 DBA 显式执行，保持 `AIOPS_DATABASE__AUTO_MIGRATE=false`。
-- 不使用 initContainer、应用启动钩子或多副本 API 自动迁移生产数据库，避免并发迁移、权限扩大和不可审计变更。
+- 不使用 initContainer、应用启动钩子或 API 自动迁移生产数据库；迁移由发布流水线或 DBA 用镜像内置 `/app/aiops-migrate` 显式执行（可封装为一次性 Job，保证同一时间仅一个实例连库），避免并发迁移、权限扩大和不可审计变更。
 - 不把数据库密码、JWT secret、Redis 密码、AI provider key 写入 Git、ConfigMap、镜像层或前端环境变量。
 
 ## 前置条件
@@ -67,10 +67,10 @@ Redis：
 ## 发布顺序
 
 ```text
-1. 构建并推送 aiops-api 镜像
+1. 构建并推送 aiops-api 镜像（内含 aiops-migrate 与迁移 SQL）
 2. 构建并发布前端静态资源
 3. 备份外部 PostgreSQL
-4. DBA 在外部 PostgreSQL 执行建表、种子数据和迁移账本 SQL
+4. 由发布流水线或 DBA 用镜像内置 aiops-migrate 对外部 PostgreSQL 执行迁移（runner 写入账本）
 5. apply / update Kubernetes ConfigMap、Secret、Deployment、Service、Ingress
 6. 等待 /readyz 返回 data.status=ready
 7. 执行业务 E2E 或手工验收
@@ -79,41 +79,34 @@ Redis：
 
 ## 数据库初始化
 
-生产 Kubernetes 部署不允许 API 进程自动初始化数据库，也不在 Pod、initContainer 或 K8s Job 中运行迁移。数据库初始化由 DBA 在外部 PostgreSQL 上统一执行，应用只读取结果并通过 `/readyz` 校验状态。
+生产 Kubernetes 部署不允许 API 进程自动初始化数据库，也不在 API Pod 或启动钩子中运行迁移。迁移由发布流水线（或 DBA 手动触发）使用**镜像内置的自研迁移二进制**对外部 PostgreSQL 显式执行；`schema_migrations` 账本只能由 runner 写入，**禁止手工执行 SQL 后手工维护账本**（与 `ops/migration-contract.md` 的禁止清单一致）。
 
-DBA 执行范围包括：
+迁移执行方式（按优先级）：
 
-- 按版本顺序执行 `migrations/*.up.sql`。
-- 确认所有业务表、权限种子、Runbook 种子和审计相关表已成功创建。
-- 执行 `migrations/manual_schema_migrations.sql`，创建并维护 `schema_migrations` 迁移账本表。
-- 确认 `schema_migrations` 已记录当前发布版本包含的全部 SQL 版本。
+```bash
+# 方式 A（推荐）：镜像内置 aiops-migrate；可在流水线 Job 或任意能连库的节点执行
+docker run --rm \
+  -e AIOPS_DATABASE__HOST=prod-postgres.example.internal \
+  -e AIOPS_DATABASE__PORT=5432 \
+  -e AIOPS_DATABASE__USER=aiops \
+  -e AIOPS_DATABASE__PASSWORD=<postgres-password> \
+  -e AIOPS_DATABASE__NAME=aiops \
+  -e AIOPS_DATABASE__SSL_MODE=require \
+  registry.example.com/aiops/aiops-api:<version> /app/aiops-migrate
 
-`schema_migrations` 不是业务表，它是应用 readiness 用来判断数据库是否追平当前镜像内 `migrations/` 的账本。即使 DBA 已手工执行了所有 `*.up.sql`，也必须同步写入账本；否则 `/readyz` 会返回 migration pending，Pod 不应接收流量。
+# 方式 B：等价入口（同一镜像）
+docker run --rm ... registry.example.com/aiops/aiops-api:<version> /app/aiops-api -migrate
 
-DBA SQL 统一目录为仓库根目录下的 `migrations/`。生产初始化按 `migrations/README.md` 中列出的顺序执行：
-
-```text
-migrations/0001_init_identity.up.sql
-migrations/0002_seed_admin_permissions.up.sql
-migrations/0003_external_identity.up.sql
-migrations/0004_user_provisioning_permissions.up.sql
-migrations/0005_user_role_source.up.sql
-migrations/0006_auth_audit.up.sql
-migrations/0007_init_alert.up.sql
-migrations/0008_init_asset.up.sql
-migrations/0009_init_audit.up.sql
-migrations/0010_ai_analyze_permission.up.sql
-migrations/0011_init_execution.up.sql
-migrations/0012_init_runbook.up.sql
-migrations/0013_dashboard_permission.up.sql
-migrations/0014_init_asset_match_rule.up.sql
-migrations/0015_identity_access_control_management.up.sql
-migrations/0016_seed_default_admin_user.up.sql
-migrations/0017_repair_default_admin_superset.up.sql
-migrations/manual_schema_migrations.sql
+# 方式 C：源码方式（本地 / CI）
+go run ./cmd/migrate -config <prod-config>
 ```
 
-执行完成后检查：
+- `deployments/Dockerfile` 同时构建 `/app/aiops-api` 与 `/app/aiops-migrate`，并在构建期把仓库 `migrations/` 复制到镜像 `/app/migrations`；runner 按版本顺序执行全部 `*.up.sql`（当前 0001–0062）并写入 `schema_migrations`（含 SHA-256 checksum），无需任何手工账本维护。
+- 若用 K8s Job 跑迁移：设置 `backoffLimit`，并保证同一时间只有一个 Job 实例连库（runner 无分布式锁）；迁移成功后再滚动更新 API。
+- `/readyz` 的 migration 子项会比对镜像内 `migrations/` 与账本：pending 或 checksum 漂移都会让 Pod 不就绪；不要为了让 `/readyz` 变绿而预写账本。
+- `make migrate` / `go run ./cmd/migrate` 是开发环境方式，不作为 Kubernetes 生产部署步骤。
+
+迁移结果检查：
 
 ```sql
 SELECT version, name, applied_at
@@ -121,9 +114,7 @@ FROM public.schema_migrations
 ORDER BY version;
 ```
 
-只有在确认对应版本的 `*.up.sql` 已经实际执行成功后，才能写入该版本账本。不要为了让 `/readyz` 变绿而预写未执行版本。
-
-仓库内的 `go run ./cmd/migrate` / `make migrate` 是开发、测试环境可选方式；在“DBA 统一执行 SQL”的生产模式下，不作为 Kubernetes 部署步骤使用。当前 `deployments/Dockerfile` 也只打包 API 进程，不包含独立迁移二进制。
+SQL 分句与编写约束（块注释/行尾注释内不得含分号等）见 `ops/migration-contract.md`；迁移版本清单以仓库 `migrations/` 目录与该契约为准，本文档不再重复罗列。
 
 ## 基础清单示例
 
@@ -208,9 +199,12 @@ stringData:
   AIOPS_REDIS__PASSWORD: "<redis-password>"
   AIOPS_AUTH__JWT_SECRET: "<at-least-32-bytes-high-entropy-secret>"
   AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY: "<independent-high-entropy-secret>"
+  AIOPS_EXECUTION__AGENT_REGISTER_TOKEN: "<high-entropy-token-for-execution-agent-registration>"
 ```
 
 如果 Redis 不需要密码，可以删除 `AIOPS_REDIS__PASSWORD`，不要写空密码到共享模板中。
+
+`AIOPS_EXECUTION__AGENT_REGISTER_TOKEN` 是 Execution Agent 注册接口的准入令牌：prod 环境 `Config.Validate` 强制非空且需达到接近 JWT 的熵要求，缺失或弱值时 Pod 会在配置校验阶段退出；外部 Agent 注册、心跳与领取租约都依赖它。
 
 `AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY` 用于加密 Integration 接入账号凭据，必须与
 `AIOPS_AUTH__JWT_SECRET` 分离。`aiops-api:1.2` 起非 dev 环境启动时会拒绝空值、弱密钥、dev
@@ -289,9 +283,12 @@ spec:
               cpu: 1000m
               memory: 1Gi
           securityContext:
+            runAsNonRoot: true
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
       terminationGracePeriodSeconds: 30
 ```
 
@@ -330,8 +327,12 @@ metadata:
   name: aiops-api
   namespace: aiops
   annotations:
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    # SSE 对话回合最长 ai.turn_budget_s（默认 600s），服务端读写超时按 660s 对齐；
+    # nginx ingress 默认 60s 会截断流式响应。proxy-body-size 对齐 server.max_request_body_bytes
+    # （默认 10MB）：带图消息的 data URL 可达约 8MB，默认 1m 会 413。
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "660"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "660"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
 spec:
   ingressClassName: nginx
   tls:
@@ -600,8 +601,12 @@ metadata:
   name: aiops
   namespace: aiops
   annotations:
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    # SSE 对话回合最长 ai.turn_budget_s（默认 600s），服务端读写超时按 660s 对齐；
+    # nginx ingress 默认 60s 会截断流式响应。proxy-body-size 对齐 server.max_request_body_bytes
+    # （默认 10MB）：带图消息的 data URL 可达约 8MB，默认 1m 会 413。
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "660"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "660"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
 spec:
   ingressClassName: nginx
   tls:
@@ -818,7 +823,7 @@ $env:API_BASE = "https://api.example.com"
 | 现象 | 常见原因 | 处理 |
 | --- | --- | --- |
 | Pod Running 但未 Ready | `/readyz` 中 migration/db/redis 非 ok | 查 `kubectl logs` 和 `/readyz` 的 checks |
-| `migration` degraded | 外部数据库未执行最新 SQL，或 `schema_migrations` 账本未同步 | 由 DBA 补齐 SQL 与账本后，再滚动 API |
+| `migration` degraded | 镜像内迁移与账本未追平（pending 或 checksum 漂移） | 用当前镜像的 `/app/aiops-migrate` 补跑迁移后，再滚动 API；禁止手工改账本 |
 | `db` down | 安全组、DNS、SSL、账号密码或连接池配置错误 | 从临时调试 Pod 或 DBA 运维网络验证连通性 |
 | `redis` down | `redis.required=true` 且 Redis 不可达 | 检查 Redis 地址、密码、DB 编号和网络策略 |
 | 登录后 403 | 权限种子迁移未追平，常见于缺少 `0002` 或后续权限迁移 | 执行完整迁移并检查 `schema_migrations` |
@@ -831,11 +836,12 @@ $env:API_BASE = "https://api.example.com"
 - `AIOPS_AUTH__BOOTSTRAP_USERNAME/PASSWORD` 为空。
 - `AIOPS_AUTH__JWT_SECRET` 使用高熵密钥，长度至少 32 字节。
 - `AIOPS_INTEGRATION__CREDENTIAL_ENCRYPTION_KEY` 已通过 Secret 注入独立强密钥，且不同于 JWT secret。
+- `AIOPS_EXECUTION__AGENT_REGISTER_TOKEN` 已注入强熵值（prod 启动校验强制）；未部署 Execution Agent 时该令牌仍须配置。
 - PostgreSQL / Redis 不通过 Kubernetes LoadBalancer、NodePort 或 Ingress 暴露。
 - 前端不持有任何服务端密钥。
 - CORS 只允许正式前端域名。
 - API 镜像 tag 使用不可变版本，不使用 `latest`。
-- 外部 PostgreSQL 已备份，DBA 建表、种子数据和 `schema_migrations` 账本执行结果可追溯。
+- 外部 PostgreSQL 已备份；迁移由自研 runner 执行、账本由 runner 写入，执行记录可追溯。
 - 日志使用 stdout/json，便于平台采集并保留 `trace_id`。
 
 ## 回滚

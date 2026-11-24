@@ -676,6 +676,9 @@ func EnrichResourceSummary(item ResourceSummary) ResourceSummary {
 	if item.DimensionValue == "" {
 		item.DimensionValue = selector.DimensionValue
 	}
+	if item.Engine == "" {
+		item.Engine = strings.TrimSpace(item.Labels["engine"])
+	}
 	item.Labels = nil
 	return item
 }

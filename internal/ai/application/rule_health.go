@@ -46,6 +46,9 @@ type RuleHealthRuleResult struct {
 	// ResourceGroupCount 大于 0 表示规则按资源分组关联，ResourceCount 是分组数而非实例数。
 	ResourceGroupCount int               `json:"resource_group_count,omitempty"`
 	Dimensions         map[string]string `json:"dimensions,omitempty"`
+	// ResourceLevel / DimensionName 是规则在 CES 里的资源层级与维度名。
+	ResourceLevel string `json:"resource_level,omitempty"`
+	DimensionName string `json:"dimension_name,omitempty"`
 	// Sampled 表示规则关联多个资源/资源分组，本次只对其中部分实例取数。
 	Sampled bool `json:"sampled,omitempty"`
 	// ScopeSource 表示本次取数维度的来源：rule（规则直接绑定）/ resource_group（分组展开）/

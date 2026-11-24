@@ -98,12 +98,12 @@ docker compose -p aiops-demo \
 
 `-v` 只删除 `aiops-demo_*` 前缀的卷，`lianghua_lianghua_pg_data` 不受影响。
 
-## 验证结果
+## 验证记录
 
-主链路 e2e 全部通过（`scripts/e2e-alert.ps1`、`e2e-asset.ps1`、`e2e-runbook.ps1`、`e2e-execution.ps1`）：
+以下为**历史验证结果**（迁移基线 `0045` 时点）：主链路 E2E（`scripts/e2e-alert.ps1`、`e2e-asset.ps1`、`e2e-runbook.ps1`、`e2e-execution.ps1`）全部通过：
 
 ```
 告警接入 -> 资产匹配 -> Runbook 推荐 -> 执行确认 -> Dashboard 汇总 -> 审计追溯
 ```
 
-迁移版本 `0045`，`/readyz` 的 config / migration / db / redis 子项均为 `ok`。
+当前迁移基线已推进到 `0062`（`/readyz` 的 config/migration/db/redis 子项均应 `ok`）。demo seed 只写入 0045 前已存在的表与列（0046+ 新增列均有默认值，`ON CONFLICT DO NOTHING` 幂等），但**历史通过结论不代表当前基线已重跑**；重建演示环境后建议按 `docs/acceptance-checklist.md` 复跑一轮再对外演示。

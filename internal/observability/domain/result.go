@@ -106,6 +106,12 @@ type AlertRule struct {
 	// ResourceGroupIDs 是规则按资源分组关联时的分组 ID；
 	// 这类规则 provider 只返回分组、不返回实例维度，需要由资源分组展开补全。
 	ResourceGroupIDs []string `json:"resource_group_ids,omitempty"`
+	// ResourceLevel / ProductName 来自 CES 规则：product 表示云产品级，dimension 表示子维度；
+	// ProductName 形如 "SYS.RDS,rds_instance_id"，是云产品级规则唯一的维度线索。
+	ResourceLevel string `json:"resource_level,omitempty"`
+	ProductName   string `json:"product_name,omitempty"`
+	// DimensionName 是规则维度名（从 ProductName 推导，如 rds_instance_id）。
+	DimensionName string `json:"dimension_name,omitempty"`
 }
 
 // EvidenceRef 查询证据引用，供巡检与 AI 分析复用。

@@ -258,7 +258,7 @@ C. AI 会话 / Agent Loop
 - 强制收敛成功可返回 ok 或 insufficient_context，审计 `forced_convergence=true`；只有仍失败/输出非法才 degraded/agent_loop_exhausted。时间预算耗尽不走该强制轮。
 - `loop_rounds` 是实际追加取数轮数，不包含强制收敛；所有工具观测进入 tool_calls 和详细 tool_invoke 审计。
 
-**证据覆盖限制**：规则体检会先展开资源分组型规则的实例维度（单次规则列表最多展开 10 条、每条最多 3 个实例样本）；规则没有任何资源维度时（云产品级），按 namespace 对应的资源类型从本地云同步资源发现最多 3 个实例兜底（`scope_source=resource_discovery`），并对最多 3 个实例分别取数、取越限最严重的样本；只有连实例发现也取不到时才 `no_resource_scope`。进入 Prompt 的曲线最多 288 点，峰值时刻（`peak_at`）、破限片段与越限时长在降采样前按全量序列计算并保留；长窗口小时级聚合仍不能还原规则原始秒级窗口，Loop 预算/去重也会缩小实际覆盖。排查时应先核对 `scope_source`、`checked_resources`/`sampled`、截断标记、聚合 period 与实际执行轮数，再决定是否缩窗复查。
+**证据覆盖限制**：`ListAlarmRules` 不携带完整资源明细，规则资源优先通过 CES `ListAlarmRuleResources` 补全，并透传 `resource_level` / `product_name`（维度名）；资源分组型规则再展开分组（单次规则列表最多 10 条、每条最多 3 个实例样本）；仍无资源维度时按 namespace + 规则维度名从本地云同步资源发现最多 3 个实例兜底（`scope_source=resource_discovery`），并按规则名/描述中的引擎线索优先匹配同引擎实例，避免 PG 规则抽到 MySQL 实例。每条规则对最多 3 个实例取数、取越限最严重的样本；只有连实例发现也取不到时才 `no_resource_scope`。单次体检默认预算 60 次指标查询（总超时 75s），按广度优先分配：先保证每条规则至少 1 个实例，有余量再补第 2/3 个。进入 Prompt 的曲线最多 288 点，峰值时刻（`peak_at`）、破限片段与越限时长在降采样前按全量序列计算并保留；长窗口小时级聚合仍不能还原规则原始秒级窗口。排查时应先核对 `scope_source`、`dimension_name`、`checked_resources`/`sampled`、截断标记、聚合 period 与实际执行轮数，再决定是否缩窗复查。
 
 ### 8.5 SSE、取消与模型重试
 
@@ -489,9 +489,10 @@ sendNow 完成/失败 finally
 ### 11.5 验证覆盖与差距
 
 - `useChat.spec.ts`：1 个用例覆盖跨会话并发、同会话第二条入队、首条完成后自动发送与列表 `sendingSessionIds` 标记。
+- `BasicLayout.spec.ts`：4 个用例覆盖共享控制器跨页语义——路由重挂载不换控制器实例、在途流不被中止（整布局卸载才 abort）、跨页队列顺序/置顶/删除与「停止并清空队列」。
 - `AIAssistantOverlay.spec.ts`：4 个用例覆盖选择器不自动打开、选择历史会话、带告警上下文新建会话与默认入口自动选中。
 - `QueuedMessageList.spec.ts`：1 个用例覆盖置顶/删除/清空事件透传；`chatSessionState.ts` 类型无独立测试。
-- 当前差距：停止并清空队列、队列管理与流的交互、归档会话排队逐条失败、删除会话清理、`Alt + A` 快捷键与窄屏宽度均无专项测试；排队条目与乐观消息不持久化，刷新后丢失，不能把浮层当作可恢复的工作区。
+- 当前差距：归档会话排队逐条失败、删除会话清理、`Alt + A` 快捷键与窄屏宽度无专项测试；排队条目与乐观消息不持久化，刷新后丢失，不能把浮层当作可恢复的工作区。
 
 ## 12. RDS 长事务历史会话诊断
 

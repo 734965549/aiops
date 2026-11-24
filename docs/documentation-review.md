@@ -182,18 +182,18 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 ### 5.1 契约和目录 README
 
 - `ops/ai-contract.md`：AI 契约各轮次（Provider/工具网关、会话/Agent Loop、记忆/知识、分享/多模态、浮层/消息排队、RDS 诊断、ai-orchestrator）已按代码修正完毕；后续如改动 AI 行为需按相同口径回补。
-- `cmd/api/README.md`：装配说明仍偏 Identity/AI，需对齐当前 11 个业务上下文及后台任务。
-- `web/src/views/README.md`、`web/src/stores/README.md`、`web/src/router/README.md`：仍停留在早期概念说明，需补实际页面、aiContext、共享会话和权限边界。
-- `web/src/api/README.md`：拓扑函数归属和跨应用关系已修正；Inspection `getPolicy` 已核对为后端与封装均存在、页面未使用，其余模块继续按轮次复核。
+- `cmd/api/README.md`：已重写为当前装配口径（11 个 registrar、AI 端口注入、可选 worker、关机顺序与降级分支），bootstrap/server README 同步重写替换早期概念稿；pkg 共享包留待独立轮次。
+- `web/src/router/README.md`、`web/src/views/README.md`、`web/src/stores/README.md`：均已重写为实际实现口径（路由表/守卫/静态菜单/深链、页面清单、auth+aiContext 双 store 与跨页语义，替换早期概念稿并补齐 aiContext 登记）。
+- `web/src/api/README.md`：拓扑函数归属和跨应用关系已修正；Inspection `getPolicy` 已核对为后端与封装均存在、页面未使用；request/SSE 基础设施已按代码补全（200 非 OK 拒绝、单次刷新重试、两类 409 静默、http 解包、SSEParser/consumeSSE 语义与测试边界）；其余模块继续按轮次复核。
 
 ### 5.2 部署、演示和发布
 
-- `deployments/kubernetes.md`：手工 SQL/手工账本与自研 runner 冲突；迁移清单停在 `0017`；关于镜像不含迁移二进制的描述已过时。
-- Kubernetes 示例还需核对生产必需的 Execution Agent 注册令牌、SSE/Ingress 超时和安全配置。
-- `docs/release-checklist.md`：存在旧迁移号示例、旧前端静态目录、E2E 覆盖偏旧及 `go test` 与 race 表述不一致等问题。
-- `docs/demo-flow.md`：仍有旧迁移基线和“全部 E2E”范围不清等问题；Alert 告警源字段与 secret 语义已随本轮修正。
-- `deployments/README.demo.md`：历史验证结果需按当前迁移基线重述；`deployments/README.md` 的默认管理员前提已随 Identity 轮次修正。
-- `scripts/` 没有统一索引；后续应说明每个脚本的前置条件、外部资源、写数据/清理行为和适用环境。
+- `deployments/kubernetes.md`：已随 Compose/K8s 轮次修正——手工 SQL/手工账本改为镜像内置 `aiops-migrate` 流水线执行、过时迁移清单移除、镜像已含迁移二进制的描述纠正、Ingress 超时 660s + body-size 10m、Secret 示例补 Execution Agent 注册令牌、安全上下文补 seccomp/runAsNonRoot。
+- Kubernetes 示例的 Execution Agent 注册令牌、SSE/Ingress 超时和安全配置已核对修正（见上条）。
+- `docs/release-checklist.md`：已随发布清单轮次修正——go test 补 `-race -count=1` 与 `make test` 一致、前端静态目录改为 `static/`（`assets/` 与 SPA 路由冲突）、示例迁移号 0047→0062、§6 E2E 表更正 e2e-asset 覆盖边界并补扩展脚本指引。
+- `docs/demo-flow.md`：文档版本行更新为当前基线 0062；“一键自动化验收”改为主链路 4 脚本并指明扩展脚本索引，go test 同步补 race。Alert 告警源字段与 secret 语义已随前序轮次修正。
+- `deployments/README.demo.md`：历史验证结果已标注“迁移基线 0045 时点”，当前基线 0062 需重跑后再对外演示；`deployments/README.md` 的默认管理员前提已随 Identity 轮次修正。
+- `scripts/`：统一索引已随 scripts/E2E 轮次补齐（`scripts/README.md`：前置、外部依赖、写数据/清理、SKIP 语义与验收锚点）；逐项覆盖边界仍以验收清单各节为准。
 
 ### 5.3 不能只靠文档关闭的实现差距
 
@@ -210,6 +210,7 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 - Observability 真实 logs/traces/topology 与 SigNoz/Prometheus 在线 Adapter 未落地；公共指标 Handler 未接收 project_id，证据详情 API/UI 未提供。普通证据与 AI 定稿 payload 不能合并描述，fake/mock E2E 不能替代真实云验收。
 - Inspection 定时 worker、取消、通知、真实 scope 资源映射和前端转执行未落地；Recommendation 不存 task_id，任务创建与状态更新非事务，Execution 完成不回写，不能凭后端路由存在认定巡检闭环完成。
 - AI Provider 无健康检查/测试连接，数据库与运行时无统一事务或跨实例广播；页面普通编辑清 headers。Provider CRUD 无操作审计，直接工具调用的 allowed=false 仍记 result=success且缺 reason；工具确认豁免、非 all 数据范围入口限制和固定工具目录必须按实际实现展示。
+- `deploy-prod.ps1` 与 `verify-post-migration.ps1` 的 `-ExpectedMigrationVersion` 默认值停在 `0061`，当前基线已是 `0062`：不显式传参时迁移后校验会失败。发布清单示例已改为显式传 `0062`；脚本默认值是否改为动态读取最新迁移版本由后续需求单独确认。
 - AI 会话详情仅最近 200 条，用户/助手消息非同一事务且后端无会话级串行锁；前端归档输入清空、生成中模型未禁用、详情无通用刷新，重试复用旧 key 只重放并可能重复显示，历史重试不可用。同步封装 90 秒与默认 600 秒 Loop 预算不一致。
 - AI 取数链路三项缺口已于 2026-11-24 修复：资源分组/云产品级规则会在 provider 层展开实例维度并按规则最多 3 个实例抽样（不再只取首实例）；曲线定稿上限提升到 288 点，峰值时刻与破限片段/时长在降采样前按全量序列计算；Agent Loop 预算放宽到 4 轮/80000 token/单轮 4 个申请。小时级 max 聚合仍不能还原原始秒级误报，需模型缩窗复查。
 - AI 记忆管理 UI 只传 status/keyword/user_id、limit=100，未使用 application/resource/offset 和分页，详情不展示 session_id；自动反馈增减不写独立 memory 审计。知识 UI 不展示审核/创建元数据，激活/停用无确认，聚合固定 min_cases=3。记忆 E2E 不查管理列表，knowledge E2E 未覆盖 403、编辑回草稿、自动停用和聚合幂等完整断言。
@@ -223,8 +224,8 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 2. P0 主链路：Identity（已完成）→ Alert（已完成，CES 审计事务旧描述已修正）→ Asset/CMDB/拓扑（文档已完成，实现差距已登记）→ Runbook（文档已完成，Command Spec 边界已登记）→ Execution/Execution Agent（文档已完成，控制面边界已登记）→ Dashboard（文档已完成，降级边界已登记）→ Audit（文档已完成，聚合/导出与写入边界已登记）。
 3. 云与观测：Integration（文档已完成，字段检查/凭据/前端边界已登记）→ Observability/证据快照（文档已完成，真实/fake 与定稿边界已登记）→ Inspection（文档已完成，同步规则/转执行边界已登记）；CES 告警拉取归入 Alert，CES 资源同步归入 Asset。
 4. AI：Provider/工具网关（文档已完成）→ 会话/Agent Loop（文档已完成）→ 记忆/知识（文档已完成，反馈/聚合/管理 UI/E2E 覆盖差距已登记）→ 分享/多模态（文档已完成，共享页附图渲染与图片 E2E 缺口已登记）→ 浮层/消息排队（文档已完成，队列快照/不持久化/停止清队与测试差距已登记）→ RDS 诊断（文档已完成，告警弹窗无诊断展示、平台主动采集未实现与真实账号 E2E 边界已登记）→ ai-orchestrator（文档已完成，降级无 degraded 标记、不消费 postgres_activity、无部署模板与 E2E 已登记）。AI 模块队列全部完成。
-5. 前端公共能力：API/request/SSE → Router/导航 → Stores/布局与跨页状态。
-6. 工程与交付：cmd/bootstrap/server/version/pkg → migrations → Compose/Kubernetes → scripts/E2E → demo/验收/发布清单。
+5. 前端公共能力（全部完成）：API/request/SSE（文档已完成，request 无专项 Vitest 与 consumeSSE 测试边界已登记）→ Router/导航（文档已完成，路由表/守卫/静态菜单/深链清单与 router·views README 重写完成）→ Stores/布局与跨页状态（文档已完成，aiContext 登记、跨页控制器测试边界修正完成）。
+6. 工程与交付（全部完成）：cmd/bootstrap/server/version（装配层文档已完成）→ pkg 共享包（文档已完成，8 份 README 重写）→ migrations（文档已完成，SQL 分句边界并入契约）→ Compose/Kubernetes（文档已完成，kubernetes.md 手工账本/迁移清单/Ingress 超时/Agent 令牌与 README.demo 历史口径已修正）→ scripts/E2E（文档已完成，统一索引建立）→ demo/验收/发布清单（文档已完成，release-checklist race/静态目录/迁移号/E2E 边界与 demo-flow 基线已修正；脚本默认迁移版本缺口已登记 §5.3）。
 
 ## 7. 全局基线检查记录
 
@@ -371,3 +372,94 @@ fake/mock、真实云账号、可选 worker、后端 API、前端 UI 和独立�
 - 验证比对：`analysis_test.go` 7 个用例、toolgateway 类型 c 仅 stub 覆盖；验收 9.7.17 登记为手工构建人工验收项。
 - 自动校验通过：本轮修改 Markdown 的尾随空格、代码围栏和本地链接检查通过，9.7.1–9.7.17 验收编号一致；`git diff --check` 无空白错误。
 - 本轮未执行 Go 测试、前端 Vitest 或 AI E2E，不记为运行通过，未修改任何业务代码。
+
+## 25. 前端 request/SSE 检查记录
+
+- request/SSE 轮次扩充 `web/src/api/README.md`（重写请求与错误处理章节、新增 SSE 章节），更新队列与本记录。
+- request.ts 比对：`VITE_API_BASE` 缺省 `/`、默认 30s 超时与单接口覆盖、Bearer 注入、HTTP 200 且 `code==="OK"` 才成功（非 OK 弹错并 reject `ApiHttpError(200, code)`）、401 单次 refresh 重试（`_retry` 防循环，登录/刷新/登出路径排除）、刷新失败登出并带 redirect 跳转、403 warning 与 PERMISSION_DENIED 迁移提示、两类 409 静默（资产同步 in-progress 精确匹配、AI 对话消息冲突）、503/UNAVAILABLE 提示、网络错误兜底、`http<T>` 解包 `data.data` 均按代码核对。
+- sse.ts 比对：跨分片缓冲与 CRLF/CR 归一化、空行切帧、多行 data 合并、注释与 id/retry 忽略、flush 兜底、consumeSSE 逐帧回调与 onFrame 抛错取消响应体、read 前 signal 检查、`isAbortError` 兼容 `CanceledError` 均按代码核对；唯一使用方为 `streamChatMessage`。
+- 验证边界：`request.ts` 无专项 Vitest；`sse.spec.ts` 7 个用例覆盖解析器与取消识别，`consumeSSE` 读取/取消链路由 useChat.spec 间接覆盖；`asset.spec.ts` 只覆盖批次通知文案，不覆盖同步 409 判断。auth store 的 localStorage Token 差距维持既有登记不变。
+- 自动校验通过：本轮修改 Markdown 的尾随空格、代码围栏和本地链接检查通过；`git diff --check` 无空白错误。
+- 本轮未执行前端 Vitest 或构建，不记为运行通过，未修改任何业务代码。
+
+## 26. Router 与导航检查记录
+
+- Router/导航轮次重写 `web/src/router/README.md` 与 `web/src/views/README.md`（替换早期概念稿），更新队列与本记录。
+- 路由比对：登录页 + BasicLayout 下 14 个业务路由 + 404 兜底；`/system` 外壳 redirect `/system/ai-config`，`/identity/access-control`、`/identity/ldap-import` 为绝对路径子路由（URL 在 `/identity` 下、渲染在外壳内、借 `activeMenu=/system` 高亮）；`/ai-assistant/shared/:token` 非 public，未登录先登录页；`createWebHistory` 与 `afterEach` 标题拼接均按代码核对。
+- 守卫比对：仅校验 token 存在（空时 `loadFromStorage()` 恢复），无 RBAC/菜单权限过滤；已登录访问 `/login` 按 `?redirect`（须以 `/` 开头）回跳；`meta.public` 放行；无 token 带 `redirect=to.fullPath` 去登录页；`request.ts` 经动态 import router 避免循环依赖。
+- 导航比对：侧栏 `navigation.ts` 为静态 4 组 12 项，不读角色权限；`BasicLayout` 高亮按 activeMenu → navigationItems 最长前缀匹配 → 当前路径兜底。
+- 页面清单比对：views 目录与路由一一对应；深链 `?alert_id=`、`?application_id=`、`?resource_id=`、`?task_id=`、`?tab=match-rules`、`?redirect=` 由各页面读取清理，router 不统一处理；404 页 public 独立渲染。
+- 验证边界：路由表与守卫无专项 Vitest，行为靠页面测试与人工验收；`stores/README.md` 缺 `aiContext.ts` 登记留待 Stores/布局轮次。
+- 自动校验通过：本轮修改 Markdown 的尾随空格、代码围栏和本地链接检查通过；`git diff --check` 无空白错误。
+- 本轮未执行前端 Vitest 或构建，不记为运行通过，未修改任何业务代码。
+
+## 27. Stores 与布局检查记录
+
+- Stores/布局轮次重写 `web/src/stores/README.md`（补齐 aiContext store 登记并细化 auth 语义），更新 AI §11.5、验收 9.8 前置、演示 8H 覆盖说明、队列与本记录。
+- auth store 比对：`login` 支持 providerId 走外部身份源、`loginWithOAuthCallback` 补入方法表、`refresh` 无 token 抛错且并发复用 in-flight、`logout` 先清本地再 best-effort 吊销、`loadFromStorage` user 解析失败置 null、`aiops_token/aiops_refresh_token/aiops_user` 持久化键均按代码核对；localStorage Token 差距维持既有登记。
+- aiContext store 比对：current 资源级字段、overlayVisible/overlaySessionPicker、hasResourceContext 将 `execution_id` 视为资源级、summary 摘要、setPageContext trim 转义、setPageBase 同页保留/页基重置、clearResourceContext、openOverlay 显式选择器入口均按代码核对；`aiContext.spec.ts` 6 个用例覆盖。
+- 布局与跨页状态比对：App.vue 仅路由出口；BasicLayout onMounted 有 token 才 fetchCurrentUser 刷新用户（失败不阻断）；ChatController 经 provide/inject 跨页共享（Pinia 不承载对话状态）；深链与浮层语义引用 router/ai 章节，不重复登记。
+- **修正第 22 轮登记**：`BasicLayout.spec.ts`（commit 4b9ad68 已存在，当时盘点遗漏）4 个用例覆盖跨页共享控制器——路由重挂载不换实例且在途流不被中止、整布局卸载才 abort、跨页队列顺序/置顶/删除与停止清队；AI §11.5、验收 9.8 前置与演示 8H 已同步修正，归档排队失败/删除清理/快捷键仍无专项测试。
+- 自动校验通过：本轮修改 Markdown 的尾随空格、代码围栏和本地链接检查通过；`git diff --check` 无空白错误。
+- 本轮未执行前端 Vitest 或构建，不记为运行通过，未修改任何业务代码。
+
+## 28. 装配层（cmd/bootstrap/server/version）检查记录
+
+- 装配层轮次重写 `cmd/api/README.md`、`internal/bootstrap/README.md`、`internal/server/README.md`（替换早期概念稿），更新队列与本记录；`internal/version` 无独立 README，由 internal/README 与 `/version` 路由说明覆盖。
+- cmd/api 比对：`-config`/`-migrate` 双模式（迁移后退出为生产推荐）、bootstrap 超时缺省 30s、server 超时低于 `turn_budget_s+60` 仅告警；装配顺序（JWT -> Identity（Redis 降级矩阵）-> 凭据 Vault -> AI 网关三执行器 -> Audit 四 recorder -> 各上下文 -> AI 端口 setter 链 -> CES/Asset 同步与可选 worker -> 11 个 registrar）；关机顺序 rootCancel -> HTTP drain -> 独立预算等待同步/worker -> app.Close 均按代码核对。
+- bootstrap 比对：Init/Migrate 双入口、auto_migrate 仅 dev/test、Redis required/optional 降级矩阵、迁移超时缺省 5 分钟均按代码核对。
+- server 比对：中间件固定顺序含 SecurityHeaders 与可选 RequestBodyLimit（原 README 遗漏）、public/authed 双分组、`/readyz` 五子项语义（config/migration/db 非 OK 阻塞、checksum drift 子项 degraded 且阻塞顶层、redis 按 required 区分 down/degraded）、read_header_timeout 5s 与 max_header_bytes 1MB 缺省均按代码核对。
+- 验证比对：`main_test.go` 仅 1 个装配冒烟；`router_test.go` 覆盖中间件与探针；关机顺序与装配降级分支无专项测试，靠模块测试与人工验收。
+- 边界决策：pkg 共享包（8 个子包约 3500 行）规模足以独立成轮，本段拆为「装配层」与「pkg」两轮。
+- 自动校验通过：本轮修改 Markdown 的尾随空格、代码围栏和本地链接检查通过；`git diff --check` 无空白错误。
+- 本轮未执行 Go 测试或构建，不记为运行通过，未修改任何业务代码。
+
+## 29. pkg 共享包检查记录
+
+- pkg 轮次重写 `pkg/README.md` 与 auth/config/database/errors/logger/transport/transport·http/transport·http·middleware 共 8 份 README（替换早期概念稿）；`pagination`（58 行、无测试）并入 pkg 根 README，不单独建文件。
+- errors 比对：12 个错误码、`FromError` 未包装转 INTERNAL 固定文案、`CodeOf/MessageOf`、HTTPStatus 映射（`ABORTED`→409、`PAYLOAD_TOO_LARGE`→413、`RESOURCE_EXHAUSTED`→429）按代码核对。
+- logger 比对：dev 强制 console 彩色、file 模式 lumberjack 滚动压缩、全局 atomic 单例未初始化为 Nop、`ReportError` 未初始化降级 stderr、字段 helper 清单按代码核对。
+- database 比对：NewPostgres `PrepareStmt`/`SkipDefaultTransaction`/5s ping、NewRedis 3s ping、BaseModel 钩子（保留显式 CreatedAt、`db.Exec` 绕过）、23505 映射、GORM 慢查询 200ms、迁移 runner（二进制同级目录优先、checksum 空 backfill/漂移 fail-closed 与 `/readyz` 只读报告分离、TargetVersion 整数截断）均按代码核对。
+- **新登记边界**：迁移 SQL 分句仅识别整行 `--` 注释与单引号字符串（含 `''` 转义），块注释或 dollar-quoted 字符串内的分号会导致错误切分——已写入 database README，下一轮 migrations 核对时并入 `ops/migration-contract.md`。
+- auth/config/transport 比对：JWT HS256/Claims typ/30s skew/TTL 缺省、bcrypt cost 12、refresh store Redis 键结构与 RevokeAll、登录限流降级、配置优先级与默认值（read 15s/write 30s/body 10MB）、JWT secret 非 dev 强度规则（≥32 字节/≥16 唯一字符/重复 run ≤4/熵 ≥3.8）、CORS 防御过滤、BindJSON 解码前 UTF-8 校验、Trace UUID 归一、RequestLog 分级与脱敏、RequestBodyLimit 经 MaxBytesReader 返回 413、AuthorizeStatic/Dynamic/Required 三入口语义均按代码核对。
+- 自动校验通过：本轮修改 Markdown 的尾随空格、代码围栏和本地链接检查通过；`git diff --check` 无空白错误。
+- 本轮未执行 Go 测试或构建，不记为运行通过，未修改任何业务代码。
+
+## 30. migrations 检查记录
+
+- migrations 轮次盘点迁移目录并核对 `ops/migration-contract.md`，把 SQL 分句边界补全进契约；`pkg/database/README.md` 同步措辞。
+- 目录比对：61 个 `*.up.sql`（0001–0062，缺 `0021` Notification 与验收 0.2 口径一致），**全部有 `*.down.sql` 配对**；`migrations/manual_schema_migrations.sql` 存在且在契约禁止清单内；文件名均匹配 `^(\d{4,})_name.up.sql$`；契约执行顺序清单 61 条与实际文件一一对应。
+- 契约声称核对：`make migrate`/`make migrate-up`（Makefile 双目标规则）、compose dev 注入 `AIOPS_DATABASE__AUTO_MIGRATE=true` 且与 make migrate 二选一、迁移超时缺省 300s、`migrate_test.go` 对仓库全部 up.sql 做拆分冒烟、0001/0002 down 清理账本记录、`aiops-migrate` 由 `deployments/Dockerfile` 构建进镜像（部署细节归 Compose/K8s 轮次）、checksum 空 backfill 与漂移 fail-closed 无白名单、`/readyz` 判读指向 health 契约，均与代码/配置一致。
+- **补全分句边界**：契约原只写“忽略整行 `--` 注释、单引号内分号不拆、不支持美元引用”；本轮补上**行尾 `--` 注释与块注释 `/* */` 内的分号同样会被误当分隔符**（剔除仅对整行注释生效），并给出迁移编写约束（含分号说明一律写成整行注释）。扫描确认现有 61 个迁移无风险写法（两处 `--...;` 命中均为整行注释，会被剔除）；`0041`/`0042` 的 `CHECK(n=0)` 守卫即兼容该 splitter 的纯 DML 写法，已在契约标注。
+- 命名与规范核对：版本号正则允许 4+ 位递增、上下文前缀约定、业务表时间戳由 Go 维护（`schema_migrations.applied_at` 为唯一 DEFAULT NOW() 例外且 runner 显式传参）均与宪章及 runner 实现一致。
+- 自动校验通过：本轮修改 Markdown 的尾随空格、代码围栏和本地链接检查通过；`git diff --check` 无空白错误。
+- 本轮未执行迁移或 Go 测试，不记为运行通过，未修改任何业务代码。
+
+## 31. Compose/Kubernetes 检查记录
+
+- Compose/K8s 轮次定向修订 `deployments/kubernetes.md` 与 `deployments/README.demo.md`；`deployments/README.md` 已在前序轮次重写为准确口径，本轮仅复核。
+- Compose 比对：主文件（660s 读写超时、AUTO_MIGRATE=false 默认、bootstrap 留空、JWT dev 占位回退、migrations 只读挂载、/readyz 健康检查）、dev 覆盖（auto_migrate=true + admin/admin123 + 挂载 config.example.yaml）、prod（`AIOPS_IMAGE` 必填禁 latest、migrate-first 三方式、PG/Redis 不映射端口、read_only+cap_drop+no-new-privileges、Agent 注册令牌必填、CORS/TTL）、web/host/demo 覆盖（独立前端容器、seccomp 兼容、`!override` 端口隔离）均与文件一致；`scripts/verify-prod-version.ps1` 存在。
+- Dockerfile 比对：多阶段构建同时产出 `/app/aiops-api` 与 `/app/aiops-migrate` 并 COPY migrations；tini 转发信号、非 root 运行、内置 HEALTHCHECK /readyz。
+- kubernetes.md 修正（§5.2 既有待办逐项关闭）：①「数据库初始化」由“DBA 手工 SQL + 手工维护账本”改为镜像内置 `/app/aiops-migrate` 流水线执行（Job 需单实例连库），删除停在 `0017` 的手工清单与 `manual_schema_migrations.sql` 步骤；②纠正“镜像不含迁移二进制”的过时描述；③两处 Ingress 注解 60s→660s 并补 `proxy-body-size: 10m`（SSE 回合 600s 预算与带图消息体量）；④Secret 示例与生产安全检查补 `AIOPS_EXECUTION__AGENT_REGISTER_TOKEN`（prod Validate 强制）；⑤API Deployment 安全上下文补 `runAsNonRoot` 与 `seccompProfile RuntimeDefault`；⑥排障表与备份措辞改为 runner 口径。
+- README.demo.md 修正：验证结果标注为历史时点（迁移基线 `0045`），当前基线 `0062` 需重建后重跑再对外演示；核对 demo seed 仅写 0045 前已存在的表列（0046+ 新增列有默认值，兼容当前 schema）。
+- web/Dockerfile 引文与实际文件一致；未部署 Execution Agent 时注册令牌仍须配置的边界已登记。
+- 自动校验通过：本轮修改 Markdown 的尾随空格、代码围栏和本地链接检查通过；`git diff --check` 无空白错误。
+- 本轮未执行 compose/K8s 部署验证，不记为运行通过，未修改任何业务代码。
+
+## 32. scripts/E2E 检查记录
+
+- scripts/E2E 轮次新建 `scripts/README.md` 统一索引（§5.2 既有待办「scripts 没有统一索引」关闭），更新队列与本记录。
+- 盘点比对：22 个 `e2e-*.ps1`（21 个可独立运行 + 1 个共享 fixture `e2e-ai-mock-provider`）与装配层/全局基线记录的「19 个默认 E2E + 2 个带外部前提的可选 E2E」口径一致；生产运维 6 个脚本（deploy-prod/backup/verify-post/verify-prod-version/provision-prod-admin/tools/hash-password）与工程检查 3 项（check_architecture.py/基线 JSON/tests 两个）均已入索引。
+- 脚本行为比对：逐个核对头部前置注释与尾部清理段——`e2e-inspection/integration/observability/alert-sync/asset-sync/ai-rules/ai-evidence` 在 finally 清理账号或探针资源；`e2e-alert/asset/runbook/execution/execution-agent*/identity-access` 保留业务数据；`e2e-runbook` 支持独立运行或 `-AlertId` 复用；`-ApiBase`/`API_BASE` 全量支持；SKIP 分支（agent-loop 无告警、ai-memory degraded、ai-mock-provider/ai-stream/postgres-history 必填参数）均已在索引登记。
+- 验收锚点比对：21 个可运行脚本与验收清单 §1–§9.17 各节对应关系逐一核实（e2e-ai-evidence 归 §9.2 观测证据账本，不在 AI 助手分节）；覆盖边界仍以验收清单为单一事实源，索引不重复断言。
+- 自动校验通过：本轮修改 Markdown 的尾随空格、代码围栏和本地链接检查通过；`git diff --check` 无空白错误。
+- 本轮未执行任何 E2E 脚本，不记为运行通过，未修改任何业务代码。
+
+## 33. demo/验收/发布清单检查记录
+
+- 收尾轮次修正 `docs/release-checklist.md` 与 `docs/demo-flow.md`（§5.2 既有待办逐项关闭），更新队列与本记录；工程与交付阶段全部完成。
+- release-checklist 修正：①1.1 `go test` 命令补 `-race -count=1` 并标注与 `make test` 一致，消除“无 race”表述与命令不一致；②7.2 静态资源目录 `assets/`→`static/`（`web/vite.config.ts` `build.assetsDir='static'`，避免与 SPA 路由 `/assets` 冲突）；③§9 示例 `-ExpectedMigrationVersion 0047`→`0062`；④§6 E2E 表更正 `e2e-asset` 覆盖边界（不含云同步）并追加扩展脚本段落指向 `scripts/README.md` 与验收清单。既有迁移基线（0062、0021 缺失）、0032/0039/0044、镜像校验与 Agent 令牌条目经复核为准确，未改动。
+- demo-flow 修正：文档版本行由“与 migration 0017 同期”改为当前基线 0062；“一键自动化验收”由“全部 E2E 脚本”改为主链路 4 个 + 扩展指引，构建验收命令同步补 race。
+- **新登记缺口（§5.3）**：`deploy-prod.ps1` 与 `verify-post-migration.ps1` 的 `-ExpectedMigrationVersion` 默认值停在 `0061`，不显式传参时对 0062 基线校验会失败；本轮只改文档示例并登记，脚本默认值改动待确认。
+- 自动校验通过：本轮修改 Markdown 的尾随空格、代码围栏和本地链接检查通过；`git diff --check` 无空白错误。
+- 本轮未执行构建、测试或发布脚本，不记为运行通过，未修改任何业务代码。

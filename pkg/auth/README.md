@@ -1,42 +1,33 @@
-# pkg/auth 模块说明（粤语版）
+# pkg/auth 模块说明
 
-## 呢个模块做咩
+`auth` 提供与业务无关的认证原语：密码哈希、JWT 签发/校验、refresh token 会话存储、登录限流与 IP 白名单。Identity 上下文消费这些原语实现登录与鉴权；接入 OIDC/SSO 时在 Identity 内适配，不改本包接口。
 
-`auth` 系平台嘅「钥匙同门锁」。密码入库之前要加密，用户登录成功之后要发 token，请求入嚟时要验 token。
+## JWT（`jwt.go`）
 
-## 调用关系
+- HS256 对称密钥；`Claims` 在标准 RegisteredClaims 上扩展 `uname`（用户名）、`roles`（仅展示与粗判，权限校验仍需服务端再查）、`typ`（access/refresh 区分，防止 refresh 被当 access 使用）。
+- `NewJWTManager`：secret 必填；TTL 缺省 access 2h / refresh 7 天；clock skew 缺省 30s。
+- 一个实例绑定一份 (secret, issuer, ttl)；密钥轮换需在实例外再包一层并保留 kid。
 
-```text
-identity.AuthService
-  -> HashPassword / VerifyPassword
-  -> JWTManager.IssueAccess / IssueRefresh
-  -> JWTManager.Verify
+## 密码（`password.go`）
 
-server Auth 中间件
-  -> JWTAuthenticator.Authenticate
-  -> JWTManager.Verify(access token)
-```
+- bcrypt cost 12（`HashPassword/VerifyPassword`）；空密码拒绝。
+- `ErrPasswordMismatch` 是校验失败统一错误；调用方转为 `UNAUTHENTICATED` 等业务码，不回显内部细节。
 
-## 入参
+## Refresh token 会话（`refresh_store.go`）
 
-| 方法 | 入参 | 说明 |
-| --- | --- | --- |
-| `HashPassword` | 明文密码 | 创建默认管理员或注册时使用 |
-| `VerifyPassword` | 密码 hash、明文密码 | 登录时验证 |
-| `NewJWTManager` | secret、issuer、accessTTL、refreshTTL | 创建签发同验证 JWT 嘅工具 |
-| `IssueAccess/IssueRefresh` | 用户 ID、用户名 | 签发 token |
-| `Verify` | token、token 类型 | 校验 token 是否有效同类型是否正确 |
+- 接口 `RefreshTokenStore`：`Register/Validate/Revoke/RevokeAll`（强制下线）。
+- `RedisRefreshTokenStore`：键 `auth:refresh:<user_id>:<jti>`，TTL 与 token 过期一致；`RevokeAll` 按用户前缀扫描。无 Redis 时使用 `NoopRefreshTokenStore`（dev-only，禁轮换）。
+- `NewRefreshTokenJTI` 生成唯一标识。
 
-## 出参
+## 登录限流与 IP 白名单（`login_limiter.go`/`ip_allowlist.go`）
 
-| 输出 | 说明 |
-| --- | --- |
-| 密码 hash | 存入数据库，唔存明文 |
-| access token | 调业务接口用 |
-| refresh token | 换新 token 用 |
-| claims | token 入面解析出用户 ID、用户名、类型、过期时间 |
-| error | 密码唔匹配、token 过期、secret 配置错等 |
+- `LoginAttemptLimiter`：按 IP 与用户名两个维度的窗口计数、失败锁定与锁定时长，配置经 `pkg/config` 注入；无 Redis 时降级为进程内计数（多副本不共享）。
+- `NewIPAllowlist`：解析登录白名单网段，配置非法即报错（`config.Validate` 前置校验）。
 
-## 通俗比喻
+## 中间件适配（`middleware_adapter.go`）
 
-密码 hash 就似将门匙倒模成保险箱编号，别人睇到编号都唔知原匙点样。JWT 就似临时通行证，写住你系边个、几时过期、可唔可以入门。
+`JWTAuthenticator` 实现 `pkg/transport/http/middleware.Authenticator`，把 token 校验结果转换为 `Identity{UserID, Username, Roles}` 注入 Gin context（`user_id/username/roles`）。
+
+## 测试
+
+`jwt_test.go`/`password_test.go`/`login_limiter_test.go`/`ip_allowlist_test.go` 覆盖签发校验、哈希、限流与白名单语义。
