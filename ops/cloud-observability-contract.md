@@ -85,6 +85,10 @@ AI 工具权限建议：
 
 ## 4. Integration API
 
+当前提供 6 个账号路由和 `read/create/update/delete/check` 五类权限。所有路由使用 `AuthorizeStatic`：只检查 RBAC，不按 `owner_team`、region 或其他对象字段自动应用数据范围过滤。migration `0018` 默认将五类权限绑定 admin，并迁移/移除旧 `app:integrations:write`。
+
+Integration 只管理账号、凭据引用、默认能力声明和字段级检查；真实观测/资源能力由对应 Provider Adapter 单独验收。
+
 ### 4.1 创建接入账号
 
 - Method: `POST`
@@ -105,6 +109,7 @@ AI 工具权限建议：
 | `enabled` | boolean | 否 | 默认 true |
 | `owner_team` | string | 否 | 数据归属团队 |
 | `description` | string | 否 | 描述 |
+| `extra_config` | object | 否 | provider 专属非敏感配置；华为新建省略或传空对象时默认 `sync_mode=ces` |
 
 `provider` 与 `auth_type` 兼容矩阵（创建/更新时校验，不兼容返回 `INVALID_ARGUMENT`）：
 
@@ -113,6 +118,10 @@ AI 工具权限建议：
 | `huawei_cloud` | `none`, `ak_sk`, `agency` |
 | `signoz` | `none`, `api_token` |
 | `prometheus` | `none`, `api_token`, `ak_sk` |
+
+非 none 创建必须提供对应凭据：AK/SK 为 `access_key + secret_key`，agency 为 `agency_name + domain_name`，api_token 接受 `api_token` 或 `access_token`；Prometheus 非 none 另需 `credential.base_url`。`none` 可省略凭据，但传入的非空配置仍会加密保存并使 `has_credential=true`。
+
+regions 会去除空项、去重并排序。华为 region 只允许小写字母、数字和合法连字符；创建时的格式校验不代替 checker 对非 none 华为账号至少一个 region 的检查。
 
 示例：
 
@@ -140,13 +149,13 @@ AI 工具权限建议：
 }
 ```
 
-`extra_config` 只允许保存 provider 专属非敏感配置，例如华为云资产同步的 `sync_mode`、`resource_group_name`、`resource_group_id`、`enterprise_project_id`、`max_resources`、`region_projects`（region → project_id 映射数组，每项可选填 `resource_group_id` / `resource_group_name`；多区域账号按 region 选用对应 project_id 与资源组，未命中回落账号顶层 `project_id` / 全局资源组）。密钥、Token、AK/SK、密码等仍只能通过 `credential` 写入凭据仓库，不能进入 `extra_config`。
+`extra_config` 只允许保存 provider 专属非敏感配置，例如华为云资产同步的 `sync_mode`、`resource_group_name`、`resource_group_id`、`enterprise_project_id`、`max_resources`、`region_projects`（region → project_id 映射数组，每项可选填 `resource_group_id` / `resource_group_name`；多区域账号按 region 选用对应 project_id 与资源组，未命中回落账号顶层 `project_id` / 全局资源组）。服务端递归拒绝明显敏感键，普通未知非敏感键可保留；`region_projects` 数组项的未知字段会被拒绝。密钥、Token、AK/SK、密码等仍只能通过 `credential` 写入凭据仓库，不能进入 `extra_config`。
 
 响应 `data`：
 
 ```json
 {
-  "account_id": "acc_xxx",
+  "account_id": "acc-<uuid>",
   "name": "华为云生产账号",
   "provider": "huawei_cloud",
   "auth_type": "ak_sk",
@@ -168,13 +177,25 @@ AI 工具权限建议：
 }
 ```
 
+账号、可选凭据引用和默认 capabilities 在同一事务创建。响应不包含 `credential`、密文、指纹或 `credential_ref_id`；`capabilities` 为 provider 默认声明，`last_check_status` 在首次检查前省略。
+
+migration `0024` 增加 `extra_config`；`0029` 将仍为空配置的历史华为账号回填为 `sync_mode=native`，与新建账号默认 CES 区分。
+
 ### 4.2 列表
 
 - Method: `GET`
 - Path: `/api/integrations/accounts?page=1&page_size=20&provider=huawei_cloud&enabled=true`
 - Auth: Bearer + `app:integrations:read`
 
-响应使用 `pagination.PageData` 形态。
+查询参数：
+
+- `page` 默认 1，`page_size` 默认 20、最大 100。
+- `provider` 精确匹配，`enabled` 可选布尔筛选。
+- `keyword` 对 name、account_id、owner_team 执行 ILIKE 包含匹配；当前前端没有关键字输入。
+
+列表只包含 `deleted=false`，按 `created_at DESC, id DESC` 排序，响应使用 `pagination.PageData` 形态。每项包含当前 capabilities 和最近一次检查的 `last_check_status`，不包含检查历史或凭据内容。
+
+`GET /api/integrations/accounts/:account_id` 使用同一读权限；已软删除账号按 404 处理。
 
 ### 4.3 更新
 
