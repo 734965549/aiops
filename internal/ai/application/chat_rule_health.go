@@ -157,7 +157,7 @@ func (s *ChatService) refreshRuleHealthObservation(ctx context.Context, userID s
 		"rules":                  rules,
 		"granularity_note": "破限比例与越限时长按请求的 period 聚合口径统计（越限时长为 breach_points × period 的上限估计）；" +
 			"规则原始采样窗口小于 period 时，不能据此推断原始窗口的误报频率，需缩小窗口用原始粒度复查；" +
-			"规则关联多个实例时最多抽样 3 个实例，统计取越限最严重的样本；预算按广度优先分配，先保证每条规则至少 1 个实例；无资源绑定的云产品级规则按 namespace 发现实例兜底（scope_source=resource_discovery），实际覆盖见 checked_resources 与 resource_count/resource_group_count",
+			"规则关联多个实例时最多抽样 3 个实例，统计取越限最严重的样本；预算按广度优先分配，先保证每条规则至少 1 个实例；无资源绑定的云产品级规则按 namespace 发现实例兜底（scope_source=resource_discovery，此时 resource_count 为空表示规则资源总数未知）。point_count=0 的规则附带 probe_point_count（近 1 小时/60s 探针）：大于 0 说明主窗口无点但近期有数据，等于 0 说明近期也无数据（事件型指标无事件/未上报/维度不匹配）；实际覆盖见 checked_resources 与 resource_group_count",
 	}
 	appendRuleHealthReferences(data, result.Rules)
 	s.appendToolResult(ctx, userID, session.SessionID, "", data, obs)

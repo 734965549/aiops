@@ -34,13 +34,16 @@ func (a *Adapter) fillRuleResources(ctx context.Context, cred AKSKCredential, pr
 			return
 		}
 		fetched++
-		samples, err := a.ruleResourceList.ListRuleResources(
+		samples, total, err := a.ruleResourceList.ListRuleResources(
 			ctx, cred, projectID, region, rule.RuleID, ruleResourceSampleMax)
 		if err != nil {
 			logger.From(ctx).Warn("huawei ces alarm rule resources lookup failed",
 				logger.String("rule_id", rule.RuleID),
 				logger.Error(err))
 			continue
+		}
+		if total > rule.ResourceCount {
+			rule.ResourceCount = total
 		}
 		if len(samples) > 0 {
 			rule.Resources = samples

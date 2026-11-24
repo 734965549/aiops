@@ -75,6 +75,12 @@ type RuleHealthRuleResult struct {
 	BreachEpisodes        int   `json:"breach_episodes,omitempty"`
 	BreachDurationSeconds int64 `json:"breach_duration_seconds,omitempty"`
 	LongestBreachSeconds  int64 `json:"longest_breach_seconds,omitempty"`
+	// ProbePointCount 是曲线为 0 点时对近 1 小时/60s 窗口探测得到的点数：
+	// 大于 0 说明近期有数据（主窗口无点可能是保留期/窗口问题），为 0 说明近期也无数据
+	// （事件型指标无事件、指标未上报或维度不匹配）。
+	ProbePointCount    int   `json:"probe_point_count,omitempty"`
+	ProbePeriod        int   `json:"probe_period,omitempty"`
+	ProbeWindowSeconds int64 `json:"probe_window_seconds,omitempty"`
 }
 
 // RuleHealthResult 是批量规则体检结果。

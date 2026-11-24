@@ -358,13 +358,13 @@ type fakeAlarmRuleResourceLister struct {
 	limits  []int
 }
 
-func (f *fakeAlarmRuleResourceLister) ListRuleResources(_ context.Context, _ AKSKCredential, _, _, alarmID string, limit int) ([]map[string]string, error) {
+func (f *fakeAlarmRuleResourceLister) ListRuleResources(_ context.Context, _ AKSKCredential, _, _, alarmID string, limit int) ([]map[string]string, int, error) {
 	f.calls = append(f.calls, alarmID)
 	f.limits = append(f.limits, limit)
 	if f.err != nil {
-		return nil, f.err
+		return nil, 0, f.err
 	}
-	return f.samples[alarmID], nil
+	return f.samples[alarmID], len(f.samples[alarmID]), nil
 }
 
 func TestMapListAlarmRuleKeepsProductScope(t *testing.T) {
@@ -411,5 +411,8 @@ func TestAdapterListAlertRulesFillsResourcesFromRuleResourceAPI(t *testing.T) {
 	}
 	if len(lister.calls) != 1 || lister.calls[0] != "al-pg" || lister.limits[0] != ruleResourceSampleMax {
 		t.Fatalf("lister calls = %+v limits=%+v", lister.calls, lister.limits)
+	}
+	if rules[0].ResourceCount != 2 {
+		t.Fatalf("resource_count must be reconciled from lister, got %d", rules[0].ResourceCount)
 	}
 }

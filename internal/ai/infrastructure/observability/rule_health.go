@@ -26,6 +26,12 @@ const (
 	ruleHealthMaxMetricQueries = 60
 	// ruleHealthDiscoveryLimit 是资源发现兜底的单次拉取条数，足够覆盖 3 个样本并容忍无效行。
 	ruleHealthDiscoveryLimit = 12
+	// ruleHealthMaxProbes 限制单次体检对零数据规则做近端探测的次数。
+	ruleHealthMaxProbes       = 6
+	ruleHealthProbeWindowSecs = int64(3600)
+	ruleHealthProbePeriod     = 60
+	// ruleHealthLongWindowSec 与 AI 工具侧的 7 天长窗口阈值一致，只影响 AllowLongWindow 标记。
+	ruleHealthLongWindowSec = int64(7 * 24 * 3600)
 )
 
 // RuleHealthCollector 实现 aiapp.RuleHealthPort：
@@ -123,11 +129,12 @@ func (c *RuleHealthCollector) Check(ctx context.Context, userID string, q aiapp.
 		rules = rules[:ruleHealthRulesCap]
 	}
 	queries := 0
+	probes := 0
 	budget := c.effectiveQueryBudget()
 	fallbackScopes := c.collectFallbackScopes(checkCtx, userID, q, rules)
 	for i, rule := range rules {
 		perRule := samplesPerRule(budget-queries, len(rules)-i)
-		item := c.checkRule(checkCtx, userID, q, rule, fallbackScopes[fallbackScopeKey(rule)], perRule, &queries)
+		item := c.checkRule(checkCtx, userID, q, rule, fallbackScopes[fallbackScopeKey(rule)], perRule, &queries, &probes)
 		if item.Status == aiapp.EvidenceStatusOK {
 			out.CheckedCount++
 		}
@@ -312,7 +319,7 @@ func resourceTypeFromCESNamespace(namespace string) string {
 // checkRule 对单条规则按关联实例抽样取数，统计字段取越限最严重的样本；maxSamples 是
 // 本次预算分配给该规则的实例样本数（广度优先，最多 3 个）。
 // fallback 是规则没有资源绑定时由资源发现得到的实例样本；queries 为单次体检共享的查询计数。
-func (c *RuleHealthCollector) checkRule(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, fallback []map[string]string, maxSamples int, queries *int) aiapp.RuleHealthRuleResult {
+func (c *RuleHealthCollector) checkRule(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, fallback []map[string]string, maxSamples int, queries, probes *int) aiapp.RuleHealthRuleResult {
 	item := aiapp.RuleHealthRuleResult{
 		RuleID: rule.RuleID, Name: rule.Name, Metric: rule.Metric,
 		Operator: rule.Operator, Threshold: rule.Threshold, RuleUnit: rule.Unit,
@@ -394,6 +401,13 @@ func (c *RuleHealthCollector) checkRule(ctx context.Context, userID string, q ai
 		merged.ScopeSource = source
 		// 分组型规则的 ResourceCount 是分组数，不能用来判断是否抽样；分组型与实例发现兜底一律标记 Sampled。
 		merged.Sampled = source == "resource_discovery" || item.ResourceGroupCount > 0 || item.ResourceCount > checked || incomplete
+		if source == "resource_discovery" {
+			// 实例发现兜底时规则本身没有资源总数，避免把抽样数误当成规则资源数。
+			merged.ResourceCount = 0
+		}
+		if merged.PointCount == 0 {
+			c.probeEmptySample(ctx, userID, q, rule, &merged, probes)
+		}
 		return merged
 	}
 	item.CheckedResources = 0
@@ -408,12 +422,18 @@ func (c *RuleHealthCollector) checkRule(ctx context.Context, userID string, q ai
 
 // queryRuleMetrics 在单实例上取曲线；返回稳定状态与原因，供规则级降级展示。
 func (c *RuleHealthCollector) queryRuleMetrics(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, dims map[string]string) (*obsapp.MetricQueryResult, string, string) {
+	return c.queryRuleMetricsRange(ctx, userID, q, rule, dims, q.From, q.To, q.Period)
+}
+
+// queryRuleMetricsRange 按指定窗口/粒度取单实例曲线（零数据探测使用近端短窗口）。
+func (c *RuleHealthCollector) queryRuleMetricsRange(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, dims map[string]string, from, to int64, period int) (*obsapp.MetricQueryResult, string, string) {
 	queryCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	res, err := c.metrics.QueryMetrics(queryCtx, obsapp.Actor{UserID: userID}, obsdomain.MetricQuery{
 		AccountID: q.AccountID, Region: q.Region, Namespace: q.Namespace, Metric: rule.Metric,
 		Dimensions: cloneDimensions(dims),
-		From:       q.From, To: q.To, Period: q.Period, Aggregator: q.Aggregator,
-		SnapshotRequired: true, AllowLongWindow: true,
+		From:       from, To: to, Period: period, Aggregator: q.Aggregator,
+		SnapshotRequired: true,
+		AllowLongWindow:  to-from > ruleHealthLongWindowSec,
 	})
 	timedOut := errors.Is(queryCtx.Err(), context.DeadlineExceeded)
 	cancel()
@@ -427,6 +447,34 @@ func (c *RuleHealthCollector) queryRuleMetrics(ctx context.Context, userID strin
 		return nil, aiapp.EvidenceStatusError, "empty metric query result"
 	}
 	return res, "", ""
+}
+
+// probeEmptySample 对零数据样本做近 1 小时/60s 探测，区分“近期有数据但窗口无点”和“近期也无数据”。
+func (c *RuleHealthCollector) probeEmptySample(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, sample *aiapp.RuleHealthRuleResult, probes *int) {
+	if sample == nil || len(sample.Dimensions) == 0 || ctx.Err() != nil {
+		return
+	}
+	if probes != nil && *probes >= ruleHealthMaxProbes {
+		return
+	}
+	from := q.To - ruleHealthProbeWindowSecs
+	if from < 0 || from >= q.To {
+		return
+	}
+	if probes != nil {
+		*probes = *probes + 1
+	}
+	res, status, _ := c.queryRuleMetricsRange(ctx, userID, q, rule, sample.Dimensions, from, q.To, ruleHealthProbePeriod)
+	if status != "" || res == nil {
+		return
+	}
+	count := 0
+	for _, series := range res.Series {
+		count += len(series.Points)
+	}
+	sample.ProbePointCount = count
+	sample.ProbePeriod = ruleHealthProbePeriod
+	sample.ProbeWindowSeconds = ruleHealthProbeWindowSecs
 }
 
 // betterRuleHealthSample 选择越限最严重的实例样本：破限比例优先，其次破限点数与峰值。

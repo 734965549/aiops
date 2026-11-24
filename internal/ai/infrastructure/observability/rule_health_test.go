@@ -382,7 +382,7 @@ func TestRuleHealthCollectorFallbackFiltersEngineAndDimension(t *testing.T) {
 			RuleID: "al-pg", Name: "RDS-postgresql", Description: "postgresql生产环境资源",
 			Namespace: "SYS.RDS", Metric: "rds001_cpu_util", Operator: ">", Threshold: &threshold,
 			ResourceLevel: "product", ProductName: "SYS.RDS,rds_instance_id",
-			DimensionName: "rds_instance_id",
+			DimensionName: "rds_instance_id", ResourceCount: 1,
 		}},
 	}}
 	series := func(id string) *obsapp.MetricQueryResult {
@@ -422,6 +422,9 @@ func TestRuleHealthCollectorFallbackFiltersEngineAndDimension(t *testing.T) {
 		got.CheckedResources != 3 || got.DimensionName != "rds_instance_id" {
 		t.Fatalf("fallback result = %+v", got)
 	}
+	if got.ResourceCount != 0 {
+		t.Fatalf("discovery fallback must not claim a resource total, got %d", got.ResourceCount)
+	}
 	for i, q := range metrics.queries {
 		if value := q.Dimensions["rds_instance_id"]; strings.HasPrefix(value, "my-") {
 			t.Fatalf("query[%d] sampled mysql instance for pg rule: %+v", i, q.Dimensions)
@@ -429,5 +432,62 @@ func TestRuleHealthCollectorFallbackFiltersEngineAndDimension(t *testing.T) {
 		if value := q.Dimensions["rds_instance_id"]; !strings.HasPrefix(value, "pg-") {
 			t.Fatalf("query[%d] unexpected dimension: %+v", i, q.Dimensions)
 		}
+	}
+}
+
+type fakeProbeMetricsQuerier struct {
+	primary *obsapp.MetricQueryResult
+	probe   *obsapp.MetricQueryResult
+	queries []obsdomain.MetricQuery
+}
+
+func (f *fakeProbeMetricsQuerier) QueryMetrics(_ context.Context, _ obsapp.Actor, q obsdomain.MetricQuery) (*obsapp.MetricQueryResult, error) {
+	f.queries = append(f.queries, q)
+	if q.Period == ruleHealthProbePeriod {
+		return f.probe, nil
+	}
+	return f.primary, nil
+}
+
+func TestRuleHealthCollectorProbesEmptySeries(t *testing.T) {
+	threshold := 80.0
+	rules := &fakeAlertRulesQuerier{result: &obsapp.AlertRuleQueryResult{
+		Rules: []obsdomain.AlertRule{{
+			RuleID: "al-empty", Name: "Event status", Namespace: "SYS.RDS",
+			Metric: "abnormalReplicationStatus", Operator: ">", Threshold: &threshold,
+			ResourceCount: 1, Resources: []map[string]string{{"rds_instance_id": "i-1"}},
+		}},
+	}}
+	metrics := &fakeProbeMetricsQuerier{
+		primary: &obsapp.MetricQueryResult{EvidenceID: "ev-primary"},
+		probe: &obsapp.MetricQueryResult{EvidenceID: "ev-probe", Series: []obsdomain.MetricSeries{{Points: []obsdomain.MetricPoint{
+			{TS: 1700000000, Value: 0}, {TS: 1700000060, Value: 0}, {TS: 1700000120, Value: 1},
+		}}}},
+	}
+	collector := NewRuleHealthCollector(rules, metrics, &fakeAccountResolver{snapshot: &obsdomain.AccountSnapshot{
+		AccountID: "acc-1", AuthType: "ak_sk",
+	}}, &fakeAccountAccess{}, nil, time.Second)
+
+	out, err := collector.Check(context.Background(), "u-1", aiapp.RuleHealthQuery{
+		AccountID: "acc-1", Region: "cn-north-4", Namespace: "SYS.RDS", Limit: 10,
+		From: 1700000000, To: 1700000000 + 30*24*3600, Period: 3600, Aggregator: "max",
+	})
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	got := out.Rules[0]
+	if got.Status != aiapp.EvidenceStatusOK || got.PointCount != 0 {
+		t.Fatalf("rule result = %+v", got)
+	}
+	if got.ProbePointCount != 3 || got.ProbePeriod != ruleHealthProbePeriod ||
+		got.ProbeWindowSeconds != ruleHealthProbeWindowSecs {
+		t.Fatalf("probe result = %+v", got)
+	}
+	if len(metrics.queries) != 2 {
+		t.Fatalf("queries = %d, want primary + probe", len(metrics.queries))
+	}
+	if probe := metrics.queries[1]; probe.Period != ruleHealthProbePeriod ||
+		probe.To-probe.From != ruleHealthProbeWindowSecs {
+		t.Fatalf("probe query = %+v", probe)
 	}
 }

@@ -763,7 +763,7 @@ RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测�
 | 9.11.7 | token、时间与申请数预算 | 分别构造累计 usage 达到 60000、turn_budget_s=2、单轮超过 3 个不同参数申请 | token 达预算先强制收敛，时间耗尽直接 turn_budget_exceeded；单轮只受理前 3 个不同 tool_code+params，超出不执行 |
 | 9.11.8 | 前端多轮展示 | 同工具不同参数、多轮调用后检查 AnswerCard/ContextPanel | tool_calls 保留记录，但 AnswerCard key 仅 tool_code，右侧只保留每个工具最后状态且目录固定，不是完整 Loop 时间线；execution.tasks.propose 不是 Loop 白名单 |
 | 9.11.9 | Loop 脚本边界 | 核对 `e2e-ai-agent-loop.ps1` 的 SKIP、数据与断言 | 覆盖只读 Loop、执行拒绝、发现和 3 轮耗尽的部分断言；无 active 告警会 SKIP 后 exit 0。会话保留，未覆盖全部预算/去重/强制收敛/无执行任务断言，不是 UI 验收 |
-| 9.11.10 | 证据覆盖缺口 | 分别使用资源分组型规则、云产品级规则（无资源绑定）、超过 288 点曲线、长窗口和大规则集，检查模型实际 observations | 规则资源优先通过 CES `ListAlarmRuleResources` 补全并透传 `resource_level`/`dimension_name`；分组规则再展开实例；无绑定规则按 namespace + 维度名发现实例兜底（`scope_source=resource_discovery`），并按引擎线索匹配实例，只有实例发现也取不到才 no_resource_scope；每条规则最多 3 实例抽样并取越限最严重样本（`checked_resources`/`sampled` 标明覆盖）。288 点定稿保留 `peak_at` 与破限片段/时长；长窗口聚合仍不能还原原始秒级误报，需短窗口复查 |
+| 9.11.10 | 证据覆盖缺口 | 分别使用资源分组型规则、云产品级规则（无资源绑定）、零数据规则、超过 288 点曲线、长窗口和大规则集，检查模型实际 observations | 规则资源优先通过 CES `ListAlarmRuleResources` 补全并用其 count 校正 resource_count，透传 `resource_level`/`dimension_name`；分组规则再展开实例；无绑定规则按 namespace + 维度名发现实例兜底（`scope_source=resource_discovery`，resource_count 为空），并按引擎线索匹配实例，只有实例发现也取不到才 no_resource_scope；零数据规则返回 `probe_point_count` 区分“近期无数据/窗口无点”；每条规则最多 3 实例抽样并取越限最严重样本。288 点定稿保留 `peak_at` 与破限片段/时长；长窗口聚合仍不能还原原始秒级误报，需短窗口复查 |
 
 > 前置：契约见 `ops/ai-contract.md` §10.16；无需新迁移。循环内不产生执行动作，`actions` 仍由服务端生成。`e2e-ai-agent-loop.ps1` 只自动覆盖 9.11.1/9.11.2/9.11.3/9.11.5 的部分场景，需要 active 告警；9.11.4/9.11.6 及预算/强制收敛其他分支由既有单测与人工验收分别记录。
 

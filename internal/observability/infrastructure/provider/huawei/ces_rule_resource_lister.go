@@ -14,8 +14,9 @@ const ruleResourcePageLimit = 100
 // AlarmRuleResourceLister 查询告警规则的完整关联资源。
 // CES ListAlarmRules 文档明确说明关联资源需通过 ListAlarmRuleResources 单独获取，
 // 云产品级/全部资源规则的列表响应通常不带资源明细。
+// 返回值第二个是资源总数（用于校正 ListAlarmRules 的 resource_count）。
 type AlarmRuleResourceLister interface {
-	ListRuleResources(ctx context.Context, cred AKSKCredential, projectID, region, alarmID string, limit int) ([]map[string]string, error)
+	ListRuleResources(ctx context.Context, cred AKSKCredential, projectID, region, alarmID string, limit int) ([]map[string]string, int, error)
 }
 
 type ruleResourceListAPI interface {
@@ -37,28 +38,29 @@ func NewCESAlarmRuleResourceLister() *CESAlarmRuleResourceLister {
 
 var _ AlarmRuleResourceLister = (*CESAlarmRuleResourceLister)(nil)
 
-// ListRuleResources 分页拉取规则关联资源，最多返回 limit 个维度样本。
+// ListRuleResources 分页拉取规则关联资源，最多返回 limit 个维度样本；同时返回资源总数。
 func (l *CESAlarmRuleResourceLister) ListRuleResources(
 	ctx context.Context,
 	cred AKSKCredential,
 	projectID, region, alarmID string,
 	limit int,
-) ([]map[string]string, error) {
+) ([]map[string]string, int, error) {
 	if l == nil || l.newAPI == nil {
-		return nil, apperr.New(apperr.CodeUnavailable, "huawei alarm rule resource lister is not configured")
+		return nil, 0, apperr.New(apperr.CodeUnavailable, "huawei alarm rule resource lister is not configured")
 	}
 	alarmID = strings.TrimSpace(alarmID)
 	if alarmID == "" {
-		return nil, nil
+		return nil, 0, nil
 	}
 	if limit <= 0 || limit > ruleResourceSampleMax {
 		limit = ruleResourceSampleMax
 	}
 	api, err := l.newAPI(cred, projectID, region)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	out := make([]map[string]string, 0, limit)
+	total := 0
 	offset := int32(0)
 	for page := 0; page < 3 && len(out) < limit; page++ {
 		pageLimit := int32(ruleResourcePageLimit)
@@ -71,10 +73,13 @@ func (l *CESAlarmRuleResourceLister) ListRuleResources(
 				})
 			})
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if resp == nil || resp.Resources == nil {
 			break
+		}
+		if resp.Count != nil && int(*resp.Count) > total {
+			total = int(*resp.Count)
 		}
 		items := *resp.Resources
 		for _, dims := range items {
@@ -100,5 +105,5 @@ func (l *CESAlarmRuleResourceLister) ListRuleResources(
 		}
 		offset += pageLimit
 	}
-	return out, nil
+	return out, total, nil
 }
