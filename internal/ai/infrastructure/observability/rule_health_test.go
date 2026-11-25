@@ -75,6 +75,10 @@ func TestRuleHealthCollectorSummarizesRules(t *testing.T) {
 	if first.BreachPoints != 2 || first.BreachRatio == nil || *first.BreachRatio != 2.0/3.0 {
 		t.Fatalf("breach = %+v", first)
 	}
+	if first.RecentBreachPoints != 2 || first.RecentBreachDurationSeconds != 120 ||
+		first.RecentLongestBreachSeconds != 120 {
+		t.Fatalf("recent breach stats = %+v", first)
+	}
 	if first.Unit != "%" || !first.Sampled || first.Dimensions["rds_instance_id"] != "i-1" {
 		t.Fatalf("scope/unit = %+v", first)
 	}
@@ -230,6 +234,40 @@ func TestRuleHealthCollectorSamplesWorstInstance(t *testing.T) {
 		if !seen[want] {
 			t.Fatalf("instance %s not queried: %+v", want, seen)
 		}
+	}
+}
+
+func TestSummarizeRuleHealthBreachHourProfile(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	threshold := 600.0
+	rule := obsdomain.AlertRule{Operator: ">", Threshold: &threshold}
+	// UTC 18:00 对应 Asia/Shanghai 次日 02:00。
+	base := time.Date(2026, 11, 20, 18, 0, 0, 0, time.UTC).Unix()
+	item := aiapp.RuleHealthRuleResult{}
+	summarizeRuleHealth(&item, []obsdomain.MetricSeries{{Points: []obsdomain.MetricPoint{
+		{TS: base, Value: 700},
+		{TS: base + 3600, Value: 100},
+		{TS: base + 24*3600, Value: 800},
+		{TS: base + 25*3600, Value: 100},
+		{TS: base + 48*3600, Value: 900},
+	}}}, rule, 3600, loc)
+	if item.BreachPoints != 3 || item.BreachDays != 3 {
+		t.Fatalf("breach stats = %+v", item)
+	}
+	if len(item.BreachByHour) != 24 || item.BreachByHour[2] != 3 {
+		t.Fatalf("breach_by_hour = %v", item.BreachByHour)
+	}
+	if !strings.Contains(item.BreachTopHours, "02:00-02:59=3") {
+		t.Fatalf("breach_top_hours = %q", item.BreachTopHours)
+	}
+	if !strings.Contains(item.PeakAtLocal, "2026-11-23 02:00") {
+		t.Fatalf("peak_at_local = %q", item.PeakAtLocal)
+	}
+	if !strings.Contains(item.BreachFirstAtLocal, "2026-11-21 02:00") {
+		t.Fatalf("breach_first_at_local = %q", item.BreachFirstAtLocal)
 	}
 }
 

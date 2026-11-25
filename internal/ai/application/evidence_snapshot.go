@@ -22,6 +22,8 @@ type EvidenceSnapshotStore interface {
 type evidenceSnapshotOptions struct {
 	MaxPointsPerSeries int
 	MaxBytes           int
+	// Timezone 是本地时间文本与 breach_by_hour 使用的时区；空值回退 UTC。
+	Timezone string
 }
 
 func finalizeMetricEvidence(ctx context.Context, store EvidenceSnapshotStore, query MetricEvidenceQuery, result *MetricEvidenceResult, opts evidenceSnapshotOptions) *MetricEvidenceResult {
@@ -33,9 +35,11 @@ func finalizeMetricEvidence(ctx context.Context, store EvidenceSnapshotStore, qu
 		evidence.Status = EvidenceStatusOK
 	}
 	prepareMetricEvidenceMetadata(evidence, query)
+	loc := EvidenceLocation(opts.Timezone)
+	evidence.Timezone = loc.String()
 	if evidence.Status == EvidenceStatusOK {
 		// 峰值时刻与破限片段必须在降采样前基于全量序列计算。
-		annotateMetricEvidenceDerivedStats(evidence, query)
+		annotateMetricEvidenceDerivedStats(evidence, query, loc)
 	}
 	if evidence.TraceID == "" {
 		evidence.TraceID = httpx.TraceIDFromCtx(ctx)

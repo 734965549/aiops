@@ -259,6 +259,7 @@ func (s *ChatService) executeMetricObservation(ctx context.Context, userID strin
 	result = finalizeMetricEvidence(ctx, s.evidenceSnapshots, query, result, evidenceSnapshotOptions{
 		MaxPointsPerSeries: chatMetricPromptMaxPoints,
 		MaxBytes:           s.evidencePayloadMaxBytes,
+		Timezone:           s.timezone,
 	})
 	pointCount := result.OriginalCount
 	status := result.Status
@@ -290,7 +291,8 @@ func (s *ChatService) executeMetricObservation(ctx context.Context, userID strin
 			"cloud_resource_id": result.CloudResourceID, "collected_at": result.CollectedAt,
 			"window_start": result.WindowStart, "window_end": result.WindowEnd,
 			"aggregator": result.Aggregator, "sampling": result.Sampling,
-			"from": query.From, "to": query.To, "period": result.Period,
+			"timezone": result.Timezone,
+			"from":     query.From, "to": query.To, "period": result.Period,
 			"dimensions": query.Dimensions,
 		},
 	}

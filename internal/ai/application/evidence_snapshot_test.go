@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	httpx "github.com/734965549/aiops/pkg/transport/http"
 )
@@ -158,6 +159,50 @@ func TestObservationEvidenceLinesOnlySupportsOKSnapshots(t *testing.T) {
 	data.Evidence = &MetricEvidenceResult{Status: EvidenceStatusOK, EvidenceID: "ev-ok"}
 	if lines := observationEvidenceLines(data); len(lines) != 1 || lines[0] != "observability evidence ev-ok" {
 		t.Fatalf("ok snapshot evidence missing: %+v", lines)
+	}
+}
+
+func TestFinalizeMetricEvidenceBreachHourProfile(t *testing.T) {
+	threshold := 600.0
+	// UTC 18:00 对应 Asia/Shanghai 次日 02:00。
+	base := time.Date(2026, 11, 20, 18, 0, 0, 0, time.UTC).Unix()
+	points := [][2]float64{
+		{float64(base), 700},
+		{float64(base + 3600), 100},
+		{float64(base + 24*3600), 800},
+		{float64(base + 25*3600), 100},
+		{float64(base + 48*3600), 900},
+	}
+	input := &MetricEvidenceResult{Status: EvidenceStatusOK, Metrics: []MetricEvidence{{
+		Metric: "rds046_replication_lag", EvidenceID: "ev-1", Points: points,
+	}}}
+	out := finalizeMetricEvidence(context.Background(), &fakeEvidenceSnapshotStore{}, MetricEvidenceQuery{
+		From: base, To: base + 48*3600, Period: 3600, Aggregator: "max",
+		Threshold: &threshold, Operator: ">",
+	}, input, evidenceSnapshotOptions{
+		MaxPointsPerSeries: 288, MaxBytes: maxEvidencePayloadBytes, Timezone: "Asia/Shanghai",
+	})
+	if out.Timezone != "Asia/Shanghai" {
+		t.Fatalf("timezone = %q", out.Timezone)
+	}
+	if len(out.Metrics) != 1 {
+		t.Fatalf("metrics = %d", len(out.Metrics))
+	}
+	metric := out.Metrics[0]
+	if metric.BreachPoints != 3 || metric.BreachDays != 3 {
+		t.Fatalf("breach stats = %+v", metric)
+	}
+	if len(metric.BreachByHour) != 24 || metric.BreachByHour[2] != 3 {
+		t.Fatalf("breach_by_hour = %v", metric.BreachByHour)
+	}
+	if !strings.Contains(metric.BreachTopHours, "02:00-02:59=3") {
+		t.Fatalf("breach_top_hours = %q", metric.BreachTopHours)
+	}
+	if !strings.Contains(metric.PeakAtLocal, "2026-11-23 02:00") {
+		t.Fatalf("peak_at_local = %q", metric.PeakAtLocal)
+	}
+	if !strings.Contains(metric.BreachFirstAtLocal, "2026-11-21 02:00") {
+		t.Fatalf("breach_first_at_local = %q", metric.BreachFirstAtLocal)
 	}
 }
 

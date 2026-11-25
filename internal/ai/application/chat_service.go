@@ -154,7 +154,9 @@ type ChatService struct {
 	shares domain.SessionShareRepository
 	// turnBudget 是单次对话（含 Agent Loop 多轮）的总时间预算；<=0 时使用默认值。
 	turnBudget time.Duration
-	now        func() time.Time
+	// timezone 是证据本地时间与越限小时分布的统计时区；空值回退 UTC。
+	timezone string
+	now      func() time.Time
 }
 
 // NewChatService 构造对话服务；可选依赖为 nil 时对应能力降级。
@@ -198,6 +200,14 @@ func (s *ChatService) SetTurnBudget(budget time.Duration) {
 		return
 	}
 	s.turnBudget = budget
+}
+
+// SetTimezone 设置证据统计时区（应用配置 app.timezone）；空值回退 UTC。
+func (s *ChatService) SetTimezone(timezone string) {
+	if s == nil {
+		return
+	}
+	s.timezone = strings.TrimSpace(timezone)
 }
 
 // CreateSession 创建会话并写入 AI 审计。

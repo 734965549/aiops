@@ -2,6 +2,7 @@ package application
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -355,11 +356,70 @@ func metricEvidencePointCount(evidence *MetricEvidenceResult) int {
 // 计算（annotateMetricEvidenceDerivedStats），点集用于呈现趋势形状。
 const chatMetricPromptMaxPoints = 288
 
+// EvidenceLocation 解析证据统计时区；空值或非法值回退 UTC，保证 timezone 标注与实际统计一致。
+func EvidenceLocation(timezone string) *time.Location {
+	tz := strings.TrimSpace(timezone)
+	if tz == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
+// EvidenceLocalTime 将 Unix 秒按证据时区格式化为 "2006-01-02 15:04"。
+func EvidenceLocalTime(ts int64, loc *time.Location) string {
+	if ts <= 0 {
+		return ""
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	return time.Unix(ts, 0).In(loc).Format("2006-01-02 15:04")
+}
+
+// EvidenceBreachTopHours 汇总越限点最多的小时（最多 3 个），供模型直接识别周期性时段。
+func EvidenceBreachTopHours(byHour []int) string {
+	total := 0
+	type hourCount struct{ hour, count int }
+	counts := make([]hourCount, 0, 24)
+	for hour, count := range byHour {
+		if count <= 0 {
+			continue
+		}
+		total += count
+		counts = append(counts, hourCount{hour: hour, count: count})
+	}
+	if total == 0 {
+		return ""
+	}
+	sort.Slice(counts, func(i, j int) bool {
+		if counts[i].count != counts[j].count {
+			return counts[i].count > counts[j].count
+		}
+		return counts[i].hour < counts[j].hour
+	})
+	if len(counts) > 3 {
+		counts = counts[:3]
+	}
+	parts := make([]string, 0, len(counts))
+	for _, item := range counts {
+		parts = append(parts, fmt.Sprintf("%02d:00-%02d:59=%d(%.1f%%)",
+			item.hour, item.hour, item.count, float64(item.count)*100/float64(total)))
+	}
+	return strings.Join(parts, "; ")
+}
+
 // annotateMetricEvidenceDerivedStats 在降采样前补充峰值时刻与越限片段统计，
 // 避免点数裁剪后模型无法回答"峰值出现在何时、越限持续多久、是否频繁抖动"。
-func annotateMetricEvidenceDerivedStats(evidence *MetricEvidenceResult, q MetricEvidenceQuery) {
+func annotateMetricEvidenceDerivedStats(evidence *MetricEvidenceResult, q MetricEvidenceQuery, loc *time.Location) {
 	if evidence == nil {
 		return
+	}
+	if loc == nil {
+		loc = time.UTC
 	}
 	period := q.Period
 	if period <= 0 {
@@ -378,10 +438,14 @@ func annotateMetricEvidenceDerivedStats(evidence *MetricEvidenceResult, q Metric
 		}
 		peakAt := int64(metric.Points[peakIndex][0])
 		metric.PeakAt = &peakAt
+		metric.PeakAtLocal = EvidenceLocalTime(peakAt, loc)
 		if q.Threshold == nil || strings.TrimSpace(q.Operator) == "" {
 			continue
 		}
 		episodes, current, longest, breachCount, inBreach := 0, 0, 0, 0, false
+		breachByHour := make([]int, 24)
+		breachDays := make(map[string]struct{})
+		var breachFirstAt int64
 		for _, point := range metric.Points {
 			if isBreachValue(q.Operator, point[1], *q.Threshold) {
 				breachCount++
@@ -394,6 +458,13 @@ func annotateMetricEvidenceDerivedStats(evidence *MetricEvidenceResult, q Metric
 				if current > longest {
 					longest = current
 				}
+				ts := int64(point[0])
+				local := time.Unix(ts, 0).In(loc)
+				breachByHour[local.Hour()]++
+				breachDays[local.Format("2006-01-02")] = struct{}{}
+				if breachCount == 1 || ts < breachFirstAt {
+					breachFirstAt = ts
+				}
 			} else {
 				inBreach = false
 			}
@@ -403,6 +474,13 @@ func annotateMetricEvidenceDerivedStats(evidence *MetricEvidenceResult, q Metric
 		if period > 0 {
 			metric.BreachDurationSeconds = int64(breachCount) * int64(period)
 			metric.LongestBreachSeconds = int64(longest) * int64(period)
+		}
+		if breachCount > 0 {
+			metric.BreachByHour = breachByHour
+			metric.BreachTopHours = EvidenceBreachTopHours(breachByHour)
+			metric.BreachDays = len(breachDays)
+			metric.BreachFirstAt = &breachFirstAt
+			metric.BreachFirstAtLocal = EvidenceLocalTime(breachFirstAt, loc)
 		}
 	}
 }

@@ -397,6 +397,7 @@ func main() {
 	analyzeSvc.SetMetricEvidence(aiEvidenceCollector)
 	aiEvidenceSnapshots := aiobs.NewSnapshotStore(obsEvidenceRepo)
 	analyzeSvc.SetEvidenceSnapshots(aiEvidenceSnapshots, app.Cfg.AI.EvidencePayloadLimit())
+	analyzeSvc.SetTimezone(app.Cfg.App.Timezone)
 	// 规则体检 MVP：告警规则只读查询走同一账号数据范围预检。
 	aiRulesCollector := aiobs.NewAlertRulesCollector(
 		obsQuerySvc,
@@ -449,6 +450,7 @@ func main() {
 	)
 	aiChatSvc.SetRuleHealth(aiRuleHealthCollector)
 	aiChatSvc.SetTurnBudget(app.Cfg.AI.TurnBudgetTimeout())
+	aiChatSvc.SetTimezone(app.Cfg.App.Timezone)
 	// 相似案例记忆（阶段 1）：反馈沉淀 + 对话/分析前检索注入。
 	// 检索失败只降级（memory_status=error），不阻断回答主链路。
 	aiMemoryRepo := aipg.NewMemoryCaseRepository(app.DB)

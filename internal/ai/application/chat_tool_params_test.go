@@ -292,9 +292,12 @@ func TestCapAlertRulesForObservation(t *testing.T) {
 
 func TestBuildRuleHealthQueryDefaults(t *testing.T) {
 	now := int64(1700000000)
-	query, status, reason := buildRuleHealthQuery(evidenceTestAlert(), nil, nil, now)
+	query, status, reason := buildRuleHealthQuery(evidenceTestAlert(), nil, nil, now, "Asia/Shanghai")
 	if status != "" || reason != "" {
 		t.Fatalf("unexpected status=%q reason=%q", status, reason)
+	}
+	if query.Timezone != "Asia/Shanghai" {
+		t.Fatalf("timezone = %q", query.Timezone)
 	}
 	if query.AccountID != "acc-1" || query.Region != "cn-north-4" || query.Namespace != "SYS.ECS" {
 		t.Fatalf("identity fallback = %+v", query)
@@ -324,7 +327,7 @@ func TestBuildRuleHealthQueryValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, status, _ := buildRuleHealthQuery(alert, nil, tc.params, now)
+			_, status, _ := buildRuleHealthQuery(alert, nil, tc.params, now, "Asia/Shanghai")
 			if status != tc.status {
 				t.Fatalf("status = %q, want %q", status, tc.status)
 			}

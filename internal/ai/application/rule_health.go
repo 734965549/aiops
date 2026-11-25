@@ -28,6 +28,8 @@ type RuleHealthQuery struct {
 	To         int64
 	Period     int
 	Aggregator string
+	// Timezone 是本地时间文本与 breach_by_hour 的统计时区；空值回退 UTC。
+	Timezone string
 }
 
 // RuleHealthRuleResult 是单条规则的曲线统计；status 非 ok 时统计字段为空。
@@ -67,7 +69,9 @@ type RuleHealthRuleResult struct {
 	P95              *float64 `json:"p95,omitempty"`
 	Peak             *float64 `json:"peak,omitempty"`
 	// PeakAt 是峰值时刻（Unix 秒），基于全量序列计算。
-	PeakAt       *int64   `json:"peak_at,omitempty"`
+	PeakAt *int64 `json:"peak_at,omitempty"`
+	// PeakAtLocal 是峰值时刻的证据时区文本。
+	PeakAtLocal  string   `json:"peak_at_local,omitempty"`
 	Last         *float64 `json:"last,omitempty"`
 	BreachPoints int      `json:"breach_points,omitempty"`
 	BreachRatio  *float64 `json:"breach_ratio,omitempty"`
@@ -76,6 +80,15 @@ type RuleHealthRuleResult struct {
 	BreachEpisodes        int   `json:"breach_episodes,omitempty"`
 	BreachDurationSeconds int64 `json:"breach_duration_seconds,omitempty"`
 	LongestBreachSeconds  int64 `json:"longest_breach_seconds,omitempty"`
+	// BreachByHour 是证据时区下的 24 小时越限点分布，index 0-23 对应本地 0-23 时。
+	// BreachTopHours 是越限点最多的小时摘要（最多 3 个小时），用于识别周期性时段。
+	BreachByHour   []int  `json:"breach_by_hour,omitempty"`
+	BreachTopHours string `json:"breach_top_hours,omitempty"`
+	// BreachDays 是出现越限的本地自然日数（同一自然日多次越限只计一次）。
+	BreachDays int `json:"breach_days,omitempty"`
+	// BreachFirstAt / BreachFirstAtLocal 是首个越限时刻（Unix 秒与证据时区文本）。
+	BreachFirstAt      *int64 `json:"breach_first_at,omitempty"`
+	BreachFirstAtLocal string `json:"breach_first_at_local,omitempty"`
 	// ProbePointCount 是曲线为 0 点时对近 1 小时/60s 窗口探测得到的点数：
 	// 大于 0 说明近期有数据（主窗口无点可能是保留期/窗口问题），为 0 说明近期也无数据
 	// （事件型指标无事件、指标未上报或维度不匹配）。
@@ -84,25 +97,28 @@ type RuleHealthRuleResult struct {
 	ProbeWindowSeconds int64 `json:"probe_window_seconds,omitempty"`
 	// Recent* 是近端分钟级复核（默认近 24 小时、period=60）的越限统计，
 	// 用于评估秒级规则窗口的触发频率；30 天小时级统计仍用于趋势与阈值分布。
-	RecentWindowSeconds        int64    `json:"recent_window_seconds,omitempty"`
-	RecentPeriod               int      `json:"recent_period,omitempty"`
-	RecentPointCount           int      `json:"recent_point_count,omitempty"`
-	RecentBreachPoints         int      `json:"recent_breach_points,omitempty"`
-	RecentBreachRatio          *float64 `json:"recent_breach_ratio,omitempty"`
-	RecentBreachEpisodes       int      `json:"recent_breach_episodes,omitempty"`
-	RecentLongestBreachSeconds int64    `json:"recent_longest_breach_seconds,omitempty"`
+	RecentWindowSeconds         int64    `json:"recent_window_seconds,omitempty"`
+	RecentPeriod                int      `json:"recent_period,omitempty"`
+	RecentPointCount            int      `json:"recent_point_count,omitempty"`
+	RecentBreachPoints          int      `json:"recent_breach_points,omitempty"`
+	RecentBreachRatio           *float64 `json:"recent_breach_ratio,omitempty"`
+	RecentBreachEpisodes        int      `json:"recent_breach_episodes,omitempty"`
+	RecentBreachDurationSeconds int64    `json:"recent_breach_duration_seconds,omitempty"`
+	RecentLongestBreachSeconds  int64    `json:"recent_longest_breach_seconds,omitempty"`
 	// ScopeNote 说明兜底抽样失败的具体原因（引擎/维度/发现条数），供模型和用户核对。
 	ScopeNote string `json:"scope_note,omitempty"`
 }
 
 // RuleHealthResult 是批量规则体检结果。
 type RuleHealthResult struct {
-	Status       string                 `json:"status"`
-	Reason       string                 `json:"reason,omitempty"`
-	WindowStart  int64                  `json:"window_start,omitempty"`
-	WindowEnd    int64                  `json:"window_end,omitempty"`
-	Period       int                    `json:"period,omitempty"`
-	Aggregator   string                 `json:"aggregator,omitempty"`
+	Status      string `json:"status"`
+	Reason      string `json:"reason,omitempty"`
+	WindowStart int64  `json:"window_start,omitempty"`
+	WindowEnd   int64  `json:"window_end,omitempty"`
+	Period      int    `json:"period,omitempty"`
+	Aggregator  string `json:"aggregator,omitempty"`
+	// Timezone 是本地时间文本与 breach_by_hour 的统计时区。
+	Timezone     string                 `json:"timezone,omitempty"`
 	RuleCount    int                    `json:"rule_count"`
 	CheckedCount int                    `json:"checked_count"`
 	Rules        []RuleHealthRuleResult `json:"rules,omitempty"`

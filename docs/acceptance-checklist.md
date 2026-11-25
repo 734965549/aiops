@@ -827,8 +827,9 @@ RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测�
 | 9.14.7 | huawei agency 不支持 | 用 agency 账号申请规则列表 | 观测 `status=unsupported`、reason 稳定；回答仍正常返回 |
 | 9.14.8 | 批量规则体检 | 让模型申请 `alert.rules.health`，params 带 `namespace=SYS.RDS`、`limit<=20`、30 天窗口与 `period=3600`，另覆盖资源分组型与云产品级规则 | 观测 `status=ok`，每条规则含统计字段与 `scope_source`（rule / resource_group / resource_discovery）；资源分组型展开实例、云产品级按 namespace 发现实例兜底，均最多 3 实例抽样并取越限最严重样本（`checked_resources`/`sampled` 标明覆盖）；只有实例发现也取不到才 `no_resource_scope`，审计 evidence_id 取首条成功证据 |
 | 9.14.9 | 规则体检边界 | `limit=21`、超过 30 天、>7 天且 `period<3600`、只传 `from`；再检查 288 点定稿、全实例覆盖与分钟级复核 | 非法参数返回 `status=invalid_argument` 且不取数；单条失败不阻断其它规则，总预算（180s）耗尽剩余 `skipped/rule health query timeout`，主查询超过 400 次剩余 `skipped/rule health query budget exhausted`；预算按广度优先分配，单规则最多 200 实例、6 并发，覆盖不全标记 sampled；有数据规则附带 `recent_*`（24h/60s）。288 点定稿统计按全量并保留峰值时刻/越限时长，小时级 max 仍不能还原原始秒级误报 |
+| 9.14.10 | 越限时段画像与根因优先 | 对一条 30 天窗口的 RDS 复制延迟规则申请 `alert.rules.health`，构造越限点集中在每日同一小时的数据 | 规则含 `breach_by_hour`（24 桶）、`breach_top_hours`、`breach_days`、`peak_at_local` / `breach_first_at_local`，观测 `data.timezone` 与统计一致；回答先给周期性判断并核对备份/批处理/维护窗口，不得只建议放宽阈值；缺备份窗口证据时列入 `uncertainties` |
 
-> 前置：已执行迁移 `0055` 与 `0062`；契约见 `ops/ai-contract.md` §10.12.1 / §10.16。E2E 脚本：`scripts/e2e-ai-rules.ps1`（脚本化 mock 模型 + fake `auth_type=none` 账号，自动覆盖 9.14.1/9.14.2/9.14.3/9.14.5；9.14.4 数据范围拒绝、9.14.6 real ak_sk、9.14.7 agency 不支持、9.14.8/9.14.9 批量体检由单测覆盖，真实账号需手工回归）。
+> 前置：已执行迁移 `0055` 与 `0062`；契约见 `ops/ai-contract.md` §10.12.1 / §10.16。E2E 脚本：`scripts/e2e-ai-rules.ps1`（脚本化 mock 模型 + fake `auth_type=none` 账号，自动覆盖 9.14.1/9.14.2/9.14.3/9.14.5；9.14.4 数据范围拒绝、9.14.6 real ak_sk、9.14.7 agency 不支持、9.14.8/9.14.9/9.14.10 批量体检与时段画像由单测覆盖，真实账号需手工回归）。
 
 ### 9.15 AI 上下文发现工具（migration 0056，契约 §10.12.1）
 

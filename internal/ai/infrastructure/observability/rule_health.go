@@ -131,6 +131,8 @@ func (c *RuleHealthCollector) Check(ctx context.Context, userID string, q aiapp.
 		WindowStart: q.From, WindowEnd: q.To, Period: q.Period, Aggregator: q.Aggregator,
 		RuleCount: len(result.Rules),
 	}
+	loc := aiapp.EvidenceLocation(q.Timezone)
+	out.Timezone = loc.String()
 	rules := result.Rules
 	if len(rules) > ruleHealthRulesCap {
 		rules = rules[:ruleHealthRulesCap]
@@ -147,7 +149,7 @@ func (c *RuleHealthCollector) Check(ctx context.Context, userID string, q aiapp.
 	sem := make(chan struct{}, ruleHealthQueryConcurrency)
 	queries, probes := 0, 0
 	for i, rule := range rules {
-		item := c.checkRule(checkCtx, userID, q, rule, fallbackScopes[fallbackScopeKey(rule)], allocations[i], &queries, &probes, sem)
+		item := c.checkRule(checkCtx, userID, q, rule, fallbackScopes[fallbackScopeKey(rule)], allocations[i], &queries, &probes, sem, loc)
 		if item.Status == aiapp.EvidenceStatusOK {
 			out.CheckedCount++
 		}
@@ -383,6 +385,7 @@ func (c *RuleHealthCollector) checkRule(
 	maxSamples int,
 	queries, probes *int,
 	sem chan struct{},
+	loc *time.Location,
 ) aiapp.RuleHealthRuleResult {
 	item := aiapp.RuleHealthRuleResult{
 		RuleID: rule.RuleID, Name: rule.Name, Metric: rule.Metric,
@@ -488,7 +491,7 @@ func (c *RuleHealthCollector) checkRule(
 			EvidenceID: oc.res.EvidenceID,
 			Status:     aiapp.EvidenceStatusOK,
 		}
-		summarizeRuleHealth(&candidate, oc.res.Series, rule, q.Period)
+		summarizeRuleHealth(&candidate, oc.res.Series, rule, q.Period, loc)
 		checked++
 		if best == nil || betterRuleHealthSample(&candidate, best) {
 			sample := candidate
@@ -513,7 +516,7 @@ func (c *RuleHealthCollector) checkRule(
 		if merged.ScopeNote == "" && incomplete && item.ResourceCount > 0 {
 			merged.ScopeNote = fmt.Sprintf("规则资源 %d 个，本次覆盖 %d 个", item.ResourceCount, checked)
 		}
-		c.fillRecentStats(ctx, userID, q, rule, &merged, sem)
+		c.fillRecentStats(ctx, userID, q, rule, &merged, sem, loc)
 		if merged.PointCount == 0 {
 			c.probeEmptySample(ctx, userID, q, rule, &merged, probes, sem)
 		}
@@ -531,7 +534,7 @@ func (c *RuleHealthCollector) checkRule(
 
 // fillRecentStats 对最差实例做一次近端分钟级复核（默认近 24 小时/60s）。
 // 近端复核不计入主查询预算：每条规则最多一次，整体额外查询数不超过规则数。
-func (c *RuleHealthCollector) fillRecentStats(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, merged *aiapp.RuleHealthRuleResult, sem chan struct{}) {
+func (c *RuleHealthCollector) fillRecentStats(ctx context.Context, userID string, q aiapp.RuleHealthQuery, rule obsdomain.AlertRule, merged *aiapp.RuleHealthRuleResult, sem chan struct{}, loc *time.Location) {
 	if merged == nil || len(merged.Dimensions) == 0 || merged.PointCount == 0 {
 		return
 	}
@@ -555,13 +558,14 @@ func (c *RuleHealthCollector) fillRecentStats(ctx context.Context, userID string
 		return
 	}
 	recent := aiapp.RuleHealthRuleResult{}
-	summarizeRuleHealth(&recent, res.Series, rule, ruleHealthRecentPeriod)
+	summarizeRuleHealth(&recent, res.Series, rule, ruleHealthRecentPeriod, loc)
 	merged.RecentWindowSeconds = window
 	merged.RecentPeriod = ruleHealthRecentPeriod
 	merged.RecentPointCount = recent.PointCount
 	merged.RecentBreachPoints = recent.BreachPoints
 	merged.RecentBreachRatio = recent.BreachRatio
 	merged.RecentBreachEpisodes = recent.BreachEpisodes
+	merged.RecentBreachDurationSeconds = recent.BreachDurationSeconds
 	merged.RecentLongestBreachSeconds = recent.LongestBreachSeconds
 }
 
@@ -664,7 +668,10 @@ func betterRuleHealthSample(candidate, current *aiapp.RuleHealthRuleResult) bool
 
 // summarizeRuleHealth 汇总定稿点数、峰值、P95、破限比例与破限片段统计；空序列只保留 point_count=0。
 // 只使用第一条有数据点的序列，避免多序列（异常 provider 返回）混算不同实例。
-func summarizeRuleHealth(item *aiapp.RuleHealthRuleResult, series []obsdomain.MetricSeries, rule obsdomain.AlertRule, period int) {
+func summarizeRuleHealth(item *aiapp.RuleHealthRuleResult, series []obsdomain.MetricSeries, rule obsdomain.AlertRule, period int, loc *time.Location) {
+	if loc == nil {
+		loc = time.UTC
+	}
 	points := make([]obsdomain.MetricPoint, 0)
 	unit := ""
 	for _, s := range series {
@@ -693,6 +700,9 @@ func summarizeRuleHealth(item *aiapp.RuleHealthRuleResult, series []obsdomain.Me
 	breach := 0
 	episodes, currentRun, longestRun, inBreach := 0, 0, 0, false
 	peakValue, peakAt := points[0].Value, int64(points[0].TS)
+	breachByHour := make([]int, 24)
+	breachDays := make(map[string]struct{})
+	var breachFirstAt int64
 	for _, p := range points {
 		values = append(values, p.Value)
 		sum += p.Value
@@ -710,6 +720,12 @@ func summarizeRuleHealth(item *aiapp.RuleHealthRuleResult, series []obsdomain.Me
 			currentRun++
 			if currentRun > longestRun {
 				longestRun = currentRun
+			}
+			local := time.Unix(p.TS, 0).In(loc)
+			breachByHour[local.Hour()]++
+			breachDays[local.Format("2006-01-02")] = struct{}{}
+			if breach == 1 || p.TS < breachFirstAt {
+				breachFirstAt = p.TS
 			}
 		} else {
 			inBreach = false
@@ -733,11 +749,19 @@ func summarizeRuleHealth(item *aiapp.RuleHealthRuleResult, series []obsdomain.Me
 	item.First, item.Min, item.Avg = &first, &minValue, &avg
 	item.P95, item.Peak, item.Last = &p95, &peak, &last
 	item.PeakAt = &peakAt
+	item.PeakAtLocal = aiapp.EvidenceLocalTime(peakAt, loc)
 	item.BreachPoints, item.BreachRatio = breach, &ratio
 	item.BreachEpisodes = episodes
 	if period > 0 {
 		item.BreachDurationSeconds = int64(breach) * int64(period)
 		item.LongestBreachSeconds = int64(longestRun) * int64(period)
+	}
+	if breach > 0 {
+		item.BreachByHour = breachByHour
+		item.BreachTopHours = aiapp.EvidenceBreachTopHours(breachByHour)
+		item.BreachDays = len(breachDays)
+		item.BreachFirstAt = &breachFirstAt
+		item.BreachFirstAtLocal = aiapp.EvidenceLocalTime(breachFirstAt, loc)
 	}
 }
 

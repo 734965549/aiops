@@ -41,17 +41,28 @@ type MetricEvidence struct {
 	First     *float64 `json:"first,omitempty"`
 	Peak      *float64 `json:"peak,omitempty"`
 	// PeakAt 是峰值时刻（Unix 秒），基于全量序列计算，降采样后仍保留。
-	PeakAt       *int64   `json:"peak_at,omitempty"`
+	PeakAt *int64 `json:"peak_at,omitempty"`
+	// PeakAtLocal 是峰值时刻的证据时区文本，便于模型直接引用时段。
+	PeakAtLocal  string   `json:"peak_at_local,omitempty"`
 	Last         *float64 `json:"last,omitempty"`
 	BreachPoints int      `json:"breach_points,omitempty"`
 	// BreachDurationSeconds / LongestBreachSeconds 是按查询 period 聚合口径推算的累计/最长越限时长，
 	// BreachEpisodes 是连续越限片段数；三者只反映 period 粒度下的持续性与频次，不等同原始采样窗口。
-	BreachDurationSeconds int64             `json:"breach_duration_seconds,omitempty"`
-	LongestBreachSeconds  int64             `json:"longest_breach_seconds,omitempty"`
-	BreachEpisodes        int               `json:"breach_episodes,omitempty"`
-	Points                [][2]float64      `json:"points,omitempty"` // [ts 秒, 值]
-	Labels                map[string]string `json:"labels,omitempty"`
-	EvidenceID            string            `json:"evidence_id,omitempty"`
+	BreachDurationSeconds int64 `json:"breach_duration_seconds,omitempty"`
+	LongestBreachSeconds  int64 `json:"longest_breach_seconds,omitempty"`
+	BreachEpisodes        int   `json:"breach_episodes,omitempty"`
+	// BreachByHour 是按证据时区统计的 24 小时越限点分布，index 0-23 对应本地 0-23 时。
+	// BreachTopHours 是越限点最多的小时摘要（最多 3 个小时）。
+	BreachByHour   []int  `json:"breach_by_hour,omitempty"`
+	BreachTopHours string `json:"breach_top_hours,omitempty"`
+	// BreachDays 是出现越限的本地自然日数（同一自然日多次越限只计一次）。
+	BreachDays int `json:"breach_days,omitempty"`
+	// BreachFirstAt / BreachFirstAtLocal 是首个越限时刻（Unix 秒与证据时区文本）。
+	BreachFirstAt      *int64            `json:"breach_first_at,omitempty"`
+	BreachFirstAtLocal string            `json:"breach_first_at_local,omitempty"`
+	Points             [][2]float64      `json:"points,omitempty"` // [ts 秒, 值]
+	Labels             map[string]string `json:"labels,omitempty"`
+	EvidenceID         string            `json:"evidence_id,omitempty"`
 }
 
 // MetricEvidenceSampling 描述定稿前的降采样口径。
@@ -62,25 +73,27 @@ type MetricEvidenceSampling struct {
 
 // MetricEvidenceResult 取数结果；status 非 ok 时 Metrics 为空且 Reason 说明原因。
 type MetricEvidenceResult struct {
-	Status          string                  `json:"status"`
-	Reason          string                  `json:"reason,omitempty"`
-	EvidenceID      string                  `json:"evidence_id,omitempty"`
-	SchemaVersion   string                  `json:"schema_version,omitempty"`
-	Provider        string                  `json:"provider,omitempty"`
-	TraceID         string                  `json:"trace_id,omitempty"`
-	ProjectID       string                  `json:"project_id,omitempty"`
-	ResourceID      string                  `json:"resource_id,omitempty"`
-	CloudResourceID string                  `json:"cloud_resource_id,omitempty"`
-	WindowStart     int64                   `json:"window_start,omitempty"`
-	WindowEnd       int64                   `json:"window_end,omitempty"`
-	CollectedAt     int64                   `json:"collected_at,omitempty"`
-	Period          int                     `json:"period,omitempty"`
-	Aggregator      string                  `json:"aggregator,omitempty"`
-	OriginalCount   int                     `json:"original_count"`
-	RetainedCount   int                     `json:"retained_count"`
-	Truncated       bool                    `json:"truncated,omitempty"`
-	Sampling        *MetricEvidenceSampling `json:"sampling,omitempty"`
-	Metrics         []MetricEvidence        `json:"metrics,omitempty"`
+	Status          string `json:"status"`
+	Reason          string `json:"reason,omitempty"`
+	EvidenceID      string `json:"evidence_id,omitempty"`
+	SchemaVersion   string `json:"schema_version,omitempty"`
+	Provider        string `json:"provider,omitempty"`
+	TraceID         string `json:"trace_id,omitempty"`
+	ProjectID       string `json:"project_id,omitempty"`
+	ResourceID      string `json:"resource_id,omitempty"`
+	CloudResourceID string `json:"cloud_resource_id,omitempty"`
+	WindowStart     int64  `json:"window_start,omitempty"`
+	WindowEnd       int64  `json:"window_end,omitempty"`
+	CollectedAt     int64  `json:"collected_at,omitempty"`
+	// Timezone 是本结果中本地时间文本与 breach_by_hour 使用的时区。
+	Timezone      string                  `json:"timezone,omitempty"`
+	Period        int                     `json:"period,omitempty"`
+	Aggregator    string                  `json:"aggregator,omitempty"`
+	OriginalCount int                     `json:"original_count"`
+	RetainedCount int                     `json:"retained_count"`
+	Truncated     bool                    `json:"truncated,omitempty"`
+	Sampling      *MetricEvidenceSampling `json:"sampling,omitempty"`
+	Metrics       []MetricEvidence        `json:"metrics,omitempty"`
 }
 
 // MetricEvidencePort 只读观测取数端口，由 infrastructure/observability 适配。

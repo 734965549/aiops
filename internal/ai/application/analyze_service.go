@@ -52,6 +52,8 @@ type AnalyzeService struct {
 	audit                   AuditRecorder
 	// memory 为可选的相似案例记忆能力；nil 表示关闭。
 	memory MemoryCaseStore
+	// timezone 是证据本地时间与越限小时分布的统计时区；空值回退 UTC。
+	timezone string
 }
 
 // NewAnalyzeService 构造分析服务；providerID 为空时跳过工具网关调用。
@@ -106,6 +108,14 @@ func (s *AnalyzeService) SetEvidenceSnapshots(store EvidenceSnapshotStore, maxBy
 	}
 	s.evidenceSnapshots = store
 	s.evidencePayloadMaxBytes = maxBytes
+}
+
+// SetTimezone 设置证据统计时区（应用配置 app.timezone）；空值回退 UTC。
+func (s *AnalyzeService) SetTimezone(timezone string) {
+	if s == nil {
+		return
+	}
+	s.timezone = strings.TrimSpace(timezone)
 }
 
 // SetMemory 注入相似案例记忆能力；nil 表示关闭（payload 不含 similar_cases）。
@@ -265,6 +275,7 @@ func (s *AnalyzeService) collectMetricEvidence(ctx context.Context, userID strin
 	}
 	return finalizeMetricEvidence(ctx, s.evidenceSnapshots, query, result, evidenceSnapshotOptions{
 		MaxBytes: s.evidencePayloadMaxBytes,
+		Timezone: s.timezone,
 	})
 }
 
