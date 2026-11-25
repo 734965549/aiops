@@ -288,6 +288,12 @@ type AIConfig struct {
 	// StreamIdleTimeoutS 是模型流式输出连续无新增量的最大等待时间（秒），
 	// 0 使用默认 180s；低于 30s 按 30s 处理。SSE 注释/心跳行也会重置该计时。
 	StreamIdleTimeoutS int `mapstructure:"stream_idle_timeout_s"`
+	// ChatPromptTokenBudget 是 AI 助手单次请求（system + user prompt）的 token 预算，
+	// 0 使用默认 32768；provider 配置了 context_window_tokens 时以模型窗口为准，本值仅作兜底。
+	ChatPromptTokenBudget int `mapstructure:"chat_prompt_token_budget"`
+	// ChatMaxOutputTokens 是单次模型输出上限（max_tokens）的全局默认，
+	// 0 使用默认 4096；provider 配置了 max_output_tokens 时以 provider 为准。
+	ChatMaxOutputTokens int `mapstructure:"chat_max_output_tokens"`
 }
 
 // EvidenceTimeout 返回指标证据取数预算。
@@ -318,6 +324,22 @@ func (c AIConfig) TurnBudgetTimeout() time.Duration {
 		return 10 * time.Minute
 	}
 	return time.Duration(c.TurnBudgetS) * time.Second
+}
+
+// ChatPromptTokenBudgetLimit 返回 AI 助手单次 prompt 的全局 token 预算。
+func (c AIConfig) ChatPromptTokenBudgetLimit() int {
+	if c.ChatPromptTokenBudget <= 0 {
+		return 32 * 1024
+	}
+	return c.ChatPromptTokenBudget
+}
+
+// ChatMaxOutputTokensLimit 返回单次模型输出上限的全局默认。
+func (c AIConfig) ChatMaxOutputTokensLimit() int {
+	if c.ChatMaxOutputTokens <= 0 {
+		return 4 * 1024
+	}
+	return c.ChatMaxOutputTokens
 }
 
 // StreamIdleTimeout 返回模型流式输出空闲超时。

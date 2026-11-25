@@ -260,6 +260,7 @@ func main() {
 	// 执行器只追加 /chat/completions。
 	chatExecutor := toolgateway.NewChatCompletionExecutor(toolgateway.ProviderTypeB, "/chat/completions")
 	chatExecutor.SetStreamIdleTimeout(app.Cfg.AI.StreamIdleTimeout())
+	chatExecutor.SetDefaultMaxOutputTokens(app.Cfg.AI.ChatMaxOutputTokensLimit())
 	providerRegistry.RegisterExecutor(chatExecutor)
 	providerRegistry.RegisterExecutor(toolgateway.NewInternalServiceExecutor(toolgateway.ProviderTypeC, "/api/tool/invoke"))
 
@@ -457,6 +458,8 @@ func main() {
 	)
 	aiChatSvc.SetRuleHealth(aiRuleHealthCollector)
 	aiChatSvc.SetTurnBudget(app.Cfg.AI.TurnBudgetTimeout())
+	aiChatSvc.SetPromptTokenBudget(app.Cfg.AI.ChatPromptTokenBudgetLimit())
+	aiChatSvc.SetMaxOutputTokens(app.Cfg.AI.ChatMaxOutputTokensLimit())
 	aiChatSvc.SetTimezone(app.Cfg.App.Timezone)
 	// 相似案例记忆（阶段 1）：反馈沉淀 + 对话/分析前检索注入。
 	// 检索失败只降级（memory_status=error），不阻断回答主链路。

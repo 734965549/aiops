@@ -44,7 +44,7 @@ AI 接口均挂载在 `/api/ai` 下并要求登录，但不同入口的授权方
 
 #### 响应示例
 
-列表接口**不返回** `api_key` 字段，也不返回单独的 `****` 掩码值；通过 `has_api_key` 表示是否已配置密钥。`model` 仅对类型 `b` 执行器有意义，但服务端不会强制清空类型 `a` / `c` 已保存的 model。列表还包含 `headers`、`reasoning_effort` 和 `vision_enabled`；headers 会原样返回，不应当作秘密字段使用。
+列表接口**不返回** `api_key` 字段，也不返回单独的 `****` 掩码值；通过 `has_api_key` 表示是否已配置密钥。`model` 仅对类型 `b` 执行器有意义，但服务端不会强制清空类型 `a` / `c` 已保存的 model。列表还包含 `headers`、`reasoning_effort`、`vision_enabled`、`context_window_tokens` 和 `max_output_tokens`；headers 会原样返回，不应当作秘密字段使用。
 
 ```json
 {
@@ -104,8 +104,10 @@ AI 接口均挂载在 `/api/ai` 下并要求登录，但不同入口的授权方
 | `enabled` | boolean | 否 | 是否启用；后端普通 bool 零值为 false，API 省略不会自动变成 true |
 | `description` | string | 否 | 备注说明；按本次请求覆盖 |
 | `vision_enabled` | boolean | 否 | 类型 b 是否接受图片输入；省略/未传为 false |
+| `context_window_tokens` | number | 否 | 类型 b 模型上下文窗口（token）；0/省略表示未配置，使用全局 `ai.chat_prompt_token_budget`；正值必须 ≥1024，AI 助手按“窗口 - 输出上限”计算输入预算（provider 覆盖全局） |
+| `max_output_tokens` | number | 否 | 类型 b 单次输出上限（`max_tokens`）；0/省略表示使用全局 `ai.chat_max_output_tokens`（默认 4096）；正值必须 ≥256 且小于已配置的 `context_window_tokens`；实际下发不超过窗口的一半 |
 
-该接口是**同 ID 全量 upsert**，不是通用 PATCH。除 api_key 外，省略字段不会保留旧值：model、headers、enabled、description、reasoning_effort、vision_enabled 都按本次请求覆盖。前端 Provider 编辑当前未携带 headers，因此页面普通保存也会清空既有自定义头。
+该接口是**同 ID 全量 upsert**，不是通用 PATCH。除 api_key 外，省略字段不会保留旧值：model、headers、enabled、description、reasoning_effort、vision_enabled、context_window_tokens、max_output_tokens 都按本次请求覆盖。前端 Provider 编辑当前未携带 headers，因此页面普通保存也会清空既有自定义头。
 
 #### 请求示例
 
@@ -133,7 +135,7 @@ AI 接口均挂载在 `/api/ai` 下并要求登录，但不同入口的授权方
 
 ### 4.4 持久化、运行时与密钥约定
 
-- Provider 配置落库到 `ai_provider`（迁移 `0048`），数据库是列表和持久化事实源；`ai.providers` YAML 仅在数据库为空时作为种子写入，之后不会覆盖已有配置。
+- Provider 配置落库到 `ai_provider`（迁移 `0048`，字段扩展见 `0057/0059/0064/0065`），数据库是列表和持久化事实源；`ai.providers` YAML 仅在数据库为空时作为种子写入，之后不会覆盖已有配置。
 - 页面入口位于「系统设置 → AI 配置 → Provider 管理」；AI 运维助手页只负责对话，不再承载 AI 配置。
 - 启动时从数据库解密并加载到当前进程的运行时注册表；新增/更新/删除同步写库并更新**当前进程**，本实例无需重启。数据库与内存不是同一事务，多实例之间没有变更广播，不能宣称其他副本已即时刷新。
 - 单条 Provider 启动加载失败只跳过该条并记录 Warn，不阻断 API 启动；列表仍从数据库读取，可能继续显示 `enabled=true`。enabled 是配置状态，不是运行时健康或在线状态。
@@ -263,7 +265,7 @@ AI 运维助手（§10）只使用类型 `b` 做对话补全：没有启用中�
 ### 8.1 Provider 管理页（系统设置 → AI 配置）
 
 - 左侧列表展示 ID、名称、类型、model、密钥是否已配置和 enabled；当前没有启用状态筛选、健康状态或测试连接按钮。
-- 右侧表单可新增、编辑和删除；类型 b 必须填写模型/Endpoint，可设置 timeout、reasoning_effort、vision_enabled 和 enabled。
+- 右侧表单可新增、编辑和删除；类型 b 必须填写模型/Endpoint，可设置 timeout、reasoning_effort、vision_enabled、context_window_tokens（上下文窗口，0 表示用全局预算）、max_output_tokens（输出上限，0 表示用全局默认）和 enabled。
 - API Key 新增必填，编辑留空保留；页面只显示“已配置/未配置”，没有独立掩码值。
 - 当前表单没有 headers 编辑器，普通编辑保存会清空既有 headers；保存后刷新列表，本实例运行时同步生效。
 - 页面没有独立 403 保留结构状态，错误主要依赖统一请求拦截器；无 ProviderManager 专项 Vitest。
@@ -1052,7 +1054,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | 工具白名单 | 仅 `alarm.analyze`、`metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`rds.backup.query`、`accounts.list`、`resource.analyze`、`resources.list` 可被申请；其它工具（含 `execution.tasks.propose` / `dispatch` / `command.run`）一律拒绝并记 `allowed=false`、`reason=tool is not allowed in agent loop` |
 | 参数透传 | `tool_requests[].params` 按 §10.12.1 校验；非法参数记 `status=invalid_argument` 并反馈给模型，不执行取数 |
 | 权限 | 每轮每个工具独立过 RBAC + 工具权限（与首轮同一套校验），`allowed=false` 时把原因反馈给模型而不中断 |
-| 预算 | 追加轮数 ≤ **4**（含无进展轮，纯重复不占）；Provider 回报的累计 token ≥ **80000** 即停止继续取数并进入强制收敛；单轮最多受理 **4** 个不同 `tool_code+params` 申请（同工具不同参数可分别执行）；单次对话总时间预算 `ai.turn_budget_s`（默认 600s），超时立即返回 `turn_budget_exceeded` |
+| 预算 | 追加轮数 ≤ **4**（含无进展轮，纯重复不占）；Provider 回报的累计 token ≥ **80000** 即停止继续取数并进入强制收敛；单轮最多受理 **4** 个不同 `tool_code+params` 申请（同工具不同参数可分别执行）；单次对话总时间预算 `ai.turn_budget_s`（默认 600s），超时立即返回 `turn_budget_exceeded`；单次 prompt 另受 §10.22 token 预算约束，每轮调用前重新估算并裁剪 |
 | 去重 | 轮内相同 `tool_code + params` 只执行一次，不同参数各自执行；跨轮按 `tool_code + params` 去重：已成功执行过的组合重复申请时返回 `status=denied`、`reason=duplicate tool request: identical parameters already executed in this turn`，不再取数且不占用有效轮数；连续两轮无实际取数仍按收敛规则终止 |
 | 收敛 | 连续两轮「申请了但一个工具都没真正执行」才终止，给模型一次看到拒绝原因后自我纠正的机会 |
 | 审计 | 每轮工具调用写 `tool_invoke`（与现状同结构）；`chat_message` 新增 `loop_rounds`（实际追加轮数） |
@@ -1065,6 +1067,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | --- | --- |
 | 轮数或 token 预算耗尽 | 先追加一次强制收敛调用（prompt 禁止再申请工具、仅基于现有 observations 作答；`chat_message` 审计 `forced_convergence=true`），成功按 `ok` / `insufficient_context` 返回；该调用失败或输出非法才 `status=degraded`、`degraded_reason=agent_loop_exhausted`，保留已获取的 observations 作为证据 |
 | 回合总时间预算耗尽 | `status=degraded`、`degraded_reason=turn_budget_exceeded`，停止后续模型/工具调用并保留已获取的 observations |
+| prompt 预算不足 | 裁剪到最小仍超预算时 `status=degraded`、`degraded_reason=prompt_budget_exceeded`，不调用模型并保留已获取的 observations（详见 §10.22） |
 | 流式客户端断开 | 模型调用随 ctx 取消而中止；不落 assistant 消息，记 `chat_canceled` |
 | 连续两轮无实际取数 | 同上：先强制收敛一轮，仍失败才 `agent_loop_exhausted` |
 | 模型输出既非 answer 也非 tool_requests | `degraded_reason=model_output_invalid`（与 §10.6.1 一致） |
@@ -1354,3 +1357,28 @@ AI 助手支持用户随消息携带图片（截图提问）。仅类型 b 且�
 `confirmed` 仅表示 RDS 历史会话直接支持的诊断分类，不表示已经人工确认应用代码级最终根因；空闲长事务仍须明确“应用原因未定”。`Client/ClientRead` 只表示数据库等待客户端下一命令，不得解释为锁等待。事实由三部分组成：指标事实（first/peak/last/破限点/保留点）、**最多 6 条**会话事实与**最多 3 条**与这些会话 Query ID 匹配的 Top SQL 脱敏摘要；不匹配的 Top SQL 不进入诊断事实。分类按 `lock_wait` → `idle_in_transaction` → `active_long_query` → `undetermined` 优先级判定，命中即停止。`diagnosis` 中的 summary/evidence/recommendations/uncertainties 由服务端按分类覆盖生成；模型输出里的 `diagnosis` 字段在解析时被忽略重建，重放时保留首次结构。摘要、建议、事实、假设和缺失项由服务端生成，模型不能把这些字段改写为无依据结论。
 
 真实账号验收：`scripts/e2e-postgres-history.ps1 -AlertId <long-transaction-alert-id>`，使用告警现有云账号和 mock 模型，验证 `postgres.activity.query` 返回状态、证据 ID、根因状态和事实；权限不足必须显式失败，不伪造成功。
+
+### 10.22 Prompt 输入/输出预算与自动裁剪（migration 0064/0065）
+
+多轮对话的历史、工具观测、记忆/知识与图片都会进入单次模型请求；本能力在**请求发出前**按 token 预算估算并自动裁剪输入，同时为每次 `chat/completions` 请求下发输出上限 `max_tokens`。
+
+- 配置：
+  - `ai_provider.context_window_tokens`（INTEGER，默认 `0`）：类型 b 模型的上下文窗口；`0` 表示未配置。写接口允许 `0` 或 `≥1024`，负值/过小值返回 `INVALID_ARGUMENT`。
+  - `ai_provider.max_output_tokens`（INTEGER，默认 `0`）：单次输出上限；`0` 表示未配置。写接口允许 `0` 或 `≥256`，且配置窗口时必须小于窗口。
+  - `ai.chat_prompt_token_budget`（默认 `32768`）：全局输入预算，环境变量 `AIOPS_AI__CHAT_PROMPT_TOKEN_BUDGET` 可覆盖；仅在 provider 未配置窗口时生效。
+  - `ai.chat_max_output_tokens`（默认 `4096`）：全局输出上限，环境变量 `AIOPS_AI__CHAT_MAX_OUTPUT_TOKENS` 可覆盖；provider 未配置 `max_output_tokens` 时使用。
+- 预算规则：
+  - 输出上限 = provider `max_output_tokens`，未配置时用全局默认；配置了窗口时再按 `窗口/2` 封顶，保证输入至少保留一半窗口。
+  - 输入预算：provider 配置了窗口时 = `模型窗口 - 输出上限`（覆盖全局）；未配置窗口时 = 全局输入预算。
+  - 输出上限通过请求体 `max_tokens` 下发，作用于对话（同步/流式/强制收敛）与 `/api/ai/analyze-alert` 的模型调用；输入裁剪只作用于 AI 助手对话。
+- 估算口径：保守按 UTF-8 **3 字节 ≈ 1 token** 估算 system + user prompt；每张图片额外按 **1600 token** 计入，防止图片消息绕过文本预算。估算不追求精确，宁多勿少。
+- 裁剪顺序（只在超预算时触发，每轮 Agent Loop 与强制收敛轮重新估算）：
+  1. 从**最旧**开始逐条丢弃历史消息；
+  2. 指标证据丢弃逐点 `points`，仅保留统计，并标记 `points_stripped=true`；
+  3. 按工具优先级逐条丢弃观测：`accounts.list` → `resource.analyze` → `resources.list` → `rds.backup.query` → `alert.rules.list` → `alert.rules.health` → `postgres.activity.query` → `metrics.query` → `alarm.analyze`（未知工具最先丢）；
+  4. 逐条丢弃历史案例记忆；
+  5. 仍超预算：`status=degraded`、`degraded_reason=prompt_budget_exceeded`，**不调用模型**，保留已获取的 observations 作为证据，并在 `uncertainties` 提示缩小范围/缩短窗口/减少附图。
+- 裁剪只影响本轮送入模型的 prompt，不回写、不删除已落库证据；审计 `chat_message` payload 新增 `prompt_tokens_est`（裁剪后估算值）、`prompt_token_budget`（本轮输入预算）、`prompt_output_limit`（本轮 `max_tokens`）、`prompt_trims`（如 `dropped_history:2`、`stripped_metric_points`、`dropped_observations:1`）。
+- 输出超限仍按既有 `finish_reason=length/max_tokens` 语义处理：`status=incomplete`、`incomplete_reason=output_truncated`，重试不会绕过该上限。
+- 数据范围与权限语义不变：被裁剪的观测仍在 `tool_calls` 与工具审计中可见。
+- 验证：`internal/ai/application/chat_prompt_budget_test.go` 覆盖估算、历史裁剪、points 裁剪、观测/记忆裁剪、输入/输出预算、预算不足降级与 provider 窗口覆盖；`internal/ai/toolgateway/chat_client_test.go`/`chat_completion_test.go` 覆盖同步/流式/分析请求的 `max_tokens` 下发与窗口封顶；`provider_service_test.go` 覆盖两个字段的写库与运行时透传；`pkg/config/config_test.go` 覆盖默认预算。

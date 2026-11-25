@@ -44,6 +44,58 @@ func TestProviderRegistryChatCompletion(t *testing.T) {
 	}
 }
 
+func TestProviderRegistryChatCompletionSendsMaxTokens(t *testing.T) {
+	var captured chatRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &captured)
+		_ = json.NewEncoder(w).Encode(chatCompletionResponse(`{"summary":"ok"}`))
+	}))
+	defer srv.Close()
+
+	exec := NewChatCompletionExecutor(ProviderTypeB, "/chat/completions")
+	exec.SetDefaultMaxOutputTokens(2048)
+	registry := NewProviderRegistryWithPolicy(OutboundPolicy{AllowLoopback: true})
+	registry.RegisterExecutor(exec)
+	if err := registry.UpsertProvider(ProviderConfig{
+		ID: "ark", Type: ProviderTypeB, BaseURL: srv.URL, Model: "ep-2024", APIKey: "secret",
+		Enabled: true, MaxOutputTokens: 1234,
+	}); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+
+	if _, err := registry.Complete(context.Background(), "ark", "sys", "user"); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if captured.MaxTokens != 1234 {
+		t.Fatalf("provider max_output_tokens = %d, want 1234", captured.MaxTokens)
+	}
+
+	cfg, _ := registry.GetProvider("ark")
+	cfg.MaxOutputTokens = 0
+	if err := registry.UpsertProvider(cfg); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+	if _, err := registry.Complete(context.Background(), "ark", "sys", "user"); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if captured.MaxTokens != 2048 {
+		t.Fatalf("global default max_output_tokens = %d, want 2048", captured.MaxTokens)
+	}
+
+	cfg.ContextWindowTokens = 8000
+	cfg.MaxOutputTokens = 6000
+	if err := registry.UpsertProvider(cfg); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+	if _, err := registry.Complete(context.Background(), "ark", "sys", "user"); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if captured.MaxTokens != 4000 {
+		t.Fatalf("max_output_tokens must be capped at half window, got %d", captured.MaxTokens)
+	}
+}
+
 func TestProviderRegistryChatCompletionSendsReasoningEffort(t *testing.T) {
 	var captured chatRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -192,6 +244,11 @@ func TestProviderRegistryCompleteStream(t *testing.T) {
 	defer srv.Close()
 
 	registry := chatTestRegistry(t, srv.URL)
+	cfg, _ := registry.GetProvider("ark")
+	cfg.MaxOutputTokens = 1234
+	if err := registry.UpsertProvider(cfg); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
 	type deltaEvent struct{ phase, text string }
 	var deltas []deltaEvent
 	result, err := registry.CompleteStream(context.Background(), "ark", "sys", "user", func(phase, text string) error {
@@ -203,6 +260,9 @@ func TestProviderRegistryCompleteStream(t *testing.T) {
 	}
 	if !captured.Stream || accept != "text/event-stream" {
 		t.Fatalf("unexpected stream request: stream=%v accept=%q", captured.Stream, accept)
+	}
+	if captured.MaxTokens != 1234 {
+		t.Fatalf("stream max_tokens = %d, want 1234", captured.MaxTokens)
 	}
 	if result.Content != `{"summary":"ok"}` || result.Tokens != 42 {
 		t.Fatalf("unexpected result: %+v", result)

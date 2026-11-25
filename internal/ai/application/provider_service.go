@@ -59,6 +59,10 @@ type UpsertProviderInput struct {
 	ReasoningEffort string
 	// VisionEnabled 表示类型 b 模型接受图片输入（多模态）。
 	VisionEnabled bool
+	// ContextWindowTokens 是模型上下文窗口（token）；0 表示未配置，按全局预算处理。
+	ContextWindowTokens int
+	// MaxOutputTokens 是单次输出上限（max_tokens）；0 表示未配置，使用全局默认。
+	MaxOutputTokens int
 }
 
 // ProviderService 编排 provider 的持久化、启动加载与运行时注册。
@@ -145,6 +149,8 @@ func (s *ProviderService) ListProviders(ctx context.Context) ([]toolgateway.Prov
 			BaseURL: record.BaseURL, Model: record.Model, HasAPIKey: record.HasAPIKey,
 			TimeoutMS: record.TimeoutMS, Headers: record.Headers, Enabled: record.Enabled,
 			Description: record.Description, ReasoningEffort: record.ReasoningEffort, VisionEnabled: record.VisionEnabled,
+			ContextWindowTokens: record.ContextWindowTokens,
+			MaxOutputTokens:     record.MaxOutputTokens,
 		})
 	}
 	return out, nil
@@ -162,6 +168,12 @@ func (s *ProviderService) UpsertProvider(ctx context.Context, in UpsertProviderI
 	}
 	reasoningEffort, err := normalizeReasoningEffort(in.ReasoningEffort)
 	if err != nil {
+		return err
+	}
+	if err := validateContextWindowTokens(in.ContextWindowTokens); err != nil {
+		return err
+	}
+	if err := validateMaxOutputTokens(in.MaxOutputTokens, in.ContextWindowTokens); err != nil {
 		return err
 	}
 	existing, err := s.store.Get(ctx, providerID)
@@ -189,7 +201,9 @@ func (s *ProviderService) UpsertProvider(ctx context.Context, in UpsertProviderI
 		BaseURL: strings.TrimSpace(in.BaseURL), Model: strings.TrimSpace(in.Model),
 		Headers: in.Headers, TimeoutMS: normalizeProviderTimeout(in.TimeoutMS), Enabled: in.Enabled,
 		Description: strings.TrimSpace(in.Description), ReasoningEffort: reasoningEffort, VisionEnabled: in.VisionEnabled,
-		APIKeyCiphertext: ciphertext, HasAPIKey: true,
+		ContextWindowTokens: in.ContextWindowTokens,
+		MaxOutputTokens:     in.MaxOutputTokens,
+		APIKeyCiphertext:    ciphertext, HasAPIKey: true,
 	}
 	cfg := runtimeConfig(record, apiKey)
 	if err := s.runtime.ValidateProvider(cfg); err != nil {
@@ -240,6 +254,33 @@ func normalizeReasoningEffort(raw string) (string, error) {
 	}
 }
 
+// validateContextWindowTokens 允许 0（未配置）或 >=1024 的窗口值；
+// 过小的值无法容纳系统提示词，提前在写接口拒绝。
+func validateContextWindowTokens(tokens int) error {
+	if tokens < 0 {
+		return apperr.New(apperr.CodeInvalidArgument, "context_window_tokens must not be negative")
+	}
+	if tokens > 0 && tokens < 1024 {
+		return apperr.New(apperr.CodeInvalidArgument, "context_window_tokens must be 0 or at least 1024")
+	}
+	return nil
+}
+
+// validateMaxOutputTokens 允许 0（未配置）或 >=256 的输出上限；
+// 同时配置窗口时要求输出上限小于窗口，避免输入预算被挤成 0。
+func validateMaxOutputTokens(tokens, window int) error {
+	if tokens < 0 {
+		return apperr.New(apperr.CodeInvalidArgument, "max_output_tokens must not be negative")
+	}
+	if tokens > 0 && tokens < 256 {
+		return apperr.New(apperr.CodeInvalidArgument, "max_output_tokens must be 0 or at least 256")
+	}
+	if tokens > 0 && window > 0 && tokens >= window {
+		return apperr.New(apperr.CodeInvalidArgument, "max_output_tokens must be less than context_window_tokens")
+	}
+	return nil
+}
+
 func (s *ProviderService) encrypt(plaintext string) ([]byte, error) {
 	if s.cipher == nil {
 		return nil, errors.New("ai provider secret cipher is not configured")
@@ -263,5 +304,7 @@ func runtimeConfig(record domain.Provider, apiKey string) toolgateway.ProviderCo
 		BaseURL: record.BaseURL, Model: record.Model, APIKey: apiKey,
 		TimeoutMS: record.TimeoutMS, Headers: record.Headers, Enabled: record.Enabled,
 		Description: record.Description, ReasoningEffort: record.ReasoningEffort, VisionEnabled: record.VisionEnabled,
+		ContextWindowTokens: record.ContextWindowTokens,
+		MaxOutputTokens:     record.MaxOutputTokens,
 	}
 }

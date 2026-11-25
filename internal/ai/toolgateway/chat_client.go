@@ -60,6 +60,10 @@ type ChatModel struct {
 	Model      string `json:"model"`
 	// VisionEnabled 表示该模型接受图片输入（migration 0059）。
 	VisionEnabled bool `json:"vision_enabled"`
+	// ContextWindowTokens 是模型上下文窗口（token）；0 表示未配置。
+	ContextWindowTokens int `json:"context_window_tokens,omitempty"`
+	// MaxOutputTokens 是单次输出上限（max_tokens）；0 表示未配置。
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 }
 
 // ChatModelCatalog 是可选能力：列出/解析启用中的类型 b 模型。
@@ -99,6 +103,7 @@ func (e *ChatCompletionExecutor) complete(ctx context.Context, cfg ProviderConfi
 		}{Type: "json_object"},
 		Temperature:     0.2,
 		ReasoningEffort: cfg.ReasoningEffort,
+		MaxTokens:       e.effectiveMaxOutputTokens(cfg),
 	})
 	if err != nil {
 		return nil, apperr.Wrap(err, apperr.CodeInternal, "build model request failed")
@@ -173,6 +178,7 @@ func (e *ChatCompletionExecutor) completeStream(ctx context.Context, cfg Provide
 		}{Type: "json_object"},
 		Temperature:     0.2,
 		ReasoningEffort: cfg.ReasoningEffort,
+		MaxTokens:       e.effectiveMaxOutputTokens(cfg),
 		Stream:          true,
 	})
 	if err != nil {
@@ -239,7 +245,11 @@ func (r *ProviderRegistry) ChatModels() []ChatModel {
 		if name == "" {
 			name = id
 		}
-		out = append(out, ChatModel{ProviderID: id, Name: name, Model: p.Model, VisionEnabled: p.VisionEnabled})
+		out = append(out, ChatModel{
+			ProviderID: id, Name: name, Model: p.Model,
+			VisionEnabled: p.VisionEnabled, ContextWindowTokens: p.ContextWindowTokens,
+			MaxOutputTokens: p.MaxOutputTokens,
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ProviderID < out[j].ProviderID })
 	return out
@@ -261,7 +271,11 @@ func (r *ProviderRegistry) ChatProviderByID(providerID string) (ChatModel, bool)
 	if name == "" {
 		name = providerID
 	}
-	return ChatModel{ProviderID: providerID, Name: name, Model: p.Model, VisionEnabled: p.VisionEnabled}, true
+	return ChatModel{
+		ProviderID: providerID, Name: name, Model: p.Model,
+		VisionEnabled: p.VisionEnabled, ContextWindowTokens: p.ContextWindowTokens,
+		MaxOutputTokens: p.MaxOutputTokens,
+	}, true
 }
 
 // chatCompleter 统一对话补全的 provider 查找与启用校验，供文本/图片、同步/流式四种调用复用。

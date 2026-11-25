@@ -186,6 +186,41 @@ func TestProviderServiceUpsertRequiresKeyForNewProvider(t *testing.T) {
 	}
 }
 
+func TestProviderServiceUpsertContextWindowTokens(t *testing.T) {
+	store := newFakeProviderStore()
+	runtime := newFakeProviderRuntime()
+	svc := NewProviderService(store, runtime, fakeSecretCipher{})
+
+	if err := svc.UpsertProvider(context.Background(), UpsertProviderInput{
+		ID: "ark", Name: "Ark", Type: "b", BaseURL: "https://ark.example.com",
+		Model: "ep-1", APIKey: "k", Enabled: true, ContextWindowTokens: 128000, MaxOutputTokens: 30000,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if got := store.records["ark"].ContextWindowTokens; got != 128000 {
+		t.Fatalf("persisted context window = %d", got)
+	}
+	if got := store.records["ark"].MaxOutputTokens; got != 30000 {
+		t.Fatalf("persisted max output = %d", got)
+	}
+	if got := runtime.providers["ark"].ContextWindowTokens; got != 128000 {
+		t.Fatalf("runtime context window = %d", got)
+	}
+	if got := runtime.providers["ark"].MaxOutputTokens; got != 30000 {
+		t.Fatalf("runtime max output = %d", got)
+	}
+
+	for _, in := range []UpsertProviderInput{
+		{ID: "ark", Name: "Ark", Type: "b", BaseURL: "https://ark.example.com", Model: "ep-1", APIKey: "k", ContextWindowTokens: 512},
+		{ID: "ark", Name: "Ark", Type: "b", BaseURL: "https://ark.example.com", Model: "ep-1", APIKey: "k", MaxOutputTokens: 128},
+		{ID: "ark", Name: "Ark", Type: "b", BaseURL: "https://ark.example.com", Model: "ep-1", APIKey: "k", ContextWindowTokens: 8000, MaxOutputTokens: 8000},
+	} {
+		if err := svc.UpsertProvider(context.Background(), in); err == nil || apperr.FromError(err).Code != apperr.CodeInvalidArgument {
+			t.Fatalf("expected invalid argument for %+v, got %v", in, err)
+		}
+	}
+}
+
 func TestNormalizeReasoningEffort(t *testing.T) {
 	for _, raw := range []string{"", "low", "high", "max", " LOW "} {
 		if _, err := normalizeReasoningEffort(raw); err != nil {

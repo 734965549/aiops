@@ -15,18 +15,20 @@ import (
 
 type providerModel struct {
 	database.BaseModel
-	ProviderID      string `gorm:"column:provider_id;type:varchar(64);uniqueIndex;not null"`
-	Name            string `gorm:"column:name;type:varchar(128);not null"`
-	Type            string `gorm:"column:type;type:varchar(16);not null"`
-	BaseURL         string `gorm:"column:base_url;type:varchar(512);not null"`
-	Model           string `gorm:"column:model;type:varchar(128);not null;default:''"`
-	APIKeyEncrypted []byte `gorm:"column:api_key_encrypted;type:bytea"`
-	Headers         []byte `gorm:"column:headers;type:jsonb;not null"`
-	TimeoutMS       int64  `gorm:"column:timeout_ms;not null;default:300000"`
-	Enabled         bool   `gorm:"column:enabled;not null;default:true"`
-	Description     string `gorm:"column:description;type:varchar(512);not null;default:''"`
-	ReasoningEffort string `gorm:"column:reasoning_effort;type:varchar(16);not null;default:''"`
-	VisionEnabled   bool   `gorm:"column:vision_enabled;not null;default:false"`
+	ProviderID          string `gorm:"column:provider_id;type:varchar(64);uniqueIndex;not null"`
+	Name                string `gorm:"column:name;type:varchar(128);not null"`
+	Type                string `gorm:"column:type;type:varchar(16);not null"`
+	BaseURL             string `gorm:"column:base_url;type:varchar(512);not null"`
+	Model               string `gorm:"column:model;type:varchar(128);not null;default:''"`
+	APIKeyEncrypted     []byte `gorm:"column:api_key_encrypted;type:bytea"`
+	Headers             []byte `gorm:"column:headers;type:jsonb;not null"`
+	TimeoutMS           int64  `gorm:"column:timeout_ms;not null;default:300000"`
+	Enabled             bool   `gorm:"column:enabled;not null;default:true"`
+	Description         string `gorm:"column:description;type:varchar(512);not null;default:''"`
+	ReasoningEffort     string `gorm:"column:reasoning_effort;type:varchar(16);not null;default:''"`
+	VisionEnabled       bool   `gorm:"column:vision_enabled;not null;default:false"`
+	ContextWindowTokens int    `gorm:"column:context_window_tokens;not null;default:0"`
+	MaxOutputTokens     int    `gorm:"column:max_output_tokens;not null;default:0"`
 }
 
 func (providerModel) TableName() string { return "ai_provider" }
@@ -95,18 +97,20 @@ func (r *ProviderRepository) Upsert(ctx context.Context, provider domain.Provide
 	}
 	now := time.Now()
 	res := r.db.WithContext(ctx).Model(&providerModel{}).Where("provider_id = ?", providerID).Updates(map[string]any{
-		"name":              provider.Name,
-		"type":              provider.Type,
-		"base_url":          provider.BaseURL,
-		"model":             provider.Model,
-		"api_key_encrypted": provider.APIKeyCiphertext,
-		"headers":           headers,
-		"timeout_ms":        provider.TimeoutMS,
-		"enabled":           provider.Enabled,
-		"description":       provider.Description,
-		"reasoning_effort":  provider.ReasoningEffort,
-		"vision_enabled":    provider.VisionEnabled,
-		"updated_at":        now,
+		"name":                  provider.Name,
+		"type":                  provider.Type,
+		"base_url":              provider.BaseURL,
+		"model":                 provider.Model,
+		"api_key_encrypted":     provider.APIKeyCiphertext,
+		"headers":               headers,
+		"timeout_ms":            provider.TimeoutMS,
+		"enabled":               provider.Enabled,
+		"description":           provider.Description,
+		"reasoning_effort":      provider.ReasoningEffort,
+		"vision_enabled":        provider.VisionEnabled,
+		"context_window_tokens": provider.ContextWindowTokens,
+		"max_output_tokens":     provider.MaxOutputTokens,
+		"updated_at":            now,
 	})
 	if res.Error != nil {
 		return res.Error
@@ -119,6 +123,8 @@ func (r *ProviderRepository) Upsert(ctx context.Context, provider domain.Provide
 		BaseURL: provider.BaseURL, Model: provider.Model, APIKeyEncrypted: provider.APIKeyCiphertext,
 		Headers: headers, TimeoutMS: provider.TimeoutMS, Enabled: provider.Enabled,
 		Description: provider.Description, ReasoningEffort: provider.ReasoningEffort, VisionEnabled: provider.VisionEnabled,
+		ContextWindowTokens: provider.ContextWindowTokens,
+		MaxOutputTokens:     provider.MaxOutputTokens,
 	}
 	if err := r.db.WithContext(ctx).Create(&row).Error; err != nil {
 		if database.IsUniqueViolation(err) {
@@ -126,7 +132,9 @@ func (r *ProviderRepository) Upsert(ctx context.Context, provider domain.Provide
 				"name": provider.Name, "type": provider.Type, "base_url": provider.BaseURL,
 				"model": provider.Model, "api_key_encrypted": provider.APIKeyCiphertext,
 				"headers": headers, "timeout_ms": provider.TimeoutMS, "enabled": provider.Enabled,
-				"description": provider.Description, "reasoning_effort": provider.ReasoningEffort, "vision_enabled": provider.VisionEnabled, "updated_at": time.Now(),
+				"description": provider.Description, "reasoning_effort": provider.ReasoningEffort,
+				"vision_enabled": provider.VisionEnabled, "context_window_tokens": provider.ContextWindowTokens,
+				"max_output_tokens": provider.MaxOutputTokens, "updated_at": time.Now(),
 			}).Error
 		}
 		return err
@@ -151,21 +159,23 @@ func toProviderDomain(row *providerModel) (domain.Provider, error) {
 		return domain.Provider{}, err
 	}
 	return domain.Provider{
-		ProviderID:       row.ProviderID,
-		Name:             row.Name,
-		Type:             row.Type,
-		BaseURL:          row.BaseURL,
-		Model:            row.Model,
-		Headers:          headers,
-		TimeoutMS:        row.TimeoutMS,
-		Enabled:          row.Enabled,
-		Description:      row.Description,
-		ReasoningEffort:  row.ReasoningEffort,
-		VisionEnabled:    row.VisionEnabled,
-		APIKeyCiphertext: row.APIKeyEncrypted,
-		HasAPIKey:        len(row.APIKeyEncrypted) > 0,
-		CreatedAt:        row.CreatedAt,
-		UpdatedAt:        row.UpdatedAt,
+		ProviderID:          row.ProviderID,
+		Name:                row.Name,
+		Type:                row.Type,
+		BaseURL:             row.BaseURL,
+		Model:               row.Model,
+		Headers:             headers,
+		TimeoutMS:           row.TimeoutMS,
+		Enabled:             row.Enabled,
+		Description:         row.Description,
+		ReasoningEffort:     row.ReasoningEffort,
+		VisionEnabled:       row.VisionEnabled,
+		ContextWindowTokens: row.ContextWindowTokens,
+		MaxOutputTokens:     row.MaxOutputTokens,
+		APIKeyCiphertext:    row.APIKeyEncrypted,
+		HasAPIKey:           len(row.APIKeyEncrypted) > 0,
+		CreatedAt:           row.CreatedAt,
+		UpdatedAt:           row.UpdatedAt,
 	}, nil
 }
 

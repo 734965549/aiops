@@ -13,19 +13,23 @@ var ErrProviderNotFound = errors.New("ai provider not found")
 // Provider 是持久化的 AI provider 配置。
 // APIKeyCiphertext 仅保存密文，明文只在 application/infrastructure 运行时短暂持有。
 type Provider struct {
-	ProviderID       string
-	Name             string
-	Type             string
-	BaseURL          string
-	Model            string
-	Headers          map[string]string
-	TimeoutMS        int64
-	Enabled          bool
-	Description      string
+	ProviderID  string
+	Name        string
+	Type        string
+	BaseURL     string
+	Model       string
+	Headers     map[string]string
+	TimeoutMS   int64
+	Enabled     bool
+	Description string
 	// ReasoningEffort 思考型模型的推理强度（low/high/max）；空串表示不发送该参数。
-	ReasoningEffort  string
+	ReasoningEffort string
 	// VisionEnabled 表示类型 b 模型接受图片输入（多模态）；false 时带图消息被拒绝。
-	VisionEnabled    bool
+	VisionEnabled bool
+	// ContextWindowTokens 是模型上下文窗口（token）；0 表示未配置，按全局预算处理。
+	ContextWindowTokens int
+	// MaxOutputTokens 是单次输出上限（max_tokens）；0 表示未配置，使用全局默认。
+	MaxOutputTokens  int
 	APIKeyCiphertext []byte
 	HasAPIKey        bool
 	CreatedAt        time.Time

@@ -217,6 +217,24 @@ func TestAIPostgresEvidenceTimeout(t *testing.T) {
 	}
 }
 
+func TestAIChatPromptTokenBudgetLimit(t *testing.T) {
+	if got := (AIConfig{}).ChatPromptTokenBudgetLimit(); got != 32*1024 {
+		t.Fatalf("default chat prompt token budget = %d", got)
+	}
+	if got := (AIConfig{ChatPromptTokenBudget: 65536}).ChatPromptTokenBudgetLimit(); got != 65536 {
+		t.Fatalf("explicit chat prompt token budget = %d", got)
+	}
+}
+
+func TestAIChatMaxOutputTokensLimit(t *testing.T) {
+	if got := (AIConfig{}).ChatMaxOutputTokensLimit(); got != 4096 {
+		t.Fatalf("default chat max output tokens = %d", got)
+	}
+	if got := (AIConfig{ChatMaxOutputTokens: 8192}).ChatMaxOutputTokensLimit(); got != 8192 {
+		t.Fatalf("explicit chat max output tokens = %d", got)
+	}
+}
+
 func TestAITurnBudgetTimeout(t *testing.T) {
 	if got := (AIConfig{}).TurnBudgetTimeout(); got != 10*time.Minute {
 		t.Fatalf("default turn budget = %v", got)

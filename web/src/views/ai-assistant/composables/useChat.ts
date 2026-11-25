@@ -223,9 +223,15 @@ export function useChat() {
   function deriveUIStatus(status: ChatResultStatus, answer?: ChatAnswer): ChatUIStatus {
     if (status === 'incomplete' || answer?.incomplete) return 'incomplete'
     if (status === 'degraded') {
-      // 取数预算耗尽属于「已保留证据但未收敛」，按橙色未结论呈现，不当作模型失败。
+      // 取数/上下文预算耗尽属于「已保留证据但未收敛」，按橙色未结论呈现，不当作模型失败。
       const reason = (answer?.degraded_reason || '').trim()
-      if (reason === 'agent_loop_exhausted' || reason === 'turn_budget_exceeded') return 'inconclusive'
+      if (
+        reason === 'agent_loop_exhausted' ||
+        reason === 'turn_budget_exceeded' ||
+        reason === 'prompt_budget_exceeded'
+      ) {
+        return 'inconclusive'
+      }
       return 'failed'
     }
     if (status === 'insufficient_context' || answer?.insufficient_context) return 'insufficient_context'

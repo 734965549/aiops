@@ -647,7 +647,7 @@ RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测�
 
 > 9.6.1 需已配置并启用 AI provider 和真实只读账号，当前没有专用真实 CES 指标 E2E；无 provider 时 `include_metrics` 不会发起取数，仅返回本地摘要。9.6.5 需要 migration `0060`、本地 mock 模型和 Docker PostgreSQL，使用 fake 指标；证据详情 API / 前端抽屉不在当前实现范围。
 
-### 9.7 AI Provider 与工具网关（migration 0001/0002/0048/0055–0062）
+### 9.7 AI Provider 与工具网关（migration 0001/0002/0048/0055–0065）
 
 | # | 检查项 | 操作 | 预期 |
 | ---|--------|------|------|
@@ -756,11 +756,11 @@ RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测�
 |---|--------|------|------|
 | 9.11.1 | 追加只读工具 | 配置一个会在上下文不足时输出 `tool_requests`（`metrics.query`）的模型，提问 | 服务端执行追加取数后二次调用模型；`tool_calls` 含该轮调用；审计 `chat_message` 的 `loop_rounds ≥ 1` |
 | 9.11.2 | 执行类工具不可达 | 让模型申请 `execution.command.run` / `execution.tasks.propose`，并核对 Execution 列表 | 该申请 `allowed=false`、`reason=tool is not allowed in agent loop`，不产生执行动作；finalize 阶段另可做执行提议权限校验，二者不得混淆 |
-| 9.11.3 | 轮数预算与强制收敛 | 让模型按不同参数持续申请 `metrics.query`，分别让强制轮回答和继续申请工具 | 最多 3 个追加轮后先强制收敛；强制轮给出合法 answer 时可 ok/insufficient_context且 forced_convergence=true，仍失败才 degraded/agent_loop_exhausted，保留观测 |
+| 9.11.3 | 轮数预算与强制收敛 | 让模型按不同参数持续申请 `metrics.query`，分别让强制轮回答和继续申请工具 | 最多 4 个追加轮后先强制收敛；强制轮给出合法 answer 时可 ok/insufficient_context且 forced_convergence=true，仍失败才 degraded/agent_loop_exhausted，保留观测 |
 | 9.11.4 | 无进展收敛 | 让模型持续申请被拒绝的工具 | 连续两轮无实际取数后进入强制收敛，通常为首轮+纠正轮+强制轮；不是“至多两次模型调用”，成功可正常回答，失败才 agent_loop_exhausted |
 | 9.11.5 | 审计可回放 | `GET /api/audits?resource_type=ai&resource_id={session_id}` | 每轮工具调用都有 `tool_invoke`；`chat_message` 含 loop_rounds、tokens，强制轮另有 forced_convergence；loop_rounds 不含强制轮 |
 | 9.11.6 | 重复申请去重 | 跨轮重复已成功的同工具同参数，再对失败/非法参数修正重试 | 成功组合后续 denied/duplicate reason，不重复取数且纯重复不占轮；失败或非法参数可修正重试。连续两轮无进展后先强制收敛，不直接等同 degraded |
-| 9.11.7 | token、时间与申请数预算 | 分别构造累计 usage 达到 60000、turn_budget_s=2、单轮超过 3 个不同参数申请 | token 达预算先强制收敛，时间耗尽直接 turn_budget_exceeded；单轮只受理前 3 个不同 tool_code+params，超出不执行 |
+| 9.11.7 | token、时间与申请数预算 | 分别构造累计 usage 达到 80000、turn_budget_s=2、单轮超过 4 个不同参数申请 | token 达预算先强制收敛，时间耗尽直接 turn_budget_exceeded；单轮只受理前 4 个不同 tool_code+params，超出不执行 |
 | 9.11.8 | 前端多轮展示 | 同工具不同参数、多轮调用后检查 AnswerCard/ContextPanel | tool_calls 保留记录，但 AnswerCard key 仅 tool_code，右侧只保留每个工具最后状态且目录固定，不是完整 Loop 时间线；execution.tasks.propose 不是 Loop 白名单 |
 | 9.11.9 | Loop 脚本边界 | 核对 `e2e-ai-agent-loop.ps1` 的 SKIP、数据与断言 | 覆盖只读 Loop、执行拒绝、发现和 3 轮耗尽的部分断言；无 active 告警会 SKIP 后 exit 0。会话保留，未覆盖全部预算/去重/强制收敛/无执行任务断言，不是 UI 验收 |
 | 9.11.10 | 证据覆盖缺口 | 分别使用资源分组型规则、云产品级规则（无资源绑定）、SQLServer 等单引擎规则、零数据规则、超过 288 点曲线、长窗口和大规则集，检查模型实际 observations | 规则资源优先通过 CES `ListAlarmRuleResources` 补全并用其 count 校正 resource_count，透传 `resource_level`/`dimension_name`；分组规则再展开实例；无绑定规则按 namespace + 维度名发现实例兜底（`scope_source=resource_discovery`，resource_count 为空、scope_note 给出未匹配原因），并按引擎线索匹配实例，只有实例发现也取不到才 no_resource_scope；预算内尽量覆盖全部实例（单规则上限 200、6 并发），覆盖不全标记 sampled；有数据规则附带 `recent_*`（近 24h/60s）分钟级复核；零数据规则返回 `probe_point_count` 区分“近期无数据/窗口无点”。288 点定稿保留 `peak_at` 与破限片段/时长；频率判断按近端 24h/60s 复核给出近似值，不再要求 1s 原始数据或将其列为数据缺失 |
@@ -887,6 +887,19 @@ RecommendationService 当前没有独立单元测试，现有 Run/Analyzer 测�
 | 9.18.6 | 与规则体检联动 | 对每日固定时段越限的规则申请 `rds.backup.query` | 回答同时引用时段画像与备份窗口/记录；策略缺失时列入 `uncertainties`，不得假设备份窗口或只建议放宽阈值 |
 
 > 前置：已执行迁移 `0063`；账号需具备 RDS 实例备份策略/备份列表只读权限（具体 IAM action 以华为云 RDS 文档为准）。`rds_cluster_id` 在标准 RDS 实例上通常与实例 ID 一致，集群版可能需要 `rds_instance_id`；对不上时返回稳定错误，不做模糊猜测。单测覆盖参数回退、UTC→本地窗口、备份记录映射、agency/权限与部分失败；真实账号由 9.18.2/9.18.4 手工验证。当前没有专项 E2E 脚本。
+
+### 9.19 Prompt 输入/输出预算（migration 0064/0065，契约 §10.22）
+
+| # | 检查项 | 操作 | 预期 |
+| --- | --- | --- | --- |
+| 9.19.1 | 迁移与字段 | `go run ./cmd/migrate` 后查 `ai_provider.context_window_tokens` / `max_output_tokens`；通过 `POST /api/ai/providers` 写入 128000/30000、0/0、512/0、0/128、8000/8000 | 列存在且默认 0；合法值落库并透传运行时；过小窗口或输出上限、输出上限 ≥ 窗口均返回 `INVALID_ARGUMENT` |
+| 9.19.2 | 自动裁剪顺序 | 设置 `AIOPS_AI__CHAT_PROMPT_TOKEN_BUDGET=4096`，构造 12 条长历史、含 points 的证据、多观测与记忆后提问 | 模型仍被调用；审计 `chat_message.prompt_trims` 可见 `dropped_history` / `stripped_metric_points` / `dropped_observations` / `dropped_memory`，`prompt_tokens_est <= prompt_token_budget` |
+| 9.19.3 | 预算不足降级 | 设置 `AIOPS_AI__CHAT_PROMPT_TOKEN_BUDGET=1024` 并发送长问题或带图消息 | 返回 `degraded/prompt_budget_exceeded`；不调用模型；消息落库且保留已取观测 |
+| 9.19.4 | 输入预算与窗口覆盖 | provider 配置 `context_window_tokens=8000`，全局输入预算 32768、全局输出 4096；再改配 `context_window_tokens=128000`；再配置 `max_output_tokens=2000` | 8000 时输出封顶 4000、输入 4000；128000 时输出 4096、输入 123904（不被全局 32768 截断）；显式输出 2000 时输入 6000；未配置窗口的 provider 才使用全局输入预算 |
+| 9.19.5 | 输出上限下发 | provider 配置 `max_output_tokens=512`，用 mock 记录请求体并让模型输出超长文本 | 同步/流式/分析请求体均含 `max_tokens=512`；输出被截断时返回 `incomplete/output_truncated`（对话）或既有分析降级语义，不因重试绕过上限；审计 `chat_message.prompt_output_limit=512` |
+| 9.19.6 | 前端配置 | 「系统设置 → AI 配置 → Provider 管理」编辑类型 b，填写上下文窗口与最大输出并保存 | 列表回显 `context_window_tokens` / `max_output_tokens`；0 表示使用全局预算/默认；保存后无需重启 |
+
+> 前置：已执行迁移 `0064`、`0065`；输入裁剪只约束 AI 助手对话，输出 `max_tokens` 同时作用于对话与 `/api/ai/analyze-alert`。估算为保守口径（3 字节≈1 token，图片 1600 token/张），不是精确 tokenizer；裁剪只影响本轮 prompt，不删除已落库证据。单测：`internal/ai/application/chat_prompt_budget_test.go`、`provider_service_test.go`、`internal/ai/toolgateway/chat_client_test.go`、`chat_completion_test.go`、`pkg/config/config_test.go`。
 
 ## 附录 A：仅 UI 手工步骤（精简表）
 

@@ -27,7 +27,9 @@ const (
 	chatDegradedModelFailed        = "model_failed"
 	chatDegradedOutputInvalid      = "model_output_invalid"
 	chatDegradedTurnBudgetExceeded = "turn_budget_exceeded"
-	chatDegradedStreamInterrupted  = "stream_interrupted"
+	// chatDegradedPromptBudgetExceeded 表示裁剪到最小后 prompt 仍超过 token 预算，未调用模型。
+	chatDegradedPromptBudgetExceeded = "prompt_budget_exceeded"
+	chatDegradedStreamInterrupted    = "stream_interrupted"
 	// chatDegradedOutputTruncated 对应 provider finish_reason=length/max_tokens 的输出超限。
 	chatDegradedOutputTruncated = "output_truncated"
 	chatDegradedRateLimited     = "provider_rate_limited"
@@ -156,6 +158,11 @@ type ChatService struct {
 	shares domain.SessionShareRepository
 	// turnBudget 是单次对话（含 Agent Loop 多轮）的总时间预算；<=0 时使用默认值。
 	turnBudget time.Duration
+	// promptTokenBudget 是单次 prompt 的全局 token 预算；<=0 时使用默认值。
+	// provider 配置了 context_window_tokens 时按其窗口计算，本值仅作未配置窗口时的兜底。
+	promptTokenBudget int
+	// maxOutputTokens 是 provider 未配置 max_output_tokens 时的全局输出上限。
+	maxOutputTokens int
 	// timezone 是证据本地时间与越限小时分布的统计时区；空值回退 UTC。
 	timezone string
 	now      func() time.Time
@@ -175,7 +182,9 @@ func NewChatService(
 	}
 	return &ChatService{
 		sessions: sessions, alerts: alerts, tools: tools, chat: chat,
-		evidence: evidence, audit: audit, turnBudget: chatDefaultTurnBudget, now: time.Now,
+		evidence: evidence, audit: audit, turnBudget: chatDefaultTurnBudget,
+		promptTokenBudget: chatDefaultPromptTokenBudget,
+		maxOutputTokens:   chatDefaultMaxOutputTokens, now: time.Now,
 	}
 }
 
@@ -202,6 +211,22 @@ func (s *ChatService) SetTurnBudget(budget time.Duration) {
 		return
 	}
 	s.turnBudget = budget
+}
+
+// SetPromptTokenBudget 设置单次 prompt 的全局 token 预算；<=0 时保持默认值。
+func (s *ChatService) SetPromptTokenBudget(tokens int) {
+	if s == nil || tokens <= 0 {
+		return
+	}
+	s.promptTokenBudget = tokens
+}
+
+// SetMaxOutputTokens 设置 provider 未配置时的全局输出上限；<=0 时保持默认值。
+func (s *ChatService) SetMaxOutputTokens(tokens int) {
+	if s == nil || tokens <= 0 {
+		return
+	}
+	s.maxOutputTokens = tokens
 }
 
 // SetTimezone 设置证据统计时区（应用配置 app.timezone）；空值回退 UTC。
@@ -483,6 +508,10 @@ func (s *ChatService) sendMessage(ctx context.Context, in SendChatMessageInput, 
 		"knowledge_status":      contextData.KnowledgeStatus,
 		"loop_rounds":           contextData.LoopRounds,
 		"forced_convergence":    generation.ForcedConvergence,
+		"prompt_tokens_est":     contextData.PromptTokenEstimate,
+		"prompt_token_budget":   contextData.PromptTokenBudget,
+		"prompt_output_limit":   contextData.PromptOutputTokens,
+		"prompt_trims":          contextData.PromptTrims,
 		"result":                auditResult(generation.Status),
 	})
 	result := &SendChatMessageResult{

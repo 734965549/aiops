@@ -252,7 +252,8 @@ C. AI 会话 / Agent Loop
 
 - 白名单固定为 8 个本地只读工具，执行类工具申请只生成 denied 观测，不调用 Execution。
 - 最多 4 个追加轮（含实际取数和无进展轮；纯重复申请不占），单轮最多 4 个不同 `tool_code+params` 申请；同工具不同参数可分别执行。
-- token 预算为 Provider 回报的累计 60000，达到后停止继续取数；Provider 不返回 usage 时不能据本地字符数推断等值 token。
+- token 预算为 Provider 回报的累计 80000，达到后停止继续取数；Provider 不返回 usage 时不能据本地字符数推断等值 token。
+- 单次 prompt 受模型 `context_window_tokens` 约束（未配置时用 `ai.chat_prompt_token_budget`，默认 32768）：每轮调用前保守估算，超限按历史→points→低优先级观测→记忆顺序裁剪；裁剪到最小仍超限返回 degraded/prompt_budget_exceeded，不调用模型。输出侧由 provider `max_output_tokens` 或 `ai.chat_max_output_tokens`（默认 4096）决定，随请求下发 `max_tokens`，且不超过窗口一半。
 - 整回合总预算默认 600 秒，包含首轮 gather、Loop 和强制收敛；超时返回 degraded/turn_budget_exceeded。
 - 轮内同参数去重；跨轮只对**已经成功执行**的同参数组合拒绝重复，失败或非法参数可在后续轮修正重试。纯重复申请不占有效轮数。
 - 连续两轮没有任何实际取数，或轮数/token 预算耗尽，会先做一次强制收敛：禁止新工具，只基于已有 observations 作答。

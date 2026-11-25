@@ -14,6 +14,10 @@ export interface AIProvider {
   reasoning_effort?: string
   /** 类型 b 模型是否接受图片输入（多模态）；未开启时带图消息会被后端拒绝。 */
   vision_enabled?: boolean
+  /** 模型上下文窗口（token）；0 或缺省表示未配置，使用全局 prompt 预算。 */
+  context_window_tokens?: number
+  /** 单次输出上限（max_tokens）；0 或缺省表示使用全局默认。 */
+  max_output_tokens?: number
   headers?: Record<string, string>
   enabled: boolean
   description?: string
@@ -29,6 +33,8 @@ export interface UpsertProviderInput {
   timeout_ms?: number
   reasoning_effort?: string
   vision_enabled?: boolean
+  context_window_tokens?: number
+  max_output_tokens?: number
   headers?: Record<string, string>
   enabled?: boolean
   description?: string

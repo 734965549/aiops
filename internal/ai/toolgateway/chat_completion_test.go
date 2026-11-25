@@ -43,6 +43,11 @@ func TestChatCompletionExecutorInvoke(t *testing.T) {
 	defer srv.Close()
 
 	r := chatTestRegistry(t, srv.URL+"/api/v3")
+	cfg, _ := r.GetProvider("ark")
+	cfg.MaxOutputTokens = 1234
+	if err := r.UpsertProvider(cfg); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
 	resp, err := r.Invoke(context.Background(), "ark", ToolRequest{
 		ToolCode: "alarm.analyze",
 		Payload: map[string]any{
@@ -60,6 +65,9 @@ func TestChatCompletionExecutorInvoke(t *testing.T) {
 	}
 	if captured.Model != "ep-2024" || captured.ResponseFormat.Type != "json_object" {
 		t.Fatalf("unexpected model request: %+v", captured)
+	}
+	if captured.MaxTokens != 1234 {
+		t.Fatalf("analysis max_tokens = %d, want 1234", captured.MaxTokens)
 	}
 	if len(captured.Messages) != 2 || captured.Messages[0].Role != "system" || captured.Messages[0].Content != "服务端固定提示词" {
 		t.Fatalf("unexpected messages: %+v", captured.Messages)

@@ -307,6 +307,9 @@ func degradedChatAnswer(reason string, evidence []string) ChatAnswer {
 		uncertainties = append(uncertainties, "模型在追加只读取数的预算内仍未给出结论，已按已获取上下文保守回答")
 	case chatDegradedTurnBudgetExceeded:
 		uncertainties = append(uncertainties, "本轮对话已超过总时间预算，已停止继续取数与模型调用；请缩小问题范围或稍后重试")
+	case chatDegradedPromptBudgetExceeded:
+		summary = "本轮上下文超过模型上下文预算，已停止调用模型；已保留本轮获取的只读证据。"
+		uncertainties = append(uncertainties, "上下文裁剪到最小后仍超过模型窗口或全局预算，请缩小问题范围、缩短时间窗口或减少附图后重试")
 	case chatDegradedStreamInterrupted:
 		summary = "AI 回答在生成过程中中断，已保留本轮已获取的只读证据；请缩小问题范围或稍后重试。"
 		uncertainties = append(uncertainties, "模型流式输出中断，未获得完整结构化回答；已保留本轮已获取的只读证据")

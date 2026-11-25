@@ -32,6 +32,13 @@ type chatContextData struct {
 	KnowledgeStatus   string
 	// LoopRounds 是回合内追加只读取数的轮数（阶段 3 审计字段）。
 	LoopRounds int
+	// PromptTokenEstimate / PromptTokenBudget 是最近一轮 prompt 的估算 token 与输入预算。
+	PromptTokenEstimate int
+	PromptTokenBudget   int
+	// PromptOutputTokens 是最近一轮下发的 max_tokens 输出上限。
+	PromptOutputTokens int
+	// PromptTrims 是最近一轮发生的裁剪动作（dropped_history / stripped_metric_points 等）。
+	PromptTrims []string
 }
 
 // gatherContext 按会话页面上下文执行只读工具权限校验与取数（流程图 §16 的 J1/J4）。

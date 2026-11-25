@@ -36,39 +36,47 @@ type ProviderConfig struct {
 	ReasoningEffort string
 	// VisionEnabled 表示该类型 b 模型接受图片输入（多模态 content）。
 	VisionEnabled bool
+	// ContextWindowTokens 是模型上下文窗口（token）；0 表示未配置。
+	ContextWindowTokens int
+	// MaxOutputTokens 是单次输出上限（max_tokens）；0 表示未配置，使用全局默认。
+	MaxOutputTokens int
 }
 
 // ProviderPublic 是对外暴露的 provider 摘要，不含明文 api_key。
 type ProviderPublic struct {
-	ID          string
-	Name        string
-	Type        ProviderType
-	BaseURL     string
-	Model       string
-	HasAPIKey   bool
-	TimeoutMS   int64
-	Headers     map[string]string
-	Enabled     bool
-	Description string
-	ReasoningEffort string
-	VisionEnabled bool
+	ID                  string
+	Name                string
+	Type                ProviderType
+	BaseURL             string
+	Model               string
+	HasAPIKey           bool
+	TimeoutMS           int64
+	Headers             map[string]string
+	Enabled             bool
+	Description         string
+	ReasoningEffort     string
+	VisionEnabled       bool
+	ContextWindowTokens int
+	MaxOutputTokens     int
 }
 
 // Public 将内部配置转换为对外安全摘要。
 func (c ProviderConfig) Public() ProviderPublic {
 	return ProviderPublic{
-		ID:          c.ID,
-		Name:        c.Name,
-		Type:        c.Type,
-		BaseURL:     c.BaseURL,
-		Model:       c.Model,
-		HasAPIKey:   strings.TrimSpace(c.APIKey) != "",
-		TimeoutMS:   c.TimeoutMS,
-		Headers:     c.Headers,
-		Enabled:     c.Enabled,
-		Description: c.Description,
-		ReasoningEffort: c.ReasoningEffort,
-		VisionEnabled: c.VisionEnabled,
+		ID:                  c.ID,
+		Name:                c.Name,
+		Type:                c.Type,
+		BaseURL:             c.BaseURL,
+		Model:               c.Model,
+		HasAPIKey:           strings.TrimSpace(c.APIKey) != "",
+		TimeoutMS:           c.TimeoutMS,
+		Headers:             c.Headers,
+		Enabled:             c.Enabled,
+		Description:         c.Description,
+		ReasoningEffort:     c.ReasoningEffort,
+		VisionEnabled:       c.VisionEnabled,
+		ContextWindowTokens: c.ContextWindowTokens,
+		MaxOutputTokens:     c.MaxOutputTokens,
 	}
 }
 

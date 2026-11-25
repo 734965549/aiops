@@ -19,6 +19,8 @@ const (
 	chatMaxResponseBytes = 4 << 20
 	// chatMaxAttempts 为非流式请求的总尝试次数（首次 + 2 次退避重试）。
 	chatMaxAttempts = 3
+	// DefaultMaxOutputTokens 是未显式配置时的输出上限（与 ai.chat_max_output_tokens 默认一致）。
+	DefaultMaxOutputTokens = 4096
 )
 
 // 平台直连模型时的默认 system prompt；analyze-alert 路径由 application 层传入固定提示词，
@@ -84,6 +86,8 @@ type chatRequest struct {
 	Temperature float64 `json:"temperature"`
 	// ReasoningEffort 思考型模型推理强度（low/high/max）；空串不发送。
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// MaxTokens 是单次输出 token 上限；0 不发送，由 provider 使用自身默认值。
+	MaxTokens int `json:"max_tokens,omitempty"`
 	// Stream 为 true 时请求 OpenAI 兼容 SSE 流式响应；同步与分析路径保持 false。
 	Stream bool `json:"stream,omitempty"`
 }
@@ -161,10 +165,15 @@ type ChatCompletionExecutor struct {
 	typeName          ProviderType
 	requestPath       string
 	streamIdleTimeout time.Duration
+	// defaultMaxOutputTokens 是 provider 未配置 max_output_tokens 时的全局输出上限。
+	defaultMaxOutputTokens int
 }
 
 func NewChatCompletionExecutor(t ProviderType, requestPath string) *ChatCompletionExecutor {
-	return &ChatCompletionExecutor{typeName: t, requestPath: requestPath}
+	return &ChatCompletionExecutor{
+		typeName: t, requestPath: requestPath,
+		defaultMaxOutputTokens: DefaultMaxOutputTokens,
+	}
 }
 
 // SetStreamIdleTimeout 覆盖流式空闲超时；<=0 保持默认（chatStreamIdleTimeout）。
@@ -179,6 +188,43 @@ func (e *ChatCompletionExecutor) effectiveStreamIdleTimeout() time.Duration {
 		return e.streamIdleTimeout
 	}
 	return chatStreamIdleTimeout
+}
+
+// SetDefaultMaxOutputTokens 覆盖 provider 未配置时的全局输出上限；<=0 保持不发送 max_tokens。
+func (e *ChatCompletionExecutor) SetDefaultMaxOutputTokens(tokens int) {
+	if e != nil && tokens > 0 {
+		e.defaultMaxOutputTokens = tokens
+	}
+}
+
+// EffectiveOutputTokens 计算实际下发的 max_tokens：
+// 优先 provider 显式配置，其次全局默认；配置了上下文窗口时不超过窗口的一半，给输入留空间。
+func EffectiveOutputTokens(window, configured, fallback int) int {
+	out := configured
+	if out <= 0 {
+		out = fallback
+	}
+	if out <= 0 {
+		return 0
+	}
+	if window > 0 {
+		maxOut := window / 2
+		if maxOut < 1 {
+			maxOut = 1
+		}
+		if out > maxOut {
+			out = maxOut
+		}
+	}
+	return out
+}
+
+func (e *ChatCompletionExecutor) effectiveMaxOutputTokens(cfg ProviderConfig) int {
+	fallback := 0
+	if e != nil {
+		fallback = e.defaultMaxOutputTokens
+	}
+	return EffectiveOutputTokens(cfg.ContextWindowTokens, cfg.MaxOutputTokens, fallback)
 }
 
 func (e *ChatCompletionExecutor) Type() ProviderType { return e.typeName }
@@ -209,6 +255,7 @@ func (e *ChatCompletionExecutor) Invoke(ctx context.Context, cfg ProviderConfig,
 		}{Type: "json_object"},
 		Temperature:     0.2,
 		ReasoningEffort: cfg.ReasoningEffort,
+		MaxTokens:       e.effectiveMaxOutputTokens(cfg),
 	})
 	if err != nil {
 		return nil, apperr.Wrap(err, apperr.CodeInternal, "build model request failed")

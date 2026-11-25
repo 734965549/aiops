@@ -17,7 +17,7 @@
 | `ai` | config.go | providers 种子、证据/回合/流式超时与 payload 上限 |
 | `alert_sync` / `execution` / `integration` | alert_sync.go / execution.go / integration.go | CES 拉取 worker、Agent 租约与注册令牌、凭据加密 |
 
-`AIConfig` 访问器统一兜底：`EvidenceTimeout`(5s)、`PostgresEvidenceTimeout`(15s)、`TurnBudgetTimeout`(600s)、`StreamIdleTimeout`(180s，下限 30s)、`EvidencePayloadLimit`(32KB)。
+`AIConfig` 访问器统一兜底：`EvidenceTimeout`(5s)、`PostgresEvidenceTimeout`(15s)、`TurnBudgetTimeout`(600s)、`StreamIdleTimeout`(180s，下限 30s)、`EvidencePayloadLimit`(32KB)、`ChatPromptTokenBudgetLimit`(32768 tokens)、`ChatMaxOutputTokensLimit`(4096 tokens)。
 
 ## 校验（`Validate()`）
 

@@ -189,6 +189,13 @@ ai:
   # 模型流式输出连续无新增量的最大等待时间（秒），0 使用代码默认 180，低于 30 按 30 处理。
   # 203 部署挂载本文件，当前设为 300s 以覆盖思考型模型的长间隔；provider 的 SSE 注释/心跳也会重置该计时。
   stream_idle_timeout_s: 300
+  # AI 助手单次 prompt（system + user）的全局 token 预算，0 使用默认 32768；
+  # 仅在 provider 未配置 context_window_tokens 时生效。
+  # provider 配置了窗口时按“窗口 - 输出上限”执行，超限会自动裁剪历史/证据并标注裁剪项。
+  chat_prompt_token_budget: 32768
+  # 单次模型输出上限（max_tokens）的全局默认，0 使用默认 4096；
+  # provider 配置了 max_output_tokens 时以 provider 为准，且不超过模型窗口的一半。
+  chat_max_output_tokens: 4096
   providers:
     - id: "demo-http-a"
       name: "Demo HTTP Provider A"

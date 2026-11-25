@@ -160,6 +160,36 @@
               仅视觉模型开启：开启后 AI 助手可向该模型发送图片（截图提问）
             </div>
           </a-form-item>
+          <a-form-item
+            v-if="form.type === 'b'"
+            label="上下文窗口 (tokens)"
+          >
+            <a-input-number
+              v-model="form.context_window_tokens"
+              :min="0"
+              :step="1024"
+              style="width: 100%"
+              placeholder="0 表示未配置，使用全局预算"
+            />
+            <div class="field-hint">
+              填写模型上下文窗口（如 128000）；AI 助手按“窗口 - 输出上限”自动裁剪历史与证据
+            </div>
+          </a-form-item>
+          <a-form-item
+            v-if="form.type === 'b'"
+            label="最大输出 (tokens)"
+          >
+            <a-input-number
+              v-model="form.max_output_tokens"
+              :min="0"
+              :step="256"
+              style="width: 100%"
+              placeholder="0 表示使用全局默认（4096）"
+            />
+            <div class="field-hint">
+              随请求发送 max_tokens；配置窗口时不超过窗口一半，0 表示使用全局默认
+            </div>
+          </a-form-item>
           <a-form-item label="启用">
             <a-switch v-model="form.enabled" />
           </a-form-item>
@@ -229,6 +259,8 @@ const emptyForm = () => ({
   timeout_ms: 300000,
   reasoning_effort: '',
   vision_enabled: false,
+  context_window_tokens: 0,
+  max_output_tokens: 0,
   enabled: true,
   description: ''
 })
@@ -259,6 +291,8 @@ function onSelect(record: Record<string, unknown>) {
   form.timeout_ms = provider.timeout_ms ?? 300000
   form.reasoning_effort = provider.reasoning_effort ?? ''
   form.vision_enabled = provider.vision_enabled ?? false
+  form.context_window_tokens = provider.context_window_tokens ?? 0
+  form.max_output_tokens = provider.max_output_tokens ?? 0
   form.enabled = provider.enabled
   form.description = provider.description ?? ''
 }
@@ -290,6 +324,8 @@ async function onSave() {
       timeout_ms: form.timeout_ms,
       reasoning_effort: form.reasoning_effort || undefined,
       vision_enabled: form.vision_enabled,
+      context_window_tokens: form.context_window_tokens || 0,
+      max_output_tokens: form.max_output_tokens || 0,
       enabled: form.enabled,
       description: form.description.trim() || undefined
     })

@@ -86,6 +86,18 @@ func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, 
 	if appendix := strings.TrimSpace(data.KnowledgeAppendix); appendix != "" {
 		systemPrompt = chatSystemPrompt + "\n\n" + appendix
 	}
+	promptBudget, outputTokens := s.promptBudgetFor(providerID)
+	data.PromptOutputTokens = outputTokens
+	fixedPromptTokens := estimateChatPromptTokens(systemPrompt) + len(images)*chatImageTokenEstimate
+	if promptBudget <= 0 {
+		logger.From(ctx).Warn("ai chat prompt budget is not positive",
+			logger.String("session_id", session.SessionID),
+			logger.Int("output_tokens", outputTokens))
+		return chatGeneration{
+			Answer: degradedChatAnswer(chatDegradedPromptBudgetExceeded, observationEvidenceLines(*data)),
+			Status: chatStatusDegraded, ProviderID: providerID,
+		}
+	}
 
 	budget := s.turnBudget
 	if budget <= 0 {
@@ -113,12 +125,23 @@ func (s *ChatService) generateWithLoop(ctx context.Context, providerID, userID, 
 		if time.Until(deadline) <= 0 {
 			return budgetExceeded()
 		}
-		prompt := buildChatUserPrompt(ChatPromptInput{
+		prompt, trim, fits := buildChatUserPromptWithBudget(ChatPromptInput{
 			Question: question, Context: session.Context, TimeRange: session.Context.TimeRange,
 			Now:   s.now().Unix(),
 			Alert: alertSnapshot(data.Alert), Observations: data.Observations, History: history,
 			Memory: memoryPromptCases(data.Memories),
-		})
+		}, promptBudget, fixedPromptTokens)
+		recordPromptBudget(data, trim)
+		if !fits {
+			logger.From(ctx).Warn("ai chat prompt budget exceeded",
+				logger.String("session_id", session.SessionID),
+				logger.Int("budget_tokens", promptBudget),
+				logger.Int("estimated_tokens", trim.EstimatedTokens))
+			return chatGeneration{
+				Answer: degradedChatAnswer(chatDegradedPromptBudgetExceeded, observationEvidenceLines(*data)),
+				Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
+			}
+		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			return budgetExceeded()
@@ -234,12 +257,31 @@ func (s *ChatService) forceFinalAnswer(ctx context.Context, providerID, question
 	if remaining <= 0 {
 		return degraded
 	}
-	prompt := buildChatUserPrompt(ChatPromptInput{
+	promptBudget, outputTokens := s.promptBudgetFor(providerID)
+	data.PromptOutputTokens = outputTokens
+	if promptBudget <= 0 {
+		return chatGeneration{
+			Answer: degradedChatAnswer(chatDegradedPromptBudgetExceeded, evidence),
+			Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
+		}
+	}
+	prompt, trim, fits := buildChatUserPromptWithBudget(ChatPromptInput{
 		Question: question, Context: session.Context, TimeRange: session.Context.TimeRange,
 		Now:   s.now().Unix(),
 		Alert: alertSnapshot(data.Alert), Observations: data.Observations, History: history,
 		Memory: memoryPromptCases(data.Memories), ForceAnswer: true,
-	})
+	}, promptBudget, estimateChatPromptTokens(systemPrompt)+len(images)*chatImageTokenEstimate)
+	recordPromptBudget(data, trim)
+	if !fits {
+		logger.From(ctx).Warn("ai chat forced convergence prompt budget exceeded",
+			logger.String("session_id", session.SessionID),
+			logger.Int("budget_tokens", trim.Budget),
+			logger.Int("estimated_tokens", trim.EstimatedTokens))
+		return chatGeneration{
+			Answer: degradedChatAnswer(chatDegradedPromptBudgetExceeded, evidence),
+			Status: chatStatusDegraded, ProviderID: providerID, Tokens: tokens,
+		}
+	}
 	callCtx, cancel := context.WithTimeout(ctx, remaining)
 	started := time.Now()
 	result, err := s.completeModel(callCtx, providerID, systemPrompt, prompt, images)

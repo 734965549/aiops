@@ -46,49 +46,55 @@ func NewHandler(gateway Gateway, providers ProviderManager, authorizer Authorize
 }
 
 type providerRequest struct {
-	ID          string            `json:"id" binding:"required"`
-	Name        string            `json:"name" binding:"required"`
-	Type        string            `json:"type" binding:"required"`
-	BaseURL     string            `json:"base_url" binding:"required"`
-	Model       string            `json:"model"`
-	APIKey      string            `json:"api_key"`
-	TimeoutMS   int64             `json:"timeout_ms"`
-	Headers     map[string]string `json:"headers"`
-	Enabled     bool              `json:"enabled"`
-	Description string            `json:"description"`
-	ReasoningEffort string        `json:"reasoning_effort"`
-	VisionEnabled bool            `json:"vision_enabled"`
+	ID                  string            `json:"id" binding:"required"`
+	Name                string            `json:"name" binding:"required"`
+	Type                string            `json:"type" binding:"required"`
+	BaseURL             string            `json:"base_url" binding:"required"`
+	Model               string            `json:"model"`
+	APIKey              string            `json:"api_key"`
+	TimeoutMS           int64             `json:"timeout_ms"`
+	Headers             map[string]string `json:"headers"`
+	Enabled             bool              `json:"enabled"`
+	Description         string            `json:"description"`
+	ReasoningEffort     string            `json:"reasoning_effort"`
+	VisionEnabled       bool              `json:"vision_enabled"`
+	ContextWindowTokens int               `json:"context_window_tokens"`
+	MaxOutputTokens     int               `json:"max_output_tokens"`
 }
 
 type providerListItem struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Type        string            `json:"type"`
-	BaseURL     string            `json:"base_url"`
-	Model       string            `json:"model"`
-	HasAPIKey   bool              `json:"has_api_key"`
-	TimeoutMS   int64             `json:"timeout_ms"`
-	Headers     map[string]string `json:"headers"`
-	Enabled     bool              `json:"enabled"`
-	Description string            `json:"description"`
-	ReasoningEffort string        `json:"reasoning_effort"`
-	VisionEnabled bool            `json:"vision_enabled"`
+	ID                  string            `json:"id"`
+	Name                string            `json:"name"`
+	Type                string            `json:"type"`
+	BaseURL             string            `json:"base_url"`
+	Model               string            `json:"model"`
+	HasAPIKey           bool              `json:"has_api_key"`
+	TimeoutMS           int64             `json:"timeout_ms"`
+	Headers             map[string]string `json:"headers"`
+	Enabled             bool              `json:"enabled"`
+	Description         string            `json:"description"`
+	ReasoningEffort     string            `json:"reasoning_effort"`
+	VisionEnabled       bool              `json:"vision_enabled"`
+	ContextWindowTokens int               `json:"context_window_tokens"`
+	MaxOutputTokens     int               `json:"max_output_tokens"`
 }
 
 func maskProviderForList(p toolgateway.ProviderPublic) providerListItem {
 	return providerListItem{
-		ID:          p.ID,
-		Name:        p.Name,
-		Type:        string(p.Type),
-		BaseURL:     p.BaseURL,
-		Model:       p.Model,
-		HasAPIKey:   p.HasAPIKey,
-		TimeoutMS:   p.TimeoutMS,
-		Headers:     p.Headers,
-		Enabled:     p.Enabled,
-		Description: p.Description,
-		ReasoningEffort: p.ReasoningEffort,
-		VisionEnabled: p.VisionEnabled,
+		ID:                  p.ID,
+		Name:                p.Name,
+		Type:                string(p.Type),
+		BaseURL:             p.BaseURL,
+		Model:               p.Model,
+		HasAPIKey:           p.HasAPIKey,
+		TimeoutMS:           p.TimeoutMS,
+		Headers:             p.Headers,
+		Enabled:             p.Enabled,
+		Description:         p.Description,
+		ReasoningEffort:     p.ReasoningEffort,
+		VisionEnabled:       p.VisionEnabled,
+		ContextWindowTokens: p.ContextWindowTokens,
+		MaxOutputTokens:     p.MaxOutputTokens,
 	}
 }
 
@@ -123,6 +129,8 @@ func (h *Handler) UpsertProvider(c *gin.Context) {
 		ID: req.ID, Name: req.Name, Type: req.Type, BaseURL: req.BaseURL, Model: req.Model,
 		APIKey: req.APIKey, TimeoutMS: req.TimeoutMS, Headers: req.Headers,
 		Enabled: req.Enabled, Description: req.Description, ReasoningEffort: req.ReasoningEffort, VisionEnabled: req.VisionEnabled,
+		ContextWindowTokens: req.ContextWindowTokens,
+		MaxOutputTokens:     req.MaxOutputTokens,
 	})
 	if err != nil {
 		httpx.Fail(c, err)
