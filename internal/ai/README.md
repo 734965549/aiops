@@ -126,7 +126,7 @@ C. AI 会话 / Agent Loop
 
 ### 4.2 当前对话内置只读工具
 
-`toolgateway/builtin.go` 登记以下 8 个内置只读工具，均要求对应 AI 工具权限，并允许在受限 Agent Loop 中申请：
+`toolgateway/builtin.go` 登记以下 9 个内置只读工具，均要求对应 AI 工具权限，并允许在受限 Agent Loop 中申请：
 
 | tool_code | 本地执行能力 |
 | --- | --- |
@@ -135,6 +135,7 @@ C. AI 会话 / Agent Loop
 | `postgres.activity.query` | 查询 RDS for PostgreSQL 历史会话证据 |
 | `alert.rules.list` | 查询告警规则 |
 | `alert.rules.health` | 批量规则历史曲线体检 |
+| `rds.backup.query` | 查询 RDS 备份策略与最近备份记录 |
 | `accounts.list` | 列出当前用户可见的启用 Integration 账号 |
 | `resource.analyze` | 读取当前资源上下文并推导云查询参数 |
 | `resources.list` | 查询本地云同步资源清单 |
@@ -178,7 +179,7 @@ C. AI 会话 / Agent Loop
 | `0055/0056` | 规则查询、账号/资源发现工具权限 |
 | `0057` | Provider `reasoning_effort` |
 | `0059` | Provider `vision_enabled` 与会话图片字段 |
-| `0061/0062` | PostgreSQL 历史会话与批量规则体检工具权限 |
+| `0061/0062/0063` | PostgreSQL 历史会话、批量规则体检与 RDS 备份查询工具权限 |
 
 已有覆盖：
 
@@ -258,7 +259,7 @@ C. AI 会话 / Agent Loop
 - 强制收敛成功可返回 ok 或 insufficient_context，审计 `forced_convergence=true`；只有仍失败/输出非法才 degraded/agent_loop_exhausted。时间预算耗尽不走该强制轮。
 - `loop_rounds` 是实际追加取数轮数，不包含强制收敛；所有工具观测进入 tool_calls 和详细 tool_invoke 审计。
 
-**证据覆盖限制**：`ListAlarmRules` 不携带完整资源明细，规则资源优先通过 CES `ListAlarmRuleResources` 补全并用其 count 校正 `resource_count`，并透传 `resource_level` / `product_name`（维度名）；资源分组型规则再展开分组（单次规则列表最多 10 条、每条最多 3 个实例样本）；仍无资源维度时按 namespace + 规则维度名从本地云同步资源发现最多 3 个实例兜底（`scope_source=resource_discovery`，此时 `resource_count` 为空），并按规则名/描述中的引擎线索优先匹配同引擎实例，避免 PG 规则抽到 MySQL 实例。每条规则对最多 3 个实例取数、取越限最严重的样本；只有连实例发现也取不到时才 `no_resource_scope`。单次体检默认预算 400 次指标查询（总超时 180s、6 并发），按广度优先分配：先保证每条规则至少 1 个实例，剩余预算轮转补全全部实例（单规则上限 200），覆盖不全标记 sampled；有数据规则额外做近 24h/60s 分钟级复核（`recent_*`），`point_count=0` 的规则追加近 1 小时/60s 探测（`probe_point_count`，单次最多 6 条），区分“近期无数据”和“窗口无点”。进入 Prompt 的曲线最多 288 点，峰值时刻（`peak_at`/`peak_at_local`）、破限片段、越限时长与 `breach_by_hour`/`breach_top_hours`/`breach_days` 时段画像在降采样前按全量序列计算并保留（统计时区取 `app.timezone`，空值/非法回退 UTC）；规则窗口小于 60s 时按 recent_*（24h/60s）给出近似频率并注明口径，不再要求 1s 原始数据。提示词要求先做周期性与根因判断：`breach_top_hours` 集中或 `breach_days` 接近窗口天数时，先核对备份、批处理、维护窗口等计划任务并给根因处置，不得把放宽阈值或延长持续时间作为唯一建议。排查时应先核对 `scope_source`、`dimension_name`、`checked_resources`/`sampled`、`probe_point_count`、截断标记、聚合 period 与实际执行轮数，再决定是否缩窗复查。
+**证据覆盖限制**：`ListAlarmRules` 不携带完整资源明细，规则资源优先通过 CES `ListAlarmRuleResources` 补全并用其 count 校正 `resource_count`，并透传 `resource_level` / `product_name`（维度名）；资源分组型规则再展开分组（单次规则列表最多 10 条、每条最多 3 个实例样本）；仍无资源维度时按 namespace + 规则维度名从本地云同步资源发现最多 3 个实例兜底（`scope_source=resource_discovery`，此时 `resource_count` 为空），并按规则名/描述中的引擎线索优先匹配同引擎实例，避免 PG 规则抽到 MySQL 实例。每条规则对最多 3 个实例取数、取越限最严重的样本；只有连实例发现也取不到时才 `no_resource_scope`。单次体检默认预算 400 次指标查询（总超时 180s、6 并发），按广度优先分配：先保证每条规则至少 1 个实例，剩余预算轮转补全全部实例（单规则上限 200），覆盖不全标记 sampled；有数据规则额外做近 24h/60s 分钟级复核（`recent_*`），`point_count=0` 的规则追加近 1 小时/60s 探测（`probe_point_count`，单次最多 6 条），区分“近期无数据”和“窗口无点”。进入 Prompt 的曲线最多 288 点，峰值时刻（`peak_at`/`peak_at_local`）、破限片段、越限时长与 `breach_by_hour`/`breach_top_hours`/`breach_days` 时段画像在降采样前按全量序列计算并保留（统计时区取 `app.timezone`，空值/非法回退 UTC）；规则窗口小于 60s 时按 recent_*（24h/60s）给出近似频率并注明口径，不再要求 1s 原始数据。系统提示词只保留安全边界、输出 schema、工具协议与“无证据不定根因”的通用约束，不固化具体领域成因或平台能力声明；模型可基于 `breach_top_hours`/`breach_days` 自行形成假设，并申请 `rds.backup.query` 获取备份策略与最近备份记录验证，未取得证据时列入 uncertainties。排查时应先核对 `scope_source`、`dimension_name`、`checked_resources`/`sampled`、`probe_point_count`、截断标记、聚合 period 与实际执行轮数，再决定是否缩窗复查。
 
 ### 8.5 SSE、取消与模型重试
 

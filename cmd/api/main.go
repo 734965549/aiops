@@ -428,6 +428,13 @@ func main() {
 	)
 	aiChatSvc.SetPostgresEvidence(aiPostgresCollector, aiEvidenceSnapshots, app.Cfg.AI.EvidencePayloadLimit())
 	analyzeSvc.SetPostgresEvidence(aiPostgresCollector, aiEvidenceSnapshots, app.Cfg.AI.EvidencePayloadLimit())
+	aiChatSvc.SetRDSBackups(aiobs.NewRDSBackupCollector(
+		obsAccountAdapter,
+		huaweiObsCreds,
+		huaweiobs.NewRDSBackupClient(),
+		aiAccountAccess,
+		app.Cfg.AI.EvidenceTimeout(),
+	))
 	aiChatSvc.SetAlertRules(aiRulesCollector)
 	// 上下文不足修复：账号发现 + 资源上下文 + 云资源发现（ops/ai-contract.md §10.12.1）。
 	aiChatSvc.SetAccounts(aiintegration.NewAccountDiscovery(

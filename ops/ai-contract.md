@@ -244,7 +244,7 @@ AI 工具网关必须区分外部 Provider 通用转发、平台内置只读工�
 - AI 生成的命令必须匹配 Execution 模块中的 Command Spec，并由运维人员确认后才能执行。
 - 执行介体、代理、租约和日志回传契约见 `ops/execution-agent-contract.md`。
 
-> 状态（2026-11）：对话/Agent Loop 的内置只读工具共有 8 个：`alarm.analyze`、`metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`accounts.list`、`resource.analyze`、`resources.list`。它们由 AI application 经受控 Port 本地执行，不经 AI Provider 转发；模型补全只使用类型 b。cloud.* 系列与 `execution.tasks.propose` 的平台内置工具化保持推迟（§10.12.2 / §10.12.3）。`logs.search`、Execution/Inspection 等权限种子不代表已有本地实现；通用 `/tools/invoke` 只能按权限把请求转发给指定外部 Provider，不能据此保证平台业务语义。
+> 状态（2026-11）：对话/Agent Loop 的内置只读工具共有 9 个：`alarm.analyze`、`metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`rds.backup.query`、`accounts.list`、`resource.analyze`、`resources.list`。它们由 AI application 经受控 Port 本地执行，不经 AI Provider 转发；模型补全只使用类型 b。cloud.* 系列与 `execution.tasks.propose` 的平台内置工具化保持推迟（§10.12.2 / §10.12.3）。`logs.search`、Execution/Inspection 等权限种子不代表已有本地实现；通用 `/tools/invoke` 只能按权限把请求转发给指定外部 Provider，不能据此保证平台业务语义。
 
 ## 7. Provider 类型说明
 
@@ -554,13 +554,13 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 每条消息在 gather 阶段先执行 `accounts.list`（未配置时跳过），把当前用户可见的集成账号清单注入观测，供模型选择 `account_id`。
 - 上下文中的 `alert_id` 会触发告警快照读取：先做 `alarm.analyze` 的 RBAC 与工具权限校验，再由 `AlertReader.GetForAnalysis` 按当前用户的数据范围校验对象（映射见 §10.6.4）；可推导指标查询条件时触发 `metrics.query` 权限校验并采集只读指标证据。
 - 无 `alert_id` 但会话带 `resource_id` 时触发 `resource.analyze`：读取资源并推导 `account_id/region/namespace/dimensions`；资源数据范围由 Asset 应用层按账号归属团队/区域收口（拒绝记为 `allowed=false`、`status=denied`、`reason=data_scope_denied`）。
-- 模型可在 Agent Loop 中申请 `alarm.analyze`、`metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`accounts.list`、`resource.analyze` 与 `resources.list`；执行类工具仍在白名单之外。
+- 模型可在 Agent Loop 中申请 `alarm.analyze`、`metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`rds.backup.query`、`accounts.list`、`resource.analyze` 与 `resources.list`；执行类工具仍在白名单之外。
 - 每次工具校验/调用都写入审计：`resource_type=ai`、`resource_id=session_id`、`action=tool_invoke`，payload 含 `tool_code/allowed/mode/status/reason/evidence_id/result`，不含 prompt 与凭据。
 - 回答写入审计：`action=chat_message`，含 `status/risk_level/require_confirm/tool_codes/tool_denied/reference_count/provider_id/tokens/degraded_reason/incomplete_reason`。
 - 数据范围校验口径：
   - 告警快照的对象级数据范围在 `AlertReader` 收口（`POST /api/ai/analyze-alert` 与对话共用同一入口），拒绝时不返回任何告警字段；
   - 对话路径把拒绝降级为一次观测：`alarm.analyze` 的 `allowed=false`、`status=denied`、`reason=data_scope_denied`，不产生告警 `references`，也不返回 `view.alert` 跳转入口，模型仍可基于其它上下文（或降级结果）作答；
-  - 工具校验固定 `SkipDataScope=true` 且排在对象读取之前：告警/资源的数据范围由各自读取端口判断，而 `metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`accounts.list`、`resources.list`、`execution.tasks.propose` 没有通用对象上下文；账号级范围由观测取数、规则/资源查询、账号发现端口二次校验。在此强制通用对象数据范围会把正常对话误判为“缺少对象上下文”。
+  - 工具校验固定 `SkipDataScope=true` 且排在对象读取之前：告警/资源的数据范围由各自读取端口判断，而 `metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`rds.backup.query`、`accounts.list`、`resources.list`、`execution.tasks.propose` 没有通用对象上下文；账号级范围由观测取数、规则/资源查询、账号发现端口二次校验。在此强制通用对象数据范围会把正常对话误判为“缺少对象上下文”。
   - 分析路径在读取通过后会把同一份对象上下文随 `alarm.analyze` 工具请求下发，由网关复核（纵深防御）。
 - 对话历史最多取最近 12 条送入模型；单条历史内容截断，不读取全量会话。
 
@@ -718,7 +718,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - **流式与取消检查点已落地**：见 §10.17（SSE 事件级推送、取消检查点不写 assistant 并写 `chat_canceled`）；assistant 落库后的最终 answer 推送失败不回滚，不能概括为所有断流都不落回答。同步接口 §10.6 保留不变。
 - **会话分享已完成**：见 §10.18（对内只读链接 + 1–720 小时有效期 + owner 撤销；不提供匿名/对外访问）。
 - **记忆手动管理已完成**：见 §10.19（migration `0054`，管理员检索与手动停用/启用，写 `memory_review` 审计）；回答注入范围不因管理接口扩大。
-- **工具范围扩展已落地**：当前对话只读工具为 `alarm.analyze` / `metrics.query` / `postgres.activity.query` / `alert.rules.list` / `alert.rules.health` / `accounts.list` / `resource.analyze` / `resources.list`（§10.12.1、§10.21）；日志、变更类与 `cloud.*` 只读工具仍推迟接入。
+- **工具范围扩展已落地**：当前对话只读工具为 `alarm.analyze` / `metrics.query` / `postgres.activity.query` / `alert.rules.list` / `alert.rules.health` / `rds.backup.query` / `accounts.list` / `resource.analyze` / `resources.list`（§10.12.1、§10.21）；日志、变更类与 `cloud.*` 只读工具仍推迟接入。
 - **当前前端差距**：归档提示前会清空输入；生成中模型选择未禁用；详情无通用手动刷新入口；重试复用旧 key 会重放旧回答且历史重试可能不可用；多轮工具目录不是完整时间线。上述均属于实现缺口，不随“会话/Loop 后端已落地”自动关闭。
 - **同步客户端预算差距**：`web/src/api/ai.ts` 的同步 sendChatMessage 仍为 90 秒超时，与后端默认 600 秒回合预算不一致；独立工作台使用 SSE，但自定义同步调用方需单独评估。
 - **验证边界**：E2E 均为 API/curl + mock/fake，不是浏览器 UI 或真实模型验收；部分脚本保留业务数据，Agent Loop 无 active 告警会 SKIP 后 exit 0，必须看实际输出。
@@ -729,7 +729,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 #### 10.12.1 规则体检与上下文发现只读工具
 
-- **已落地**：`alarm.analyze`、自由参数 `metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、上下文发现三件套 `accounts.list` / `resource.analyze` / `resources.list`。执行类工具仍不可达。
+- **已落地**：`alarm.analyze`、自由参数 `metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`rds.backup.query`、上下文发现三件套 `accounts.list` / `resource.analyze` / `resources.list`。执行类工具仍不可达。
 - **上下文发现解决的问题**：无告警上下文时模型拿不到 `account_id/region/namespace/instance_id`；`accounts.list` 提供账号清单，`resource.analyze` 从资产页/观测页带入资源上下文，`resources.list` 让模型在纯对话场景发现实例。
 - **仍推迟什么**：`logs.search`、`changes.list`、`assets.get`（非云资源详情）、`cloud.*` 系列。资产资源只读范围已按集成账号数据范围收口，但变更类对象仍无统一口径。
 - **为什么先做规则体检**：告警规则查询 Port 已存在（`AlertRuleQueryPort`），指标查询已有成熟证据链与数据范围校验；用 namespace 过滤即可覆盖数据库类规则的 MVP 场景。
@@ -740,6 +740,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | --- | --- | --- | --- |
 | `alert.rules.list` | read_only | AI 工具权限 `alert.rules.list`（migration `0055`，仅 admin） | 按 namespace 查询告警规则及阈值字段 |
 | `alert.rules.health` | read_only | AI 工具权限 `alert.rules.health`（migration `0062`，仅 admin） | 按规则批量取历史曲线并统计峰值/破限比例 |
+| `rds.backup.query` | read_only | AI 工具权限 `rds.backup.query`（migration `0063`，仅 admin） | 查询 RDS 自动备份策略与最近备份记录，账号范围与 metrics.query 同口径 |
 | `metrics.query` | read_only | AI 工具权限 `metrics.query`（既有种子） | 自由参数，服务端校验后取指标证据 |
 | `postgres.activity.query` | read_only | AI 工具权限 `postgres.activity.query`（migration `0061`，仅 admin） | 查询 RDS for PostgreSQL 历史会话证据，详见 §10.21 |
 | `alarm.analyze` | read_only | AI 工具权限 `alarm.analyze`（既有种子） | 重新读取当前告警快照，无参数 |
@@ -747,7 +748,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | `resource.analyze` | read_only | AI 工具权限 `resource.analyze`（migration `0056`，仅 admin） | 读取会话选中的资源（业务 ID 或 cloud_resource_id），推导账号/区域/namespace/主维度 |
 | `resources.list` | read_only | AI 工具权限 `resources.list`（migration `0056`，仅 admin） | 按账号查询本地云同步资源（source=cloud_sync） |
 
-执行路径：在**对话/Agent Loop**中，`alarm.analyze` 由 AI application 经 AlertReader 本地读取；`metrics.query` / `alert.rules.list` 经 `MetricEvidencePort` / `AlertRuleListPort`，`postgres.activity.query` 经 `PostgresEvidencePort`，`alert.rules.health` 经 `RuleHealthPort` 组合规则与指标查询，`accounts.list` 经 `AccountListPort`，`resource.analyze` / `resources.list` 经 `AssetReader` / `ResourceDiscoveryPort`。这些内置工具均不经 `ProviderRegistry` 转发。只有在 `POST /api/ai/analyze-alert` 或直接 `/tools/invoke` 链中，`alarm.analyze` 才会继续交给 AI Provider 执行。`toolgateway` 负责工具权限校验与内置工具清单登记（`internal/ai/toolgateway/builtin.go`），工具权限均落在 `iam_ai_tool_permission` + `iam_role_ai_tool_permission`。
+执行路径：在**对话/Agent Loop**中，`alarm.analyze` 由 AI application 经 AlertReader 本地读取；`metrics.query` / `alert.rules.list` 经 `MetricEvidencePort` / `AlertRuleListPort`，`postgres.activity.query` 经 `PostgresEvidencePort`，`alert.rules.health` 经 `RuleHealthPort` 组合规则与指标查询，`rds.backup.query` 经 `RDSBackupPort` 组合 RDS `ShowBackupPolicy` / `ListBackups`，`accounts.list` 经 `AccountListPort`，`resource.analyze` / `resources.list` 经 `AssetReader` / `ResourceDiscoveryPort`。这些内置工具均不经 `ProviderRegistry` 转发。只有在 `POST /api/ai/analyze-alert` 或直接 `/tools/invoke` 链中，`alarm.analyze` 才会继续交给 AI Provider 执行。`toolgateway` 负责工具权限校验与内置工具清单登记（`internal/ai/toolgateway/builtin.go`），工具权限均落在 `iam_ai_tool_permission` + `iam_role_ai_tool_permission`。
 
 **`metrics.query` 参数 schema（`tool_requests[].params`）**
 
@@ -805,9 +806,24 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 近端分钟级复核：对每条有数据的规则，在最差实例上追加一次近 24 小时、`period=60` 的查询，返回 `recent_window_seconds` / `recent_period` / `recent_point_count` / `recent_breach_points` / `recent_breach_ratio` / `recent_breach_episodes` / `recent_breach_duration_seconds`（累计越限 = breach_points × 60s）/ `recent_longest_breach_seconds`（最长连续越限，不是累计），用于判断规则窗口较小时的触发频率。60s 是 CES 可用的最细历史粒度，1s/15s 精确频率不可还原；模型按 `recent_*` 给出近似结论并注明口径，不得把“无法还原 1s 频率”列为数据缺失而拒绝给结论，也不得把最长连续越限写成累计越限。
 - 零数据探测：`point_count=0` 的规则会对该样本追加一次近 1 小时、`period=60` 的探测，返回 `probe_point_count` / `probe_period` / `probe_window_seconds`。`probe_point_count>0` 说明主窗口无点但近期有数据（保留期/窗口问题）；`=0` 说明近期也无数据（事件型指标无事件、指标未上报或维度不匹配）。单次体检最多探测 6 条规则。
 - **曲线与预算**：长窗口 period 可能是小时级 max 聚合，不能还原规则原始秒级窗口；进入 Prompt 的每条曲线定稿为最多 **288 点**，峰值时刻（`peak_at`/`peak_at_local`）、越限持续时长与 `breach_by_hour`/`breach_days` 时段画像均在降采样前基于全量序列计算，因此裁剪不会丢失时刻、持续性与周期性证据；跨轮重复申请仍会被去重。大规则集在总查询预算内可能只覆盖部分实例，不能仅凭页面有峰值就宣称证据充分；需要短窗口、指定实例复查时由模型继续申请。
-- **根因优先口径**：系统提示词要求先判断越限是否呈周期性/计划性（`breach_top_hours` 集中、`breach_days` 接近窗口天数），周期性场景优先核对备份、批处理、维护窗口等计划任务并给根因处置；RDS 主从复制延迟需按备份窗口物理备份 IO、大事务/DDL/批量写入、网络/跨 AZ、备库回放能力逐项核对，缺备份窗口证据时列入 uncertainties，不得把放宽阈值或延长持续时间作为唯一建议。推荐操作按「根因处置 / 告警降噪 / 阈值调整」分类；平台当前只支持单条告警静默，规则级抑制窗口尚未落地，建议时必须注明。
+- **根因证据口径**：系统提示词只保留安全边界、输出 schema、工具协议与“无证据不定根因”的通用约束，不固化具体领域成因或产品能力声明。规则体检返回 `breach_by_hour` / `breach_days` / `breach_top_hours` 等时段画像；模型可申请 `rds.backup.query` 获取备份策略与最近备份记录后自行对齐时段。未取得备份窗口等环境证据时必须在 uncertainties 中列出，不得假设备份窗口；阈值调整必须说明可能掩盖的真实故障。平台能力以实际工具/动作清单为准，不在提示词中硬编码。
 - 证据：每条成功规则携带 `evidence_id`（对应一次 `metrics` 证据快照）；最终回答 `references` 最多追加 10 条规则体检证据；`tool_invoke` 审计的 `evidence_id` 取首条成功规则证据。观测 `data` 另含 `timezone`、`checked_resource_count` 与 `granularity_note`：破限比例/越限时长是聚合口径，不能直接推断原始采样窗口（如 1s 规则）的误报频率；`breach_by_hour` / `breach_days` 用于周期性判断，但仍受 period 聚合粒度限制，需要分钟级复核时以 `recent_*` 为准并注明口径。
 - provider 支持矩阵与 `alert.rules.list` 一致（huawei `ak_sk` ✅、`none` ✅、`agency` ❌）；数据范围拒绝返回 `status=permission_denied`。
+
+**`rds.backup.query` 参数 schema（`tool_requests[].params`）**
+
+| 字段 | 类型 | 必填 | 约束 |
+| --- | --- | --- | --- |
+| `account_id` / `region` | string | 否 | 缺省依次回退告警标签与资源上下文；最终缺失返回 `status=skipped`、`reason=no_account` / `no_region` |
+| `project_id` | string | 否 | 缺省由账号 `extra_config` + region 解析；仍缺失返回 `status=error`、`reason=project_id is required` |
+| `instance_id` | string | 否 | ≤128 字符，匹配 `^[A-Za-z0-9-]{1,128}$`；缺省优先取告警/资源标签 `rds_instance_id`，其次 `rds_cluster_id`，再其次 `cloud_resource_id`；仍缺失返回 `status=skipped`、`reason=no_instance_id` |
+| `days` | int | 否 | 最近备份记录查询窗口，默认 **7**，最大 **30** |
+| `limit` | int | 否 | 最近备份记录条数，默认 **10**，最大 **20** |
+
+- 执行口径：账号解析 + `AccountAccessAuthorizer` 与 `metrics.query` 同口径；仅支持 `ak_sk`，`agency` 返回 `status=unsupported`；调用华为云 RDS `ShowBackupPolicy` 与 `ListBackups`（只读，不修改策略）。
+- 观测 `data`：`status` / `reason` / `instance_id` / `timezone` / `window_start` / `window_end` / `policy` / `backups` / `backup_total` / `collection_errors` / `time_note`。`policy` 含 `start_time_utc`（华为云 UTC 时间窗）、`window_local`（按 `timezone` 转换后的本地窗口，跨日追加“(次日)”）、`period`、`keep_days`；`backups` 含 `backup_id` / `name` / `type` / `status` / `begin_time` / `end_time` / `size_kb`，时间均为本地时间文本。
+- 部分失败：策略查询成功、备份列表失败时保留 `policy` 并在 `collection_errors` 记录 `backups:*`；两者都失败时 `status` 为 `error`/`permission_denied`。未返回 `policy` 时模型不得臆造备份窗口。
+- provider 支持矩阵与 `metrics.query` 一致（huawei `ak_sk` ✅、`agency` ❌）。
 
 **`accounts.list` 参数与观测**
 
@@ -843,7 +859,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 - 上下文缺失：`allowed=true`、`status=skipped`；常见 reason：`no_alert` / `no_account` / `no_region` / `no_namespace` / `no_metric` / `no_dimensions`。
 - 资源上下文缺失/不可用：`resource_not_found` / `resource_not_cloud_linked` / `resource_load_failed` / `data_scope_denied`。
 - 审计：每次执行写 `tool_invoke`，payload 含 `tool_code/allowed/mode/status/reason/evidence_id/result`；`evidence_id` 仅在成功取数时出现；`metrics.query` 另含 `query`（`metric/dimensions/from/to/period/point_count`，不含凭据）供排查空调数。`chat_message` 仍含 `tool_codes` / `tool_denied` / `loop_rounds`。
-- Agent Loop 白名单为 `alarm.analyze` / `metrics.query` / `postgres.activity.query` / `alert.rules.list` / `alert.rules.health` / `accounts.list` / `resource.analyze` / `resources.list`；其余约束（≤4 轮、80000 token、单轮≤4 个申请、轮内/跨轮按 tool_code+params 去重、每轮 RBAC、执行类拒绝）不变（§10.16）。
+- Agent Loop 白名单为 `alarm.analyze` / `metrics.query` / `postgres.activity.query` / `alert.rules.list` / `alert.rules.health` / `rds.backup.query` / `accounts.list` / `resource.analyze` / `resources.list`；其余约束（≤4 轮、80000 token、单轮≤4 个申请、轮内/跨轮按 tool_code+params 去重、每轮 RBAC、执行类拒绝）不变（§10.16）。
 
 #### 10.12.2 云厂商只读观测工具（cloud.* 系列）— 推迟
 
@@ -1033,7 +1049,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 
 | 控制点 | 要求 |
 | --- | --- |
-| 工具白名单 | 仅 `alarm.analyze`、`metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`accounts.list`、`resource.analyze`、`resources.list` 可被申请；其它工具（含 `execution.tasks.propose` / `dispatch` / `command.run`）一律拒绝并记 `allowed=false`、`reason=tool is not allowed in agent loop` |
+| 工具白名单 | 仅 `alarm.analyze`、`metrics.query`、`postgres.activity.query`、`alert.rules.list`、`alert.rules.health`、`rds.backup.query`、`accounts.list`、`resource.analyze`、`resources.list` 可被申请；其它工具（含 `execution.tasks.propose` / `dispatch` / `command.run`）一律拒绝并记 `allowed=false`、`reason=tool is not allowed in agent loop` |
 | 参数透传 | `tool_requests[].params` 按 §10.12.1 校验；非法参数记 `status=invalid_argument` 并反馈给模型，不执行取数 |
 | 权限 | 每轮每个工具独立过 RBAC + 工具权限（与首轮同一套校验），`allowed=false` 时把原因反馈给模型而不中断 |
 | 预算 | 追加轮数 ≤ **4**（含无进展轮，纯重复不占）；Provider 回报的累计 token ≥ **80000** 即停止继续取数并进入强制收敛；单轮最多受理 **4** 个不同 `tool_code+params` 申请（同工具不同参数可分别执行）；单次对话总时间预算 `ai.turn_budget_s`（默认 600s），超时立即返回 `turn_budget_exceeded` |
@@ -1055,7 +1071,7 @@ AI 运维助手通过自然语言查询状态、分析告警、生成排查步�
 | 工具被拒绝 | 回答仍正常返回；拒绝原因在 `tool_calls[].reason` 与审计中可见 |
 | 未装配知识/记忆 | 循环本身不受影响 |
 
-- 提示词约束：system prompt 明确「只在现有只读观测不足时申请；可申请 `alarm.analyze` / `metrics.query` / `postgres.activity.query` / `alert.rules.list` / `alert.rules.health` / `accounts.list` / `resource.analyze` / `resources.list`；`account_id` 优先来自 `accounts.list` 清单（不可用时回退告警/资源上下文），不得臆造；参数边界见 §10.12.1；最多 4 轮且单轮最多 4 个申请，同轮可并列申请多个不同参数的 metrics.query；现有观测足以作答时必须立即输出 answer；同工具同参数重复申请无意义（服务端跨轮去重拒绝）；不得申请执行类工具；规则体检/阈值建议必须根因优先，先判断周期性并核对备份/批处理/维护窗口，不得只建议放宽阈值」。
+- 提示词约束：system prompt 明确「只在现有只读观测不足时申请；可申请 `alarm.analyze` / `metrics.query` / `postgres.activity.query` / `alert.rules.list` / `alert.rules.health` / `rds.backup.query` / `accounts.list` / `resource.analyze` / `resources.list`；`account_id` 优先来自 `accounts.list` 清单（不可用时回退告警/资源上下文），不得臆造；参数边界见 §10.12.1；最多 4 轮且单轮最多 4 个申请，同轮可并列申请多个不同参数的 metrics.query；现有观测足以作答时必须立即输出 answer；同工具同参数重复申请无意义（服务端跨轮去重拒绝）；不得申请执行类工具；系统提示词不固化具体领域成因或平台能力声明，无证据不定根因，缺失环境证据必须列入 uncertainties」。
 - 前端按 §10.9 映射 `status`；多轮调用会自然出现在 `tool_calls`；`loop_rounds` 不包含强制收敛，仅用于审计与排查。当前 AnswerCard 仅用 tool_code 作为 key，ContextPanel 只保留每个工具最后一次状态，不能视为完整多轮时间线。
 - 循环只影响取数与证据丰富度，不改变权限判断、`actions` 生成或执行链路。
 

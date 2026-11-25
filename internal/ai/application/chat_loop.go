@@ -432,6 +432,8 @@ func (s *ChatService) runLoopToolRequests(ctx context.Context, userID string, se
 			ok = s.refreshAlertRulesObservation(ctx, userID, session, data, req.Params)
 		case chatToolAlertRulesHealth:
 			ok = s.refreshRuleHealthObservation(ctx, userID, session, data, req.Params)
+		case chatToolRDSBackupQuery:
+			ok = s.refreshRDSBackupObservation(ctx, userID, session, data, req.Params)
 		case chatToolAccountsList:
 			ok = s.refreshAccountsObservation(ctx, userID, session, data)
 		case chatToolResourceAnalyze:

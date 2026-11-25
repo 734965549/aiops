@@ -140,6 +140,8 @@ type ChatService struct {
 	alertRules AlertRuleListPort
 	// ruleHealth 为可选的批量规则体检能力；nil 表示 alert.rules.health 不可用。
 	ruleHealth RuleHealthPort
+	// rdsBackups 为可选的 RDS 备份策略/记录查询能力；nil 表示 rds.backup.query 不可用。
+	rdsBackups RDSBackupPort
 	// accounts 为可选的集成账号发现能力；nil 表示关闭 accounts.list。
 	accounts AccountListPort
 	// assets 为可选的资源上下文读取能力；nil 表示关闭 resource.analyze。

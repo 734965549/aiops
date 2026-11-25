@@ -310,6 +310,67 @@ func TestBuildRuleHealthQueryDefaults(t *testing.T) {
 	}
 }
 
+func TestBuildRDSBackupQueryDefaults(t *testing.T) {
+	query, status, reason := buildRDSBackupQuery(evidenceTestAlert(), nil, nil, "Asia/Shanghai")
+	if status != "" || reason != "" {
+		t.Fatalf("unexpected status=%q reason=%q", status, reason)
+	}
+	if query.AccountID != "acc-1" || query.Region != "cn-north-4" || query.ProjectID != "p-1" || query.InstanceID != "i-1" {
+		t.Fatalf("identity fallback = %+v", query)
+	}
+	if query.Days != RDSBackupDefaultDays || query.Limit != RDSBackupDefaultLimit || query.Timezone != "Asia/Shanghai" {
+		t.Fatalf("defaults = %+v", query)
+	}
+}
+
+func TestBuildRDSBackupQueryPrefersRDSInstanceID(t *testing.T) {
+	alert := evidenceTestAlert()
+	alert.Labels["rds_cluster_id"] = "cluster-1"
+	alert.Labels["rds_instance_id"] = "instance-1"
+	query, status, _ := buildRDSBackupQuery(alert, nil, nil, "")
+	if status != "" || query.InstanceID != "instance-1" {
+		t.Fatalf("rds_instance_id must win: %+v status=%q", query, status)
+	}
+	query, status, _ = buildRDSBackupQuery(alert, nil, map[string]any{"instance_id": "explicit-1"}, "")
+	if status != "" || query.InstanceID != "explicit-1" {
+		t.Fatalf("explicit instance_id must win: %+v status=%q", query, status)
+	}
+}
+
+func TestBuildRDSBackupQueryValidation(t *testing.T) {
+	now := evidenceTestAlert()
+	cases := []struct {
+		name   string
+		alert  *AlertContext
+		params map[string]any
+		status string
+	}{
+		{name: "days too large", alert: now, params: map[string]any{"days": RDSBackupMaxDays + 1}, status: chatObservationStatusInvalidArgument},
+		{name: "limit too large", alert: now, params: map[string]any{"limit": RDSBackupMaxLimit + 1}, status: chatObservationStatusInvalidArgument},
+		{name: "invalid instance", alert: now, params: map[string]any{"instance_id": "bad/id"}, status: chatObservationStatusInvalidArgument},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, status, _ := buildRDSBackupQuery(tc.alert, nil, tc.params, "")
+			if status != tc.status {
+				t.Fatalf("status = %q, want %q", status, tc.status)
+			}
+		})
+	}
+	missingAccount := evidenceTestAlert()
+	delete(missingAccount.Labels, "account_id")
+	if _, status, reason := buildRDSBackupQuery(missingAccount, nil, nil, ""); status != EvidenceStatusSkipped || reason != "no_account" {
+		t.Fatalf("missing account = status %q reason %q", status, reason)
+	}
+	missingInstance := evidenceTestAlert()
+	delete(missingInstance.Labels, "cloud_resource_id")
+	delete(missingInstance.Labels, "rds_instance_id")
+	delete(missingInstance.Labels, "rds_cluster_id")
+	if _, status, reason := buildRDSBackupQuery(missingInstance, nil, nil, ""); status != EvidenceStatusSkipped || reason != "no_instance_id" {
+		t.Fatalf("missing instance = status %q reason %q", status, reason)
+	}
+}
+
 func TestBuildRuleHealthQueryValidation(t *testing.T) {
 	alert := evidenceTestAlert()
 	now := int64(1700000000)
